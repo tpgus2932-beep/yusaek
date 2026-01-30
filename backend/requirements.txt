@@ -5,3 +5,5 @@ openpyxl
 xlrd
 pywin32
 lxml
+passlib[bcrypt]
+python-jose

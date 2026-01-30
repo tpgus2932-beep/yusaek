@@ -25,6 +25,12 @@ def _to_int(x, default=0):
         return default
 
 
+def _to_str(x):
+    if x is None:
+        return ""
+    return str(x).strip()
+
+
 def normalize_to_yusas(text: str | None) -> str:
     if text is None:
         return ""
@@ -203,10 +209,10 @@ def process_and_load_any(path: Path):
         cur_run_members[code] = []
 
     for r in range(2, ws.max_row + 1):
-        code = (ws.cell(r, 8).value or "").strip()    # H
-        name = str(ws.cell(r, 9).value or "").strip() # I
-        option = str(ws.cell(r, 10).value or "").strip() # J
-        inv = (ws.cell(r, 13).value or "").strip()    # M
+        code = _to_str(ws.cell(r, 8).value)     # H
+        name = _to_str(ws.cell(r, 9).value)     # I
+        option = _to_str(ws.cell(r, 10).value)  # J
+        inv = _to_str(ws.cell(r, 13).value)     # M
         t = _parse_dt(ws.cell(r, 14).value)           # N
         qty = _to_int(ws.cell(r, QTY_COL).value, default=1)
         o_val = ws.cell(r, 15).value                  # O
@@ -216,7 +222,7 @@ def process_and_load_any(path: Path):
             continue
 
         if code not in code_o_text and o_val is not None:
-            code_o_text[code] = str(o_val).strip()
+            code_o_text[code] = _to_str(o_val)
 
         if inv not in seen_invoice:
             seen_invoice.add(inv)
