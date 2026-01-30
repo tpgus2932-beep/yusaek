@@ -1,0 +1,22 @@
+.appContainer {
+    display: flex;
+    min-height: 100vh;
+}
+
+.mainContent {
+    flex-grow: 1;
+    background-color: var(--bg-primary);
+    display: flex;
+    flex-direction: column;
+}
+
+.placeholderSection {
+    padding: 2rem;
+    text-align: center;
+    color: var(--text-secondary);
+}
+
+.placeholderSection h2 {
+    margin-bottom: 1rem;
+    color: var(--text-primary);
+}
