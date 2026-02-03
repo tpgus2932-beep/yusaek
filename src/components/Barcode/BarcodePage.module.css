@@ -234,11 +234,27 @@
   gap: 0.35rem;
 }
 
+.infoItemLarge {
+  padding: 1.1rem 1.25rem;
+  min-height: 88px;
+}
+
+.infoItemCurrent {
+  padding: 1.9rem 1.8rem;
+  min-height: 170px;
+  justify-content: center;
+}
+
 .infoLabel {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-muted);
+}
+
+.infoLabelMuted {
+  color: #9aa0a6;
+  opacity: 1;
 }
 
 .scanBtn {
@@ -251,11 +267,47 @@
   overflow-wrap: anywhere;
 }
 
+.infoValueMuted {
+  color: #9aa0a6;
+}
+
+.doneBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 0.5rem;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  background-color: rgba(34, 197, 94, 0.15);
+  color: #15803d;
+  border: 1px solid rgba(34, 197, 94, 0.35);
+}
+
+.infoValueLarge {
+  font-size: 1.35rem;
+  line-height: 1.35;
+}
+
+.infoValueCurrent {
+  font-size: 1.6rem;
+  line-height: 1.4;
+}
+
 .infoList {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
   font-weight: 600;
+}
+
+.infoListLarge {
+  gap: 0.55rem;
+}
+
+.infoListCurrent {
+  gap: 0.85rem;
 }
 
 .infoLine {
@@ -276,6 +328,14 @@
   flex: 1 1 auto;
   min-width: 220px;
   overflow-wrap: anywhere;
+}
+
+.infoTextLarge {
+  font-size: 1.2rem;
+}
+
+.infoTextCurrent {
+  font-size: 1.45rem;
 }
 
 .infoLineDone {
@@ -333,6 +393,16 @@
   color: var(--text-secondary);
 }
 
+.inlineTagRun {
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background-color: #fff4cc;
+  color: #8a5b00;
+  border: 1px solid rgba(138, 91, 0, 0.2);
+}
+
 .inlineTagDanger {
   font-size: 0.75rem;
   font-weight: 700;
@@ -340,6 +410,12 @@
   border-radius: 999px;
   background-color: rgba(220, 53, 69, 0.12);
   color: #b42318;
+}
+
+.inlineMeta {
+  margin-left: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
 }
 
 .logBox {
@@ -403,6 +479,13 @@
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+}
+
+.modalActions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
 .modalTitle {

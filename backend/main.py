@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Header, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Header, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 import tempfile
@@ -6,11 +6,16 @@ import uuid
 import traceback
 import os
 import sqlite3
+import io
+import re
+from collections import Counter
 from datetime import datetime, timedelta
 
-from barcode_core import process_and_load_any, normalize_to_yusas
+from barcode_core import process_and_load_any, normalize_to_yusas, load_excel_any
 
 import barcode_core
+import pandas as pd
+import xlwt
 
 from passlib.context import CryptContext
 from jose import jwt, JWTError
@@ -39,7 +44,133 @@ STATE = {
     "last_scanned_code": None,
     "processed_path": None,
     "defect_counts": None,
+    "incoming_counts": None,
 }
+
+# ---------- EasyAdmin product upload helpers ----------
+HEADER_LIST = [
+    "상품명","공급처코드 / 공급처명","공급처 상품명","공급처 옵션","원산지","택배비","중량",
+    "원가","공급가","판매가","시중가","옵션1","옵션2","옵션3","옵션관리","바코드",
+    "대표 이미지","설명 이미지1","설명 이미지2","설명 이미지3","설명 이미지4","설명 이미지5",
+    "비고 이미지","상품설명","상품설명2","재고경고수량","재고위험수량","합포불가",
+    "동일상품 합포가능 수량","로케이션","메모","제조사","사은품","담당MD","관리자(정)",
+    "관리자(부)","무료배송","카테고리","배송타입","매장간이동","판매시작일","입고대기",
+    "판매처코드 / 판매처명","상품태그","상품추가항목1","상품추가항목2","상품추가항목3",
+    "상품추가항목4","상품추가항목5","상품추가항목6","상품추가항목7","상품추가항목8",
+    "상품추가항목9","상품추가항목10","소진시 품절","입고시 품절해제","소진시 일시품절",
+    "입고시 일시품절해제","옵션추가항목1","옵션추가항목2","옵션추가항목3","옵션추가항목4",
+    "옵션추가항목5","옵션추가금액(원가)","옵션추가금액(판매가)","매칭시 자동취소",
+    "유통기한 경고 설정","판매상태","원가메모","재고단위1","재고단위2","재고단위3","재고단위4","재고단위5"
+]
+
+_FRONT_BRACKETS = re.compile(r'^(\s*\[[^\]]*\]\s*)+')
+_BACK_BRACKETS = re.compile(r'(\s*\[[^\]]*\]\s*)+$')
+
+
+def _strip_edge_brackets(text):
+    if pd.isna(text):
+        return text
+    s = str(text)
+    s = re.sub(_FRONT_BRACKETS, '', s)
+    s = re.sub(_BACK_BRACKETS, '', s)
+    return s.strip()
+
+
+def _split_b_to_c_and_h(value):
+    if pd.isna(value):
+        return pd.NA, pd.NA
+    s = str(value).strip()
+    if not s:
+        return pd.NA, pd.NA
+    parts = s.split()
+    if len(parts) <= 2:
+        return " ".join(parts), pd.NA
+    if len(parts) == 3:
+        c_part = " ".join(parts[:2])
+        try:
+            h_part = int(parts[2])
+        except ValueError:
+            h_part = pd.NA
+        return c_part, h_part
+    return " ".join(parts), pd.NA
+
+
+def _split_l_values(value):
+    if pd.isna(value):
+        return pd.NA, pd.NA, pd.NA
+    tokens = [t.strip() for t in str(value).split(',') if t.strip()]
+    tokens = [f":{t}" for t in tokens[:3]]
+    while len(tokens) < 3:
+        tokens.append(pd.NA)
+    return tokens[0], tokens[1], tokens[2]
+
+
+def _col_to_num(col: str) -> int:
+    n = 0
+    for ch in col:
+        n = n * 26 + (ord(ch) - 64)
+    return n
+
+
+def _pos0(col: str) -> int:
+    return _col_to_num(col) - 1
+
+
+def _save_as_xls_bytes(df: pd.DataFrame) -> bytes:
+    book = xlwt.Workbook()
+    sheet = book.add_sheet("Sheet1")
+    for j, col in enumerate(df.columns):
+        sheet.write(0, j, col)
+    for i, row in df.iterrows():
+        for j, val in enumerate(row):
+            if pd.isna(val):
+                sheet.write(i + 1, j, "")
+            else:
+                sheet.write(i + 1, j, val)
+    buf = io.BytesIO()
+    book.save(buf)
+    return buf.getvalue()
+
+
+def _process_easyadmin_product_upload(path: Path) -> bytes:
+    ext = path.suffix.lower()
+    if ext == ".xlsx":
+        df = pd.read_excel(path, engine="openpyxl")
+    elif ext == ".xls":
+        df = pd.read_excel(path)
+    elif ext == ".csv":
+        try:
+            df = pd.read_csv(path, encoding="utf-8")
+        except UnicodeDecodeError:
+            df = pd.read_csv(path, encoding="cp949")
+    else:
+        raise ValueError("지원 형식: xlsx, xls, csv")
+
+    if df.shape[1] < 12:
+        raise ValueError("원본 파일에 최소 12열(C, H, L 포함)이 필요합니다.")
+
+    series_b = df.iloc[:, 1]
+    series_c = df.iloc[:, 2]
+    series_h = df.iloc[:, 7]
+    series_l = df.iloc[:, 11]
+
+    col_a = series_c.apply(_strip_edge_brackets)
+    col_b = pd.Series(["유색"] * len(df), index=df.index)
+    ch_df = series_b.apply(lambda v: pd.Series(_split_b_to_c_and_h(v)))
+    lmn_df = series_l.apply(lambda v: pd.Series(_split_l_values(v)))
+
+    out = pd.DataFrame("", index=df.index, columns=HEADER_LIST)
+    out.iloc[:, _pos0('A')] = col_a
+    out.iloc[:, _pos0('B')] = col_b
+    out.iloc[:, _pos0('C')] = ch_df.iloc[:, 0]
+    out.iloc[:, _pos0('H')] = ch_df.iloc[:, 1]
+    out.iloc[:, _pos0('L')] = lmn_df.iloc[:, 0]
+    out.iloc[:, _pos0('M')] = lmn_df.iloc[:, 1]
+    out.iloc[:, _pos0('N')] = lmn_df.iloc[:, 2]
+    out.iloc[:, _pos0('O')] = 1
+    out.iloc[:, _pos0('BG')] = series_h
+
+    return _save_as_xls_bytes(out)
 
 DB_PATH = Path(__file__).with_name("app.db")
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-me")
@@ -64,6 +195,7 @@ def _init_db():
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             display_name TEXT NOT NULL DEFAULT '',
+            role TEXT NOT NULL DEFAULT 'user',
             created_at TEXT NOT NULL
         )
         """
@@ -83,6 +215,7 @@ def _ensure_user_column(column: str, ddl: str):
 
 _init_db()
 _ensure_user_column("display_name", "ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+_ensure_user_column("role", "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
 
 
 def _init_requests():
@@ -131,11 +264,53 @@ _ensure_request_column(
 )
 
 
+
 def _get_user_display(username: str) -> str:
     conn = _get_db()
     row = conn.execute("SELECT display_name FROM users WHERE username = ?", (username,)).fetchone()
     conn.close()
     return row["display_name"] if row else ""
+
+
+def _get_user_role(username: str) -> str:
+    conn = _get_db()
+    row = conn.execute("SELECT role FROM users WHERE username = ?", (username,)).fetchone()
+    conn.close()
+    return row["role"] if row and row["role"] else "user"
+
+
+def _is_admin(username: str) -> bool:
+    return _get_user_role(username) == "admin"
+
+
+def _count_admins() -> int:
+    conn = _get_db()
+    row = conn.execute("SELECT COUNT(*) as cnt FROM users WHERE role = 'admin'").fetchone()
+    conn.close()
+    return int(row["cnt"]) if row else 0
+
+
+def _ensure_bootstrap_admin():
+    username = (os.environ.get("BOOTSTRAP_ADMIN_USERNAME") or "ksh2932").strip()
+    password = (os.environ.get("BOOTSTRAP_ADMIN_PASSWORD") or "").strip()
+    display_name = (os.environ.get("BOOTSTRAP_ADMIN_DISPLAY_NAME") or "관리자").strip()
+    if not password:
+        return
+    conn = _get_db()
+    row = conn.execute("SELECT username FROM users WHERE username = ?", (username,)).fetchone()
+    if row:
+        conn.execute("UPDATE users SET role = 'admin' WHERE username = ?", (username,))
+        conn.commit()
+        conn.close()
+        return
+    conn.execute(
+        "INSERT INTO users (username, password_hash, display_name, role, created_at) VALUES (?, ?, ?, ?, ?)",
+        (username, _hash_password(password), display_name, "admin", datetime.utcnow().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
 
 
 def _parse_iso_date(value: str | None):
@@ -179,6 +354,18 @@ def _verify_password(password: str, password_hash: str) -> bool:
     return pwd_context.verify(password, password_hash)
 
 
+def _to_int(value, default=0):
+    try:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return default
+        return int(float(str(value).strip()))
+    except Exception:
+        return default
+
+
+_ensure_bootstrap_admin()
+
+
 def _create_access_token(username: str) -> str:
     expire = datetime.utcnow() + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
     payload = {"sub": username, "exp": expire}
@@ -199,6 +386,12 @@ def _get_current_user(authorization: str = Header(None)):
     return username
 
 
+def _require_admin(user: str = Depends(_get_current_user)):
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="admin required")
+    return user
+
+
 @app.get("/ping")
 def ping():
     return {"status": "ok"}
@@ -215,8 +408,8 @@ def register(payload: dict = Body(...)):
     conn = _get_db()
     try:
         conn.execute(
-            "INSERT INTO users (username, password_hash, display_name, created_at) VALUES (?, ?, ?, ?)",
-            (username, _hash_password(password), display_name, datetime.utcnow().isoformat()),
+            "INSERT INTO users (username, password_hash, display_name, role, created_at) VALUES (?, ?, ?, ?, ?)",
+            (username, _hash_password(password), display_name, "user", datetime.utcnow().isoformat()),
         )
         conn.commit()
     except sqlite3.IntegrityError:
@@ -246,7 +439,15 @@ def login(payload: dict = Body(...)):
         raise HTTPException(status_code=401, detail="invalid credentials")
 
     token = _create_access_token(username)
-    return {"ok": True, "token": token, "username": username, "display_name": row["display_name"]}
+    role = row["role"] if row["role"] else "user"
+    return {
+        "ok": True,
+        "token": token,
+        "username": username,
+        "display_name": row["display_name"],
+        "role": role,
+        "is_admin": role == "admin",
+    }
 
 
 @app.options("/auth/login")
@@ -257,10 +458,11 @@ def login_options():
 @app.get("/auth/me")
 def me(user: str = Depends(_get_current_user)):
     conn = _get_db()
-    row = conn.execute("SELECT display_name FROM users WHERE username = ?", (user,)).fetchone()
+    row = conn.execute("SELECT display_name, role FROM users WHERE username = ?", (user,)).fetchone()
     conn.close()
     display_name = row["display_name"] if row else ""
-    return {"ok": True, "username": user, "display_name": display_name}
+    role = row["role"] if row and row["role"] else "user"
+    return {"ok": True, "username": user, "display_name": display_name, "role": role, "is_admin": role == "admin"}
 
 
 @app.options("/auth/me")
@@ -332,6 +534,59 @@ async def barcode_upload(file: UploadFile = File(...), user: str = Depends(_get_
     }
 
 
+@app.post("/barcode/incoming/upload")
+async def incoming_upload(file: UploadFile = File(...), user: str = Depends(_get_current_user)):
+    name = (file.filename or "").lower()
+    if not (name.endswith(".xls") or name.endswith(".xlsx")):
+        raise HTTPException(status_code=400, detail="xls/xlsx files only")
+
+    suffix = ".xlsx" if name.endswith(".xlsx") else ".xls"
+    tmp_path = Path(tempfile.gettempdir()) / f"yusaek_incoming_{uuid.uuid4().hex}{suffix}"
+    data = await file.read()
+    tmp_path.write_bytes(data)
+
+    try:
+        wb, ws = load_excel_any(tmp_path)
+        counts = Counter()
+        for r in range(1, ws.max_row + 1):
+            code_raw = ws.cell(r, 1).value
+            qty_raw = ws.cell(r, 2).value
+            code = normalize_to_yusas(code_raw)
+            if not code:
+                continue
+            qty = _to_int(qty_raw, default=0)
+            if qty > 0:
+                counts[code] += qty
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"incoming load failed: {e}")
+
+    STATE["incoming_counts"] = dict(counts)
+    return {"ok": True, "codes": len(counts), "total_qty": sum(counts.values())}
+
+
+@app.post("/barcode/product/upload")
+async def easyadmin_product_upload(file: UploadFile = File(...), user: str = Depends(_get_current_user)):
+    name = (file.filename or "").lower()
+    if not (name.endswith(".xls") or name.endswith(".xlsx") or name.endswith(".csv")):
+        raise HTTPException(status_code=400, detail="xls/xlsx/csv만 업로드 가능")
+
+    suffix = Path(name).suffix or ".xlsx"
+    tmp_path = Path(tempfile.gettempdir()) / f"yusaek_easyadmin_{uuid.uuid4().hex}{suffix}"
+    data = await file.read()
+    tmp_path.write_bytes(data)
+
+    try:
+        xls_bytes = _process_easyadmin_product_upload(tmp_path)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"가공 실패: {e}")
+
+    filename = f"easyadmin_products_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xls"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return Response(content=xls_bytes, media_type="application/vnd.ms-excel", headers=headers)
+
+
 @app.get("/barcode/status")
 def barcode_status(user: str = Depends(_get_current_user)):
     if not STATE["loaded"]:
@@ -360,11 +615,13 @@ def _get_all_items(inv: str):
     else:
         codes = sorted(mapping[inv].keys())
 
+    incoming_counts = STATE.get("incoming_counts") or {}
     items = []
     for code in codes:
         remain = mapping[inv].get(code, 0)
         run_len = (STATE["runs"] or {}).get(inv, {}).get(code, 0)
         defect_n = (STATE["defect_counts"] or {}).get(code, 0)
+        incoming_n = incoming_counts.get(code, 0)
         det = (STATE["details"] or {}).get(inv, {}).get(code, {})
         items.append(
             {
@@ -374,6 +631,7 @@ def _get_all_items(inv: str):
                 "remain": remain,
                 "run_len": run_len,
                 "defect": defect_n,
+                "incoming": incoming_n,
             }
         )
     return items
@@ -449,6 +707,27 @@ def _get_defect_list():
             }
         )
     return rows
+
+
+def _build_defect_csv() -> str:
+    defect_counts = STATE.get("defect_counts") or {}
+    code_o_text = STATE.get("code_o_text") or {}
+    lines = ["A열(O왼쪽),B열(O오른쪽),C열(옵션명),D열(불량수량)"]
+    for code, n in sorted(defect_counts.items()):
+        det = _find_item_detail_by_code(code)
+        opt = det.get("option", "") or ""
+        o_text = (code_o_text.get(code) or "").strip()
+        if not o_text:
+            name = det.get("name", "") or ""
+            o_text = f"{code} {name}".strip()
+        o_text = str(o_text).strip().replace(",", " ")
+        if " " in o_text:
+            left, right = o_text.split(" ", 1)
+        else:
+            left, right = o_text, ""
+        opt_clean = (opt or "").replace(",", " ")
+        lines.append(f"{left},{right},{opt_clean},{n}")
+    return "\n".join(lines) + "\n"
 
 
 @app.post("/barcode/scan/invoice")
@@ -580,6 +859,19 @@ def list_defects(user: str = Depends(_get_current_user)):
     return {"ok": True, "defects": _get_defect_list()}
 
 
+@app.get("/barcode/defect/export")
+def export_defects(user: str = Depends(_get_current_user)):
+    if not STATE["loaded"]:
+        raise HTTPException(status_code=400, detail="먼저 엑셀을 업로드해주세요")
+    if not (STATE.get("defect_counts") or {}):
+        raise HTTPException(status_code=400, detail="불량 목록이 비어있습니다")
+    csv_text = _build_defect_csv()
+    filename = f"defects_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    headers = {"Content-Disposition": f'attachment; filename=\"{filename}\"'}
+    csv_bytes = csv_text.encode("utf-8-sig")
+    return Response(content=csv_bytes, media_type="text/csv; charset=utf-8", headers=headers)
+
+
 @app.post("/barcode/defect/dec")
 def decrement_defect(payload: dict = Body(...), user: str = Depends(_get_current_user)):
     if not STATE["loaded"]:
@@ -634,6 +926,76 @@ def list_users(user: str = Depends(_get_current_user)):
     return {"ok": True, "users": [{"username": r["username"], "display_name": r["display_name"]} for r in rows]}
 
 
+@app.get("/admin/users")
+def admin_list_users(admin: str = Depends(_require_admin)):
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT username, display_name, role, created_at FROM users ORDER BY username ASC"
+    ).fetchall()
+    conn.close()
+    return {
+        "ok": True,
+        "users": [
+            {
+                "username": r["username"],
+                "display_name": r["display_name"],
+                "role": r["role"] if r["role"] else "user",
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.patch("/admin/users/{target}/role")
+def admin_set_role(target: str, payload: dict = Body(...), admin: str = Depends(_require_admin)):
+    role = (payload.get("role") or "").strip()
+    if role not in ("admin", "user"):
+        raise HTTPException(status_code=400, detail="invalid role")
+
+    conn = _get_db()
+    row = conn.execute("SELECT role FROM users WHERE username = ?", (target,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="user not found")
+
+    current_role = row["role"] if row["role"] else "user"
+    if current_role == "admin" and role != "admin" and _count_admins() <= 1:
+        conn.close()
+        raise HTTPException(status_code=400, detail="cannot remove last admin")
+
+    conn.execute("UPDATE users SET role = ? WHERE username = ?", (role, target))
+    conn.commit()
+    conn.close()
+    return {"ok": True, "username": target, "role": role}
+
+
+@app.delete("/admin/users/{target}")
+def admin_delete_user(target: str, admin: str = Depends(_require_admin)):
+    if target == admin:
+        raise HTTPException(status_code=400, detail="cannot delete self")
+
+    conn = _get_db()
+    row = conn.execute("SELECT role FROM users WHERE username = ?", (target,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="user not found")
+
+    role = row["role"] if row["role"] else "user"
+    if role == "admin" and _count_admins() <= 1:
+        conn.close()
+        raise HTTPException(status_code=400, detail="cannot delete last admin")
+
+    conn.execute(
+        "DELETE FROM requests WHERE requester_username = ? OR assignee_username = ?",
+        (target, target),
+    )
+    conn.execute("DELETE FROM users WHERE username = ?", (target,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
 @app.post("/requests")
 def create_request(payload: dict = Body(...), user: str = Depends(_get_current_user)):
     assignee = (payload.get("assignee") or "").strip()
@@ -685,6 +1047,18 @@ def get_assigned_requests(user: str = Depends(_get_current_user)):
     return {"ok": True, "assignee": target, "requests": items}
 
 
+@app.delete("/requests/assigned/clear")
+def clear_assigned_requests(user: str = Depends(_get_current_user)):
+    conn = _get_db()
+    conn.execute(
+        "DELETE FROM requests WHERE assignee_username = ? AND status = 'completed'",
+        (user,),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
 @app.post("/requests/{request_id}/complete")
 def complete_request(request_id: int, user: str = Depends(_get_current_user)):
     conn = _get_db()
@@ -713,9 +1087,9 @@ def get_resolved_requests(user: str = Depends(_get_current_user)):
         """
         SELECT * FROM requests
         WHERE requester_username = ?
-          AND status = 'completed'
-          AND acknowledged_at IS NULL
-        ORDER BY completed_at DESC
+        ORDER BY (status = 'completed') DESC,
+                 completed_at DESC,
+                 created_at DESC
         """,
         (user,),
     ).fetchall()
@@ -723,11 +1097,25 @@ def get_resolved_requests(user: str = Depends(_get_current_user)):
 
     items = []
     for row in rows:
-        if not _is_visible_completed(row["completed_at"]):
+        if row["status"] == "completed" and not _is_visible_completed(row["completed_at"]):
             continue
-        items.append(_row_to_request(row))
+        item = _row_to_request(row)
+        item["can_ack"] = row["status"] == "completed" and row["acknowledged_at"] is None
+        items.append(item)
 
     return {"ok": True, "requests": items}
+
+
+@app.delete("/requests/sent/clear")
+def clear_sent_requests(user: str = Depends(_get_current_user)):
+    conn = _get_db()
+    conn.execute(
+        "DELETE FROM requests WHERE requester_username = ? AND status = 'completed'",
+        (user,),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
 
 
 @app.post("/requests/{request_id}/ack")

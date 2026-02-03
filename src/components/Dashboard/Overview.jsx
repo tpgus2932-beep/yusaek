@@ -4,13 +4,6 @@ import styles from './Dashboard.module.css';
 
 const Overview = ({ currentUser }) => {
     const API = `http://${window.location.hostname}:8000`;
-    const stats = [
-        { title: 'Total Revenue', value: '$45,231.89', change: '+20.1%', status: 'up' },
-        { title: 'Subscriptions', value: '+2,350', change: '+180.1%', status: 'up' },
-        { title: 'Active Now', value: '573', change: '+201', status: 'up' },
-        { title: 'Total Users', value: '+12,234', change: '+19.2%', status: 'up' },
-    ];
-
     const [users, setUsers] = useState([]);
     const [assignee, setAssignee] = useState('');
     const [requestText, setRequestText] = useState('');
@@ -21,6 +14,7 @@ const Overview = ({ currentUser }) => {
     const [loadingResolved, setLoadingResolved] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState('');
+    const [sentFilter, setSentFilter] = useState('all');
 
     const authHeaders = useMemo(() => {
         const token = localStorage.getItem('token');
@@ -31,11 +25,31 @@ const Overview = ({ currentUser }) => {
         if (res.status === 401) {
             localStorage.removeItem('token');
             localStorage.removeItem('displayName');
+            localStorage.removeItem('username');
+            localStorage.removeItem('isAdmin');
             window.location.reload();
             return true;
         }
         return false;
     };
+
+    const remainingCount = useMemo(
+        () => activity.filter((item) => item.status !== 'completed').length,
+        [activity]
+    );
+    const completedCount = useMemo(
+        () => activity.filter((item) => item.status === 'completed').length,
+        [activity]
+    );
+    const totalCount = activity.length;
+    const sentCount = resolved.length;
+
+    const stats = [
+        { title: '남은 요청개수', value: remainingCount, change: '건', status: 'up' },
+        { title: '완료 요청개수', value: completedCount, change: '건', status: 'up' },
+        { title: '전체 요청개수', value: totalCount, change: '건', status: 'up' },
+        { title: '보낸 요청개수', value: sentCount, change: '건', status: 'up' },
+    ];
 
     const fetchUsers = async () => {
         try {
@@ -115,6 +129,7 @@ const Overview = ({ currentUser }) => {
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data?.detail || 'Failed to send request');
             setRequestText('');
+            await fetchResolved();
             if (assignee === (currentUser || localStorage.getItem('username'))) {
                 await fetchActivity();
             }
@@ -156,10 +171,42 @@ const Overview = ({ currentUser }) => {
         }
     };
 
+    const handleClearActivity = async () => {
+        if (!window.confirm('요청 목록에서 완료된 항목만 삭제할까요?')) return;
+        try {
+            const res = await fetch(`${API}/requests/assigned/clear`, {
+                method: 'DELETE',
+                headers: authHeaders,
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || 'Failed to clear activity');
+            await fetchActivity();
+        } catch (err) {
+            setError(err.message || 'Failed to clear activity');
+        }
+    };
+
+    const handleClearSent = async () => {
+        if (!window.confirm('보낸 요청에서 완료된 항목만 삭제할까요?')) return;
+        try {
+            const res = await fetch(`${API}/requests/sent/clear`, {
+                method: 'DELETE',
+                headers: authHeaders,
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || 'Failed to clear sent requests');
+            await fetchResolved();
+        } catch (err) {
+            setError(err.message || 'Failed to clear sent requests');
+        }
+    };
+
     return (
         <section className={styles.dashboard}>
             <div className={styles.headerRow}>
-                <h1 className={styles.title}>Overview</h1>
+                <h1 className={styles.title}>대시보드</h1>
                 <button className={styles.downloadBtn}>
                     <Plus size={18} />
                     Download Report
@@ -183,7 +230,7 @@ const Overview = ({ currentUser }) => {
             <div className={styles.contentGrid}>
                 <div className={styles.card}>
                     <div className={styles.cardTitle}>
-                        Request a Task
+                        요청 보내기
                         <Plus size={18} className={styles.cardHeaderIcon} />
                     </div>
                     <form className={styles.requestForm} onSubmit={handleSubmit}>
@@ -223,8 +270,13 @@ const Overview = ({ currentUser }) => {
 
                 <div className={styles.card}>
                     <div className={styles.cardTitle}>
-                        Activity Log
+                        요청 목록
                         <Calendar size={18} className={styles.cardHeaderIcon} />
+                    </div>
+                    <div className={styles.cardActions}>
+                        <button className={styles.secondaryBtn} type="button" onClick={handleClearActivity}>
+                            목록 지우기
+                        </button>
                     </div>
                     <div className={styles.activityList}>
                         {loadingActivity && <div className={styles.mutedText}>Loading activity...</div>}
@@ -266,33 +318,81 @@ const Overview = ({ currentUser }) => {
 
             <div className={styles.resolvedGrid}>
                 <div className={styles.card}>
-                    <div className={styles.cardTitle}>
-                        Request Resolved
-                        <Bell size={18} className={styles.cardHeaderIcon} />
+                    <div className={styles.cardTitleRow}>
+                        <div className={styles.cardTitle}>
+                            보낸 요청
+                            <Bell size={18} className={styles.cardHeaderIcon} />
+                        </div>
+                        <div className={styles.filterGroup}>
+                            <button
+                                type="button"
+                                className={`${styles.filterBtn} ${
+                                    sentFilter === 'open' ? styles.filterActive : ''
+                                }`}
+                                onClick={() => setSentFilter('open')}
+                            >
+                                요청한 목록만보기
+                            </button>
+                            <button
+                                type="button"
+                                className={`${styles.filterBtn} ${
+                                    sentFilter === 'completed' ? styles.filterActive : ''
+                                }`}
+                                onClick={() => setSentFilter('completed')}
+                            >
+                                완료된 목록만보기
+                            </button>
+                            <button
+                                type="button"
+                                className={`${styles.filterBtn} ${
+                                    sentFilter === 'all' ? styles.filterActive : ''
+                                }`}
+                                onClick={() => setSentFilter('all')}
+                            >
+                                전체보기
+                            </button>
+                            <button className={styles.filterBtn} type="button" onClick={handleClearSent}>
+                                목록 지우기
+                            </button>
+                        </div>
                     </div>
                     <div className={styles.resolvedList}>
                         {loadingResolved && <div className={styles.mutedText}>Loading resolved...</div>}
                         {!loadingResolved && resolved.length === 0 && (
-                            <div className={styles.mutedText}>No resolved requests.</div>
+                            <div className={styles.mutedText}>No sent requests.</div>
                         )}
                         {!loadingResolved &&
-                            resolved.map((item) => (
+                            resolved
+                                .filter((item) => {
+                                    if (sentFilter === 'open') return item.status !== 'completed';
+                                    if (sentFilter === 'completed') return item.status === 'completed';
+                                    return true;
+                                })
+                                .map((item) => (
                                 <div key={item.id} className={styles.resolvedItem}>
                                     <div className={styles.resolvedInfo}>
                                         <div className={styles.resolvedTitle}>{item.text}</div>
                                         <div className={styles.resolvedMeta}>
-                                            {item.assignee_display || item.assignee_username} completed
+                                            {item.assignee_display || item.assignee_username}
+                                            {item.status === 'completed' ? ' completed' : ' in progress'}
                                         </div>
                                     </div>
                                     <div className={styles.resolvedActions}>
-                                        <span className={styles.newBadge}>NEW</span>
-                                        <button
-                                            className={styles.secondaryBtn}
-                                            type="button"
-                                            onClick={() => handleAck(item.id)}
-                                        >
-                                            확인
-                                        </button>
+                                        {item.status === 'completed' && item.can_ack && (
+                                            <>
+                                                <span className={styles.newBadge}>NEW</span>
+                                                <button
+                                                    className={styles.secondaryBtn}
+                                                    type="button"
+                                                    onClick={() => handleAck(item.id)}
+                                                >
+                                                    확인
+                                                </button>
+                                            </>
+                                        )}
+                                        {item.status !== 'completed' && (
+                                            <span className={styles.pendingBadge}>OPEN</span>
+                                        )}
                                     </div>
                                 </div>
                             ))}

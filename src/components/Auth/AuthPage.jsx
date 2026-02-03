@@ -46,7 +46,7 @@ export default function AuthPage({ onAuth }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "로그인 실패");
 
-      if (data?.token) onAuth(data.token, data.display_name || data.username, data.username);
+      if (data?.token) onAuth(data.token, data.display_name || data.username, data.username, !!data.is_admin);
     } catch (err) {
       setError(err.message || "요청 실패");
     } finally {

@@ -97,6 +97,43 @@
     justify-content: space-between;
 }
 
+.cardActions {
+    margin-top: -0.75rem;
+    margin-bottom: 1rem;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.cardTitleRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.filterGroup {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.filterBtn {
+    background-color: transparent;
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    padding: 0.35rem 0.75rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.filterActive {
+    background-color: var(--accent-black);
+    color: var(--accent-white);
+    border-color: var(--accent-black);
+}
+
 .cardHeaderIcon {
     color: var(--text-muted);
 }
@@ -142,6 +179,10 @@
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
+    max-height: 320px;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+    overscroll-behavior: contain;
 }
 
 .activityItem {
@@ -150,12 +191,23 @@
     align-items: flex-start;
 }
 
+.activityInfo {
+    min-width: 0;
+    flex: 1;
+}
+
 .activityDot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
     background-color: var(--accent-black);
     margin-top: 0.4rem;
+}
+
+.activityInfo div {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    white-space: normal;
 }
 
 .activityInfo div:first-child {
@@ -294,6 +346,15 @@
 .newBadge {
     background-color: #000;
     color: #fff;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+}
+
+.pendingBadge {
+    background-color: #f0f0f0;
+    color: #000;
     font-size: 0.7rem;
     font-weight: 600;
     padding: 0.2rem 0.5rem;

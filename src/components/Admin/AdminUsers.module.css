@@ -1,0 +1,132 @@
+.admin {
+    padding: 2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.headerRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.title {
+    font-size: 1.75rem;
+    font-weight: 700;
+}
+
+.card {
+    background-color: var(--bg-primary);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-color);
+    padding: 1.5rem;
+    box-shadow: var(--card-shadow);
+}
+
+.table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.table th {
+    text-align: left;
+    padding-bottom: 1rem;
+    color: var(--text-muted);
+    font-weight: 500;
+    font-size: 0.875rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.table td {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 0.9375rem;
+}
+
+.actionsCol {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.roleBadge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.roleAdmin {
+    background-color: #000;
+    color: #fff;
+}
+
+.roleUser {
+    background-color: #f0f0f0;
+    color: #000;
+}
+
+.primaryBtn {
+    background-color: var(--accent-black);
+    color: var(--accent-white);
+    border: none;
+    padding: 0.5rem 0.9rem;
+    border-radius: 999px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-right: 0.5rem;
+}
+
+.secondaryBtn {
+    background-color: transparent;
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    padding: 0.5rem 0.9rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    margin-right: 0.5rem;
+}
+
+.dangerBtn {
+    background-color: #b42318;
+    color: #fff;
+    border: none;
+    padding: 0.5rem 0.9rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.primaryBtn:disabled,
+.secondaryBtn:disabled,
+.dangerBtn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.errorText {
+    color: #b42318;
+    font-size: 0.875rem;
+}
+
+.successText {
+    color: #027a48;
+    font-size: 0.875rem;
+}
+
+.mutedText {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+}
+
+@media (max-width: 1024px) {
+    .table th:nth-child(4),
+    .table td:nth-child(4) {
+        display: none;
+    }
+}
