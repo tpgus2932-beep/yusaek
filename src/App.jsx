@@ -3,14 +3,16 @@ import Sidebar from './components/Layout/Sidebar';
 import Header from './components/Layout/Header';
 import Overview from './components/Dashboard/Overview';
 import styles from './components/Layout/Layout.module.css';
-import BarcodePage from './components/Barcode/BarcodePage';
+import BarcodeTabs from './components/Barcode/BarcodeTabs';
 import ProductUploadPage from './components/Barcode/ProductUploadPage';
+import SharedFilesPage from './components/Barcode/SharedFilesPage';
+import ReturnsPage from './components/Barcode/ReturnsPage';
 import AuthPage from './components/Auth/AuthPage';
 import AdminUsers from './components/Admin/AdminUsers';
 
 
 const App = () => {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'dashboard');
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [token, setToken] = useState(localStorage.getItem('token'));
   const [authChecked, setAuthChecked] = useState(false);
@@ -63,6 +65,10 @@ const App = () => {
       .finally(() => setAuthChecked(true));
   }, []);
 
+  useEffect(() => {
+    localStorage.setItem('activeTab', activeTab);
+  }, [activeTab]);
+
   const handleAuth = (newToken, name) => {
     localStorage.setItem('token', newToken);
     setToken(newToken);
@@ -79,6 +85,7 @@ const App = () => {
       localStorage.setItem('username', user);
       setUsername(user);
     }
+    localStorage.setItem('todos-reset-on-login', '1');
     if (typeof adminFlag === 'boolean') {
       localStorage.setItem('isAdmin', adminFlag ? 'true' : 'false');
       setIsAdmin(adminFlag);
@@ -125,13 +132,17 @@ const App = () => {
         />
 
         {activeTab === 'dashboard' && <Overview currentUser={username} />}
-        {activeTab === 'barcode' && <BarcodePage />}
+        {activeTab === 'barcode' && <BarcodeTabs />}
+        {activeTab === 'returns' && <ReturnsPage />}
         {activeTab === 'barcode-product-upload' && <ProductUploadPage />}
+        {activeTab === 'shared-files' && <SharedFilesPage />}
         {activeTab === 'admin' && isAdmin && <AdminUsers currentUser={username} />}
 
         {activeTab !== 'dashboard' &&
           activeTab !== 'barcode' &&
+          activeTab !== 'returns' &&
           activeTab !== 'barcode-product-upload' &&
+          activeTab !== 'shared-files' &&
           activeTab !== 'admin' && (
           <div className={styles.placeholderSection}>
             <h2>{activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} Section</h2>

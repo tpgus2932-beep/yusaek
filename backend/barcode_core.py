@@ -53,8 +53,10 @@ def _excel_com_convert_to_xlsx(path: Path) -> Path:
     # Excel 설치된 윈도우에서만 동작(로컬 PC면 OK)
     import win32com.client as win32  # pip install pywin32
 
-    excel = win32.Dispatch("Excel.Application")
+    # Use a new Excel instance so we don't close the user's existing Excel
+    excel = win32.DispatchEx("Excel.Application")
     excel.Visible = False
+    excel.DisplayAlerts = False
     wb = excel.Workbooks.Open(str(path))
     tmp = Path(tempfile.gettempdir()) / (path.stem + "_auto_tmp.xlsx")
     wb.SaveAs(str(tmp), FileFormat=51)  # 51 = xlsx

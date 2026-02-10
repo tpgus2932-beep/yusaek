@@ -75,6 +75,48 @@
   flex-wrap: wrap;
 }
 
+.dropZone {
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background-color: var(--bg-tertiary);
+}
+
+.dropZoneActive {
+  border-color: var(--text-primary);
+  background-color: rgba(0, 0, 0, 0.04);
+}
+
+.dropHint {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.dualCard {
+  padding: 1rem 1.25rem;
+}
+
+.dualGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.dualItem {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+@media (max-width: 900px) {
+  .dualGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .fileInput {
   position: relative;
   display: inline-flex;
@@ -245,6 +287,11 @@
   justify-content: center;
 }
 
+.infoItemCurrent .infoLabel {
+  font-size: 1.05rem;
+  letter-spacing: 0.06em;
+}
+
 .infoLabel {
   font-size: 0.75rem;
   text-transform: uppercase;
@@ -317,6 +364,7 @@
   flex-wrap: wrap;
   gap: 0.5rem;
   align-items: center;
+  justify-content: flex-start;
 }
 
 .infoLine:last-child {
@@ -325,8 +373,9 @@
 }
 
 .infoText {
-  flex: 1 1 auto;
-  min-width: 220px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   overflow-wrap: anywhere;
 }
 
@@ -335,7 +384,19 @@
 }
 
 .infoTextCurrent {
-  font-size: 1.45rem;
+  font-size: 1.95rem;
+}
+
+.infoItemCurrent .inlineTag,
+.infoItemCurrent .inlineTagRun,
+.infoItemCurrent .inlineTagDanger,
+.infoItemCurrent .doneBadge {
+  font-size: 1.05rem;
+  padding: 0.36rem 0.8rem;
+}
+
+.infoItemCurrent .inlineMeta {
+  font-size: 1.15rem;
 }
 
 .infoLineDone {
@@ -401,6 +462,16 @@
   background-color: #fff4cc;
   color: #8a5b00;
   border: 1px solid rgba(138, 91, 0, 0.2);
+}
+
+.inlineTagIncoming {
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  background-color: rgba(17, 154, 94, 0.12);
+  color: #0b6b3a;
+  border: 1px solid rgba(17, 154, 94, 0.25);
 }
 
 .inlineTagDanger {
@@ -491,6 +562,146 @@
 .modalTitle {
   font-size: 1.1rem;
   font-weight: 700;
+}
+
+.sharedList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.sharedItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
+  flex-wrap: wrap;
+}
+
+.sharedMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.sharedName {
+  font-weight: 600;
+  color: var(--text-primary);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.sharedName:hover {
+  text-decoration: underline;
+}
+
+.sharedSub {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.sharedActions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tabRow {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.tabBtn {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  padding: 0.5rem 0.9rem;
+  border-radius: 999px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease, background-color 0.2s ease;
+}
+
+.tabBtn:hover {
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+
+.tabActive {
+  background-color: #111111;
+  color: #ffffff;
+  border-color: #111111;
+}
+
+.tableWrap {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  overflow: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 720px;
+}
+
+.table th,
+.table td {
+  text-align: left;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 0.9rem;
+}
+
+.table th {
+  background-color: var(--bg-secondary);
+  font-weight: 700;
+}
+
+.cellInput {
+  width: 100%;
+  padding: 0.35rem 0.45rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+
+.checkboxRow {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.checkboxItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+.radioItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+.searchInput {
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
+  min-width: 220px;
+  font-family: inherit;
 }
 
 @media (max-width: 640px) {

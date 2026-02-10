@@ -10,7 +10,9 @@ import {
     Sun,
     Barcode,
     Shield,
-    Upload
+    Upload,
+    FolderOpen,
+    RotateCcw
 } from 'lucide-react';
 import styles from './Sidebar.module.css';
 
@@ -19,7 +21,7 @@ import styles from './Sidebar.module.css';
 const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin }) => {
     return (
         <aside className={styles.sidebar}>
-            <div className={styles.logo}>
+            <div className={styles.logo} onClick={() => setActiveTab('dashboard')}>
                 <div className={styles.logoIcon}></div>
                 YUSAEK
             </div>
@@ -40,20 +42,27 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin }) 
                 바코드
                 </div>
                 <div
+                    className={`${styles.navItem} ${activeTab === 'returns' ? styles.active : ''}`}
+                    onClick={() => setActiveTab('returns')}
+                >
+                    <RotateCcw size={20} />
+                    반품
+                </div>
+                <div
                     className={`${styles.navItem} ${activeTab === 'barcode-product-upload' ? styles.active : ''}`}
                     onClick={() => setActiveTab('barcode-product-upload')}
                 >
                     <Upload size={20} />
                     상품 업로드
                 </div>
-                
                 <div
-                    className={`${styles.navItem} ${activeTab === 'users' ? styles.active : ''}`}
-                    onClick={() => setActiveTab('users')}
+                    className={`${styles.navItem} ${activeTab === 'shared-files' ? styles.active : ''}`}
+                    onClick={() => setActiveTab('shared-files')}
                 >
-                    <Users size={20} />
-                    사용자
+                    <FolderOpen size={20} />
+                    유색 공용 파일
                 </div>
+                
                 {isAdmin && (
                     <div
                         className={`${styles.navItem} ${activeTab === 'admin' ? styles.active : ''}`}
@@ -63,20 +72,6 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin }) 
                         관리자
                     </div>
                 )}
-                <div
-                    className={`${styles.navItem} ${activeTab === 'sales' ? styles.active : ''}`}
-                    onClick={() => setActiveTab('sales')}
-                >
-                    <ShoppingBag size={20} />
-                    판매
-                </div>
-                <div
-                    className={`${styles.navItem} ${activeTab === 'analytics' ? styles.active : ''}`}
-                    onClick={() => setActiveTab('analytics')}
-                >
-                    <BarChart3 size={20} />
-                    분석
-                </div>
                 <div
                     className={`${styles.navItem} ${activeTab === 'settings' ? styles.active : ''}`}
                     onClick={() => setActiveTab('settings')}

@@ -3,6 +3,7 @@ uvicorn
 pandas
 openpyxl
 xlrd
+xlwt
 pywin32
 lxml
 passlib[bcrypt]

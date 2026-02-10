@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import styles from "./BarcodePage.module.css";
+import * as XLSX from "xlsx";
 const API = `http://${window.location.hostname}:8000`;
 
 const getAuthHeaders = () => {
@@ -7,7 +8,148 @@ const getAuthHeaders = () => {
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
 
-export default function BarcodePage() {
+const HANGUL_BASE = 0xac00;
+const HANGUL_LAST = 0xd7a3;
+const HANGUL_L = [
+  "r",
+  "R",
+  "s",
+  "e",
+  "E",
+  "f",
+  "a",
+  "q",
+  "Q",
+  "t",
+  "T",
+  "d",
+  "w",
+  "W",
+  "c",
+  "z",
+  "x",
+  "v",
+  "g",
+];
+const HANGUL_V = [
+  "k",
+  "o",
+  "i",
+  "O",
+  "j",
+  "p",
+  "u",
+  "P",
+  "h",
+  "hk",
+  "ho",
+  "hl",
+  "y",
+  "n",
+  "nj",
+  "np",
+  "nl",
+  "b",
+  "m",
+  "ml",
+  "l",
+];
+const HANGUL_T = [
+  "",
+  "r",
+  "R",
+  "rt",
+  "s",
+  "sw",
+  "sg",
+  "e",
+  "f",
+  "fr",
+  "fa",
+  "fq",
+  "ft",
+  "fx",
+  "fv",
+  "fg",
+  "a",
+  "q",
+  "qt",
+  "t",
+  "T",
+  "d",
+  "w",
+  "c",
+  "z",
+  "x",
+  "v",
+  "g",
+];
+const HANGUL_COMPAT = {
+  ㄱ: "r",
+  ㄲ: "R",
+  ㄴ: "s",
+  ㄷ: "e",
+  ㄸ: "E",
+  ㄹ: "f",
+  ㅁ: "a",
+  ㅂ: "q",
+  ㅃ: "Q",
+  ㅅ: "t",
+  ㅆ: "T",
+  ㅇ: "d",
+  ㅈ: "w",
+  ㅉ: "W",
+  ㅊ: "c",
+  ㅋ: "z",
+  ㅌ: "x",
+  ㅍ: "v",
+  ㅎ: "g",
+  ㅏ: "k",
+  ㅐ: "o",
+  ㅑ: "i",
+  ㅒ: "O",
+  ㅓ: "j",
+  ㅔ: "p",
+  ㅕ: "u",
+  ㅖ: "P",
+  ㅗ: "h",
+  ㅘ: "hk",
+  ㅙ: "ho",
+  ㅚ: "hl",
+  ㅛ: "y",
+  ㅜ: "n",
+  ㅝ: "nj",
+  ㅞ: "np",
+  ㅟ: "nl",
+  ㅠ: "b",
+  ㅡ: "m",
+  ㅢ: "ml",
+  ㅣ: "l",
+};
+
+const toEnglishKey = (text) => {
+  if (!text) return text;
+  let out = "";
+  for (const ch of text) {
+    const code = ch.charCodeAt(0);
+    if (code >= HANGUL_BASE && code <= HANGUL_LAST) {
+      const sIndex = code - HANGUL_BASE;
+      const lIndex = Math.floor(sIndex / 588);
+      const vIndex = Math.floor((sIndex % 588) / 28);
+      const tIndex = sIndex % 28;
+      out += `${HANGUL_L[lIndex]}${HANGUL_V[vIndex]}${HANGUL_T[tIndex]}`;
+      continue;
+    }
+    if (HANGUL_COMPAT[ch]) {
+      out += HANGUL_COMPAT[ch];
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+};
+
+export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [file, setFile] = useState(null);
   const [uploadMsg, setUploadMsg] = useState("");
   const [count, setCount] = useState(null);
@@ -32,7 +174,21 @@ export default function BarcodePage() {
   const soundsRef = useRef(null);
 
   const pushLog = (msg) => {
-    setLog((prev) => [msg, ...prev].slice(0, 12));
+    setLog((prev) => [msg, ...prev]);
+  };
+
+  const displayLog = log.slice(0, 12);
+
+  const downloadLogExcel = () => {
+    if (!log.length) {
+      alert("로그가 없습니다.");
+      return;
+    }
+    const rows = [["번호", "로그"], ...log.map((text, idx) => [idx + 1, text])];
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "결과로그");
+    XLSX.writeFile(wb, "barcode_result_log.xlsx");
   };
 
   const handleUnauthorized = (res) => {
@@ -176,7 +332,8 @@ export default function BarcodePage() {
   };
 
   const handleDefectAdd = async () => {
-    const value = scanText.trim();
+    const raw = scanText.trim();
+    const value = toEnglishKey(raw);
     if (!value) return;
     try {
       const res = await fetch(`${API}/barcode/defect/add`, {
@@ -200,7 +357,8 @@ export default function BarcodePage() {
   };
 
   const handleScan = async () => {
-    const value = scanText.trim();
+    const raw = scanText.trim();
+    const value = toEnglishKey(raw);
     if (!value) return;
 
     if (defectMode) {
@@ -392,9 +550,10 @@ export default function BarcodePage() {
     <div className={styles.page}>
       <div className={styles.pageHeader}>
         <div>
-          <h2 className={styles.title}>Barcode</h2>
+          <h2 className={styles.title}>{title}</h2>
           <p className={styles.subtitle}>송장 업로드 후 송장/상품 스캔(Enter)</p>
         </div>
+        {headerExtra}
       </div>
       <div className={styles.stack}>
         <section className={styles.card}>
@@ -412,7 +571,7 @@ export default function BarcodePage() {
               파일 선택
             </label>
             <button className={styles.primaryBtn} onClick={handleUpload} disabled={loadingUpload}>
-              {loadingUpload ? "업로드 중.." : "업로드"}
+              {loadingUpload ? "업로드 중..." : "업로드"}
             </button>
           </div>
           {uploadMsg && (
@@ -435,7 +594,7 @@ export default function BarcodePage() {
               onClick={handleIncomingUpload}
               disabled={loadingIncoming}
             >
-              {loadingIncoming ? "업로드 중.." : "업로드"}
+              {loadingIncoming ? "업로드 중..." : "업로드"}
             </button>
           </div>
           {incomingMsg && (
@@ -629,13 +788,18 @@ export default function BarcodePage() {
       <section className={styles.card}>
         <div className={styles.cardHeader}>
           <h3 className={styles.cardTitle}>결과 로그</h3>
-          <span className={styles.pill}>최근 {Math.min(log.length, 12)}개</span>
+          <div className={styles.headerActions}>
+          <span className={styles.pill}>최근 {Math.min(displayLog.length, 12)}개</span>
+            <button className={styles.secondaryBtn} onClick={downloadLogExcel}>
+              엑셀로 다운로드
+            </button>
+          </div>
         </div>
         <div className={styles.logBox}>
           {log.length === 0 ? (
             <div className={styles.empty}>아직 없음</div>
           ) : (
-            log.map((l, i) => (
+            displayLog.map((l, i) => (
               <div key={i} className={styles.logLine}>
                 {l}
               </div>

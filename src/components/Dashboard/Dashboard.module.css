@@ -210,12 +210,12 @@
     white-space: normal;
 }
 
-.activityInfo div:first-child {
+.activityText {
     font-size: 0.9375rem;
     font-weight: 600;
 }
 
-.activityInfo div:last-child {
+.activityMeta {
     font-size: 0.8125rem;
     color: var(--text-secondary);
 }
@@ -267,6 +267,37 @@
     resize: vertical;
 }
 
+.fileRow {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.fileButton {
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px dashed var(--border-color);
+    padding: 0.5rem 0.9rem;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.fileButton:hover {
+    border-color: var(--text-muted);
+}
+
+.fileInputHidden {
+    display: none;
+}
+
+.fileHint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    word-break: break-word;
+}
+
 .primaryBtn {
     background-color: var(--accent-black);
     color: var(--accent-white);
@@ -275,6 +306,143 @@
     border-radius: var(--radius-sm);
     font-weight: 600;
     cursor: pointer;
+}
+
+.todoHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.todoHeaderActions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.todoAddToggle {
+    background-color: transparent;
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    padding: 0.35rem 0.8rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    cursor: pointer;
+}
+
+.todoAddToggle:hover {
+    border-color: var(--text-muted);
+}
+
+.todoRow {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+
+.todoInput {
+    flex: 1;
+    min-width: 220px;
+    padding: 0.75rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+.todoList {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.todoListCollapsed {
+    max-height: min(60vh, 420px);
+    overflow-y: auto;
+    padding-right: 0.25rem;
+    overscroll-behavior: contain;
+}
+
+.todoToggleRow {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.5rem;
+}
+
+.todoToggleBtn {
+    background-color: transparent;
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    padding: 0.3rem 0.8rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.todoToggleBtn:hover {
+    border-color: var(--text-muted);
+}
+
+.todoItem {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.6rem 0.8rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-secondary);
+}
+
+.todoLabel {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 0.95rem;
+    min-width: 0;
+}
+
+.todoActions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.todoDoneBtn {
+    background-color: transparent;
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    padding: 0.3rem 0.7rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.todoDoneBtn:hover {
+    border-color: var(--text-muted);
+}
+
+.todoText {
+    overflow-wrap: anywhere;
+}
+
+.todoTextDone {
+    text-decoration: line-through;
+    color: var(--text-muted);
+}
+
+.todoHint {
+    margin-top: 0.75rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
 }
 
 .secondaryBtn {
@@ -286,6 +454,61 @@
     font-size: 0.75rem;
     cursor: pointer;
 }
+
+.companyCreds {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.companyCredRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    padding: 0.6rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-secondary);
+}
+
+.companyPinRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    padding: 0.6rem;
+    border-radius: var(--radius-sm);
+    border: 1px dashed var(--border-color);
+    background-color: var(--bg-secondary);
+}
+
+.companyCredLabel {
+    font-weight: 600;
+    min-width: 140px;
+}
+
+.credentialInput,
+.credentialPin {
+    padding: 0.45rem 0.6rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-primary);
+    font-size: 0.85rem;
+    min-width: 160px;
+}
+
+.credentialPin {
+    width: 120px;
+}
+
+.credentialValue {
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    display: grid;
+    gap: 0.25rem;
+}
+
 
 .secondaryBtn:disabled {
     opacity: 0.5;
@@ -343,6 +566,134 @@
     align-items: center;
 }
 
+.attachmentList {
+    margin-top: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.attachmentItem {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.4rem 0.5rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-tertiary);
+}
+
+.attachmentThumb {
+    width: 48px;
+    height: 48px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    cursor: zoom-in;
+}
+
+.attachmentIcon {
+    width: 48px;
+    height: 48px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-secondary);
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+}
+
+.attachmentMeta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+}
+
+.attachmentLink {
+    color: var(--text-primary);
+    text-decoration: none;
+    font-size: 0.85rem;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.attachmentLink:hover {
+    text-decoration: underline;
+}
+
+.attachmentSize {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.previewOverlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    z-index: 60;
+}
+
+.previewModal {
+    background: var(--bg-primary);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-color);
+    box-shadow: var(--card-shadow);
+    width: min(920px, 96vw);
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 1rem;
+}
+
+.previewHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.previewActions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+
+.previewTitle {
+    font-weight: 700;
+    font-size: 0.95rem;
+    overflow-wrap: anywhere;
+}
+
+.previewBody {
+    flex: 1;
+    overflow: auto;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.75rem;
+}
+
+.previewImage {
+    max-width: 100%;
+    height: auto;
+    object-fit: contain;
+    transform-origin: center center;
+}
+
 .newBadge {
     background-color: #000;
     color: #fff;
@@ -360,6 +711,7 @@
     padding: 0.2rem 0.5rem;
     border-radius: 999px;
 }
+
 
 @media (max-width: 1024px) {
     .contentGrid {

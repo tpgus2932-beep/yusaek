@@ -13,11 +13,13 @@ const ProductUploadPage = () => {
         return token ? { Authorization: `Bearer ${token}` } : {};
     };
 
+
     const getDownloadFilename = (res) => {
         const disposition = res.headers.get('content-disposition') || '';
         const match = disposition.match(/filename\\*?=(?:UTF-8''|\"?)([^\";]+)/i);
         if (match?.[1]) {
-            return decodeURIComponent(match[1].replace(/\"/g, ''));
+            const name = decodeURIComponent(match[1].replace(/\"/g, ''));
+            return name.toLowerCase().endsWith('.xls') ? name : `${name.replace(/\.[^.]+$/, '')}.xls`;
         }
         const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
         return `easyadmin_products_${stamp}.xls`;
@@ -66,6 +68,7 @@ const ProductUploadPage = () => {
             setLoading(false);
         }
     };
+
 
     return (
         <div className={pageStyles.page}>
