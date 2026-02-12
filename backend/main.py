@@ -25,6 +25,7 @@ from openpyxl.utils.cell import column_index_from_string
 
 from passlib.context import CryptContext
 from jose import jwt, JWTError
+from api.amood_hapbae import router as amood_hapbae_router
 
 print("### barcode_core file =", barcode_core.__file__)
 
@@ -1037,6 +1038,12 @@ def _require_admin(user: str = Depends(_get_current_user)):
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="admin required")
     return user
+
+
+app.include_router(
+    amood_hapbae_router,
+    dependencies=[Depends(_get_current_user)],
+)
 
 
 @app.get("/ping")
