@@ -18,7 +18,8 @@ import styles from './Sidebar.module.css';
 
 
 
-const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin }) => {
+const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hiddenTabs = [] }) => {
+    const isHidden = (tab) => hiddenTabs.includes(tab);
     return (
         <aside className={styles.sidebar}>
             <div className={styles.logo} onClick={() => setActiveTab('dashboard')}>
@@ -27,6 +28,7 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin }) 
             </div>
 
             <nav className={styles.navGroup}>
+                {!isHidden('dashboard') && (
                 <div
                     className={`${styles.navItem} ${activeTab === 'dashboard' ? styles.active : ''}`}
                     onClick={() => setActiveTab('dashboard')}
@@ -34,6 +36,8 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin }) 
                     <LayoutDashboard size={20} />
                     대시보드
                 </div>
+                )}
+                {!isHidden('barcode') && (
                 <div
                 className={`${styles.navItem} ${activeTab === 'barcode' ? styles.active : ''}`}
                 onClick={() => setActiveTab('barcode')}
@@ -41,6 +45,8 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin }) 
                 <Barcode size={20} />
                 바코드
                 </div>
+                )}
+                {!isHidden('returns') && (
                 <div
                     className={`${styles.navItem} ${activeTab === 'returns' ? styles.active : ''}`}
                     onClick={() => setActiveTab('returns')}
@@ -48,6 +54,8 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin }) 
                     <RotateCcw size={20} />
                     반품
                 </div>
+                )}
+                {!isHidden('barcode-product-upload') && (
                 <div
                     className={`${styles.navItem} ${activeTab === 'barcode-product-upload' ? styles.active : ''}`}
                     onClick={() => setActiveTab('barcode-product-upload')}
@@ -55,6 +63,8 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin }) 
                     <Upload size={20} />
                     상품 업로드
                 </div>
+                )}
+                {!isHidden('shared-files') && (
                 <div
                     className={`${styles.navItem} ${activeTab === 'shared-files' ? styles.active : ''}`}
                     onClick={() => setActiveTab('shared-files')}
@@ -62,8 +72,28 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin }) 
                     <FolderOpen size={20} />
                     유색 공용 파일
                 </div>
+                )}
+                {!isHidden('noye-kimsungil') && (
+                <div
+                    className={`${styles.navItem} ${activeTab === 'noye-kimsungil' ? styles.active : ''}`}
+                    onClick={() => setActiveTab('noye-kimsungil')}
+                >
+                    <Users size={20} />
+                    노예김승일
+                </div>
+                )}
                 
-                {isAdmin && (
+                {isAdmin && !isHidden('order') && (
+                    <div
+                        className={`${styles.navItem} ${activeTab === 'order' ? styles.active : ''}`}
+                        onClick={() => setActiveTab('order')}
+                    >
+                        <ShoppingBag size={20} />
+                        발주
+                    </div>
+                )}
+
+                {isAdmin && !isHidden('admin') && (
                     <div
                         className={`${styles.navItem} ${activeTab === 'admin' ? styles.active : ''}`}
                         onClick={() => setActiveTab('admin')}

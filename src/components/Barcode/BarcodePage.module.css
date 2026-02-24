@@ -646,6 +646,10 @@
   overflow: auto;
 }
 
+.registeredTableWrap {
+  max-height: 420px;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
