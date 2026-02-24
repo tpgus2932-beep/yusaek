@@ -395,7 +395,7 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
           setCurrentInvoice(data.invoice);
           setItems(data.items ?? []);
           setCurrentNext(data.current_next ?? null);
-          setInvoiceDone(false);
+          setInvoiceDone(!!data.invoice_done);
           pushLog(`송장 SET: ${data.invoice}`);
         }
       } else {
@@ -639,7 +639,14 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
             <input
               ref={scanRef}
               value={scanText}
-              onChange={(e) => setScanText(e.target.value)}
+              onChange={(e) => {
+                if (e.nativeEvent?.isComposing) {
+                  setScanText(e.target.value);
+                  return;
+                }
+                setScanText(toEnglishKey(e.target.value));
+              }}
+              onCompositionEnd={(e) => setScanText(toEnglishKey(e.currentTarget.value))}
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleScan();
               }}

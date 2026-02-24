@@ -663,7 +663,14 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
             <input
               ref={scanRef}
               value={scanText}
-              onChange={(e) => setScanText(e.target.value)}
+              onChange={(e) => {
+                if (e.nativeEvent?.isComposing) {
+                  setScanText(e.target.value);
+                  return;
+                }
+                setScanText(toEnglishKey(e.target.value));
+              }}
+              onCompositionEnd={(e) => setScanText(toEnglishKey(e.currentTarget.value))}
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleScan();
               }}

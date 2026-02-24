@@ -9,9 +9,15 @@ import SharedFilesPage from './components/Barcode/SharedFilesPage';
 import ReturnsPage from './components/Barcode/ReturnsPage';
 import AuthPage from './components/Auth/AuthPage';
 import AdminUsers from './components/Admin/AdminUsers';
+import OrderPage from './components/Admin/OrderPage';
+import SettingsPage from './components/Layout/SettingsPage';
+import NoyeKimPage from './components/NoyeKim/NoyeKimPage';
+import MobileRequestKimsungilPage from './components/Mobile/MobileRequestKimsungilPage';
 
 
 const App = () => {
+  const pathname = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
+  const isMobileKimsungilRequestRoute = pathname === '/request-kimsungil';
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'dashboard');
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [token, setToken] = useState(localStorage.getItem('token'));
@@ -19,6 +25,22 @@ const App = () => {
   const [displayName, setDisplayName] = useState(localStorage.getItem('displayName'));
   const [username, setUsername] = useState(localStorage.getItem('username'));
   const [isAdmin, setIsAdmin] = useState(localStorage.getItem('isAdmin') === 'true');
+  const [hiddenTabs, setHiddenTabs] = useState([]);
+
+  const isTabAllowed = (tab, adminFlag = isAdmin, hidden = hiddenTabs) => {
+    if (tab === 'settings') return true;
+    if (tab === 'order' || tab === 'admin') {
+      return adminFlag && !hidden.includes(tab);
+    }
+    return !hidden.includes(tab);
+  };
+
+  const getFallbackTab = (adminFlag = isAdmin, hidden = hiddenTabs) => {
+    const candidates = ['dashboard', 'barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil'];
+    if (adminFlag) candidates.push('order', 'admin');
+    candidates.push('settings');
+    return candidates.find((tab) => isTabAllowed(tab, adminFlag, hidden)) || 'settings';
+  };
 
   const toggleTheme = () => {
     setIsDarkMode(!isDarkMode);
@@ -69,6 +91,30 @@ const App = () => {
     localStorage.setItem('activeTab', activeTab);
   }, [activeTab]);
 
+  useEffect(() => {
+    if (!token) {
+      setHiddenTabs([]);
+      return;
+    }
+    fetch(`http://${window.location.hostname}:8000/settings/menu-visibility`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(async (res) => {
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data && Array.isArray(data.hidden_tabs)) {
+          setHiddenTabs(data.hidden_tabs);
+        }
+      })
+      .catch(() => {});
+  }, [token]);
+
+  useEffect(() => {
+    if (!isTabAllowed(activeTab)) {
+      setActiveTab(getFallbackTab());
+    }
+  }, [activeTab, isAdmin, hiddenTabs]);
+
   const handleAuth = (newToken, name) => {
     localStorage.setItem('token', newToken);
     setToken(newToken);
@@ -101,10 +147,18 @@ const App = () => {
     setDisplayName(null);
     setUsername(null);
     setIsAdmin(false);
+    setHiddenTabs([]);
   };
 
   if (!authChecked) {
+    if (isMobileKimsungilRequestRoute) {
+      return <MobileRequestKimsungilPage />;
+    }
     return <div className={styles.placeholderSection}>Loading...</div>;
+  }
+
+  if (isMobileKimsungilRequestRoute) {
+    return <MobileRequestKimsungilPage />;
   }
 
   if (!token) {
@@ -119,6 +173,7 @@ const App = () => {
         isDarkMode={isDarkMode}
         toggleTheme={toggleTheme}
         isAdmin={isAdmin}
+        hiddenTabs={hiddenTabs}
       />
 
       <main className={styles.mainContent}>
@@ -131,19 +186,27 @@ const App = () => {
           }}
         />
 
-        {activeTab === 'dashboard' && <Overview currentUser={username} />}
-        {activeTab === 'barcode' && <BarcodeTabs />}
-        {activeTab === 'returns' && <ReturnsPage />}
-        {activeTab === 'barcode-product-upload' && <ProductUploadPage />}
-        {activeTab === 'shared-files' && <SharedFilesPage />}
-        {activeTab === 'admin' && isAdmin && <AdminUsers currentUser={username} />}
+        {activeTab === 'dashboard' && !hiddenTabs.includes('dashboard') && <Overview currentUser={username} />}
+        {activeTab === 'barcode' && !hiddenTabs.includes('barcode') && <BarcodeTabs />}
+        {activeTab === 'returns' && !hiddenTabs.includes('returns') && <ReturnsPage />}
+        {activeTab === 'barcode-product-upload' && !hiddenTabs.includes('barcode-product-upload') && <ProductUploadPage />}
+        {activeTab === 'shared-files' && !hiddenTabs.includes('shared-files') && <SharedFilesPage />}
+        {activeTab === 'noye-kimsungil' && !hiddenTabs.includes('noye-kimsungil') && <NoyeKimPage />}
+        {activeTab === 'order' && isAdmin && !hiddenTabs.includes('order') && <OrderPage />}
+        {activeTab === 'admin' && isAdmin && !hiddenTabs.includes('admin') && <AdminUsers currentUser={username} />}
+        {activeTab === 'settings' && (
+          <SettingsPage hiddenTabs={hiddenTabs} setHiddenTabs={setHiddenTabs} isAdmin={isAdmin} />
+        )}
 
         {activeTab !== 'dashboard' &&
           activeTab !== 'barcode' &&
           activeTab !== 'returns' &&
           activeTab !== 'barcode-product-upload' &&
           activeTab !== 'shared-files' &&
-          activeTab !== 'admin' && (
+          activeTab !== 'noye-kimsungil' &&
+          activeTab !== 'order' &&
+          activeTab !== 'admin' &&
+          activeTab !== 'settings' && (
           <div className={styles.placeholderSection}>
             <h2>{activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} Section</h2>
             <p>Coming soon...</p>
