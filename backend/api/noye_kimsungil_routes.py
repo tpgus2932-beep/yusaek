@@ -420,7 +420,8 @@ def build_noye_kimsungil_router(*, get_current_user):
                 "F": g["수량"].astype(int).astype(str),
             }
         )
-        tsv = out.to_csv(sep="\t", index=False, header=False, lineterminator="\n").rstrip("\n")
+        # Keep a trailing newline so repeated copy/paste blocks append cleanly.
+        tsv = out.to_csv(sep="\t", index=False, header=False, lineterminator="\n")
         return {"ok": True, "count": len(out), "text": tsv}
 
     @router.post("/date-chunk/process")

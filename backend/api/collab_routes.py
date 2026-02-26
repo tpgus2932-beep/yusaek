@@ -268,6 +268,80 @@ def build_collab_router(
 
         return {"ok": True}
 
+    @router.get("/shared-todos")
+    def list_shared_todos(user: str = Depends(get_current_user)):
+        conn = get_db()
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM shared_todos
+            ORDER BY (status = 'completed') ASC,
+                     created_at ASC,
+                     id ASC
+            """
+        ).fetchall()
+        conn.close()
+        items = []
+        for row in rows:
+            items.append(
+                {
+                    "id": row["id"],
+                    "text": row["text"],
+                    "status": row["status"],
+                    "created_by_username": row["created_by_username"],
+                    "created_by_display": row["created_by_display"] or "",
+                    "created_at": row["created_at"],
+                    "completed_by_username": row["completed_by_username"],
+                    "completed_by_display": row["completed_by_display"] or "",
+                    "completed_at": row["completed_at"],
+                    "completed_comment": row["completed_comment"] or "",
+                }
+            )
+        return {"ok": True, "todos": items}
+
+    @router.post("/shared-todos")
+    def create_shared_todo(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        text = (payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text required")
+        now = datetime.now(timezone.utc).isoformat()
+        created_by_display = get_user_display(user)
+        conn = get_db()
+        conn.execute(
+            """
+            INSERT INTO shared_todos (
+                text, status,
+                created_by_username, created_by_display, created_at
+            ) VALUES (?, 'open', ?, ?, ?)
+            """,
+            (text, user, created_by_display, now),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+
+    @router.post("/shared-todos/{todo_id}/complete")
+    def complete_shared_todo(todo_id: int, payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        completed_by_display = get_user_display(user)
+        completed_comment = (payload.get("comment") or "").strip()
+        conn = get_db()
+        row = conn.execute("SELECT * FROM shared_todos WHERE id = ?", (todo_id,)).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="todo not found")
+        if row["status"] != "completed":
+            conn.execute(
+                """
+                UPDATE shared_todos
+                SET status = ?, completed_by_username = ?, completed_by_display = ?, completed_at = ?, completed_comment = ?
+                WHERE id = ?
+                """,
+                ("completed", user, completed_by_display, datetime.now(timezone.utc).isoformat(), completed_comment, todo_id),
+            )
+            conn.commit()
+        conn.close()
+        return {"ok": True}
+
     @router.get("/shared-files")
     def list_shared_files(user: str = Depends(get_current_user)):
         conn = get_db()

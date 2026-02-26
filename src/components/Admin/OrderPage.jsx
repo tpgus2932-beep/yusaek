@@ -33,7 +33,6 @@ export default function OrderPage() {
   const [qty, setQty] = useState("0");
   const searchTimer = useRef(null);
 
-  const [costBaseFile, setCostBaseFile] = useState(null);
   const [showCostEditor, setShowCostEditor] = useState(false);
   const [costColumns, setCostColumns] = useState([]);
   const [costRows, setCostRows] = useState([]);
@@ -41,6 +40,8 @@ export default function OrderPage() {
   const [costOffset, setCostOffset] = useState(0);
   const [costQuery, setCostQuery] = useState("");
   const [costEdits, setCostEdits] = useState({});
+  const [costAddName, setCostAddName] = useState("");
+  const [costAddCode, setCostAddCode] = useState("");
   const costLimit = 50;
 
   const [excelFile, setExcelFile] = useState(null);
@@ -258,6 +259,7 @@ export default function OrderPage() {
     const rows = checkResults.map((r) => ({
       상품명: r.name || "",
       코드: r.code || "",
+      접수: r.received_qty ?? "",
       기준개수: r.need_qty ?? "",
       실제개수: r.actual_qty ?? "",
       부족수량: r.shortage ?? "",
@@ -374,50 +376,32 @@ export default function OrderPage() {
     }
   };
 
-  const handleCostBaseUpload = async () => {
-    if (!costBaseFile) {
-      setCostMessage("원가베이스 파일을 선택하세요.");
+  const handleCostBaseAddSingle = async () => {
+    const name = (costAddName || "").trim();
+    const code = (costAddCode || "").trim();
+    if (!name && !code) {
+      setCostMessage("A열 또는 B열 값을 입력하세요.");
       return;
     }
     try {
-      const formData = new FormData();
-      formData.append("file", costBaseFile);
-      const res = await fetch(`${API}/amood-hapbae/cost-base/upload`, {
+      const res = await fetch(`${API}/amood-hapbae/cost-base/add-row`, {
         method: "POST",
-        headers: getAuthHeaders(),
-        body: formData,
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ name, code }),
       });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "원가베이스 업로드 실패");
-      setCostMessage("원가베이스 업로드 완료");
-      setCostBaseFile(null);
+      if (!res.ok) throw new Error(data?.detail || "개별상품추가 실패");
+      setCostMessage("개별상품추가 완료");
+      setCostAddName("");
+      setCostAddCode("");
       await fetchStatus();
       await fetchRegistered();
-    } catch (err) {
-      setCostMessage(err.message || "원가베이스 업로드 실패");
-    }
-  };
-
-  const handleCostBaseDownload = async () => {
-    try {
-      const res = await fetch(`${API}/amood-hapbae/cost-base/download`, { headers: getAuthHeaders() });
-      if (handleUnauthorized(res)) return;
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data?.detail || "다운로드 실패");
+      if (showCostEditor) {
+        await fetchCostPreview(0, "").catch(() => {});
       }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "원가베이스.xlsx";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
     } catch (err) {
-      setCostMessage(err.message || "다운로드 실패");
+      setCostMessage(err.message || "개별상품추가 실패");
     }
   };
 
@@ -487,13 +471,7 @@ export default function OrderPage() {
           <h3 className={styles.cardTitle}>원가베이스 관리</h3>
         </div>
         <div className={styles.uploadRow}>
-          <label className={styles.fileInput}>
-            <input type="file" accept=".xls,.xlsx,.xlsm" onChange={(e) => setCostBaseFile(e.target.files?.[0] ?? null)} />
-            원가베이스 파일 선택
-          </label>
-          <button className={styles.primaryBtn} onClick={handleCostBaseUpload}>업로드</button>
           <button className={styles.secondaryBtn} onClick={handleCostBaseReload}>새로 로드</button>
-          <button className={styles.secondaryBtn} onClick={handleCostBaseDownload}>다운로드</button>
           <button
             className={styles.secondaryBtn}
             onClick={async () => {
@@ -504,11 +482,24 @@ export default function OrderPage() {
             원가베이스 편집
           </button>
         </div>
-        {status?.cost_base_path && (
-          <div className={styles.statusMsg}>
-            <strong>원가베이스 경로:</strong> {status.cost_base_path}
-          </div>
-        )}
+        <div className={styles.uploadRow}>
+          <input
+            className={styles.searchInput}
+            value={costAddName}
+            onChange={(e) => setCostAddName(e.target.value)}
+            placeholder="A열 데이터 (상품명)"
+          />
+          <input
+            className={styles.cellInput}
+            style={{ maxWidth: 220 }}
+            value={costAddCode}
+            onChange={(e) => setCostAddCode(e.target.value)}
+            placeholder="B열 데이터 (상품코드)"
+          />
+          <button className={styles.primaryBtn} onClick={handleCostBaseAddSingle}>
+            개별상품추가
+          </button>
+        </div>
         {costMessage && (
           <div className={styles.statusMsg}>
             <strong>{costMessage}</strong>
@@ -640,7 +631,11 @@ export default function OrderPage() {
               {checkResults.length === 0 ? (
                 <div className={styles.empty}>부족/미등록 항목 없음</div>
               ) : (
-                checkResults.map((r, idx) => <div key={`${r.code}-${idx}`} className={styles.logLine}>{r.text}</div>)
+                checkResults.map((r, idx) => (
+                  <div key={`${r.code}-${idx}`} className={styles.logLine}>
+                    {r.text} / 접수 {r.received_qty ?? 0}
+                  </div>
+                ))
               )}
             </div>
           </section>

@@ -28,12 +28,12 @@ const Overview = ({ currentUser }) => {
     const [todos, setTodos] = useState([]);
     const [showTodoInput, setShowTodoInput] = useState(false);
     const [showAllTodos, setShowAllTodos] = useState(false);
-    const [todosLoaded, setTodosLoaded] = useState(false);
+    const [todoTab, setTodoTab] = useState('open');
+    const [todoCompleteInputId, setTodoCompleteInputId] = useState(null);
+    const [todoCompleteComment, setTodoCompleteComment] = useState('');
+    const [loadingTodos, setLoadingTodos] = useState(false);
+    const [submittingTodo, setSubmittingTodo] = useState(false);
     const isAdmin = useMemo(() => localStorage.getItem('isAdmin') === 'true', []);
-    const todoStorageKey = useMemo(() => {
-        const user = currentUser || localStorage.getItem('username') || 'default';
-        return `todos:${user}`;
-    }, [currentUser]);
 
     const authHeaders = useMemo(() => {
         const token = localStorage.getItem('token');
@@ -51,42 +51,6 @@ const Overview = ({ currentUser }) => {
         }
         return false;
     };
-
-    useEffect(() => {
-        setTodosLoaded(false);
-        try {
-            const raw = localStorage.getItem(todoStorageKey);
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                if (Array.isArray(parsed)) {
-                    setTodos(parsed);
-                    setTodosLoaded(true);
-                    return;
-                }
-            }
-        } catch (err) {
-            console.warn('Failed to load todos', err);
-        }
-        setTodos([]);
-        setTodosLoaded(true);
-    }, [todoStorageKey]);
-
-    useEffect(() => {
-        if (!todosLoaded) return;
-        if (localStorage.getItem('todos-reset-on-login') === '1') {
-            setTodos((prev) => prev.map((item) => ({ ...item, done: false })));
-            localStorage.removeItem('todos-reset-on-login');
-        }
-    }, [todosLoaded]);
-
-    useEffect(() => {
-        if (!todosLoaded) return;
-        try {
-            localStorage.setItem(todoStorageKey, JSON.stringify(todos));
-        } catch (err) {
-            console.warn('Failed to save todos', err);
-        }
-    }, [todoStorageKey, todos, todosLoaded]);
 
     const fetchUsers = async () => {
         try {
@@ -140,6 +104,7 @@ const Overview = ({ currentUser }) => {
     useEffect(() => {
         fetchUsers();
         fetchResolved();
+        fetchTodos();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -167,6 +132,21 @@ const Overview = ({ currentUser }) => {
         fetchCompanyCreds();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    const fetchTodos = async () => {
+        try {
+            setLoadingTodos(true);
+            const res = await fetch(`${API}/shared-todos`, { headers: authHeaders });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || 'Failed to load todos');
+            setTodos(Array.isArray(data?.todos) ? data.todos : []);
+        } catch (err) {
+            setError(err.message || 'Failed to load todos');
+        } finally {
+            setLoadingTodos(false);
+        }
+    };
 
 
     const handleSubmit = async (e) => {
@@ -456,43 +436,59 @@ const Overview = ({ currentUser }) => {
         }
     };
 
-    const handleAddTodo = () => {
+    const handleAddTodo = async () => {
         const text = todoText.trim();
         if (!text) return;
-        const next = [
-            ...todos,
-            {
-                id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                text,
-                done: false,
-                createdAt: Date.now(),
-            },
-        ];
-        setTodos(next);
-        setTodoText('');
+        try {
+            setSubmittingTodo(true);
+            const res = await fetch(`${API}/shared-todos`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...authHeaders },
+                body: JSON.stringify({ text }),
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || 'Failed to add todo');
+            setTodoText('');
+            await fetchTodos();
+        } catch (err) {
+            setError(err.message || 'Failed to add todo');
+        } finally {
+            setSubmittingTodo(false);
+        }
     };
 
-    const handleToggleTodo = (id) => {
-        setTodos((prev) =>
-            prev.map((item) => (item.id === id ? { ...item, done: !item.done } : item))
-        );
-    };
-
-    const handleRemoveTodo = (id) => {
-        setTodos((prev) => prev.filter((item) => item.id !== id));
-    };
-
-    const handleResetTodos = () => {
-        if (!window.confirm('전체 할 일 완료를 해제할까요?')) return;
-        setTodos((prev) => prev.map((item) => ({ ...item, done: false })));
+    const handleCompleteTodo = async (id, comment = '') => {
+        try {
+            const res = await fetch(`${API}/shared-todos/${id}/complete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...authHeaders },
+                body: JSON.stringify({ comment }),
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || 'Failed to complete todo');
+            setTodoCompleteInputId(null);
+            setTodoCompleteComment('');
+            await fetchTodos();
+        } catch (err) {
+            setError(err.message || 'Failed to complete todo');
+        }
     };
 
     const orderedTodos = useMemo(() => {
         return [...todos].sort((a, b) => {
-            if (a.done !== b.done) return a.done ? 1 : -1;
-            return (a.createdAt || 0) - (b.createdAt || 0);
+            const aDone = a.status === 'completed';
+            const bDone = b.status === 'completed';
+            if (aDone !== bDone) return aDone ? 1 : -1;
+            return String(a.created_at || '').localeCompare(String(b.created_at || ''));
         });
     }, [todos]);
+
+    const visibleTodos = useMemo(() => {
+        if (todoTab === 'completed') return orderedTodos.filter((item) => item.status === 'completed');
+        return orderedTodos.filter((item) => item.status !== 'completed');
+    }, [orderedTodos, todoTab]);
 
 
     return (
@@ -503,98 +499,6 @@ const Overview = ({ currentUser }) => {
                     <Plus size={18} />
                     Download Report
                 </button>
-            </div>
-
-            <div className={styles.card}>
-                <div className={styles.todoHeader}>
-                    <div className={styles.cardTitle}>할 일 목록</div>
-                    <div className={styles.todoHeaderActions}>
-                        <button
-                            type="button"
-                            className={styles.secondaryBtn}
-                            onClick={handleResetTodos}
-                        >
-                            전체 완료 해제
-                        </button>
-                        <button
-                            type="button"
-                            className={styles.todoAddToggle}
-                            onClick={() => setShowTodoInput((v) => !v)}
-                        >
-                            <Plus size={16} />
-                            {showTodoInput ? '닫기' : '추가'}
-                        </button>
-                    </div>
-                </div>
-                {showTodoInput && (
-                    <div className={styles.todoRow}>
-                        <input
-                            className={styles.todoInput}
-                            placeholder="할 일을 입력하세요"
-                            value={todoText}
-                            onChange={(e) => setTodoText(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                    e.preventDefault();
-                                    handleAddTodo();
-                                }
-                            }}
-                        />
-                        <button type="button" className={styles.primaryBtn} onClick={handleAddTodo}>
-                            등록
-                        </button>
-                    </div>
-                )}
-                <div
-                    className={`${styles.todoList} ${
-                        !showAllTodos ? styles.todoListCollapsed : ''
-                    }`}
-                >
-                    {todos.length === 0 && (
-                        <div className={styles.mutedText}>등록된 할 일이 없습니다.</div>
-                    )}
-                    {orderedTodos.map((item) => (
-                        <div key={item.id} className={styles.todoItem}>
-                            <label className={styles.todoLabel}>
-                                <span
-                                    className={`${styles.todoText} ${
-                                        item.done ? styles.todoTextDone : ''
-                                    }`}
-                                >
-                                    {item.text}
-                                </span>
-                            </label>
-                            <div className={styles.todoActions}>
-                                <button
-                                    type="button"
-                                    className={styles.todoDoneBtn}
-                                    onClick={() => handleToggleTodo(item.id)}
-                                >
-                                    {item.done ? '완료됨' : '완료'}
-                                </button>
-                                <button
-                                    type="button"
-                                    className={styles.secondaryBtn}
-                                    onClick={() => handleRemoveTodo(item.id)}
-                                >
-                                    삭제
-                                </button>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-                {todos.length > 0 && (
-                    <div className={styles.todoToggleRow}>
-                        <button
-                            type="button"
-                            className={styles.todoToggleBtn}
-                            onClick={() => setShowAllTodos((v) => !v)}
-                        >
-                            {showAllTodos ? '접기' : '펼치기'}
-                        </button>
-                    </div>
-                )}
-                <div className={styles.todoHint}>브라우저에 저장되어 다음날도 유지됩니다.</div>
             </div>
 
             <div className={styles.contentGrid}>
@@ -723,6 +627,153 @@ const Overview = ({ currentUser }) => {
             </div>
 
             <div className={styles.resolvedGrid}>
+                <div className={styles.card}>
+                    <div className={styles.todoHeader}>
+                        <div className={styles.cardTitle}>공동 할 일</div>
+                        <div className={styles.todoHeaderActions}>
+                            <button
+                                type="button"
+                                className={`${styles.filterBtn} ${todoTab === 'open' ? styles.filterActive : ''}`}
+                                onClick={() => setTodoTab('open')}
+                            >
+                                진행중
+                            </button>
+                            <button
+                                type="button"
+                                className={`${styles.filterBtn} ${todoTab === 'completed' ? styles.filterActive : ''}`}
+                                onClick={() => setTodoTab('completed')}
+                            >
+                                완료
+                            </button>
+                            <button
+                                type="button"
+                                className={styles.todoAddToggle}
+                                onClick={() => setShowTodoInput((v) => !v)}
+                            >
+                                <Plus size={16} />
+                                {showTodoInput ? '닫기' : '추가'}
+                            </button>
+                        </div>
+                    </div>
+                    {showTodoInput && (
+                        <div className={styles.todoRow}>
+                            <input
+                                className={styles.todoInput}
+                                placeholder="공동 할 일을 입력하세요"
+                                value={todoText}
+                                onChange={(e) => setTodoText(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        handleAddTodo();
+                                    }
+                                }}
+                            />
+                            <button type="button" className={styles.primaryBtn} onClick={handleAddTodo} disabled={submittingTodo}>
+                                {submittingTodo ? '등록 중...' : '등록'}
+                            </button>
+                        </div>
+                    )}
+                    <div
+                        className={`${styles.todoList} ${
+                            !showAllTodos ? styles.todoListCollapsed : ''
+                        }`}
+                    >
+                        {loadingTodos && <div className={styles.mutedText}>Loading todos...</div>}
+                        {!loadingTodos && visibleTodos.length === 0 && (
+                            <div className={styles.mutedText}>
+                                {todoTab === 'completed' ? '완료된 공동 할 일이 없습니다.' : '등록된 공동 할 일이 없습니다.'}
+                            </div>
+                        )}
+                        {!loadingTodos && visibleTodos.map((item) => {
+                            const done = item.status === 'completed';
+                            return (
+                                <div key={item.id} className={styles.todoItem}>
+                                    <label className={styles.todoLabel}>
+                                        <div>
+                                            <div className={`${styles.todoText} ${done ? styles.todoTextDone : ''}`}>
+                                                {item.text}
+                                            </div>
+                                            <div className={styles.todoMeta}>
+                                                등록: {item.created_by_display || item.created_by_username || '-'}
+                                                {done && (
+                                                    <>
+                                                        {' · '}완료: {item.completed_by_display || item.completed_by_username || '-'}
+                                                    </>
+                                                )}
+                                            </div>
+                                            {done && item.completed_comment && (
+                                                <div className={styles.todoMeta}>코멘트: {item.completed_comment}</div>
+                                            )}
+                                            {!done && todoCompleteInputId === item.id && (
+                                                <div className={styles.todoInlineEditor}>
+                                                    <input
+                                                        className={styles.todoInput}
+                                                        placeholder="완료 코멘트 (선택)"
+                                                        value={todoCompleteComment}
+                                                        onChange={(e) => setTodoCompleteComment(e.target.value)}
+                                                        onKeyDown={(e) => {
+                                                            if (e.key === 'Enter') {
+                                                                e.preventDefault();
+                                                                handleCompleteTodo(item.id, todoCompleteComment);
+                                                            }
+                                                        }}
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        className={styles.primaryBtn}
+                                                        onClick={() => handleCompleteTodo(item.id, todoCompleteComment)}
+                                                    >
+                                                        완료 저장
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className={styles.secondaryBtn}
+                                                        onClick={() => {
+                                                            setTodoCompleteInputId(null);
+                                                            setTodoCompleteComment('');
+                                                        }}
+                                                    >
+                                                        취소
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </label>
+                                    <div className={styles.todoActions}>
+                                        {done ? (
+                                            <span className={styles.completedBadge}>완료됨</span>
+                                        ) : (
+                                            <button
+                                                type="button"
+                                                className={styles.todoDoneBtn}
+                                                onClick={() => {
+                                                    setTodoCompleteInputId(item.id);
+                                                    setTodoCompleteComment('');
+                                                }}
+                                            >
+                                                완료
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                    {visibleTodos.length > 0 && (
+                        <div className={styles.todoToggleRow}>
+                            <button
+                                type="button"
+                                className={styles.todoToggleBtn}
+                                onClick={() => setShowAllTodos((v) => !v)}
+                            >
+                                {showAllTodos ? '접기' : '펼치기'}
+                            </button>
+                        </div>
+                    )}
+
+                </div>
+
                 <div className={styles.card}>
                     <div className={styles.cardTitleRow}>
                         <div className={styles.cardTitle}>

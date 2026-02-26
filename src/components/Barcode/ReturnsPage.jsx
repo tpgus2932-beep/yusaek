@@ -8,6 +8,13 @@ const getAuthHeaders = () => {
     return token ? { Authorization: `Bearer ${token}` } : {};
 };
 
+const getTodayMmDd = () => {
+    const now = new Date();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    return `${mm}-${dd}`;
+};
+
 const DEFAULT_COLUMNS = [
     '상품코드',
     '요청수량',
@@ -20,7 +27,6 @@ const DEFAULT_COLUMNS = [
 ];
 
 const ReturnsPage = () => {
-    const [costBase, setCostBase] = useState(null);
     const [message, setMessage] = useState('');
     const [status, setStatus] = useState(null);
     const [queues, setQueues] = useState({ seller: [], customer: [], unmatched: [], all: [] });
@@ -40,6 +46,8 @@ const ReturnsPage = () => {
     const [costQuery, setCostQuery] = useState('');
     const costLimit = 50;
     const [costEdits, setCostEdits] = useState({});
+    const [costAddName, setCostAddName] = useState('');
+    const [costAddCode, setCostAddCode] = useState('');
     const searchTimer = useRef(null);
     const [selectedCols, setSelectedCols] = useState(() => ({
         상품코드: true,
@@ -95,28 +103,6 @@ const ReturnsPage = () => {
             }
         }
         return fallback;
-    };
-
-    const handleCostBaseDownload = async () => {
-        try {
-            const res = await fetch(`${API}/returns/cost-base/download`, { headers: getAuthHeaders() });
-            if (!res.ok) {
-                const data = await res.json().catch(() => ({}));
-                throw new Error(data?.detail || '다운로드 실패');
-            }
-            const blob = await res.blob();
-            const filename = getDownloadFilename(res, '원가베이스.xlsx');
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            window.URL.revokeObjectURL(url);
-        } catch (err) {
-            setMessage(err.message || '다운로드 실패');
-        }
     };
 
     useEffect(() => {
@@ -294,6 +280,34 @@ const ReturnsPage = () => {
         }
     };
 
+    const handleCostBaseAddSingle = async () => {
+        const name = (costAddName || '').trim();
+        const code = (costAddCode || '').trim();
+        if (!name && !code) {
+            setMessage('A열 또는 B열 값을 입력하세요.');
+            return;
+        }
+        try {
+            const res = await fetch(`${API}/returns/cost-base/add-row`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ name, code }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '개별상품추가 실패');
+            setStatus(data.status || status);
+            setCostAddName('');
+            setCostAddCode('');
+            setMessage('개별상품추가 완료');
+            await refreshState();
+            if (showCostEditor) {
+                await fetchCostPreview(0, '');
+            }
+        } catch (err) {
+            setMessage(err.message || '개별상품추가 실패');
+        }
+    };
+
     const handleScan = async () => {
         const value = scanText.trim();
         if (!value) return;
@@ -357,7 +371,7 @@ const ReturnsPage = () => {
     };
 
     const handleBuildOnebe = async () => {
-        const source = onebeRows.length ? 'all' : 'customer';
+        const source = 'customer';
         try {
             const res = await fetch(`${API}/returns/onebe/build`, {
                 method: 'POST',
@@ -367,7 +381,6 @@ const ReturnsPage = () => {
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data?.detail || '원베양식 생성 실패');
             setOnebeRows(data.onebe?.rows || []);
-            if (source === 'all') setMessage('전체 대기에서 다시 불러왔습니다.');
             setActiveTab('onebe');
         } catch (err) {
             setMessage(err.message || '원베양식 생성 실패');
@@ -544,29 +557,32 @@ const ReturnsPage = () => {
                     </div>
                     <div className={pageStyles.uploadRow}>
                         <button className={pageStyles.secondaryBtn} onClick={handleCostReload} disabled={loading}>
-                            원가베이스 불러오기
+                            새로 로드
                         </button>
-                        {isAdmin && (
-                            <label className={pageStyles.fileInput}>
-                                <input
-                                    type="file"
-                                    accept=".xls,.xlsx,.xlsm"
-                                    onChange={(e) =>
-                                        handleUpload(e.target.files?.[0] ?? null, '/returns/cost-base/upload', '원가베이스')
-                                    }
-                                />
-                                원가베이스 업로드
-                            </label>
-                        )}
-                        {isAdmin && (
-                            <button className={pageStyles.secondaryBtn} onClick={handleCostBaseDownload}>
-                                원가베이스 편집본 다운로드
-                            </button>
-                        )}
                         <button className={pageStyles.secondaryBtn} onClick={openCostEditor}>
                             원가베이스 편집
                         </button>
                     </div>
+                    {isAdmin && (
+                        <div className={pageStyles.uploadRow}>
+                            <input
+                                className={pageStyles.searchInput}
+                                value={costAddName}
+                                onChange={(e) => setCostAddName(e.target.value)}
+                                placeholder="A열 데이터 (상품명)"
+                            />
+                            <input
+                                className={pageStyles.cellInput}
+                                style={{ maxWidth: 220 }}
+                                value={costAddCode}
+                                onChange={(e) => setCostAddCode(e.target.value)}
+                                placeholder="B열 데이터 (상품코드)"
+                            />
+                            <button className={pageStyles.primaryBtn} onClick={handleCostBaseAddSingle}>
+                                개별상품추가
+                            </button>
+                        </div>
+                    )}
                     {status && (
                         <div className={pageStyles.metaGrid}>
                             <div className={pageStyles.metaItem}>
@@ -587,12 +603,6 @@ const ReturnsPage = () => {
                                     {status.cost_loaded ? 'O' : 'X'} ({status.cost_count ?? 0})
                                 </strong>
                             </div>
-                        </div>
-                    )}
-                    {status?.cost_base_path && (
-                        <div className={pageStyles.statusMsg}>
-                            <strong>원가베이스 경로:</strong> {status.cost_base_path}
-                            {status.cost_base_mtime ? ` (수정: ${status.cost_base_mtime})` : ''}
                         </div>
                     )}
                     {message && (
@@ -685,7 +695,7 @@ const ReturnsPage = () => {
                                 <button
                                     className={pageStyles.secondaryBtn}
                                     onClick={() =>
-                                        handleDownload('/returns/download/onebe', `원베_고객대기_추출.${onebeFormat}`, {
+                                        handleDownload('/returns/download/onebe', `${getTodayMmDd()} 이지어드민 반품.${onebeFormat}`, {
                                             columns: selectedColumnList,
                                             format: onebeFormat,
                                             header_map: onebeHeaders,

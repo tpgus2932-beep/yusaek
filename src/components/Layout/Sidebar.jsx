@@ -93,6 +93,16 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     </div>
                 )}
 
+                {isAdmin && !isHidden('cost-base-manager') && (
+                    <div
+                        className={`${styles.navItem} ${activeTab === 'cost-base-manager' ? styles.active : ''}`}
+                        onClick={() => setActiveTab('cost-base-manager')}
+                    >
+                        <BarChart3 size={20} />
+                        원가베이스 관리
+                    </div>
+                )}
+
                 {isAdmin && !isHidden('admin') && (
                     <div
                         className={`${styles.navItem} ${activeTab === 'admin' ? styles.active : ''}`}

@@ -19,8 +19,11 @@ router = APIRouter()
 
 AMOOD_HAPBAE_ALLOWED_EXCEL = {".xlsx", ".xlsm"}
 AMOOD_HAPBAE_ALLOWED_COST_BASE = {".xlsx", ".xls", ".xlsm"}
-AMOOD_HAPBAE_COST_BASE_PATH = Path(
-    os.environ.get("AMOOD_HAPBAE_COST_BASE_PATH", r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스유.xlsx")
+SHARED_COST_BASE_PATH = Path(
+    os.environ.get("SHARED_COST_BASE_PATH")
+    or os.environ.get("AMOOD_HAPBAE_COST_BASE_PATH")
+    or os.environ.get("RETURN_COST_BASE_PATH")
+    or r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스유.xlsx"
 )
 AMOOD_HAPBAE_COST_BASE_CACHE: dict[str, object] = {"df": None, "mtime": None, "path": None}
 
@@ -182,7 +185,7 @@ def _ah_read_cost_base_df(path: Path) -> pd.DataFrame:
 
 
 def _ah_load_cost_base_df():
-    path = AMOOD_HAPBAE_COST_BASE_PATH
+    path = SHARED_COST_BASE_PATH
     if not path.exists():
         raise FileNotFoundError(f"원가베이스 파일을 찾지 못했습니다: {path}")
     mtime = path.stat().st_mtime
@@ -198,7 +201,7 @@ def _ah_load_cost_base_df():
 
 
 def _ah_save_cost_base_df(df: pd.DataFrame):
-    path = AMOOD_HAPBAE_COST_BASE_PATH
+    path = SHARED_COST_BASE_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         df.to_excel(writer, index=False)
@@ -208,7 +211,7 @@ def _ah_save_cost_base_df(df: pd.DataFrame):
 
 
 def _ah_cost_base_status() -> dict:
-    path = AMOOD_HAPBAE_COST_BASE_PATH
+    path = SHARED_COST_BASE_PATH
     exists = path.exists()
     mtime = None
     if exists:
@@ -325,7 +328,7 @@ async def amood_hapbae_cost_base_upload(file: UploadFile = File(...)):
     if ext not in AMOOD_HAPBAE_ALLOWED_COST_BASE:
         raise HTTPException(status_code=400, detail="xls/xlsx/xlsm만 업로드 가능")
 
-    AMOOD_HAPBAE_COST_BASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SHARED_COST_BASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = Path(tempfile.gettempdir()) / f"amood_hapbae_cost_base_{uuid.uuid4().hex}{ext}"
     data = await file.read()
     tmp_path.write_bytes(data)
@@ -334,7 +337,7 @@ async def amood_hapbae_cost_base_upload(file: UploadFile = File(...)):
         df = _ah_read_cost_base_df(tmp_path)
         if df.shape[1] < 2:
             raise HTTPException(status_code=400, detail="원가베이스는 최소 A,B열이 필요합니다.")
-        shutil.move(str(tmp_path), str(AMOOD_HAPBAE_COST_BASE_PATH))
+        shutil.move(str(tmp_path), str(SHARED_COST_BASE_PATH))
         _ah_load_cost_base_df()
     finally:
         try:
@@ -345,9 +348,64 @@ async def amood_hapbae_cost_base_upload(file: UploadFile = File(...)):
     return {"ok": True, "status": _ah_cost_base_status()}
 
 
+@router.post("/amood-hapbae/cost-base/append-upload")
+async def amood_hapbae_cost_base_append_upload(file: UploadFile = File(...)):
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in AMOOD_HAPBAE_ALLOWED_COST_BASE:
+        raise HTTPException(status_code=400, detail="xls/xlsx/xlsm만 업로드 가능")
+
+    if not SHARED_COST_BASE_PATH.exists():
+        raise HTTPException(status_code=404, detail=f"원가베이스 파일이 없습니다: {SHARED_COST_BASE_PATH}")
+
+    tmp_path = Path(tempfile.gettempdir()) / f"amood_hapbae_cost_base_append_{uuid.uuid4().hex}{ext}"
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="업로드 파일이 비어 있습니다.")
+    tmp_path.write_bytes(data)
+
+    try:
+        src_df = _ah_read_cost_base_df(tmp_path)
+        if src_df.shape[1] < 2:
+            raise HTTPException(status_code=400, detail="업로드 엑셀은 최소 A,B열이 필요합니다.")
+
+        dst_df = _ah_load_cost_base_df().copy()
+        if dst_df.shape[1] < 2:
+            raise HTTPException(status_code=400, detail="기존 원가베이스는 최소 A,B열이 필요합니다.")
+
+        append_df = src_df.iloc[:, :2].copy()
+        append_df.columns = list(dst_df.columns[:2])
+        append_df = append_df.fillna("")
+        append_df = append_df[
+            (append_df.iloc[:, 0].astype(str).str.strip() != "") | (append_df.iloc[:, 1].astype(str).str.strip() != "")
+        ].reset_index(drop=True)
+
+        if append_df.empty:
+            raise HTTPException(status_code=400, detail="추가할 데이터가 없습니다. (2행부터 A/B열 확인)")
+
+        if len(dst_df.columns) > 2:
+            for col in dst_df.columns[2:]:
+                append_df[col] = ""
+            append_df = append_df.reindex(columns=list(dst_df.columns))
+
+        merged_df = pd.concat([dst_df, append_df], ignore_index=True)
+        _ah_save_cost_base_df(merged_df)
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    return {
+        "ok": True,
+        "appended_count": int(len(append_df)),
+        "total_rows": int(len(merged_df)),
+        "status": _ah_cost_base_status(),
+    }
+
+
 @router.get("/amood-hapbae/cost-base/download")
 def amood_hapbae_cost_base_download():
-    path = AMOOD_HAPBAE_COST_BASE_PATH
+    path = SHARED_COST_BASE_PATH
     if not path.exists():
         raise HTTPException(status_code=404, detail="원가베이스 파일이 없습니다.")
     return FileResponse(path, filename=path.name)
@@ -427,6 +485,39 @@ def amood_hapbae_cost_base_edit_batch(payload: dict = Body(...)):
     return {"ok": True, "status": _ah_cost_base_status()}
 
 
+@router.post("/amood-hapbae/cost-base/add-row")
+def amood_hapbae_cost_base_add_row(payload: dict = Body(...)):
+    name = _ah_normalize(payload.get("name"))
+    code = _ah_normalize(payload.get("code"))
+    if not name and not code:
+        raise HTTPException(status_code=400, detail="A열 또는 B열 값을 입력하세요.")
+
+    try:
+        df = _ah_load_cost_base_df().copy()
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"원가베이스 로드 실패: {e}")
+
+    if df.shape[1] < 2:
+        raise HTTPException(status_code=400, detail="원가베이스는 최소 A,B열이 필요합니다.")
+
+    row_data: dict[str, object] = {}
+    row_data[df.columns[0]] = name
+    row_data[df.columns[1]] = code
+    for col in list(df.columns)[2:]:
+        row_data[col] = ""
+
+    df = pd.concat([df, pd.DataFrame([row_data], columns=list(df.columns))], ignore_index=True)
+
+    try:
+        _ah_save_cost_base_df(df)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"원가베이스 저장 실패: {e}")
+
+    return {"ok": True, "status": _ah_cost_base_status(), "row_added": {"name": name, "code": code}}
+
+
 @router.post("/amood-hapbae/conflicts")
 async def amood_hapbae_conflicts(
     file: UploadFile = File(...),
@@ -445,10 +536,10 @@ async def amood_hapbae_conflicts(
         sheet, conflicts = _ah_find_conflicts_xlsx(tmp_path, skip_header=skip_header)
         unmatched_products: list[str] = []
         unmatched_rows = 0
-        cost_base_exists = AMOOD_HAPBAE_COST_BASE_PATH.exists()
+        cost_base_exists = SHARED_COST_BASE_PATH.exists()
         if cost_base_exists:
             try:
-                cost_map = _ah_load_base_cost_map(AMOOD_HAPBAE_COST_BASE_PATH)
+                cost_map = _ah_load_base_cost_map(SHARED_COST_BASE_PATH)
                 unmatched_products, unmatched_rows = _ah_find_unmatched_products(
                     tmp_path,
                     cost_map,
@@ -498,10 +589,10 @@ async def amood_hapbae_export(
     if ext not in AMOOD_HAPBAE_ALLOWED_EXCEL:
         raise HTTPException(status_code=400, detail="xlsx/xlsm 파일만 업로드 가능합니다.")
 
-    if not AMOOD_HAPBAE_COST_BASE_PATH.exists():
+    if not SHARED_COST_BASE_PATH.exists():
         raise HTTPException(
             status_code=400,
-            detail=f"원가베이스 파일을 읽을 수 없습니다: {AMOOD_HAPBAE_COST_BASE_PATH}",
+            detail=f"원가베이스 파일을 읽을 수 없습니다: {SHARED_COST_BASE_PATH}",
         )
 
     tmp_path = Path(tempfile.gettempdir()) / f"amood_hapbae_export_{uuid.uuid4().hex}{ext}"
@@ -513,7 +604,7 @@ async def amood_hapbae_export(
         if not rows:
             raise HTTPException(status_code=400, detail="가공할 데이터(H/J)가 없습니다.")
 
-        cost_map = _ah_load_base_cost_map(AMOOD_HAPBAE_COST_BASE_PATH)
+        cost_map = _ah_load_base_cost_map(SHARED_COST_BASE_PATH)
 
         headers = [
             _ah_pick_header(header_col1, "상품명"),

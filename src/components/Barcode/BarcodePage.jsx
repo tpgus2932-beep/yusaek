@@ -205,6 +205,10 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       const res = await fetch(`${API}/barcode/status`, { headers: getAuthHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json();
+      if (data?.incoming_codes !== undefined) {
+        setIncomingCodes(data.incoming_codes);
+        setIncomingTotal(data.incoming_total ?? 0);
+      }
       if (data.loaded) {
         setCurrentInvoice(data.current_invoice ?? null);
         setInvoiceDone(false);
@@ -558,7 +562,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       <div className={styles.stack}>
         <section className={styles.card}>
           <div className={styles.cardHeader}>
-            <h3 className={styles.cardTitle}>1) 송장 업로드</h3>
+            <h3 className={styles.cardTitle}>이지어드민 확장주문검색 파일 업로드 </h3>
             {loadingUpload && <span className={styles.pill}>업로드 중</span>}
           </div>
           <div className={styles.uploadRow}>

@@ -9,6 +9,7 @@ const menuLabels = {
   "shared-files": "유색 공용 파일",
   "noye-kimsungil": "노예김승일",
   order: "발주",
+  "cost-base-manager": "원가베이스 관리",
   admin: "관리자",
 };
 
@@ -28,7 +29,7 @@ const SettingsPage = ({ hiddenTabs, setHiddenTabs, isAdmin }) => {
       "noye-kimsungil",
     ];
     if (isAdmin) {
-      base.push("order", "admin");
+      base.push("order", "cost-base-manager", "admin");
     }
     return base;
   }, [isAdmin]);

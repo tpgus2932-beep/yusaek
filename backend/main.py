@@ -22,7 +22,7 @@ import xlwt
 
 from passlib.context import CryptContext
 from jose import jwt, JWTError
-from api.amood_hapbae import router as amood_hapbae_router, AMOOD_HAPBAE_COST_BASE_PATH
+from api.amood_hapbae import router as amood_hapbae_router, SHARED_COST_BASE_PATH
 from api.auth_admin_routes import build_auth_admin_router
 from api.collab_routes import build_collab_router
 from api.barcode_routes import build_barcode_router
@@ -115,17 +115,15 @@ ALLOWED_SHARED_EXTS = {".xlsx", ".xls", ".csv"}
 RETURN_ALLOWED_EXTS = {".xlsx", ".xls", ".xlsm"}
 AMOOD_ALLOWED_EXCEL1 = {".xlsx", ".xlsm"}
 AMOOD_ALLOWED_EXCEL2 = {".xlsx", ".xls", ".xlsm", ".htm", ".html"}
-RETURN_COST_BASE_PATH = Path(
-    os.environ.get("RETURN_COST_BASE_PATH", r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스유.xlsx")
-)
 RETURN_STATES: dict[str, "ReturnState"] = {}
 AMOOD_STATES: dict[str, "AmoodState"] = {}
 RETURN_COST_BASE_CACHE: dict[str, object] = {"df": None, "mtime": None, "path": None}
+SHARED_INCOMING_COUNTS: dict[str, int] = {}
 
 def _get_return_state(user: str) -> ReturnState:
     state = RETURN_STATES.get(user)
     if not state:
-        state = ReturnState(RETURN_COST_BASE_PATH)
+        state = ReturnState(SHARED_COST_BASE_PATH)
         RETURN_STATES[user] = state
     return state
 
@@ -136,6 +134,18 @@ def _get_amood_state(user: str) -> AmoodState:
         state = AmoodState()
         AMOOD_STATES[user] = state
     return state
+
+
+def _get_shared_incoming_counts() -> dict[str, int]:
+    return SHARED_INCOMING_COUNTS
+
+
+def _set_shared_incoming_counts(counts: dict[str, int] | None):
+    SHARED_INCOMING_COUNTS.clear()
+    if counts:
+        SHARED_INCOMING_COUNTS.update(counts)
+    # Keep legacy barcode state key in sync for existing code paths.
+    STATE["incoming_counts"] = dict(SHARED_INCOMING_COUNTS)
 
 
 def _load_return_cost_base(state: ReturnState):
@@ -157,7 +167,7 @@ def _load_return_cost_base(state: ReturnState):
 
 
 def _load_cost_base_df():
-    path = RETURN_COST_BASE_PATH
+    path = SHARED_COST_BASE_PATH
     if not path.exists():
         raise FileNotFoundError(f"원가베이스 파일을 찾지 못했습니다: {path}")
     mtime = path.stat().st_mtime
@@ -180,7 +190,7 @@ def _load_cost_base_df():
 
 
 def _save_cost_base_df(df: pd.DataFrame):
-    path = RETURN_COST_BASE_PATH
+    path = SHARED_COST_BASE_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         df.to_excel(writer, index=False)
@@ -369,6 +379,46 @@ def _init_shared_files():
 
 _init_shared_files()
 
+
+
+def _init_shared_todos():
+    conn = _get_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS shared_todos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open',
+            created_by_username TEXT NOT NULL,
+            created_by_display TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            completed_by_username TEXT,
+            completed_by_display TEXT,
+            completed_at TEXT,
+            completed_comment TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_shared_todos()
+
+
+def _ensure_shared_todo_column(column: str, ddl: str):
+    conn = _get_db()
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(shared_todos)").fetchall()]
+    if column not in cols:
+        conn.execute(ddl)
+        conn.commit()
+    conn.close()
+
+
+_ensure_shared_todo_column(
+    "completed_comment",
+    "ALTER TABLE shared_todos ADD COLUMN completed_comment TEXT",
+)
 
 
 def _init_order_registered_codes():
@@ -638,6 +688,8 @@ app.include_router(
         normalize_to_yusas=normalize_to_yusas,
         process_easyadmin_product_upload=_process_easyadmin_product_upload,
         content_disposition=_content_disposition,
+        get_shared_incoming_counts=_get_shared_incoming_counts,
+        set_shared_incoming_counts=_set_shared_incoming_counts,
     )
 )
 app.include_router(
@@ -691,6 +743,8 @@ app.include_router(
         AMOOD_COL2_QTY=AMOOD_COL2_QTY,
         AMOOD_COL2_BARCODE=AMOOD_COL2_BARCODE,
         AMOOD_COL2_OUTPUT=AMOOD_COL2_OUTPUT,
+        get_shared_incoming_counts=_get_shared_incoming_counts,
+        set_shared_incoming_counts=_set_shared_incoming_counts,
     )
 )
 app.include_router(
@@ -715,14 +769,14 @@ app.include_router(
         normalize_key=_normalize_key,
         content_disposition=_content_disposition,
         return_allowed_exts=RETURN_ALLOWED_EXTS,
-        return_cost_base_path=RETURN_COST_BASE_PATH,
+        return_cost_base_path=SHARED_COST_BASE_PATH,
     )
 )
 app.include_router(
     build_order_router(
         require_admin=_require_admin,
         get_db=_get_db,
-        order_cost_base_path=AMOOD_HAPBAE_COST_BASE_PATH,
+        order_cost_base_path=SHARED_COST_BASE_PATH,
     )
 )
 app.include_router(

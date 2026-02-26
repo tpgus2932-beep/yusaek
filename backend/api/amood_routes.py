@@ -40,12 +40,18 @@ def build_amood_router(
     AMOOD_COL2_QTY,
     AMOOD_COL2_BARCODE,
     AMOOD_COL2_OUTPUT,
+    get_shared_incoming_counts,
+    set_shared_incoming_counts,
 ):
     router = APIRouter()
 
+    def _sync_shared_incoming(state):
+        state.incoming_counts = dict(get_shared_incoming_counts() or {})
+        return state.incoming_counts
+
     def _amood_items_view(state) -> list[dict]:
         items = []
-        incoming_counts = state.incoming_counts or {}
+        incoming_counts = _sync_shared_incoming(state)
         for it in state.pending_items:
             code = it.get("barcode", "")
             incoming_n = incoming_counts.get(amood_norm_barcode(code), 0)
@@ -61,7 +67,7 @@ def build_amood_router(
         return items
 
     def _amood_first_remaining(state):
-        incoming_counts = state.incoming_counts or {}
+        incoming_counts = _sync_shared_incoming(state)
         for it in state.pending_items:
             if it.get("remaining", 0) > 0:
                 code = it.get("barcode", "")
@@ -101,6 +107,7 @@ def build_amood_router(
     @router.get("/amood/status")
     def amood_status_api(user: str = Depends(get_current_user)):
         state = get_amood_state(user)
+        _sync_shared_incoming(state)
         return {
             "ok": True,
             "status": amood_status(state),
@@ -134,8 +141,9 @@ def build_amood_router(
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"incoming load failed: {e}")
 
+        set_shared_incoming_counts(dict(counts))
         state = get_amood_state(user)
-        state.incoming_counts = dict(counts)
+        _sync_shared_incoming(state)
         return {
             "ok": True,
             "codes": len(counts),
@@ -249,6 +257,7 @@ def build_amood_router(
     @router.get("/amood/scan/status")
     def amood_scan_status(user: str = Depends(get_current_user)):
         state = get_amood_state(user)
+        _sync_shared_incoming(state)
         return {
             "ok": True,
             "current_invoice": state.current_invoice,
@@ -260,11 +269,13 @@ def build_amood_router(
     def amood_reset(user: str = Depends(get_current_user)):
         state = get_amood_state(user)
         _amood_reset_state(state)
+        _sync_shared_incoming(state)
         return {"ok": True, "status": amood_status(state)}
 
     @router.post("/amood/scan/invoice")
     def amood_scan_invoice(payload: dict = Body(...), user: str = Depends(get_current_user)):
         state = get_amood_state(user)
+        _sync_shared_incoming(state)
         amood_load_workbooks(state)
 
         invoice = (payload.get("invoice") or "").strip()
@@ -341,6 +352,7 @@ def build_amood_router(
     @router.post("/amood/scan/item")
     def amood_scan_item(payload: dict = Body(...), user: str = Depends(get_current_user)):
         state = get_amood_state(user)
+        _sync_shared_incoming(state)
         if not state.waiting_for_items or not state.pending_items:
             return {"ok": False, "type": "item", "result": "NO_INVOICE"}
 

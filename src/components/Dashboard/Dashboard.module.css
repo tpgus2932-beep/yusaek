@@ -439,6 +439,20 @@
     color: var(--text-muted);
 }
 
+.todoMeta {
+    margin-top: 0.2rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.todoInlineEditor {
+    margin-top: 0.5rem;
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
 .todoHint {
     margin-top: 0.75rem;
     font-size: 0.75rem;
@@ -528,6 +542,7 @@
 .resolvedGrid {
     display: grid;
     grid-template-columns: 1fr;
+    gap: 1rem;
 }
 
 .resolvedList {

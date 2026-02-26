@@ -18,6 +18,8 @@ def build_barcode_router(
     normalize_to_yusas,
     process_easyadmin_product_upload,
     content_disposition,
+    get_shared_incoming_counts,
+    set_shared_incoming_counts,
 ):
     router = APIRouter()
 
@@ -31,7 +33,7 @@ def build_barcode_router(
         else:
             codes = sorted(mapping[inv].keys())
 
-        incoming_counts = state.get("incoming_counts") or {}
+        incoming_counts = get_shared_incoming_counts() or {}
         items = []
         for code in codes:
             remain = mapping[inv].get(code, 0)
@@ -214,7 +216,7 @@ def build_barcode_router(
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"incoming load failed: {e}")
 
-        state["incoming_counts"] = dict(counts)
+        set_shared_incoming_counts(dict(counts))
         return {"ok": True, "codes": len(counts), "total_qty": sum(counts.values())}
 
     @router.post("/barcode/product/upload")
@@ -252,6 +254,8 @@ def build_barcode_router(
             "next_preview": _get_next_item_preview(state["current_invoice"]),
             "defects": _get_defect_list(),
             "invoice_has_defect": _invoice_has_defect(state["current_invoice"]),
+            "incoming_codes": len(get_shared_incoming_counts() or {}),
+            "incoming_total": sum((get_shared_incoming_counts() or {}).values()),
         }
 
     @router.post("/barcode/scan/invoice")

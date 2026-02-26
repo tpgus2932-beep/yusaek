@@ -326,6 +326,41 @@ def build_returns_router(
 
         return {"ok": True}
 
+    @router.post("/returns/cost-base/add-row")
+    def returns_cost_base_add_row(payload: dict = Body(...), admin: str = Depends(require_admin)):
+        name = str(payload.get("name") or "").strip()
+        code = str(payload.get("code") or "").strip()
+        if not name and not code:
+            raise HTTPException(status_code=400, detail="A열 또는 B열 값을 입력하세요.")
+
+        try:
+            df = load_cost_base_df().copy()
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"원가베이스 로드 실패: {e}")
+
+        if df.shape[1] < 2:
+            raise HTTPException(status_code=400, detail="원가베이스는 최소 A,B열이 필요합니다.")
+
+        row_data: dict[str, object] = {}
+        row_data[df.columns[0]] = name
+        row_data[df.columns[1]] = code
+        for col in list(df.columns)[2:]:
+            row_data[col] = ""
+
+        df = pd.concat([df, pd.DataFrame([row_data], columns=list(df.columns))], ignore_index=True)
+
+        try:
+            save_cost_base_df(df)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"원가베이스 저장 실패: {e}")
+
+        state = get_return_state(admin)
+        state.cost_base_path = return_cost_base_path
+        load_return_cost_base(state)
+        return {"ok": True, "status": return_status(state), "row_added": {"name": name, "code": code}}
+
     @router.post("/returns/scan")
     def returns_scan(payload: dict = Body(...), user: str = Depends(get_current_user)):
         barcode_raw = (payload.get("barcode") or "").strip()

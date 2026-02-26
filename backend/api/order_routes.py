@@ -426,6 +426,7 @@ def build_order_router(
         col_b = df.iloc[:, 1]
         col_c = df.iloc[:, 2]
         col_e = df.iloc[:, 4]
+        col_f = df.iloc[:, 5]
         col_j = df.iloc[:, 9]
 
         results = []
@@ -437,14 +438,16 @@ def build_order_router(
                 continue
 
             actual_qty = _to_int(col_e.iloc[i], 0)
+            received_qty = _to_int(col_f.iloc[i], 0)
             need_qty = int(reg[code])
-            if actual_qty < need_qty:
+            shortage = (received_qty - actual_qty) + need_qty
+            if shortage == 0 and actual_qty < need_qty:
                 name = f"{_safe_str(col_b.iloc[i])} {_safe_str(col_c.iloc[i])}".strip()
-                shortage = need_qty - actual_qty
                 results.append(
                     {
                         "code": code,
                         "name": name,
+                        "received_qty": received_qty,
                         "need_qty": need_qty,
                         "actual_qty": actual_qty,
                         "shortage": shortage,

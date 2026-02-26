@@ -10,6 +10,7 @@ import ReturnsPage from './components/Barcode/ReturnsPage';
 import AuthPage from './components/Auth/AuthPage';
 import AdminUsers from './components/Admin/AdminUsers';
 import OrderPage from './components/Admin/OrderPage';
+import CostBaseManagerPage from './components/Admin/CostBaseManagerPage';
 import SettingsPage from './components/Layout/SettingsPage';
 import NoyeKimPage from './components/NoyeKim/NoyeKimPage';
 import MobileRequestKimsungilPage from './components/Mobile/MobileRequestKimsungilPage';
@@ -29,7 +30,7 @@ const App = () => {
 
   const isTabAllowed = (tab, adminFlag = isAdmin, hidden = hiddenTabs) => {
     if (tab === 'settings') return true;
-    if (tab === 'order' || tab === 'admin') {
+    if (tab === 'order' || tab === 'admin' || tab === 'cost-base-manager') {
       return adminFlag && !hidden.includes(tab);
     }
     return !hidden.includes(tab);
@@ -37,7 +38,7 @@ const App = () => {
 
   const getFallbackTab = (adminFlag = isAdmin, hidden = hiddenTabs) => {
     const candidates = ['dashboard', 'barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil'];
-    if (adminFlag) candidates.push('order', 'admin');
+    if (adminFlag) candidates.push('order', 'cost-base-manager', 'admin');
     candidates.push('settings');
     return candidates.find((tab) => isTabAllowed(tab, adminFlag, hidden)) || 'settings';
   };
@@ -193,6 +194,7 @@ const App = () => {
         {activeTab === 'shared-files' && !hiddenTabs.includes('shared-files') && <SharedFilesPage />}
         {activeTab === 'noye-kimsungil' && !hiddenTabs.includes('noye-kimsungil') && <NoyeKimPage />}
         {activeTab === 'order' && isAdmin && !hiddenTabs.includes('order') && <OrderPage />}
+        {activeTab === 'cost-base-manager' && isAdmin && !hiddenTabs.includes('cost-base-manager') && <CostBaseManagerPage />}
         {activeTab === 'admin' && isAdmin && !hiddenTabs.includes('admin') && <AdminUsers currentUser={username} />}
         {activeTab === 'settings' && (
           <SettingsPage hiddenTabs={hiddenTabs} setHiddenTabs={setHiddenTabs} isAdmin={isAdmin} />
@@ -205,6 +207,7 @@ const App = () => {
           activeTab !== 'shared-files' &&
           activeTab !== 'noye-kimsungil' &&
           activeTab !== 'order' &&
+          activeTab !== 'cost-base-manager' &&
           activeTab !== 'admin' &&
           activeTab !== 'settings' && (
           <div className={styles.placeholderSection}>
