@@ -146,6 +146,7 @@ VITE_COLLAB_API_BASE=https://your-collab-api.onrender.com
 
 - 설정 파일: [render.yaml](/C:/Users/ksh29/OneDrive/Desktop/yusaek-main%20-%20복사본/yusaek-main/render.yaml)
 - Render 전용 requirements: [backend/requirements-render.txt](/C:/Users/ksh29/OneDrive/Desktop/yusaek-main%20-%20복사본/yusaek-main/backend/requirements-render.txt)
+- Python 버전 고정: [backend/runtime.txt](/C:/Users/ksh29/OneDrive/Desktop/yusaek-main%20-%20복사본/yusaek-main/backend/runtime.txt)
 - 실행 앱: `backend/collab_app.py`
 
 Render에서 필요한 값:

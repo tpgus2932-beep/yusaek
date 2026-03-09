@@ -7,3 +7,4 @@ xlwt
 lxml
 passlib[bcrypt]
 python-jose
+python-multipart
