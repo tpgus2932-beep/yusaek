@@ -1,7 +1,6 @@
 import React, { useRef, useState } from "react";
 import styles from "./MobileRequestKimsungilPage.module.css";
-
-const API = `http://${window.location.hostname}:8000`;
+import { COLLAB_API_BASE as API } from "../../lib/api";
 const TARGET_DISPLAY_NAME = "김승일";
 
 export default function MobileRequestKimsungilPage() {

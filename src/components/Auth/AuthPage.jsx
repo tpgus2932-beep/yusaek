@@ -1,22 +1,31 @@
 import { useState } from "react";
 import styles from "./AuthPage.module.css";
+import { COLLAB_API_BASE as API } from "../../lib/api";
 
-const API = `http://${window.location.hostname}:8000`;
-
-export default function AuthPage({ onAuth }) {
+export default function AuthPage({
+  onAuth,
+  title = "YUSAEK",
+  loginSubtitle = "로그인",
+  registerSubtitle = "회원가입",
+  registerSuccessMessage = "회원가입이 완료되었습니다. 관리자 승인 후 로그인 가능합니다.",
+}) {
   const [mode, setMode] = useState("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const resetError = () => setError("");
+  const resetFeedback = () => {
+    setError("");
+    setMessage("");
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    resetError();
+    resetFeedback();
     if (!username || !password || (mode === "register" && !displayName)) {
       setError("아이디, 비밀번호, 이름을 입력해주세요.");
       return;
@@ -36,6 +45,11 @@ export default function AuthPage({ onAuth }) {
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data?.detail || "회원가입 실패");
+        setMessage(registerSuccessMessage);
+        setMode("login");
+        setPassword("");
+        setConfirm("");
+        return;
       }
 
       const res = await fetch(`${API}/auth/login`, {
@@ -58,8 +72,8 @@ export default function AuthPage({ onAuth }) {
     <div className={styles.page}>
       <div className={styles.card}>
         <div className={styles.header}>
-          <h1>YUSAEK</h1>
-          <p>{mode === "login" ? "로그인" : "회원가입"}</p>
+          <h1>{title}</h1>
+          <p>{mode === "login" ? loginSubtitle : registerSubtitle}</p>
         </div>
 
         <form className={styles.form} onSubmit={handleSubmit}>
@@ -69,7 +83,7 @@ export default function AuthPage({ onAuth }) {
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              onFocus={resetError}
+              onFocus={resetFeedback}
               placeholder="아이디"
             />
           </label>
@@ -80,7 +94,7 @@ export default function AuthPage({ onAuth }) {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              onFocus={resetError}
+              onFocus={resetFeedback}
               placeholder="비밀번호"
             />
           </label>
@@ -92,7 +106,7 @@ export default function AuthPage({ onAuth }) {
                 type="text"
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
-                onFocus={resetError}
+                onFocus={resetFeedback}
                 placeholder="이름"
               />
             </label>
@@ -105,12 +119,13 @@ export default function AuthPage({ onAuth }) {
                 type="password"
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
-                onFocus={resetError}
+                onFocus={resetFeedback}
                 placeholder="비밀번호 확인"
               />
             </label>
           )}
 
+          {message && <div className={styles.success}>{message}</div>}
           {error && <div className={styles.error}>{error}</div>}
 
           <button className={styles.primaryBtn} type="submit" disabled={loading}>
@@ -125,7 +140,7 @@ export default function AuthPage({ onAuth }) {
             className={styles.linkBtn}
             onClick={() => {
               setMode(mode === "login" ? "register" : "login");
-              setError("");
+              resetFeedback();
             }}
           >
             {mode === "login" ? "회원가입" : "로그인"}

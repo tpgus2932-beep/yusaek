@@ -28,10 +28,16 @@ def build_auth_admin_router(
             raise HTTPException(status_code=400, detail="username/password/display_name required")
 
         conn = get_db()
+        now = datetime.now(timezone.utc).isoformat()
         try:
             conn.execute(
-                "INSERT INTO users (username, password_hash, display_name, role, created_at) VALUES (?, ?, ?, ?, ?)",
-                (username, hash_password(password), display_name, "user", datetime.now(timezone.utc).isoformat()),
+                """
+                INSERT INTO users (
+                    username, password_hash, display_name, role,
+                    created_at, approval_status
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (username, hash_password(password), display_name, "user", now, "pending"),
             )
             conn.commit()
         except sqlite3.IntegrityError:
@@ -39,7 +45,7 @@ def build_auth_admin_router(
         finally:
             conn.close()
 
-        return {"ok": True}
+        return {"ok": True, "approval_status": "pending"}
 
     @router.options("/auth/register")
     def register_options():
@@ -57,6 +63,11 @@ def build_auth_admin_router(
         conn.close()
         if not row or not verify_password(password, row["password_hash"]):
             raise HTTPException(status_code=401, detail="invalid credentials")
+        approval_status = row["approval_status"] if row["approval_status"] else "approved"
+        if approval_status == "pending":
+            raise HTTPException(status_code=403, detail="관리자 승인 후 로그인 가능합니다.")
+        if approval_status == "rejected":
+            raise HTTPException(status_code=403, detail="승인 거절된 계정입니다.")
 
         token = create_access_token(username)
         role = row["role"] if row["role"] else "user"
@@ -67,6 +78,7 @@ def build_auth_admin_router(
             "display_name": row["display_name"],
             "role": role,
             "is_admin": role == "admin",
+            "approval_status": approval_status,
         }
 
     @router.options("/auth/login")
@@ -76,11 +88,22 @@ def build_auth_admin_router(
     @router.get("/auth/me")
     def me(user: str = Depends(get_current_user)):
         conn = get_db()
-        row = conn.execute("SELECT display_name, role FROM users WHERE username = ?", (user,)).fetchone()
+        row = conn.execute(
+            "SELECT display_name, role, approval_status FROM users WHERE username = ?",
+            (user,),
+        ).fetchone()
         conn.close()
         display_name = row["display_name"] if row else ""
         role = row["role"] if row and row["role"] else "user"
-        return {"ok": True, "username": user, "display_name": display_name, "role": role, "is_admin": role == "admin"}
+        approval_status = row["approval_status"] if row and row["approval_status"] else "approved"
+        return {
+            "ok": True,
+            "username": user,
+            "display_name": display_name,
+            "role": role,
+            "is_admin": role == "admin",
+            "approval_status": approval_status,
+        }
 
     @router.options("/auth/me")
     def me_options():
@@ -100,7 +123,14 @@ def build_auth_admin_router(
     @router.get("/users")
     def list_users(user: str = Depends(get_current_user)):
         conn = get_db()
-        rows = conn.execute("SELECT username, display_name FROM users ORDER BY username ASC").fetchall()
+        rows = conn.execute(
+            """
+            SELECT username, display_name
+            FROM users
+            WHERE approval_status = 'approved'
+            ORDER BY username ASC
+            """
+        ).fetchall()
         conn.close()
         return {"ok": True, "users": [{"username": r["username"], "display_name": r["display_name"]} for r in rows]}
 
@@ -108,7 +138,18 @@ def build_auth_admin_router(
     def admin_list_users(admin: str = Depends(require_admin)):
         conn = get_db()
         rows = conn.execute(
-            "SELECT username, display_name, role, created_at FROM users ORDER BY username ASC"
+            """
+            SELECT username, display_name, role, created_at,
+                   approval_status, approved_at, approved_by
+            FROM users
+            ORDER BY
+                CASE approval_status
+                    WHEN 'pending' THEN 0
+                    WHEN 'rejected' THEN 1
+                    ELSE 2
+                END,
+                username ASC
+            """
         ).fetchall()
         conn.close()
         return {
@@ -119,9 +160,45 @@ def build_auth_admin_router(
                     "display_name": r["display_name"],
                     "role": r["role"] if r["role"] else "user",
                     "created_at": r["created_at"],
+                    "approval_status": r["approval_status"] if r["approval_status"] else "approved",
+                    "approved_at": r["approved_at"],
+                    "approved_by": r["approved_by"],
                 }
                 for r in rows
             ],
+        }
+
+    @router.patch("/admin/users/{target}/approval")
+    def admin_set_approval(target: str, payload: dict = Body(...), admin: str = Depends(require_admin)):
+        approval_status = (payload.get("approval_status") or "").strip()
+        if approval_status not in ("approved", "rejected", "pending"):
+            raise HTTPException(status_code=400, detail="invalid approval_status")
+
+        conn = get_db()
+        row = conn.execute("SELECT username FROM users WHERE username = ?", (target,)).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="user not found")
+
+        now = datetime.now(timezone.utc).isoformat()
+        approved_at = now if approval_status == "approved" else None
+        approved_by = admin if approval_status == "approved" else None
+        conn.execute(
+            """
+            UPDATE users
+            SET approval_status = ?, approved_at = ?, approved_by = ?
+            WHERE username = ?
+            """,
+            (approval_status, approved_at, approved_by, target),
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "ok": True,
+            "username": target,
+            "approval_status": approval_status,
+            "approved_at": approved_at,
+            "approved_by": approved_by,
         }
 
     @router.patch("/admin/users/{target}/role")

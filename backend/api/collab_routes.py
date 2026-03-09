@@ -29,8 +29,34 @@ def build_collab_router(
     shared_upload_base,
     allowed_request_exts,
     allowed_shared_exts,
+    max_request_file_size_bytes=None,
+    max_shared_file_size_bytes=None,
 ):
     router = APIRouter()
+    # In-memory completion state for "today todos".
+    # This is intentionally reset when the server restarts.
+    my_todo_completed: dict[str, set[int]] = {}
+
+    def _get_upload_size(file: UploadFile) -> int:
+        current_pos = file.file.tell()
+        file.file.seek(0, 2)
+        size = int(file.file.tell())
+        file.file.seek(current_pos)
+        return size
+
+    def _validate_files(files: list[UploadFile], allowed_exts, max_size_bytes: int | None):
+        for f in files:
+            ext = Path(f.filename or "").suffix.lower()
+            if allowed_exts and ext not in allowed_exts:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"unsupported file type: {ext or 'unknown'}",
+                )
+            if max_size_bytes and _get_upload_size(f) > max_size_bytes:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"file too large: {f.filename or 'unknown'}",
+                )
 
     def _create_request_row(
         *,
@@ -112,13 +138,7 @@ def build_collab_router(
             raise HTTPException(status_code=400, detail="assignee/text required")
 
         files = files or []
-        for f in files:
-            ext = Path(f.filename or "").suffix.lower()
-            if ext not in allowed_request_exts:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"unsupported file type: {ext or 'unknown'}",
-                )
+        _validate_files(files, allowed_request_exts, max_request_file_size_bytes)
 
         requester_display = get_user_display(user)
         assignee_display = get_user_display(assignee)
@@ -143,13 +163,7 @@ def build_collab_router(
             raise HTTPException(status_code=400, detail="text required")
 
         files = files or []
-        for f in files:
-            ext = Path(f.filename or "").suffix.lower()
-            if ext not in allowed_request_exts:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"unsupported file type: {ext or 'unknown'}",
-                )
+        _validate_files(files, allowed_request_exts, max_request_file_size_bytes)
 
         conn = get_db()
         try:
@@ -224,9 +238,12 @@ def build_collab_router(
         file: UploadFile = File(...),
         user: str = Depends(get_current_user),
     ):
-        ext = Path(file.filename or "").suffix.lower()
-        if allowed_shared_exts and ext not in allowed_shared_exts:
-            raise HTTPException(status_code=400, detail="지원 형식: xlsx, xls, csv")
+        try:
+            _validate_files([file], allowed_shared_exts, max_shared_file_size_bytes)
+        except HTTPException as exc:
+            if exc.detail and "unsupported file type" in str(exc.detail):
+                raise HTTPException(status_code=400, detail="지원 형식: xlsx, xls, csv") from exc
+            raise
 
         created_at = datetime.now(timezone.utc).isoformat()
         uploader_display = get_user_display(user)
@@ -340,6 +357,109 @@ def build_collab_router(
             )
             conn.commit()
         conn.close()
+        return {"ok": True}
+
+    @router.get("/my-todos")
+    def list_my_todos(user: str = Depends(get_current_user)):
+        conn = get_db()
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM my_todos
+            WHERE owner_username = ?
+            ORDER BY created_at ASC,
+                     id ASC
+            """,
+            (user,),
+        ).fetchall()
+        conn.close()
+        completed_ids = my_todo_completed.get(user, set())
+        items = []
+        for row in rows:
+            is_completed = int(row["id"]) in completed_ids
+            items.append(
+                {
+                    "id": row["id"],
+                    "text": row["text"],
+                    "status": "completed" if is_completed else "open",
+                    "owner_username": row["owner_username"],
+                    "owner_display": row["owner_display"] or "",
+                    "created_at": row["created_at"],
+                    "completed_at": None,
+                    "completed_comment": "",
+                }
+            )
+        return {"ok": True, "todos": items}
+
+    @router.post("/my-todos")
+    def create_my_todo(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        text = (payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text required")
+        now = datetime.now(timezone.utc).isoformat()
+        owner_display = get_user_display(user)
+        conn = get_db()
+        conn.execute(
+            """
+            INSERT INTO my_todos (
+                owner_username, owner_display, text, status, created_at
+            ) VALUES (?, ?, ?, 'open', ?)
+            """,
+            (user, owner_display, text, now),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+
+    @router.post("/my-todos/{todo_id}/complete")
+    def complete_my_todo(todo_id: int, user: str = Depends(get_current_user)):
+        conn = get_db()
+        row = conn.execute(
+            "SELECT * FROM my_todos WHERE id = ? AND owner_username = ?",
+            (todo_id, user),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="todo not found")
+        conn.close()
+        my_todo_completed.setdefault(user, set()).add(int(todo_id))
+        return {"ok": True}
+
+    @router.post("/my-todos/{todo_id}/uncomplete")
+    def uncomplete_my_todo(todo_id: int, user: str = Depends(get_current_user)):
+        conn = get_db()
+        row = conn.execute(
+            "SELECT * FROM my_todos WHERE id = ? AND owner_username = ?",
+            (todo_id, user),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="todo not found")
+        conn.close()
+        completed_ids = my_todo_completed.get(user)
+        if completed_ids:
+            completed_ids.discard(int(todo_id))
+        return {"ok": True}
+
+    @router.delete("/my-todos/{todo_id}")
+    def delete_my_todo(todo_id: int, user: str = Depends(get_current_user)):
+        conn = get_db()
+        row = conn.execute(
+            "SELECT id FROM my_todos WHERE id = ? AND owner_username = ?",
+            (todo_id, user),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="todo not found")
+        conn.execute(
+            "DELETE FROM my_todos WHERE id = ? AND owner_username = ?",
+            (todo_id, user),
+        )
+        conn.commit()
+        conn.close()
+        completed_ids = my_todo_completed.get(user)
+        if completed_ids:
+            completed_ids.discard(int(todo_id))
         return {"ok": True}
 
     @router.get("/shared-files")

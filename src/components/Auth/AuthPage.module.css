@@ -79,6 +79,15 @@
   font-size: 0.9rem;
 }
 
+.success {
+  color: #027a48;
+  background: rgba(2, 122, 72, 0.08);
+  border: 1px solid rgba(2, 122, 72, 0.2);
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+}
+
 .switchRow {
   display: flex;
   align-items: center;

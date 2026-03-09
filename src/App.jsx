@@ -14,11 +14,14 @@ import CostBaseManagerPage from './components/Admin/CostBaseManagerPage';
 import SettingsPage from './components/Layout/SettingsPage';
 import NoyeKimPage from './components/NoyeKim/NoyeKimPage';
 import MobileRequestKimsungilPage from './components/Mobile/MobileRequestKimsungilPage';
+import CollabPortalPage from './components/Collab/CollabPortalPage';
+import { COLLAB_API_BASE } from './lib/api';
 
 
 const App = () => {
   const pathname = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
   const isMobileKimsungilRequestRoute = pathname === '/request-kimsungil';
+  const isCollabPortalRoute = pathname === '/collab';
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'dashboard');
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [token, setToken] = useState(localStorage.getItem('token'));
@@ -54,16 +57,18 @@ const App = () => {
       setAuthChecked(true);
       return;
     }
-    fetch(`http://${window.location.hostname}:8000/auth/me`, {
+    fetch(`${COLLAB_API_BASE}/auth/me`, {
       headers: { Authorization: `Bearer ${t}` },
     })
       .then(async (res) => {
-        if (res.status === 401) {
+        if (res.status === 401 || res.status === 403) {
           localStorage.removeItem('token');
           localStorage.removeItem('displayName');
+          localStorage.removeItem('username');
           localStorage.removeItem('isAdmin');
           setToken(null);
           setDisplayName(null);
+          setUsername(null);
           setIsAdmin(false);
           return;
         }
@@ -97,7 +102,7 @@ const App = () => {
       setHiddenTabs([]);
       return;
     }
-    fetch(`http://${window.location.hostname}:8000/settings/menu-visibility`, {
+    fetch(`${COLLAB_API_BASE}/settings/menu-visibility`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(async (res) => {
@@ -163,7 +168,27 @@ const App = () => {
   }
 
   if (!token) {
+    if (isCollabPortalRoute) {
+      return (
+        <AuthPage
+          onAuth={handleAuthWithUser}
+          title="YUSAEK COLLAB"
+          loginSubtitle="외부 협업 포털 로그인"
+          registerSubtitle="외부 협업 계정 신청"
+        />
+      );
+    }
     return <AuthPage onAuth={handleAuthWithUser} />;
+  }
+
+  if (isCollabPortalRoute) {
+    return (
+      <CollabPortalPage
+        currentUser={username}
+        displayName={displayName}
+        onLogout={handleLogout}
+      />
+    );
   }
 
   return (

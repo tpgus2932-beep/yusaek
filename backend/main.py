@@ -99,8 +99,9 @@ STATE = {
     "incoming_counts": None,
 }
 
-UPLOAD_BASE = Path(__file__).resolve().parent / "uploads" / "requests"
-SHARED_UPLOAD_BASE = Path(__file__).resolve().parent / "uploads" / "shared_files"
+BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_BASE = Path(os.environ.get("REQUEST_UPLOAD_BASE") or (BASE_DIR / "uploads" / "requests"))
+SHARED_UPLOAD_BASE = Path(os.environ.get("SHARED_UPLOAD_BASE") or (BASE_DIR / "uploads" / "shared_files"))
 ALLOWED_REQUEST_EXTS = {
     ".xlsx",
     ".xls",
@@ -199,7 +200,7 @@ def _save_cost_base_df(df: pd.DataFrame):
     RETURN_COST_BASE_CACHE["path"] = str(path)
 
 
-DB_PATH = Path(__file__).with_name("app.db")
+DB_PATH = Path(os.environ.get("APP_DB_PATH") or BASE_DIR / "app.db")
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-me")
 JWT_ALG = "HS256"
 BOOT_ID = uuid.uuid4().hex
@@ -244,6 +245,19 @@ def _ensure_user_column(column: str, ddl: str):
 _init_db()
 _ensure_user_column("display_name", "ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
 _ensure_user_column("role", "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+_ensure_user_column("approval_status", "ALTER TABLE users ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'")
+_ensure_user_column("approved_at", "ALTER TABLE users ADD COLUMN approved_at TEXT")
+_ensure_user_column("approved_by", "ALTER TABLE users ADD COLUMN approved_by TEXT")
+
+
+def _backfill_user_defaults():
+    conn = _get_db()
+    conn.execute("UPDATE users SET approval_status = 'approved' WHERE approval_status IS NULL OR TRIM(approval_status) = ''")
+    conn.commit()
+    conn.close()
+
+
+_backfill_user_defaults()
 
 
 def _init_requests():
@@ -421,6 +435,29 @@ _ensure_shared_todo_column(
 )
 
 
+def _init_my_todos():
+    conn = _get_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS my_todos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_username TEXT NOT NULL,
+            owner_display TEXT NOT NULL DEFAULT '',
+            text TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open',
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            completed_comment TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_my_todos()
+
+
 def _init_order_registered_codes():
     conn = _get_db()
     conn.execute(
@@ -454,6 +491,13 @@ def _get_user_role(username: str) -> str:
     return row["role"] if row and row["role"] else "user"
 
 
+def _get_user_approval_status(username: str) -> str:
+    conn = _get_db()
+    row = conn.execute("SELECT approval_status FROM users WHERE username = ?", (username,)).fetchone()
+    conn.close()
+    return row["approval_status"] if row and row["approval_status"] else "approved"
+
+
 def _is_admin(username: str) -> bool:
     return _get_user_role(username) == "admin"
 
@@ -474,13 +518,30 @@ def _ensure_bootstrap_admin():
     conn = _get_db()
     row = conn.execute("SELECT username FROM users WHERE username = ?", (username,)).fetchone()
     if row:
-        conn.execute("UPDATE users SET role = 'admin' WHERE username = ?", (username,))
+        conn.execute(
+            "UPDATE users SET role = 'admin', approval_status = 'approved' WHERE username = ?",
+            (username,),
+        )
         conn.commit()
         conn.close()
         return
     conn.execute(
-        "INSERT INTO users (username, password_hash, display_name, role, created_at) VALUES (?, ?, ?, ?, ?)",
-        (username, _hash_password(password), display_name, "admin", datetime.now(timezone.utc).isoformat()),
+        """
+        INSERT INTO users (
+            username, password_hash, display_name, role,
+            created_at, approval_status, approved_at, approved_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            username,
+            _hash_password(password),
+            display_name,
+            "admin",
+            datetime.now(timezone.utc).isoformat(),
+            "approved",
+            datetime.now(timezone.utc).isoformat(),
+            username,
+        ),
     )
     conn.commit()
     conn.close()
@@ -566,6 +627,8 @@ def _get_current_user_optional(authorization: str | None, token: str | None):
             raise HTTPException(status_code=401, detail="Unauthorized")
     except JWTError:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    if _get_user_approval_status(username) != "approved":
+        raise HTTPException(status_code=403, detail="Account not approved")
     return username
 
 
@@ -652,6 +715,8 @@ def _get_current_user(authorization: str = Header(None)):
             raise HTTPException(status_code=401, detail="Unauthorized")
     except JWTError:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    if _get_user_approval_status(username) != "approved":
+        raise HTTPException(status_code=403, detail="Account not approved")
     return username
 
 

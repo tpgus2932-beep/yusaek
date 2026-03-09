@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Calendar, Bell } from 'lucide-react';
 import styles from './Dashboard.module.css';
+import { COLLAB_API_BASE as API } from '../../lib/api';
 
 const Overview = ({ currentUser }) => {
-    const API = `http://${window.location.hostname}:8000`;
     const [users, setUsers] = useState([]);
     const [assignee, setAssignee] = useState('');
     const [requestText, setRequestText] = useState('');
@@ -33,6 +33,13 @@ const Overview = ({ currentUser }) => {
     const [todoCompleteComment, setTodoCompleteComment] = useState('');
     const [loadingTodos, setLoadingTodos] = useState(false);
     const [submittingTodo, setSubmittingTodo] = useState(false);
+    const [todayTodoText, setTodayTodoText] = useState('');
+    const [todayTodos, setTodayTodos] = useState([]);
+    const [showTodayTodoInput, setShowTodayTodoInput] = useState(false);
+    const [showAllTodayTodos, setShowAllTodayTodos] = useState(false);
+    const [loadingTodayTodos, setLoadingTodayTodos] = useState(false);
+    const [submittingTodayTodo, setSubmittingTodayTodo] = useState(false);
+    const [selectedTodayTodoIds, setSelectedTodayTodoIds] = useState([]);
     const isAdmin = useMemo(() => localStorage.getItem('isAdmin') === 'true', []);
 
     const authHeaders = useMemo(() => {
@@ -105,6 +112,7 @@ const Overview = ({ currentUser }) => {
         fetchUsers();
         fetchResolved();
         fetchTodos();
+        fetchTodayTodos();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -145,6 +153,21 @@ const Overview = ({ currentUser }) => {
             setError(err.message || 'Failed to load todos');
         } finally {
             setLoadingTodos(false);
+        }
+    };
+
+    const fetchTodayTodos = async () => {
+        try {
+            setLoadingTodayTodos(true);
+            const res = await fetch(`${API}/my-todos`, { headers: authHeaders });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || 'Failed to load my todos');
+            setTodayTodos(Array.isArray(data?.todos) ? data.todos : []);
+        } catch (err) {
+            setError(err.message || 'Failed to load my todos');
+        } finally {
+            setLoadingTodayTodos(false);
         }
     };
 
@@ -490,6 +513,109 @@ const Overview = ({ currentUser }) => {
         return orderedTodos.filter((item) => item.status !== 'completed');
     }, [orderedTodos, todoTab]);
 
+    const handleAddTodayTodo = async () => {
+        const text = todayTodoText.trim();
+        if (!text) return;
+        try {
+            setSubmittingTodayTodo(true);
+            const res = await fetch(`${API}/my-todos`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...authHeaders },
+                body: JSON.stringify({ text }),
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || 'Failed to add my todo');
+            setTodayTodoText('');
+            await fetchTodayTodos();
+        } catch (err) {
+            setError(err.message || 'Failed to add my todo');
+        } finally {
+            setSubmittingTodayTodo(false);
+        }
+    };
+
+    const handleCompleteTodayTodo = async (id) => {
+        try {
+            const res = await fetch(`${API}/my-todos/${id}/complete`, {
+                method: 'POST',
+                headers: authHeaders,
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || 'Failed to complete my todo');
+            await fetchTodayTodos();
+        } catch (err) {
+            setError(err.message || 'Failed to complete my todo');
+        }
+    };
+
+    const handleUncompleteTodayTodo = async (id) => {
+        try {
+            const res = await fetch(`${API}/my-todos/${id}/uncomplete`, {
+                method: 'POST',
+                headers: authHeaders,
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || 'Failed to uncomplete my todo');
+            await fetchTodayTodos();
+        } catch (err) {
+            setError(err.message || 'Failed to uncomplete my todo');
+        }
+    };
+
+    const handleDeleteTodayTodo = async (id, refreshAfter = true) => {
+        try {
+            const res = await fetch(`${API}/my-todos/${id}`, {
+                method: 'DELETE',
+                headers: authHeaders,
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || 'Failed to delete my todo');
+            if (refreshAfter) {
+                await fetchTodayTodos();
+            }
+        } catch (err) {
+            setError(err.message || 'Failed to delete my todo');
+            throw err;
+        }
+    };
+
+    const toggleTodayTodoSelection = (id) => {
+        setSelectedTodayTodoIds((prev) => {
+            if (prev.includes(id)) return prev.filter((v) => v !== id);
+            return [...prev, id];
+        });
+    };
+
+    const handleDeleteSelectedTodayTodos = async () => {
+        if (selectedTodayTodoIds.length === 0) return;
+        if (!window.confirm(`선택한 ${selectedTodayTodoIds.length}개 할 일을 삭제할까요?`)) return;
+        try {
+            await Promise.all(selectedTodayTodoIds.map((id) => handleDeleteTodayTodo(id, false)));
+            setSelectedTodayTodoIds([]);
+            await fetchTodayTodos();
+        } catch (err) {
+            setError(err.message || 'Failed to delete selected todos');
+        }
+    };
+
+    useEffect(() => {
+        const validIds = new Set(todayTodos.map((item) => item.id));
+        setSelectedTodayTodoIds((prev) => prev.filter((id) => validIds.has(id)));
+    }, [todayTodos]);
+
+    const orderedTodayTodos = useMemo(() => {
+        return [...todayTodos].sort((a, b) => {
+            const aDone = a.status === 'completed';
+            const bDone = b.status === 'completed';
+            if (aDone !== bDone) return aDone ? 1 : -1;
+            return String(a.created_at || '').localeCompare(String(b.created_at || ''));
+        });
+    }, [todayTodos]);
+
 
     return (
         <section className={styles.dashboard}>
@@ -502,6 +628,114 @@ const Overview = ({ currentUser }) => {
             </div>
 
             <div className={styles.contentGrid}>
+                <div className={styles.contentColumn}>
+                    <div className={styles.card}>
+                        <div className={styles.todoHeader}>
+                            <div className={styles.cardTitle}>오늘 할 일</div>
+                            <div className={styles.todoHeaderActions}>
+                                <button
+                                    type="button"
+                                    className={styles.filterBtn}
+                                    onClick={handleDeleteSelectedTodayTodos}
+                                    disabled={selectedTodayTodoIds.length === 0}
+                                >
+                                    선택 삭제
+                                </button>
+                                <button
+                                    type="button"
+                                    className={styles.todoAddToggle}
+                                    onClick={() => setShowTodayTodoInput((v) => !v)}
+                                >
+                                    <Plus size={16} />
+                                    {showTodayTodoInput ? '닫기' : '추가'}
+                                </button>
+                            </div>
+                        </div>
+                        {showTodayTodoInput && (
+                            <div className={styles.todoRow}>
+                                <input
+                                    className={styles.todoInput}
+                                    placeholder="오늘 할 일을 입력하세요"
+                                    value={todayTodoText}
+                                    onChange={(e) => setTodayTodoText(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            e.preventDefault();
+                                            handleAddTodayTodo();
+                                        }
+                                    }}
+                                />
+                                <button type="button" className={styles.primaryBtn} onClick={handleAddTodayTodo} disabled={submittingTodayTodo}>
+                                    {submittingTodayTodo ? '등록 중...' : '등록'}
+                                </button>
+                            </div>
+                        )}
+                        <div
+                            className={`${styles.todoList} ${
+                                !showAllTodayTodos ? styles.todoListCollapsed : ''
+                            }`}
+                        >
+                            {loadingTodayTodos && <div className={styles.mutedText}>Loading todos...</div>}
+                            {!loadingTodayTodos && orderedTodayTodos.length === 0 && (
+                                <div className={styles.mutedText}>
+                                    등록된 오늘 할 일이 없습니다.
+                                </div>
+                            )}
+                            {!loadingTodayTodos && orderedTodayTodos.map((item) => {
+                                const done = item.status === 'completed';
+                                const checked = selectedTodayTodoIds.includes(item.id);
+                                return (
+                                    <div key={item.id} className={styles.todoItem}>
+                                        <label className={styles.todoLabel}>
+                                            <input
+                                                type="checkbox"
+                                                className={styles.todoCheckInput}
+                                                checked={checked}
+                                                onChange={() => toggleTodayTodoSelection(item.id)}
+                                            />
+                                            <span className={`${styles.todoCheckBox} ${checked ? styles.todoCheckBoxChecked : ''}`} aria-hidden="true">
+                                                {checked ? '✓' : ''}
+                                            </span>
+                                            <span className={`${styles.todoText} ${done ? styles.todoTextDone : ''}`}>
+                                                {item.text}
+                                            </span>
+                                        </label>
+                                        <div className={styles.todoActions}>
+                                            {done ? (
+                                                <button
+                                                    type="button"
+                                                    className={styles.secondaryBtn}
+                                                    onClick={() => handleUncompleteTodayTodo(item.id)}
+                                                >
+                                                    완료 해제
+                                                </button>
+                                            ) : (
+                                                <button
+                                                    type="button"
+                                                    className={styles.todoDoneBtn}
+                                                    onClick={() => handleCompleteTodayTodo(item.id)}
+                                                >
+                                                    완료
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        {orderedTodayTodos.length > 0 && (
+                            <div className={styles.todoToggleRow}>
+                                <button
+                                    type="button"
+                                    className={styles.todoToggleBtn}
+                                    onClick={() => setShowAllTodayTodos((v) => !v)}
+                                >
+                                    {showAllTodayTodos ? '접기' : '펼치기'}
+                                </button>
+                            </div>
+                        )}
+                    </div>
+
                 <div className={styles.card}>
                     <div className={styles.cardTitle}>
                         요청 보내기
@@ -572,6 +806,7 @@ const Overview = ({ currentUser }) => {
                             {submitting ? 'Sending...' : 'Send Request'}
                         </button>
                     </form>
+                </div>
                 </div>
 
                 <div className={styles.card}>
@@ -771,7 +1006,6 @@ const Overview = ({ currentUser }) => {
                             </button>
                         </div>
                     )}
-
                 </div>
 
                 <div className={styles.card}>

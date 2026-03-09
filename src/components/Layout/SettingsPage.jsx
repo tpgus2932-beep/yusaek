@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import styles from "./SettingsPage.module.css";
+import { COLLAB_API_BASE as API } from "../../lib/api";
 
 const menuLabels = {
   dashboard: "대시보드",
@@ -17,8 +18,6 @@ const SettingsPage = ({ hiddenTabs, setHiddenTabs, isAdmin }) => {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
   const [msgType, setMsgType] = useState("");
-  const API = `http://${window.location.hostname}:8000`;
-
   const visibleMenuTabs = useMemo(() => {
     const base = [
       "dashboard",

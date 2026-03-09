@@ -24,6 +24,39 @@
     box-shadow: var(--card-shadow);
 }
 
+.summaryGrid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+.summaryCard {
+    border: 1px solid var(--border-color);
+    background: var(--bg-primary);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+    text-align: left;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.summaryCardActive {
+    border-color: #000;
+    box-shadow: inset 0 0 0 1px #000;
+}
+
+.summaryLabel {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.summaryValue {
+    font-size: 1.5rem;
+    font-weight: 700;
+}
+
 .table {
     width: 100%;
     border-collapse: collapse;
@@ -68,6 +101,21 @@
 .roleUser {
     background-color: #f0f0f0;
     color: #000;
+}
+
+.statusApproved {
+    background-color: #dcfae6;
+    color: #166534;
+}
+
+.statusPending {
+    background-color: #fef3c7;
+    color: #92400e;
+}
+
+.statusRejected {
+    background-color: #fee2e2;
+    color: #991b1b;
 }
 
 .primaryBtn {
@@ -125,8 +173,12 @@
 }
 
 @media (max-width: 1024px) {
-    .table th:nth-child(4),
-    .table td:nth-child(4) {
+    .summaryGrid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .table th:nth-child(5),
+    .table td:nth-child(5) {
         display: none;
     }
 }

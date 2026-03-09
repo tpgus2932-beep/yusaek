@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pandas
+openpyxl
+xlrd
+xlwt
+lxml
+passlib[bcrypt]
+python-jose

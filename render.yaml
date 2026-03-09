@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: yusaek-collab-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements-render.txt
+    startCommand: uvicorn collab_app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      - key: COLLAB_ALLOW_ORIGINS
+        sync: false
+      - key: COLLAB_REQUEST_MAX_BYTES
+        value: "10485760"
+      - key: COLLAB_SHARED_FILE_MAX_BYTES
+        value: "20971520"
+      - key: COLLAB_DB_PATH
+        value: /var/data/collab_app.db
+      - key: COLLAB_REQUEST_UPLOAD_BASE
+        value: /var/data/collab_requests
+      - key: COLLAB_SHARED_UPLOAD_BASE
+        value: /var/data/collab_shared_files

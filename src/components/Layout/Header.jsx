@@ -1,6 +1,7 @@
 import { Search, Bell } from 'lucide-react';
 import { useState } from 'react';
 import styles from './Header.module.css';
+import { COLLAB_API_BASE } from '../../lib/api';
 
 const Header = ({ onLogout, displayName, onProfileUpdate }) => {
     const initials = displayName ? displayName.slice(0, 2) : 'JD';
@@ -18,7 +19,7 @@ const Header = ({ onLogout, displayName, onProfileUpdate }) => {
         try {
             setSaving(true);
             const token = localStorage.getItem('token');
-            const res = await fetch('http://127.0.0.1:8000/auth/profile', {
+            const res = await fetch(`${COLLAB_API_BASE}/auth/profile`, {
                 method: 'PATCH',
                 headers: {
                     'Content-Type': 'application/json',
