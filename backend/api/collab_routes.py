@@ -109,6 +109,13 @@ def build_collab_router(
                     )
 
             conn.commit()
+            row = conn.execute("SELECT * FROM requests WHERE id = ?", (request_id,)).fetchone()
+            attachments = get_request_attachments([request_id]).get(request_id, [])
+            item = row_to_request(row) if row else {"id": request_id}
+            item["attachments"] = attachments
+            item["can_complete"] = item.get("status") == "open" and assignee == requester_username
+            item["can_ack"] = False
+            return item
         except HTTPException:
             conn.rollback()
             for path in saved_paths:
@@ -145,7 +152,7 @@ def build_collab_router(
 
         requester_display = get_user_display(user)
         assignee_display = get_user_display(assignee)
-        _create_request_row(
+        item = _create_request_row(
             requester_username=user,
             requester_display=requester_display,
             assignee=assignee,
@@ -154,7 +161,7 @@ def build_collab_router(
             files=files,
         )
 
-        return {"ok": True}
+        return {"ok": True, "request": item}
 
     @router.post("/requests/public/kimsungil")
     def create_public_request_for_kimsungil(
@@ -187,7 +194,7 @@ def build_collab_router(
 
         assignee = row["username"]
         assignee_display = (row["display_name"] or "").strip() or "김승일"
-        _create_request_row(
+        item = _create_request_row(
             requester_username="anonymous_mobile",
             requester_display="익명",
             assignee=assignee,
@@ -196,7 +203,7 @@ def build_collab_router(
             files=files,
         )
 
-        return {"ok": True}
+        return {"ok": True, "request": item}
 
     @router.get("/requests/{request_id}/attachments/{attachment_id}")
     def get_request_attachment(

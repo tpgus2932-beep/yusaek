@@ -195,11 +195,17 @@ const Overview = ({ currentUser }) => {
             if (handleUnauthorized(res)) return;
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data?.detail || 'Failed to send request');
+            if (data?.request) {
+                setResolved((prev) => [data.request, ...prev.filter((item) => item.id !== data.request.id)]);
+                if (data.request.assignee_username === (currentUser || localStorage.getItem('username'))) {
+                    setActivity((prev) => [data.request, ...prev.filter((item) => item.id !== data.request.id)]);
+                }
+            }
             setRequestText('');
             setRequestFiles([]);
             if (fileInputRef.current) fileInputRef.current.value = '';
             await fetchResolved();
-            if (assignee === (currentUser || localStorage.getItem('username'))) {
+            if ((data?.request?.assignee_username || assignee) === (currentUser || localStorage.getItem('username'))) {
                 await fetchActivity();
             }
         } catch (err) {

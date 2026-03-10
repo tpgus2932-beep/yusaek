@@ -127,6 +127,12 @@ export default function CollabPortalPage({ currentUser, displayName, onLogout })
       if (handleAuthFailure(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || '요청 전송 실패');
+      if (data?.request) {
+        setOutbox((prev) => [data.request, ...prev.filter((item) => item.id !== data.request.id)]);
+        if (data.request.assignee_username === currentUser) {
+          setInbox((prev) => [data.request, ...prev.filter((item) => item.id !== data.request.id)]);
+        }
+      }
       setRequestText('');
       setRequestFiles([]);
       if (fileInputRef.current) fileInputRef.current.value = '';
