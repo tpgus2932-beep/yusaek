@@ -8,3 +8,4 @@ lxml
 passlib[bcrypt]
 python-jose
 python-multipart
+httpx

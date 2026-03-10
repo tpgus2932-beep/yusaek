@@ -12,6 +12,7 @@ try:
     _LIBSQL_AVAILABLE = True
 except ImportError:
     _LIBSQL_AVAILABLE = False
+import httpx
 import io
 import re
 import shutil
@@ -209,7 +210,7 @@ DB_PATH = Path(os.environ.get("APP_DB_PATH") or BASE_DIR / "app.db")
 
 TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "").strip()
 TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
-_USE_TURSO = _LIBSQL_AVAILABLE and bool(TURSO_DATABASE_URL) and bool(TURSO_AUTH_TOKEN)
+_USE_TURSO = bool(TURSO_DATABASE_URL) and bool(TURSO_AUTH_TOKEN)
 
 
 class _Row:
@@ -274,6 +275,130 @@ class _TursoConn:
         self._conn.close()
 
 
+def _turso_http_url() -> str:
+    url = TURSO_DATABASE_URL
+    if url.startswith("libsql://"):
+        url = "https://" + url[len("libsql://"):]
+    elif not url.startswith("https://"):
+        url = "https://" + url
+    return url.rstrip("/") + "/v2/pipeline"
+
+
+def _py_to_turso_arg(val):
+    if val is None:
+        return {"type": "null"}
+    if isinstance(val, bool):
+        return {"type": "integer", "value": str(int(val))}
+    if isinstance(val, int):
+        return {"type": "integer", "value": str(val)}
+    if isinstance(val, float):
+        return {"type": "float", "value": str(val)}
+    if isinstance(val, bytes):
+        import base64
+        return {"type": "blob", "base64": base64.b64encode(val).decode()}
+    return {"type": "text", "value": str(val)}
+
+
+class _TursoHTTPCursor:
+    __slots__ = ("description", "rowcount", "lastrowid", "_cols", "_rows", "_pos")
+
+    def __init__(self):
+        self.description = None
+        self.rowcount = -1
+        self.lastrowid = None
+        self._cols: list = []
+        self._rows: list = []
+        self._pos = 0
+
+    def _load_result(self, result: dict):
+        cols = result.get("cols", [])
+        self._cols = [c["name"] for c in cols]
+        self.description = tuple(
+            (c["name"], None, None, None, None, None, None) for c in cols
+        )
+        self._rows = []
+        for raw_row in result.get("rows", []):
+            row = []
+            for cell in raw_row:
+                t = cell.get("type")
+                v = cell.get("value")
+                if t == "null":
+                    row.append(None)
+                elif t == "integer":
+                    row.append(int(v))
+                elif t == "float":
+                    row.append(float(v))
+                else:
+                    row.append(v)
+            self._rows.append(row)
+        self.rowcount = result.get("affected_row_count", -1)
+        rir = result.get("last_insert_rowid")
+        self.lastrowid = int(rir) if rir is not None else None
+
+    def fetchone(self):
+        if self.description is None or self._pos >= len(self._rows):
+            return None
+        row = self._rows[self._pos]
+        self._pos += 1
+        return _Row(self.description, row)
+
+    def fetchall(self):
+        if self.description is None:
+            return []
+        result = [_Row(self.description, r) for r in self._rows[self._pos:]]
+        self._pos = len(self._rows)
+        return result
+
+    def __iter__(self):
+        while self._pos < len(self._rows):
+            if self.description is not None:
+                yield _Row(self.description, self._rows[self._pos])
+            self._pos += 1
+
+
+class _TursoHTTPConn:
+    def execute(self, sql: str, params=()):
+        args = [_py_to_turso_arg(v) for v in (params or [])]
+        stmt: dict = {"sql": sql}
+        if args:
+            stmt["args"] = args
+        payload = {
+            "requests": [
+                {"type": "execute", "stmt": stmt},
+                {"type": "close"},
+            ]
+        }
+        resp = httpx.post(
+            _turso_http_url(),
+            headers={
+                "Authorization": f"Bearer {TURSO_AUTH_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        cur = _TursoHTTPCursor()
+        if not results:
+            return cur
+        first = results[0]
+        if first.get("type") == "error":
+            msg = first.get("error", {}).get("message", "Turso HTTP error")
+            raise RuntimeError(f"Turso: {msg}")
+        response = first.get("response", {})
+        result = response.get("result", {})
+        cur._load_result(result)
+        return cur
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-me")
 JWT_ALG = "HS256"
 BOOT_ID = uuid.uuid4().hex
@@ -284,7 +409,7 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 def _get_db():
     if _USE_TURSO:
-        return _TursoConn(libsql.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN))
+        return _TursoHTTPConn()
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
