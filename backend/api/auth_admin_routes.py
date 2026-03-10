@@ -204,7 +204,7 @@ def build_auth_admin_router(
     @router.patch("/admin/users/{target}/role")
     def admin_set_role(target: str, payload: dict = Body(...), admin: str = Depends(require_admin)):
         role = (payload.get("role") or "").strip()
-        if role not in ("admin", "user"):
+        if role not in ("admin", "user", "viewer"):
             raise HTTPException(status_code=400, detail="invalid role")
 
         conn = get_db()

@@ -89,8 +89,8 @@ const AdminUsers = ({ currentUser }) => {
       setError('You cannot change your own role.');
       return;
     }
-    const label = role === 'admin' ? 'promote to admin' : 'remove admin role';
-    if (!window.confirm(`Are you sure you want to ${label} for ${username}?`)) return;
+    const label = role === 'admin' ? '관리자로 승격' : role === 'viewer' ? '배포용으로 변경' : '일반 유저로 변경';
+    if (!window.confirm(`${username} 계정을 ${label}할까요?`)) return;
     try {
       setWorkingUser(username);
       setError('');
@@ -216,10 +216,12 @@ const AdminUsers = ({ currentUser }) => {
                     <td>
                       <span
                         className={`${styles.roleBadge} ${
-                          user.role === 'admin' ? styles.roleAdmin : styles.roleUser
+                          user.role === 'admin' ? styles.roleAdmin
+                          : user.role === 'viewer' ? styles.roleViewer
+                          : styles.roleUser
                         }`}
                       >
-                        {user.role}
+                        {user.role === 'admin' ? '관리자' : user.role === 'viewer' ? '배포용' : '유저'}
                       </span>
                     </td>
                     <td>
@@ -264,17 +266,46 @@ const AdminUsers = ({ currentUser }) => {
                           disabled={isSelf || isWorking || !canDemote}
                           onClick={() => handleRoleChange(user.username, 'user')}
                         >
-                          Remove Admin
+                          관리자 해제
                         </button>
+                      ) : user.role === 'viewer' ? (
+                        <>
+                          <button
+                            className={styles.primaryBtn}
+                            type="button"
+                            disabled={isSelf || isWorking}
+                            onClick={() => handleRoleChange(user.username, 'user')}
+                          >
+                            일반 유저로
+                          </button>
+                          <button
+                            className={styles.primaryBtn}
+                            type="button"
+                            disabled={isSelf || isWorking}
+                            onClick={() => handleRoleChange(user.username, 'admin')}
+                          >
+                            관리자로
+                          </button>
+                        </>
                       ) : (
-                        <button
-                          className={styles.primaryBtn}
-                          type="button"
-                          disabled={isSelf || isWorking}
-                          onClick={() => handleRoleChange(user.username, 'admin')}
-                        >
-                          Make Admin
-                        </button>
+                        <>
+                          <button
+                            className={styles.primaryBtn}
+                            type="button"
+                            disabled={isSelf || isWorking}
+                            onClick={() => handleRoleChange(user.username, 'admin')}
+                          >
+                            관리자로
+                          </button>
+                          <button
+                            className={styles.secondaryBtn}
+                            type="button"
+                            disabled={isSelf || isWorking}
+                            onClick={() => handleRoleChange(user.username, 'viewer')}
+                          >
+                            배포용으로
+                          </button>
+                        </>
                       )}
                       <button
                         className={styles.dangerBtn}

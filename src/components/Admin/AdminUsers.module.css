@@ -103,6 +103,11 @@
     color: #000;
 }
 
+.roleViewer {
+    background-color: #dbeafe;
+    color: #1d4ed8;
+}
+
 .statusApproved {
     background-color: #dcfae6;
     color: #166534;

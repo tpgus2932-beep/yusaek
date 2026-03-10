@@ -29,9 +29,11 @@ const App = () => {
   const [displayName, setDisplayName] = useState(localStorage.getItem('displayName'));
   const [username, setUsername] = useState(localStorage.getItem('username'));
   const [isAdmin, setIsAdmin] = useState(localStorage.getItem('isAdmin') === 'true');
+  const [role, setRole] = useState(localStorage.getItem('role') || 'user');
   const [hiddenTabs, setHiddenTabs] = useState([]);
 
-  const isTabAllowed = (tab, adminFlag = isAdmin, hidden = hiddenTabs) => {
+  const isTabAllowed = (tab, adminFlag = isAdmin, hidden = hiddenTabs, userRole = role) => {
+    if (userRole === 'viewer') return tab === 'dashboard';
     if (tab === 'settings') return true;
     if (tab === 'order' || tab === 'admin' || tab === 'cost-base-manager') {
       return adminFlag && !hidden.includes(tab);
@@ -39,11 +41,12 @@ const App = () => {
     return !hidden.includes(tab);
   };
 
-  const getFallbackTab = (adminFlag = isAdmin, hidden = hiddenTabs) => {
+  const getFallbackTab = (adminFlag = isAdmin, hidden = hiddenTabs, userRole = role) => {
+    if (userRole === 'viewer') return 'dashboard';
     const candidates = ['dashboard', 'barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil'];
     if (adminFlag) candidates.push('order', 'cost-base-manager', 'admin');
     candidates.push('settings');
-    return candidates.find((tab) => isTabAllowed(tab, adminFlag, hidden)) || 'settings';
+    return candidates.find((tab) => isTabAllowed(tab, adminFlag, hidden, userRole)) || 'settings';
   };
 
   const toggleTheme = () => {
@@ -90,6 +93,9 @@ const App = () => {
         const adminFlag = !!data.is_admin;
         setIsAdmin(adminFlag);
         localStorage.setItem('isAdmin', adminFlag ? 'true' : 'false');
+        const userRole = data.role || 'user';
+        setRole(userRole);
+        localStorage.setItem('role', userRole);
       })
       .catch(() => {
         // 네트워크 오류면 토큰 유지
@@ -148,15 +154,22 @@ const App = () => {
     }
   };
 
+  // viewer 역할이면 hiddenTabs 무시하고 대시보드만 허용
+  const effectiveHiddenTabs = role === 'viewer'
+    ? ['barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'order', 'cost-base-manager', 'admin', 'settings']
+    : hiddenTabs;
+
   const handleLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('displayName');
     localStorage.removeItem('username');
     localStorage.removeItem('isAdmin');
+    localStorage.removeItem('role');
     setToken(null);
     setDisplayName(null);
     setUsername(null);
     setIsAdmin(false);
+    setRole('user');
     setHiddenTabs([]);
   };
 
@@ -203,7 +216,7 @@ const App = () => {
         isDarkMode={isDarkMode}
         toggleTheme={toggleTheme}
         isAdmin={isAdmin}
-        hiddenTabs={hiddenTabs}
+        hiddenTabs={effectiveHiddenTabs}
       />
 
       <main className={styles.mainContent}>
