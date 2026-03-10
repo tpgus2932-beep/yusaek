@@ -285,6 +285,7 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 def _get_db():
     if _USE_TURSO:
         return _TursoConn(libsql.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN))
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
