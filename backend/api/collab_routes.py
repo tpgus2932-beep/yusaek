@@ -257,6 +257,7 @@ def build_collab_router(
 
         created_at = datetime.now(timezone.utc).isoformat()
         uploader_display = get_user_display(user)
+        ext = Path(file.filename or "").suffix.lower()
         stored_name = f"{uuid.uuid4().hex}{ext}"
         shared_upload_base.mkdir(parents=True, exist_ok=True)
         target_path = shared_upload_base / stored_name

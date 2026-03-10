@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import pageStyles from './BarcodePage.module.css';
+import { COLLAB_API_BASE as API } from '../../lib/api';
 
 const SharedFilesPage = () => {
-    const API = `http://${window.location.hostname}:8000`;
     const [file, setFile] = useState(null);
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
