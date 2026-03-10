@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
     LayoutDashboard,
     Users,
@@ -12,15 +12,19 @@ import {
     Shield,
     Upload,
     FolderOpen,
-    RotateCcw
+    RotateCcw,
+    Activity,
 } from 'lucide-react';
 import styles from './Sidebar.module.css';
+import ServerStatsModal from '../Admin/ServerStatsModal';
 
 
 
 const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hiddenTabs = [] }) => {
     const isHidden = (tab) => hiddenTabs.includes(tab);
+    const [showStats, setShowStats] = useState(false);
     return (
+        <>
         <aside className={styles.sidebar}>
             <div className={styles.logo} onClick={() => setActiveTab('dashboard')}>
                 <div className={styles.logoIcon}></div>
@@ -122,6 +126,12 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
             </nav>
 
             <div className={styles.footer}>
+                {isAdmin && (
+                    <div className={styles.navItem} onClick={() => setShowStats(true)}>
+                        <Activity size={20} />
+                        서버 현황
+                    </div>
+                )}
                 <div className={styles.navItem} onClick={toggleTheme}>
                     {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
                     {isDarkMode ? '라이트 모드' : '다크 모드'}
@@ -132,6 +142,8 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                 </div>
             </div>
         </aside>
+        {showStats && <ServerStatsModal onClose={() => setShowStats(false)} />}
+        </>
     );
 };
 

@@ -1058,3 +1058,55 @@ app.include_router(
 def ping():
     return {"status": "ok"}
 
+
+@app.get("/admin/stats")
+def get_admin_stats(_: str = Depends(_require_admin)):
+    tables = [
+        "users", "requests", "shared_todos", "my_todos",
+        "order_registered_codes", "shared_files", "request_attachments",
+        "company_credentials", "app_settings",
+    ]
+    conn = _get_db()
+    table_counts: dict = {}
+    for tbl in tables:
+        try:
+            row = conn.execute(f"SELECT COUNT(*) as cnt FROM {tbl}").fetchone()
+            table_counts[tbl] = int(row["cnt"]) if row else 0
+        except Exception:
+            table_counts[tbl] = None
+
+    db_size_bytes = None
+    try:
+        pc = conn.execute("PRAGMA page_count").fetchone()
+        ps = conn.execute("PRAGMA page_size").fetchone()
+        if pc and ps:
+            db_size_bytes = int(pc[0]) * int(ps[0])
+    except Exception:
+        pass
+
+    conn.close()
+
+    masked_url = ""
+    if TURSO_DATABASE_URL:
+        masked_url = TURSO_DATABASE_URL[:60] + ("..." if len(TURSO_DATABASE_URL) > 60 else "")
+
+    return {
+        "mode": "turso" if _USE_TURSO else "sqlite",
+        "turso_url": masked_url,
+        "db_size_bytes": db_size_bytes,
+        "table_counts": table_counts,
+        "turso_limits": {
+            "row_reads_per_month": 1_000_000_000,
+            "row_writes_per_month": 25_000_000,
+            "storage_gb": 9,
+            "dashboard_url": "https://app.turso.tech",
+        },
+        "render_limits": {
+            "ram_mb": 512,
+            "instance_hours_per_month": 750,
+            "cpu": "0.1 shared",
+            "spin_down_minutes": 15,
+            "dashboard_url": "https://dashboard.render.com",
+        },
+    }
+
