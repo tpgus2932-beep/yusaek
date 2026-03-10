@@ -8,4 +8,3 @@ lxml
 passlib[bcrypt]
 python-jose
 python-multipart
-libsql-experimental
