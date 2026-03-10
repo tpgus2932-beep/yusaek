@@ -213,6 +213,8 @@ DB_PATH = Path(os.environ.get("APP_DB_PATH") or BASE_DIR / "app.db")
 TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "").strip()
 TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
 _USE_TURSO = bool(TURSO_DATABASE_URL) and bool(TURSO_AUTH_TOKEN)
+# Render 환경 여부 (Render가 자동으로 RENDER=true 설정)
+_IS_RENDER = os.environ.get("RENDER", "").lower() in ("1", "true", "yes")
 
 
 class _Row:
@@ -410,6 +412,17 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 
 def _get_db():
+    """일반 DB: Render 배포 환경에서만 Turso, 로컬은 항상 SQLite (빠름)."""
+    if _IS_RENDER and _USE_TURSO:
+        return _TursoHTTPConn()
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _get_shared_db():
+    """요청/공유 DB: Turso가 설정되면 항상 Turso (로컬·배포 공유), 아니면 SQLite."""
     if _USE_TURSO:
         return _TursoHTTPConn()
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -464,7 +477,7 @@ _backfill_user_defaults()
 
 
 def _init_requests():
-    conn = _get_db()
+    conn = _get_shared_db()
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS requests (
@@ -486,7 +499,7 @@ def _init_requests():
 
 
 def _ensure_request_column(column: str, ddl: str):
-    conn = _get_db()
+    conn = _get_shared_db()
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(requests)").fetchall()]
     if column not in cols:
         conn.execute(ddl)
@@ -553,7 +566,7 @@ def _ensure_default_company_pin():
 
 
 def _init_request_attachments():
-    conn = _get_db()
+    conn = _get_shared_db()
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS request_attachments (
@@ -599,7 +612,7 @@ _init_shared_files()
 
 
 def _init_shared_todos():
-    conn = _get_db()
+    conn = _get_shared_db()
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS shared_todos (
@@ -624,7 +637,7 @@ _init_shared_todos()
 
 
 def _ensure_shared_todo_column(column: str, ddl: str):
-    conn = _get_db()
+    conn = _get_shared_db()
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(shared_todos)").fetchall()]
     if column not in cols:
         conn.execute(ddl)
@@ -792,7 +805,7 @@ def _is_image_mime(mime: str | None) -> bool:
 def _get_request_attachments(request_ids: list[int]) -> dict[int, list[dict]]:
     if not request_ids:
         return {}
-    conn = _get_db()
+    conn = _get_shared_db()
     placeholders = ",".join(["?"] * len(request_ids))
     rows = conn.execute(
         f"SELECT * FROM request_attachments WHERE request_id IN ({placeholders}) ORDER BY id ASC",
@@ -966,7 +979,7 @@ app.include_router(
         require_admin=_require_admin,
         get_current_user_optional=_get_current_user_optional,
         is_admin=_is_admin,
-        get_db=_get_db,
+        get_db=_get_shared_db,  # 요청·공동할일: 로컬·배포 공유 (Turso)
         get_user_display=_get_user_display,
         is_visible_completed=_is_visible_completed,
         get_request_attachments=_get_request_attachments,
