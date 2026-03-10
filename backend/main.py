@@ -215,6 +215,22 @@ TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
 _USE_TURSO = bool(TURSO_DATABASE_URL) and bool(TURSO_AUTH_TOKEN)
 # Render 환경 여부 (Render가 자동으로 RENDER=true 설정)
 _IS_RENDER = os.environ.get("RENDER", "").lower() in ("1", "true", "yes")
+_TURSO_HTTP_CLIENT: httpx.Client | None = None
+
+
+def _get_turso_http_client() -> httpx.Client:
+    global _TURSO_HTTP_CLIENT
+    if _TURSO_HTTP_CLIENT is None:
+        _TURSO_HTTP_CLIENT = httpx.Client(timeout=30.0)
+    return _TURSO_HTTP_CLIENT
+
+
+@app.on_event("shutdown")
+def _close_turso_http_client():
+    global _TURSO_HTTP_CLIENT
+    if _TURSO_HTTP_CLIENT is not None:
+        _TURSO_HTTP_CLIENT.close()
+        _TURSO_HTTP_CLIENT = None
 
 
 class _Row:
@@ -372,14 +388,13 @@ class _TursoHTTPConn:
                 {"type": "close"},
             ]
         }
-        resp = httpx.post(
+        resp = _get_turso_http_client().post(
             _turso_http_url(),
             headers={
                 "Authorization": f"Bearer {TURSO_AUTH_TOKEN}",
                 "Content-Type": "application/json",
             },
             json=payload,
-            timeout=30.0,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -1123,4 +1138,3 @@ def get_admin_stats(_: str = Depends(_require_admin)):
             "dashboard_url": "https://dashboard.render.com",
         },
     }
-
