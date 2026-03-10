@@ -19,8 +19,8 @@ services:
       - key: TURSO_AUTH_TOKEN
         sync: false
       - key: COLLAB_DB_PATH
-        value: /var/data/collab_app.db
+        value: /tmp/collab_app.db
       - key: COLLAB_REQUEST_UPLOAD_BASE
-        value: /var/data/collab_requests
+        value: /tmp/collab_requests
       - key: COLLAB_SHARED_UPLOAD_BASE
-        value: /var/data/collab_shared_files
+        value: /tmp/collab_shared_files
