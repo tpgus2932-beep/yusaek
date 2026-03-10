@@ -141,7 +141,7 @@ const App = () => {
     setAuthChecked(true);
   };
 
-  const handleAuthWithUser = (newToken, name, user, adminFlag) => {
+  const handleAuthWithUser = (newToken, name, user, adminFlag, userRole) => {
     handleAuth(newToken, name);
     if (user) {
       localStorage.setItem('username', user);
@@ -151,6 +151,10 @@ const App = () => {
     if (typeof adminFlag === 'boolean') {
       localStorage.setItem('isAdmin', adminFlag ? 'true' : 'false');
       setIsAdmin(adminFlag);
+    }
+    if (userRole) {
+      localStorage.setItem('role', userRole);
+      setRole(userRole);
     }
   };
 
