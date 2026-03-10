@@ -16,6 +16,7 @@ def build_collab_router(
     get_current_user_optional,
     is_admin,
     get_db,
+    get_local_db=None,  # my_todos 전용 로컬 DB (없으면 get_db 사용)
     get_user_display,
     is_visible_completed,
     get_request_attachments,
@@ -36,6 +37,8 @@ def build_collab_router(
     # In-memory completion state for "today todos".
     # This is intentionally reset when the server restarts.
     my_todo_completed: dict[str, set[int]] = {}
+    # my_todos는 개인 데이터 → 로컬 DB 우선
+    _local_db = get_local_db if get_local_db is not None else get_db
 
     def _get_upload_size(file: UploadFile) -> int:
         current_pos = file.file.tell()
@@ -361,7 +364,7 @@ def build_collab_router(
 
     @router.get("/my-todos")
     def list_my_todos(user: str = Depends(get_current_user)):
-        conn = get_db()
+        conn = _local_db()
         rows = conn.execute(
             """
             SELECT *
@@ -398,7 +401,7 @@ def build_collab_router(
             raise HTTPException(status_code=400, detail="text required")
         now = datetime.now(timezone.utc).isoformat()
         owner_display = get_user_display(user)
-        conn = get_db()
+        conn = _local_db()
         conn.execute(
             """
             INSERT INTO my_todos (
@@ -413,7 +416,7 @@ def build_collab_router(
 
     @router.post("/my-todos/{todo_id}/complete")
     def complete_my_todo(todo_id: int, user: str = Depends(get_current_user)):
-        conn = get_db()
+        conn = _local_db()
         row = conn.execute(
             "SELECT * FROM my_todos WHERE id = ? AND owner_username = ?",
             (todo_id, user),
@@ -427,7 +430,7 @@ def build_collab_router(
 
     @router.post("/my-todos/{todo_id}/uncomplete")
     def uncomplete_my_todo(todo_id: int, user: str = Depends(get_current_user)):
-        conn = get_db()
+        conn = _local_db()
         row = conn.execute(
             "SELECT * FROM my_todos WHERE id = ? AND owner_username = ?",
             (todo_id, user),
@@ -443,7 +446,7 @@ def build_collab_router(
 
     @router.delete("/my-todos/{todo_id}")
     def delete_my_todo(todo_id: int, user: str = Depends(get_current_user)):
-        conn = get_db()
+        conn = _local_db()
         row = conn.execute(
             "SELECT id FROM my_todos WHERE id = ? AND owner_username = ?",
             (todo_id, user),

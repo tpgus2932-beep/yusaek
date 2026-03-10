@@ -979,7 +979,8 @@ app.include_router(
         require_admin=_require_admin,
         get_current_user_optional=_get_current_user_optional,
         is_admin=_is_admin,
-        get_db=_get_shared_db,  # 요청·공동할일: 로컬·배포 공유 (Turso)
+        get_db=_get_shared_db,      # 요청·공동할일·공유파일: 로컬·배포 공유 (Turso)
+        get_local_db=_get_db,       # 오늘할일: 개인 데이터, 로컬 SQLite (빠름)
         get_user_display=_get_user_display,
         is_visible_completed=_is_visible_completed,
         get_request_attachments=_get_request_attachments,
