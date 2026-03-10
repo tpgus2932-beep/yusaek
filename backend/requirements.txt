@@ -8,3 +8,4 @@ pywin32
 lxml
 passlib[bcrypt]
 python-jose
+libsql-experimental

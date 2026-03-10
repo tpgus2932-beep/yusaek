@@ -57,10 +57,14 @@ const App = () => {
       setAuthChecked(true);
       return;
     }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
     fetch(`${COLLAB_API_BASE}/auth/me`, {
       headers: { Authorization: `Bearer ${t}` },
+      signal: controller.signal,
     })
       .then(async (res) => {
+        clearTimeout(timeoutId);
         if (res.status === 401 || res.status === 403) {
           localStorage.removeItem('token');
           localStorage.removeItem('displayName');

@@ -7,6 +7,11 @@ import uuid
 import traceback
 import os
 import sqlite3
+try:
+    import libsql_experimental as libsql
+    _LIBSQL_AVAILABLE = True
+except ImportError:
+    _LIBSQL_AVAILABLE = False
 import io
 import re
 import shutil
@@ -201,6 +206,74 @@ def _save_cost_base_df(df: pd.DataFrame):
 
 
 DB_PATH = Path(os.environ.get("APP_DB_PATH") or BASE_DIR / "app.db")
+
+TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "").strip()
+TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
+_USE_TURSO = _LIBSQL_AVAILABLE and bool(TURSO_DATABASE_URL) and bool(TURSO_AUTH_TOKEN)
+
+
+class _Row:
+    """sqlite3.Row 호환 래퍼 (libsql tuple row → 컬럼명 접근)."""
+    __slots__ = ("_cols", "_vals")
+
+    def __init__(self, description, values):
+        self._cols = {description[i][0]: i for i in range(len(description))}
+        self._vals = tuple(values)
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._vals[key]
+        return self._vals[self._cols[key]]
+
+    def keys(self):
+        return list(self._cols.keys())
+
+    def __bool__(self):
+        return True
+
+
+class _Cursor:
+    __slots__ = ("_cur",)
+
+    def __init__(self, cur):
+        self._cur = cur
+
+    def _wrap(self, row):
+        if row is None or self._cur.description is None:
+            return None
+        return _Row(self._cur.description, row)
+
+    def fetchone(self):
+        return self._wrap(self._cur.fetchone())
+
+    def fetchall(self):
+        if self._cur.description is None:
+            return []
+        desc = self._cur.description
+        return [_Row(desc, r) for r in self._cur.fetchall()]
+
+    def __iter__(self):
+        desc = self._cur.description
+        for row in self._cur:
+            yield _Row(desc, row)
+
+
+class _TursoConn:
+    __slots__ = ("_conn",)
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, params=()):
+        return _Cursor(self._conn.execute(sql, list(params) if params else []))
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
+
+
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-me")
 JWT_ALG = "HS256"
 BOOT_ID = uuid.uuid4().hex
@@ -210,6 +283,8 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 
 def _get_db():
+    if _USE_TURSO:
+        return _TursoConn(libsql.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN))
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
