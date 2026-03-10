@@ -221,6 +221,7 @@ const App = () => {
         toggleTheme={toggleTheme}
         isAdmin={isAdmin}
         hiddenTabs={effectiveHiddenTabs}
+        onLogout={handleLogout}
       />
 
       <main className={styles.mainContent}>

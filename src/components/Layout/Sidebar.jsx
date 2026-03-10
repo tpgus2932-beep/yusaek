@@ -20,7 +20,7 @@ import ServerStatsModal from '../Admin/ServerStatsModal';
 
 
 
-const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hiddenTabs = [] }) => {
+const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hiddenTabs = [], onLogout }) => {
     const isHidden = (tab) => hiddenTabs.includes(tab);
     const [showStats, setShowStats] = useState(false);
     return (
@@ -136,7 +136,7 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
                     {isDarkMode ? '라이트 모드' : '다크 모드'}
                 </div>
-                <div className={styles.navItem}>
+                <div className={styles.navItem} onClick={onLogout}>
                     <LogOut size={20} />
                     로그아웃
                 </div>
