@@ -92,20 +92,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-STATE = {
-    "loaded": False,
-    "mapping": None,
-    "details": None,
-    "runs": None,
-    "invoice_order": None,
-    "invoice_seq": None,
-    "code_o_text": None,
-    "current_invoice": None,
-    "last_scanned_code": None,
-    "processed_path": None,
-    "defect_counts": None,
-    "incoming_counts": None,
-}
+BARCODE_STATES: dict[str, dict] = {}
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_BASE = Path(os.environ.get("REQUEST_UPLOAD_BASE") or (BASE_DIR / "uploads" / "requests"))
@@ -128,6 +115,24 @@ RETURN_STATES: dict[str, "ReturnState"] = {}
 AMOOD_STATES: dict[str, "AmoodState"] = {}
 RETURN_COST_BASE_CACHE: dict[str, object] = {"df": None, "mtime": None, "path": None}
 SHARED_INCOMING_COUNTS: dict[str, int] = {}
+
+def _get_barcode_state(user: str) -> dict:
+    if user not in BARCODE_STATES:
+        BARCODE_STATES[user] = {
+            "loaded": False,
+            "mapping": None,
+            "details": None,
+            "runs": None,
+            "invoice_order": None,
+            "invoice_seq": None,
+            "code_o_text": None,
+            "current_invoice": None,
+            "last_scanned_code": None,
+            "processed_path": None,
+            "defect_counts": None,
+        }
+    return BARCODE_STATES[user]
+
 
 def _get_return_state(user: str) -> ReturnState:
     state = RETURN_STATES.get(user)
@@ -153,8 +158,6 @@ def _set_shared_incoming_counts(counts: dict[str, int] | None):
     SHARED_INCOMING_COUNTS.clear()
     if counts:
         SHARED_INCOMING_COUNTS.update(counts)
-    # Keep legacy barcode state key in sync for existing code paths.
-    STATE["incoming_counts"] = dict(SHARED_INCOMING_COUNTS)
 
 
 def _load_return_cost_base(state: ReturnState):
@@ -977,7 +980,7 @@ app.include_router(
 app.include_router(
     build_barcode_router(
         get_current_user=_get_current_user,
-        state=STATE,
+        get_barcode_state=_get_barcode_state,
         to_int=_to_int,
         process_and_load_any=process_and_load_any,
         load_excel_any=load_excel_any,

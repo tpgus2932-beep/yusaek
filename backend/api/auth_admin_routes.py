@@ -175,24 +175,25 @@ def build_auth_admin_router(
             raise HTTPException(status_code=400, detail="invalid approval_status")
 
         conn = get_db()
-        row = conn.execute("SELECT username FROM users WHERE username = ?", (target,)).fetchone()
-        if not row:
-            conn.close()
-            raise HTTPException(status_code=404, detail="user not found")
+        try:
+            row = conn.execute("SELECT username FROM users WHERE username = ?", (target,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="user not found")
 
-        now = datetime.now(timezone.utc).isoformat()
-        approved_at = now if approval_status == "approved" else None
-        approved_by = admin if approval_status == "approved" else None
-        conn.execute(
-            """
-            UPDATE users
-            SET approval_status = ?, approved_at = ?, approved_by = ?
-            WHERE username = ?
-            """,
-            (approval_status, approved_at, approved_by, target),
-        )
-        conn.commit()
-        conn.close()
+            now = datetime.now(timezone.utc).isoformat()
+            approved_at = now if approval_status == "approved" else None
+            approved_by = admin if approval_status == "approved" else None
+            conn.execute(
+                """
+                UPDATE users
+                SET approval_status = ?, approved_at = ?, approved_by = ?
+                WHERE username = ?
+                """,
+                (approval_status, approved_at, approved_by, target),
+            )
+            conn.commit()
+        finally:
+            conn.close()
         return {
             "ok": True,
             "username": target,
@@ -208,19 +209,19 @@ def build_auth_admin_router(
             raise HTTPException(status_code=400, detail="invalid role")
 
         conn = get_db()
-        row = conn.execute("SELECT role FROM users WHERE username = ?", (target,)).fetchone()
-        if not row:
-            conn.close()
-            raise HTTPException(status_code=404, detail="user not found")
+        try:
+            row = conn.execute("SELECT role FROM users WHERE username = ?", (target,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="user not found")
 
-        current_role = row["role"] if row["role"] else "user"
-        if current_role == "admin" and role != "admin" and count_admins() <= 1:
-            conn.close()
-            raise HTTPException(status_code=400, detail="cannot remove last admin")
+            current_role = row["role"] if row["role"] else "user"
+            if current_role == "admin" and role != "admin" and count_admins() <= 1:
+                raise HTTPException(status_code=400, detail="cannot remove last admin")
 
-        conn.execute("UPDATE users SET role = ? WHERE username = ?", (role, target))
-        conn.commit()
-        conn.close()
+            conn.execute("UPDATE users SET role = ? WHERE username = ?", (role, target))
+            conn.commit()
+        finally:
+            conn.close()
         return {"ok": True, "username": target, "role": role}
 
     @router.delete("/admin/users/{target}")
@@ -229,23 +230,23 @@ def build_auth_admin_router(
             raise HTTPException(status_code=400, detail="cannot delete self")
 
         conn = get_db()
-        row = conn.execute("SELECT role FROM users WHERE username = ?", (target,)).fetchone()
-        if not row:
-            conn.close()
-            raise HTTPException(status_code=404, detail="user not found")
+        try:
+            row = conn.execute("SELECT role FROM users WHERE username = ?", (target,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="user not found")
 
-        role = row["role"] if row["role"] else "user"
-        if role == "admin" and count_admins() <= 1:
-            conn.close()
-            raise HTTPException(status_code=400, detail="cannot delete last admin")
+            role = row["role"] if row["role"] else "user"
+            if role == "admin" and count_admins() <= 1:
+                raise HTTPException(status_code=400, detail="cannot delete last admin")
 
-        conn.execute(
-            "DELETE FROM requests WHERE requester_username = ? OR assignee_username = ?",
-            (target, target),
-        )
-        conn.execute("DELETE FROM users WHERE username = ?", (target,))
-        conn.commit()
-        conn.close()
+            conn.execute(
+                "DELETE FROM requests WHERE requester_username = ? OR assignee_username = ?",
+                (target, target),
+            )
+            conn.execute("DELETE FROM users WHERE username = ?", (target,))
+            conn.commit()
+        finally:
+            conn.close()
         return {"ok": True}
 
     @router.get("/settings/menu-visibility")
