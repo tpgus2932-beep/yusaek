@@ -3,6 +3,7 @@ import tempfile
 import io
 import re
 import urllib.parse
+import uuid
 
 import pandas as pd
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
@@ -402,7 +403,7 @@ def build_order_router(
         data = await file.read()
         if not data:
             raise HTTPException(status_code=400, detail="업로드 파일이 비어 있습니다.")
-        tmp = Path(tempfile.gettempdir()) / f"__order_check_{pd.Timestamp.utcnow().value}.xlsx"
+        tmp = Path(tempfile.gettempdir()) / f"__order_check_{uuid.uuid4().hex}.xlsx"
         tmp.write_bytes(data)
         try:
             try:
@@ -473,7 +474,7 @@ def build_order_router(
         if not raw:
             raise HTTPException(status_code=400, detail="업로드 파일이 비어 있습니다.")
 
-        tmp = Path(tempfile.gettempdir()) / f"__order_daily_sales_{pd.Timestamp.utcnow().value}{ext}"
+        tmp = Path(tempfile.gettempdir()) / f"__order_daily_sales_{uuid.uuid4().hex}{ext}"
         tmp.write_bytes(raw)
         try:
             try:
@@ -538,7 +539,7 @@ def build_order_router(
         if not raw:
             raise HTTPException(status_code=400, detail="업로드 파일이 비어 있습니다.")
 
-        tmp = Path(tempfile.gettempdir()) / f"__order_daily_sales_export_{pd.Timestamp.utcnow().value}{ext}"
+        tmp = Path(tempfile.gettempdir()) / f"__order_daily_sales_export_{uuid.uuid4().hex}{ext}"
         tmp.write_bytes(raw)
         try:
             try:

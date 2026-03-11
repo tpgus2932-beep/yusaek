@@ -129,7 +129,7 @@ const App = () => {
     if (!isTabAllowed(activeTab)) {
       setActiveTab(getFallbackTab());
     }
-  }, [activeTab, isAdmin, hiddenTabs]);
+  }, [activeTab, isAdmin, hiddenTabs, role]);
 
   const handleAuth = (newToken, name) => {
     localStorage.setItem('token', newToken);

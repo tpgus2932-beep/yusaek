@@ -383,8 +383,9 @@ def build_amood_router(
         matched["remaining"] = int(matched.get("remaining", 0)) - 1
         try:
             amood_ws_cell(state.ws2, AMOOD_COL2_QTY, matched["row"]).value = matched["remaining"]
-        except Exception:
-            pass
+        except Exception as e:
+            traceback.print_exc()
+            print(f"[amood] 셀 쓰기 실패 (row={matched['row']}): {e}")
 
         all_done = all(it.get("remaining", 0) <= 0 for it in state.pending_items)
         if all_done:
