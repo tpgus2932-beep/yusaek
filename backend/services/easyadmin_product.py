@@ -128,7 +128,7 @@ def _process_easyadmin_product_upload(path: Path) -> bytes:
     ch_df = series_b.apply(lambda v: pd.Series(_split_b_to_c_and_h(v)))
     lmn_df = series_l.apply(lambda v: pd.Series(_split_l_values(v)))
 
-    out = pd.DataFrame("", index=df.index, columns=HEADER_LIST)
+    out = pd.DataFrame("", index=df.index, columns=HEADER_LIST).astype(object)
     out.iloc[:, _pos0("A")] = col_a
     out.iloc[:, _pos0("B")] = col_b
     out.iloc[:, _pos0("C")] = ch_df.iloc[:, 0]
