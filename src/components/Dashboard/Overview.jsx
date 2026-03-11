@@ -1133,122 +1133,146 @@ const Overview = ({ currentUser }) => {
             </div>
 
             <div className={styles.card}>
-                <div className={styles.cardTitleRow}>
-                    <div className={styles.cardTitle}>회사 계정 정보</div>
+                <div className={styles.credSectionHeader}>
+                    <div className={styles.cardTitle} style={{ margin: 0 }}>회사 계정 정보</div>
+                    <div className={styles.credPinGroup}>
+                        <span className={styles.credPinLabel}>공용 PIN</span>
+                        <input
+                            className={styles.credentialPin}
+                            placeholder="••••"
+                            value={companyPin}
+                            onChange={(e) => setCompanyPin(e.target.value)}
+                            maxLength={4}
+                            type="password"
+                        />
+                    </div>
                 </div>
                 {loadingCreds && <div className={styles.mutedText}>불러오는 중...</div>}
                 {!loadingCreds && (
-                    <div className={styles.companyCreds}>
-                        <div className={styles.companyPinRow}>
-                            <input
-                                className={styles.credentialPin}
-                                placeholder="공용 4자리 PIN"
-                                value={companyPin}
-                                onChange={(e) => setCompanyPin(e.target.value)}
-                                maxLength={4}
-                            />
-                            <div className={styles.credentialHint}>PIN 입력 후 보기</div>
-                        </div>
+                    <>
                         {isAdmin && (
-                            <div className={styles.companyCredRow}>
-                                <input
-                                    className={styles.credentialInput}
-                                    placeholder="항목명 (예: 택배사)"
-                                    value={(credEdit.new?.label || '')}
-                                    onChange={(e) => updateCredEdit('new', { label: e.target.value })}
-                                />
-                                <input
-                                    className={styles.credentialInput}
-                                    placeholder="아이디"
-                                    value={(credEdit.new?.username || '')}
-                                    onChange={(e) => updateCredEdit('new', { username: e.target.value })}
-                                />
-                                <input
-                                    className={styles.credentialInput}
-                                    placeholder="비밀번호"
-                                    value={(credEdit.new?.password || '')}
-                                    onChange={(e) => updateCredEdit('new', { password: e.target.value })}
-                                />
-                                <button type="button" className={styles.secondaryBtn} onClick={handleCredentialsCreate}>
-                                    추가
-                                </button>
+                            <div className={styles.credAddCard}>
+                                <div className={styles.credAddTitle}>새 항목 추가</div>
+                                <div className={styles.credAddFields}>
+                                    <input
+                                        className={styles.credentialInput}
+                                        placeholder="항목명 (예: 택배사)"
+                                        value={(credEdit.new?.label || '')}
+                                        onChange={(e) => updateCredEdit('new', { label: e.target.value })}
+                                    />
+                                    <input
+                                        className={styles.credentialInput}
+                                        placeholder="아이디"
+                                        value={(credEdit.new?.username || '')}
+                                        onChange={(e) => updateCredEdit('new', { username: e.target.value })}
+                                    />
+                                    <input
+                                        className={styles.credentialInput}
+                                        placeholder="비밀번호"
+                                        value={(credEdit.new?.password || '')}
+                                        onChange={(e) => updateCredEdit('new', { password: e.target.value })}
+                                    />
+                                    <button type="button" className={styles.primaryBtn} onClick={handleCredentialsCreate}>
+                                        추가
+                                    </button>
+                                </div>
                             </div>
                         )}
-
-                        {companyCreds.length === 0 && (
-                            <div className={styles.mutedText}>등록된 항목이 없습니다.</div>
-                        )}
-                        {companyCreds.map((item) => (
-                            <div key={item.id} className={styles.companyCredRow}>
-                                {isAdmin ? (
-                                    <>
-                                        <input
-                                            className={styles.credentialInput}
-                                            placeholder="항목명"
-                                            value={(credEdit[item.id]?.label ?? item.label ?? '')}
-                                            onChange={(e) =>
-                                                updateCredEdit(item.id, { label: e.target.value })
-                                            }
-                                        />
-                                        <input
-                                            className={styles.credentialInput}
-                                            placeholder="아이디"
-                                            value={(credEdit[item.id]?.username ?? item.username ?? '')}
-                                            onChange={(e) =>
-                                                updateCredEdit(item.id, { username: e.target.value })
-                                            }
-                                        />
-                                        <input
-                                            className={styles.credentialInput}
-                                            placeholder="비밀번호"
-                                            value={(credEdit[item.id]?.password ?? item.password ?? '')}
-                                            onChange={(e) =>
-                                                updateCredEdit(item.id, { password: e.target.value })
-                                            }
-                                        />
-                                        <button
-                                            type="button"
-                                            className={styles.secondaryBtn}
-                                            onClick={() => handleCredentialsSave(item)}
-                                        >
-                                            저장
-                                        </button>
-                                        <button
-                                            type="button"
-                                            className={styles.secondaryBtn}
-                                            onClick={() => handleCredentialsView(item.id)}
-                                        >
-                                            보기
-                                        </button>
-                                        <button
-                                            type="button"
-                                            className={styles.secondaryBtn}
-                                            onClick={() => handleCredentialsDelete(item.id)}
-                                        >
-                                            삭제
-                                        </button>
-                                    </>
-                                ) : (
-                                    <>
-                                        <div className={styles.companyCredLabel}>{item.label}</div>
-                                        <button
-                                            type="button"
-                                            className={styles.secondaryBtn}
-                                            onClick={() => handleCredentialsView(item.id)}
-                                        >
-                                            보기
-                                        </button>
-                                        {credView[item.id] && (
-                                            <div className={styles.credentialValue}>
-                                                <div>아이디: {credView[item.id].username || '-'}</div>
-                                                <div>비밀번호: {credView[item.id].password || '-'}</div>
-                                            </div>
+                        {companyCreds.length === 0 ? (
+                            <div className={styles.emptyState}>
+                                <div className={styles.emptyStateText}>등록된 항목이 없습니다.</div>
+                            </div>
+                        ) : (
+                            <div className={styles.credGrid}>
+                                {companyCreds.map((item) => (
+                                    <div key={item.id} className={styles.credCard}>
+                                        {isAdmin ? (
+                                            <>
+                                                <input
+                                                    className={styles.credCardLabelInput}
+                                                    placeholder="항목명"
+                                                    value={(credEdit[item.id]?.label ?? item.label ?? '')}
+                                                    onChange={(e) => updateCredEdit(item.id, { label: e.target.value })}
+                                                />
+                                                <div className={styles.credFieldRow}>
+                                                    <span className={styles.credFieldLabel}>ID</span>
+                                                    <input
+                                                        className={styles.credFieldInput}
+                                                        placeholder="아이디"
+                                                        value={(credEdit[item.id]?.username ?? item.username ?? '')}
+                                                        onChange={(e) => updateCredEdit(item.id, { username: e.target.value })}
+                                                    />
+                                                </div>
+                                                <div className={styles.credFieldRow}>
+                                                    <span className={styles.credFieldLabel}>PW</span>
+                                                    <input
+                                                        className={styles.credFieldInput}
+                                                        placeholder="비밀번호"
+                                                        value={(credEdit[item.id]?.password ?? item.password ?? '')}
+                                                        onChange={(e) => updateCredEdit(item.id, { password: e.target.value })}
+                                                    />
+                                                </div>
+                                                <div className={styles.credCardActions}>
+                                                    <button
+                                                        type="button"
+                                                        className={styles.credSaveBtn}
+                                                        onClick={() => handleCredentialsSave(item)}
+                                                    >
+                                                        저장
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className={styles.credViewBtn}
+                                                        onClick={() => handleCredentialsView(item.id)}
+                                                    >
+                                                        보기
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className={styles.credDeleteBtn}
+                                                        onClick={() => handleCredentialsDelete(item.id)}
+                                                    >
+                                                        삭제
+                                                    </button>
+                                                </div>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <div className={styles.credCardName}>{item.label}</div>
+                                                {credView[item.id] ? (
+                                                    <div className={styles.credRevealedFields}>
+                                                        <div className={styles.credFieldRow}>
+                                                            <span className={styles.credFieldLabel}>ID</span>
+                                                            <span className={styles.credFieldValue}>{credView[item.id].username || '-'}</span>
+                                                        </div>
+                                                        <div className={styles.credFieldRow}>
+                                                            <span className={styles.credFieldLabel}>PW</span>
+                                                            <span className={styles.credFieldValue}>{credView[item.id].password || '-'}</span>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div className={styles.credHidden}>•••••••••</div>
+                                                )}
+                                                <button
+                                                    type="button"
+                                                    className={styles.credViewBtn}
+                                                    onClick={() => {
+                                                        if (credView[item.id]) {
+                                                            setCredView((prev) => { const n = {...prev}; delete n[item.id]; return n; });
+                                                        } else {
+                                                            handleCredentialsView(item.id);
+                                                        }
+                                                    }}
+                                                >
+                                                    {credView[item.id] ? '숨기기' : '보기'}
+                                                </button>
+                                            </>
                                         )}
-                                    </>
-                                )}
+                                    </div>
+                                ))}
                             </div>
-                        ))}
-                    </div>
+                        )}
+                    </>
                 )}
             </div>
             {previewImage && (
