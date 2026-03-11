@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, Calendar, Bell } from 'lucide-react';
+import { Plus, Calendar, Bell, ChevronDown, ChevronUp } from 'lucide-react';
 import styles from './Dashboard.module.css';
 import { COLLAB_API_BASE as API } from '../../lib/api';
 
@@ -40,6 +40,8 @@ const Overview = ({ currentUser }) => {
     const [loadingTodayTodos, setLoadingTodayTodos] = useState(false);
     const [submittingTodayTodo, setSubmittingTodayTodo] = useState(false);
     const [selectedTodayTodoIds, setSelectedTodayTodoIds] = useState([]);
+    const [sharedTodoOpen, setSharedTodoOpen] = useState(false);
+    const [sentRequestsOpen, setSentRequestsOpen] = useState(false);
     const isAdmin = useMemo(() => localStorage.getItem('isAdmin') === 'true', []);
 
     const authHeaders = useMemo(() => {
@@ -812,280 +814,321 @@ const Overview = ({ currentUser }) => {
                 </div>
 
                 <div className={styles.card}>
-                    <div className={styles.cardTitle}>
-                        요청 목록
-                        <Calendar size={18} className={styles.cardHeaderIcon} />
-                    </div>
-                    <div className={styles.cardActions}>
-                        <button className={styles.secondaryBtn} type="button" onClick={handleClearActivity}>
-                            목록 지우기
+                    <div className={styles.requestListHeader}>
+                        <div className={styles.cardTitle} style={{ margin: 0 }}>
+                            받은 요청
+                            {activity.filter((a) => a.status !== 'completed').length > 0 && (
+                                <span className={styles.requestCountBadge}>
+                                    {activity.filter((a) => a.status !== 'completed').length}
+                                </span>
+                            )}
+                        </div>
+                        <button className={styles.clearBtn} type="button" onClick={handleClearActivity}>
+                            지우기
                         </button>
                     </div>
-                    <div className={styles.activityList}>
+                    <div className={styles.requestList}>
                         {loadingActivity && <div className={styles.mutedText}>불러오는 중...</div>}
                         {!loadingActivity && activity.length === 0 && (
-                            <div className={styles.mutedText}>받은 요청이 없습니다.</div>
+                            <div className={styles.emptyState}>
+                                <div className={styles.emptyStateText}>받은 요청이 없습니다.</div>
+                            </div>
                         )}
                         {!loadingActivity &&
-                            activity.map((item) => (
-                                <div
-                                    key={item.id}
-                                    className={`${styles.activityItem} ${item.status === 'completed' ? styles.activityItemCompleted : ''}`}
-                                >
-                                    <div className={styles.activityDot}></div>
-                                    <div className={styles.activityInfo}>
-                                        <div className={styles.activityText}>{item.text}</div>
-                                        <div className={styles.activityMeta}>
-                                            {item.requester_display || item.requester_username}
+                            activity.map((item) => {
+                                const done = item.status === 'completed';
+                                return (
+                                    <div
+                                        key={item.id}
+                                        className={`${styles.requestItem} ${done ? styles.requestItemDone : styles.requestItemPending}`}
+                                    >
+                                        <div className={styles.requestItemInner}>
+                                            <div className={styles.requestItemTop}>
+                                                <span className={styles.requesterTag}>
+                                                    {item.requester_display || item.requester_username}
+                                                </span>
+                                                <span className={styles.requestTime}>{formatDateTime(item.created_at)}</span>
+                                            </div>
+                                            <div className={styles.requestText}>{item.text}</div>
+                                            {renderAttachments(item)}
                                         </div>
-                                        <div className={styles.activityMeta}>
-                                            받은시간: {formatDateTime(item.created_at)}
+                                        <div className={styles.requestItemAction}>
+                                            {done ? (
+                                                <span className={styles.completedStatusBadge}>완료됨</span>
+                                            ) : (
+                                                <button
+                                                    className={styles.completeBtn}
+                                                    type="button"
+                                                    disabled={!item.can_complete}
+                                                    onClick={() => handleComplete(item.id)}
+                                                >
+                                                    완료
+                                                </button>
+                                            )}
                                         </div>
-                                        {renderAttachments(item)}
                                     </div>
-                                    <div className={styles.activityActions}>
-                                        {item.status === 'completed' ? (
-                                            <span className={styles.completedBadge}>완료됨</span>
-                                        ) : (
-                                            <button
-                                                className={styles.secondaryBtn}
-                                                type="button"
-                                                disabled={!item.can_complete}
-                                                onClick={() => handleComplete(item.id)}
-                                            >
-                                                완료
-                                            </button>
-                                        )}
-                                    </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                     </div>
                 </div>
             </div>
 
             <div className={styles.resolvedGrid}>
+                {/* 공동 할 일 - 접기/펼치기 */}
                 <div className={styles.card}>
-                    <div className={styles.todoHeader}>
-                        <div className={styles.cardTitle}>공동 할 일</div>
-                        <div className={styles.todoHeaderActions}>
-                            <button
-                                type="button"
-                                className={`${styles.filterBtn} ${todoTab === 'open' ? styles.filterActive : ''}`}
-                                onClick={() => setTodoTab('open')}
-                            >
-                                진행중
-                            </button>
-                            <button
-                                type="button"
-                                className={`${styles.filterBtn} ${todoTab === 'completed' ? styles.filterActive : ''}`}
-                                onClick={() => setTodoTab('completed')}
-                            >
-                                완료
-                            </button>
-                            <button
-                                type="button"
-                                className={styles.todoAddToggle}
-                                onClick={() => setShowTodoInput((v) => !v)}
-                            >
-                                <Plus size={16} />
-                                {showTodoInput ? '닫기' : '추가'}
-                            </button>
-                        </div>
-                    </div>
-                    {showTodoInput && (
-                        <div className={styles.todoRow}>
-                            <input
-                                className={styles.todoInput}
-                                placeholder="공동 할 일을 입력하세요"
-                                value={todoText}
-                                onChange={(e) => setTodoText(e.target.value)}
-                                onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                        e.preventDefault();
-                                        handleAddTodo();
-                                    }
-                                }}
-                            />
-                            <button type="button" className={styles.primaryBtn} onClick={handleAddTodo} disabled={submittingTodo}>
-                                {submittingTodo ? '등록 중...' : '등록'}
-                            </button>
-                        </div>
-                    )}
-                    <div
-                        className={`${styles.todoList} ${
-                            !showAllTodos ? styles.todoListCollapsed : ''
-                        }`}
+                    <button
+                        type="button"
+                        className={styles.collapsibleHeader}
+                        onClick={() => setSharedTodoOpen((v) => !v)}
                     >
-                        {loadingTodos && <div className={styles.mutedText}>불러오는 중...</div>}
-                        {!loadingTodos && visibleTodos.length === 0 && (
-                            <div className={styles.mutedText}>
-                                {todoTab === 'completed' ? '완료된 공동 할 일이 없습니다.' : '등록된 공동 할 일이 없습니다.'}
+                        <span className={styles.collapsibleTitle}>공동 할 일</span>
+                        <span className={styles.collapsibleMeta}>
+                            {todos.filter((t) => t.status !== 'completed').length > 0 && (
+                                <span className={styles.countBadge}>
+                                    {todos.filter((t) => t.status !== 'completed').length}
+                                </span>
+                            )}
+                            {sharedTodoOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                        </span>
+                    </button>
+                    {sharedTodoOpen && (
+                        <>
+                            <div className={styles.todoHeaderActions} style={{ marginBottom: '1rem' }}>
+                                <button
+                                    type="button"
+                                    className={`${styles.filterBtn} ${todoTab === 'open' ? styles.filterActive : ''}`}
+                                    onClick={() => setTodoTab('open')}
+                                >
+                                    진행중
+                                </button>
+                                <button
+                                    type="button"
+                                    className={`${styles.filterBtn} ${todoTab === 'completed' ? styles.filterActive : ''}`}
+                                    onClick={() => setTodoTab('completed')}
+                                >
+                                    완료
+                                </button>
+                                <button
+                                    type="button"
+                                    className={styles.todoAddToggle}
+                                    onClick={() => setShowTodoInput((v) => !v)}
+                                >
+                                    <Plus size={16} />
+                                    {showTodoInput ? '닫기' : '추가'}
+                                </button>
                             </div>
-                        )}
-                        {!loadingTodos && visibleTodos.map((item) => {
-                            const done = item.status === 'completed';
-                            return (
-                                <div key={item.id} className={styles.todoItem}>
-                                    <label className={styles.todoLabel}>
-                                        <div>
-                                            <div className={`${styles.todoText} ${done ? styles.todoTextDone : ''}`}>
-                                                {item.text}
-                                            </div>
-                                            <div className={styles.todoMeta}>
-                                                등록: {item.created_by_display || item.created_by_username || '-'}
-                                                {done && (
-                                                    <>
-                                                        {' · '}완료: {item.completed_by_display || item.completed_by_username || '-'}
-                                                    </>
-                                                )}
-                                            </div>
-                                            {done && item.completed_comment && (
-                                                <div className={styles.todoMeta}>코멘트: {item.completed_comment}</div>
-                                            )}
-                                            {!done && todoCompleteInputId === item.id && (
-                                                <div className={styles.todoInlineEditor}>
-                                                    <input
-                                                        className={styles.todoInput}
-                                                        placeholder="완료 코멘트 (선택)"
-                                                        value={todoCompleteComment}
-                                                        onChange={(e) => setTodoCompleteComment(e.target.value)}
-                                                        onKeyDown={(e) => {
-                                                            if (e.key === 'Enter') {
-                                                                e.preventDefault();
-                                                                handleCompleteTodo(item.id, todoCompleteComment);
-                                                            }
-                                                        }}
-                                                    />
+                            {showTodoInput && (
+                                <div className={styles.todoRow}>
+                                    <input
+                                        className={styles.todoInput}
+                                        placeholder="공동 할 일을 입력하세요"
+                                        value={todoText}
+                                        onChange={(e) => setTodoText(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                handleAddTodo();
+                                            }
+                                        }}
+                                    />
+                                    <button type="button" className={styles.primaryBtn} onClick={handleAddTodo} disabled={submittingTodo}>
+                                        {submittingTodo ? '등록 중...' : '등록'}
+                                    </button>
+                                </div>
+                            )}
+                            <div className={`${styles.todoList} ${!showAllTodos ? styles.todoListCollapsed : ''}`}>
+                                {loadingTodos && <div className={styles.mutedText}>불러오는 중...</div>}
+                                {!loadingTodos && visibleTodos.length === 0 && (
+                                    <div className={styles.mutedText}>
+                                        {todoTab === 'completed' ? '완료된 공동 할 일이 없습니다.' : '등록된 공동 할 일이 없습니다.'}
+                                    </div>
+                                )}
+                                {!loadingTodos && visibleTodos.map((item) => {
+                                    const done = item.status === 'completed';
+                                    return (
+                                        <div key={item.id} className={styles.todoItem}>
+                                            <label className={styles.todoLabel}>
+                                                <div>
+                                                    <div className={`${styles.todoText} ${done ? styles.todoTextDone : ''}`}>
+                                                        {item.text}
+                                                    </div>
+                                                    <div className={styles.todoMeta}>
+                                                        등록: {item.created_by_display || item.created_by_username || '-'}
+                                                        {done && (
+                                                            <>
+                                                                {' · '}완료: {item.completed_by_display || item.completed_by_username || '-'}
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                    {done && item.completed_comment && (
+                                                        <div className={styles.todoMeta}>코멘트: {item.completed_comment}</div>
+                                                    )}
+                                                    {!done && todoCompleteInputId === item.id && (
+                                                        <div className={styles.todoInlineEditor}>
+                                                            <input
+                                                                className={styles.todoInput}
+                                                                placeholder="완료 코멘트 (선택)"
+                                                                value={todoCompleteComment}
+                                                                onChange={(e) => setTodoCompleteComment(e.target.value)}
+                                                                onKeyDown={(e) => {
+                                                                    if (e.key === 'Enter') {
+                                                                        e.preventDefault();
+                                                                        handleCompleteTodo(item.id, todoCompleteComment);
+                                                                    }
+                                                                }}
+                                                            />
+                                                            <button
+                                                                type="button"
+                                                                className={styles.primaryBtn}
+                                                                onClick={() => handleCompleteTodo(item.id, todoCompleteComment)}
+                                                            >
+                                                                완료 저장
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                className={styles.secondaryBtn}
+                                                                onClick={() => {
+                                                                    setTodoCompleteInputId(null);
+                                                                    setTodoCompleteComment('');
+                                                                }}
+                                                            >
+                                                                취소
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </label>
+                                            <div className={styles.todoActions}>
+                                                {done ? (
+                                                    <span className={styles.completedBadge}>완료됨</span>
+                                                ) : (
                                                     <button
                                                         type="button"
-                                                        className={styles.primaryBtn}
-                                                        onClick={() => handleCompleteTodo(item.id, todoCompleteComment)}
-                                                    >
-                                                        완료 저장
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        className={styles.secondaryBtn}
+                                                        className={styles.todoDoneBtn}
                                                         onClick={() => {
-                                                            setTodoCompleteInputId(null);
+                                                            setTodoCompleteInputId(item.id);
                                                             setTodoCompleteComment('');
                                                         }}
                                                     >
-                                                        취소
+                                                        완료
                                                     </button>
-                                                </div>
-                                            )}
+                                                )}
+                                            </div>
                                         </div>
-                                    </label>
-                                    <div className={styles.todoActions}>
-                                        {done ? (
-                                            <span className={styles.completedBadge}>완료됨</span>
-                                        ) : (
-                                            <button
-                                                type="button"
-                                                className={styles.todoDoneBtn}
-                                                onClick={() => {
-                                                    setTodoCompleteInputId(item.id);
-                                                    setTodoCompleteComment('');
-                                                }}
-                                            >
-                                                완료
-                                            </button>
-                                        )}
-                                    </div>
+                                    );
+                                })}
+                            </div>
+                            {visibleTodos.length > 0 && (
+                                <div className={styles.todoToggleRow}>
+                                    <button
+                                        type="button"
+                                        className={styles.todoToggleBtn}
+                                        onClick={() => setShowAllTodos((v) => !v)}
+                                    >
+                                        {showAllTodos ? '접기' : '펼치기'}
+                                    </button>
                                 </div>
-                            );
-                        })}
-                    </div>
-                    {visibleTodos.length > 0 && (
-                        <div className={styles.todoToggleRow}>
-                            <button
-                                type="button"
-                                className={styles.todoToggleBtn}
-                                onClick={() => setShowAllTodos((v) => !v)}
-                            >
-                                {showAllTodos ? '접기' : '펼치기'}
-                            </button>
-                        </div>
+                            )}
+                        </>
                     )}
                 </div>
 
+                {/* 보낸 요청 - 접기/펼치기 */}
                 <div className={styles.card}>
-                    <div className={styles.cardTitleRow}>
-                        <div className={styles.cardTitle}>
+                    <button
+                        type="button"
+                        className={styles.collapsibleHeader}
+                        onClick={() => setSentRequestsOpen((v) => !v)}
+                    >
+                        <span className={styles.collapsibleTitle}>
                             보낸 요청
-                            <Bell size={18} className={styles.cardHeaderIcon} />
-                        </div>
-                        <div className={styles.filterGroup}>
-                            <button
-                                type="button"
-                                className={`${styles.filterBtn} ${sentFilter === 'all' ? styles.filterActive : ''}`}
-                                onClick={() => setSentFilter('all')}
-                            >
-                                전체
-                            </button>
-                            <button
-                                type="button"
-                                className={`${styles.filterBtn} ${sentFilter === 'open' ? styles.filterActive : ''}`}
-                                onClick={() => setSentFilter('open')}
-                            >
-                                진행중
-                            </button>
-                            <button
-                                type="button"
-                                className={`${styles.filterBtn} ${sentFilter === 'completed' ? styles.filterActive : ''}`}
-                                onClick={() => setSentFilter('completed')}
-                            >
-                                완료
-                            </button>
-                            <button className={styles.filterBtn} type="button" onClick={handleClearSent}>
-                                목록 지우기
-                            </button>
-                        </div>
-                    </div>
-                    <div className={styles.resolvedList}>
-                        {loadingResolved && <div className={styles.mutedText}>불러오는 중...</div>}
-                        {!loadingResolved && resolved.length === 0 && (
-                            <div className={styles.mutedText}>보낸 요청이 없습니다.</div>
-                        )}
-                        {!loadingResolved &&
-                            resolved
-                                .filter((item) => {
-                                    if (sentFilter === 'open') return item.status !== 'completed';
-                                    if (sentFilter === 'completed') return item.status === 'completed';
-                                    return true;
-                                })
-                                .map((item) => (
-                                <div key={item.id} className={styles.resolvedItem}>
-                                    <div className={styles.resolvedInfo}>
-                                        <div className={styles.resolvedTitle}>{item.text}</div>
-                                        <div className={styles.resolvedMeta}>
-                                            받는사람: {item.assignee_display || item.assignee_username}
-                                            {' · '}{formatDateTime(item.created_at)}
+                            <Bell size={15} className={styles.cardHeaderIcon} />
+                        </span>
+                        <span className={styles.collapsibleMeta}>
+                            {resolved.filter((r) => r.status !== 'completed').length > 0 && (
+                                <span className={styles.countBadge}>
+                                    {resolved.filter((r) => r.status !== 'completed').length}
+                                </span>
+                            )}
+                            {resolved.some((r) => r.can_ack) && (
+                                <span className={styles.newBadge}>NEW</span>
+                            )}
+                            {sentRequestsOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                        </span>
+                    </button>
+                    {sentRequestsOpen && (
+                        <>
+                            <div className={styles.filterGroup} style={{ marginBottom: '1rem' }}>
+                                <button
+                                    type="button"
+                                    className={`${styles.filterBtn} ${sentFilter === 'all' ? styles.filterActive : ''}`}
+                                    onClick={() => setSentFilter('all')}
+                                >
+                                    전체
+                                </button>
+                                <button
+                                    type="button"
+                                    className={`${styles.filterBtn} ${sentFilter === 'open' ? styles.filterActive : ''}`}
+                                    onClick={() => setSentFilter('open')}
+                                >
+                                    진행중
+                                </button>
+                                <button
+                                    type="button"
+                                    className={`${styles.filterBtn} ${sentFilter === 'completed' ? styles.filterActive : ''}`}
+                                    onClick={() => setSentFilter('completed')}
+                                >
+                                    완료
+                                </button>
+                                <button className={styles.filterBtn} type="button" onClick={handleClearSent}>
+                                    목록 지우기
+                                </button>
+                            </div>
+                            <div className={styles.resolvedList}>
+                                {loadingResolved && <div className={styles.mutedText}>불러오는 중...</div>}
+                                {!loadingResolved && resolved.length === 0 && (
+                                    <div className={styles.mutedText}>보낸 요청이 없습니다.</div>
+                                )}
+                                {!loadingResolved &&
+                                    resolved
+                                        .filter((item) => {
+                                            if (sentFilter === 'open') return item.status !== 'completed';
+                                            if (sentFilter === 'completed') return item.status === 'completed';
+                                            return true;
+                                        })
+                                        .map((item) => (
+                                        <div key={item.id} className={styles.resolvedItem}>
+                                            <div className={styles.resolvedInfo}>
+                                                <div className={styles.resolvedTitle}>{item.text}</div>
+                                                <div className={styles.resolvedMeta}>
+                                                    받는사람: {item.assignee_display || item.assignee_username}
+                                                    {' · '}{formatDateTime(item.created_at)}
+                                                </div>
+                                                {renderAttachments(item)}
+                                            </div>
+                                            <div className={styles.resolvedActions}>
+                                                {item.status === 'completed' && item.can_ack ? (
+                                                    <>
+                                                        <span className={styles.newBadge}>NEW</span>
+                                                        <button
+                                                            className={styles.secondaryBtn}
+                                                            type="button"
+                                                            onClick={() => handleAck(item.id)}
+                                                        >
+                                                            확인
+                                                        </button>
+                                                    </>
+                                                ) : item.status === 'completed' ? (
+                                                    <span className={styles.completedStatusBadge}>완료됨</span>
+                                                ) : (
+                                                    <span className={styles.pendingBadge}>진행중</span>
+                                                )}
+                                            </div>
                                         </div>
-                                        {renderAttachments(item)}
-                                    </div>
-                                    <div className={styles.resolvedActions}>
-                                        {item.status === 'completed' && item.can_ack ? (
-                                            <>
-                                                <span className={styles.newBadge}>NEW</span>
-                                                <button
-                                                    className={styles.secondaryBtn}
-                                                    type="button"
-                                                    onClick={() => handleAck(item.id)}
-                                                >
-                                                    확인
-                                                </button>
-                                            </>
-                                        ) : item.status === 'completed' ? (
-                                            <span className={styles.completedStatusBadge}>완료됨</span>
-                                        ) : (
-                                            <span className={styles.pendingBadge}>진행중</span>
-                                        )}
-                                    </div>
-                                </div>
-                            ))}
-                    </div>
+                                    ))}
+                            </div>
+                        </>
+                    )}
                 </div>
             </div>
 
