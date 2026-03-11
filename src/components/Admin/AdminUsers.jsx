@@ -268,7 +268,8 @@ const AdminUsers = ({ currentUser }) => {
                 const canDemote = user.role === 'admin' && adminCount > 1;
                 const approvalStatus = user.approval_status || 'approved';
                 return (
-                  <tr key={user.username}>
+                  <React.Fragment key={user.username}>
+                  <tr>
                     <td>{user.display_name || user.username}</td>
                     <td>{user.username}</td>
                     <td>
@@ -416,6 +417,7 @@ const AdminUsers = ({ currentUser }) => {
                       </td>
                     </tr>
                   )}
+                  </React.Fragment>
                 );
               })}
             </tbody>
