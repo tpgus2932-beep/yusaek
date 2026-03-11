@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import styles from '../Layout/Layout.module.css';
 import pageStyles from './BarcodePage.module.css';
-import { LOCAL_API_BASE as API } from '../../lib/api';
+import { COLLAB_API_BASE as API } from '../../lib/api';
 
 const ProductUploadPage = () => {
     const [file, setFile] = useState(null);
