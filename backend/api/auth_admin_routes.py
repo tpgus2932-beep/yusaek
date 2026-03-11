@@ -224,6 +224,36 @@ def build_auth_admin_router(
             conn.close()
         return {"ok": True, "username": target, "role": role}
 
+    @router.get("/admin/users/{target}/menu-visibility")
+    def admin_get_user_menu_visibility(target: str, admin: str = Depends(require_admin)):
+        raw = get_setting(f"menu_hidden_tabs:{target}") or "[]"
+        try:
+            hidden_tabs = json.loads(raw)
+        except Exception:
+            hidden_tabs = []
+        if not isinstance(hidden_tabs, list):
+            hidden_tabs = []
+        return {"ok": True, "username": target, "hidden_tabs": hidden_tabs}
+
+    @router.patch("/admin/users/{target}/menu-visibility")
+    def admin_set_user_menu_visibility(target: str, payload: dict = Body(...), admin: str = Depends(require_admin)):
+        conn = get_db()
+        row = conn.execute("SELECT username FROM users WHERE username = ?", (target,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="user not found")
+
+        incoming = payload.get("hidden_tabs")
+        if not isinstance(incoming, list):
+            raise HTTPException(status_code=400, detail="hidden_tabs must be a list")
+        clean = []
+        for t in incoming:
+            if isinstance(t, str):
+                v = t.strip()
+                if v and v != "settings" and v not in clean:
+                    clean.append(v)
+        set_setting(f"menu_hidden_tabs:{target}", json.dumps(clean, ensure_ascii=False))
+        return {"ok": True, "username": target, "hidden_tabs": clean}
+
     @router.delete("/admin/users/{target}")
     def admin_delete_user(target: str, admin: str = Depends(require_admin)):
         if target == admin:

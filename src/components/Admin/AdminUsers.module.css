@@ -187,3 +187,62 @@
         display: none;
     }
 }
+
+.menuPanelCell {
+    padding: 0 !important;
+    background: var(--bg-secondary, #f9fafb);
+}
+
+.menuPanel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 1rem 1.5rem;
+    border-top: 1px solid var(--border-color, #e5e7eb);
+}
+
+.menuPanelTitle {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.menuPanelGrid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.menuToggleBtn {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.75rem;
+    border-radius: 999px;
+    border: 1px solid;
+    font-size: 0.8rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.menuToggleOn {
+    background: #ecfdf5;
+    border-color: #6ee7b7;
+    color: #065f46;
+}
+
+.menuToggleOff {
+    background: #f3f4f6;
+    border-color: #d1d5db;
+    color: #6b7280;
+    text-decoration: line-through;
+}
+
+.menuToggleDot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.7;
+}

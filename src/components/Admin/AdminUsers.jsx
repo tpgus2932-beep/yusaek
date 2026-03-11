@@ -2,6 +2,15 @@ import React, { useEffect, useMemo, useState } from 'react';
 import styles from './AdminUsers.module.css';
 import { COLLAB_API_BASE as API } from '../../lib/api';
 
+const ALL_MENU_TABS = [
+  { key: 'dashboard', label: '대시보드' },
+  { key: 'barcode', label: '바코드' },
+  { key: 'returns', label: '반품' },
+  { key: 'barcode-product-upload', label: '상품 업로드' },
+  { key: 'shared-files', label: '유색 공용 파일' },
+  { key: 'noye-kimsungil', label: '노예김승일' },
+];
+
 const AdminUsers = ({ currentUser }) => {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -9,6 +18,8 @@ const AdminUsers = ({ currentUser }) => {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [filter, setFilter] = useState('all');
+  const [menuPanel, setMenuPanel] = useState(null); // { username, hiddenTabs }
+  const [menuSaving, setMenuSaving] = useState(false);
 
   const authHeaders = useMemo(() => {
     const token = localStorage.getItem('token');
@@ -109,6 +120,53 @@ const AdminUsers = ({ currentUser }) => {
       setError(err.message || 'Failed to update role');
     } finally {
       setWorkingUser('');
+    }
+  };
+
+  const openMenuPanel = async (username) => {
+    if (menuPanel?.username === username) {
+      setMenuPanel(null);
+      return;
+    }
+    try {
+      const res = await fetch(`${API}/admin/users/${encodeURIComponent(username)}/menu-visibility`, {
+        headers: authHeaders,
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      setMenuPanel({ username, hiddenTabs: data.hidden_tabs || [] });
+    } catch {
+      setError('메뉴 설정을 불러오지 못했습니다.');
+    }
+  };
+
+  const toggleMenuTab = (tab) => {
+    if (!menuPanel) return;
+    const hidden = menuPanel.hiddenTabs;
+    setMenuPanel({
+      ...menuPanel,
+      hiddenTabs: hidden.includes(tab) ? hidden.filter((t) => t !== tab) : [...hidden, tab],
+    });
+  };
+
+  const saveMenuPanel = async () => {
+    if (!menuPanel) return;
+    setMenuSaving(true);
+    try {
+      const res = await fetch(`${API}/admin/users/${encodeURIComponent(menuPanel.username)}/menu-visibility`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ hidden_tabs: menuPanel.hiddenTabs }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || '저장 실패');
+      setMenuPanel({ ...menuPanel, hiddenTabs: data.hidden_tabs });
+      setMessage(`${menuPanel.username} 메뉴 설정 저장 완료`);
+    } catch (err) {
+      setError(err.message || '저장 실패');
+    } finally {
+      setMenuSaving(false);
     }
   };
 
@@ -308,6 +366,14 @@ const AdminUsers = ({ currentUser }) => {
                         </>
                       )}
                       <button
+                        className={styles.secondaryBtn}
+                        type="button"
+                        disabled={isWorking}
+                        onClick={() => openMenuPanel(user.username)}
+                      >
+                        메뉴
+                      </button>
+                      <button
                         className={styles.dangerBtn}
                         type="button"
                         disabled={isSelf || isWorking}
@@ -317,6 +383,39 @@ const AdminUsers = ({ currentUser }) => {
                       </button>
                     </td>
                   </tr>
+                  {menuPanel?.username === user.username && (
+                    <tr>
+                      <td colSpan={6} className={styles.menuPanelCell}>
+                        <div className={styles.menuPanel}>
+                          <span className={styles.menuPanelTitle}>메뉴 표시 설정 — {user.display_name || user.username}</span>
+                          <div className={styles.menuPanelGrid}>
+                            {ALL_MENU_TABS.map((tab) => {
+                              const isShown = !menuPanel.hiddenTabs.includes(tab.key);
+                              return (
+                                <button
+                                  key={tab.key}
+                                  type="button"
+                                  className={`${styles.menuToggleBtn} ${isShown ? styles.menuToggleOn : styles.menuToggleOff}`}
+                                  onClick={() => toggleMenuTab(tab.key)}
+                                >
+                                  {tab.label}
+                                  <span className={styles.menuToggleDot} />
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <button
+                            className={styles.primaryBtn}
+                            type="button"
+                            disabled={menuSaving}
+                            onClick={saveMenuPanel}
+                          >
+                            {menuSaving ? '저장 중...' : '저장'}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                 );
               })}
             </tbody>
