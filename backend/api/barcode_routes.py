@@ -22,6 +22,7 @@ def build_barcode_router(
     set_shared_incoming_counts,
     get_shared_defect_counts,
     set_shared_defect_counts,
+    set_shared_barcode_data,
 ):
     router = APIRouter()
 
@@ -170,8 +171,7 @@ def build_barcode_router(
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"가공 실패: {e}")
 
-        state = get_barcode_state(user)
-        state.update(
+        set_shared_barcode_data(
             {
                 "loaded": True,
                 "processed_path": str(processed_path) if processed_path else None,
@@ -181,8 +181,6 @@ def build_barcode_router(
                 "invoice_order": invoice_order,
                 "invoice_seq": invoice_seq,
                 "code_o_text": code_o_text,
-                "current_invoice": None,
-                "last_scanned_code": None,
             }
         )
         set_shared_defect_counts({})

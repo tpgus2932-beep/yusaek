@@ -116,22 +116,33 @@ AMOOD_STATES: dict[str, "AmoodState"] = {}
 RETURN_COST_BASE_CACHE: dict[str, object] = {"df": None, "mtime": None, "path": None}
 SHARED_INCOMING_COUNTS: dict[str, int] = {}
 SHARED_DEFECT_COUNTS: dict[str, int] = {}
+SHARED_BARCODE_DATA: dict = {
+    "loaded": False,
+    "mapping": None,
+    "details": None,
+    "runs": None,
+    "invoice_order": None,
+    "invoice_seq": None,
+    "code_o_text": None,
+    "processed_path": None,
+}
 
 def _get_barcode_state(user: str) -> dict:
     if user not in BARCODE_STATES:
         BARCODE_STATES[user] = {
-            "loaded": False,
-            "mapping": None,
-            "details": None,
-            "runs": None,
-            "invoice_order": None,
-            "invoice_seq": None,
-            "code_o_text": None,
+            **SHARED_BARCODE_DATA,
             "current_invoice": None,
             "last_scanned_code": None,
-            "processed_path": None,
         }
     return BARCODE_STATES[user]
+
+
+def _set_shared_barcode_data(data: dict):
+    SHARED_BARCODE_DATA.update(data)
+    for user_state in BARCODE_STATES.values():
+        user_state.update(data)
+        user_state["current_invoice"] = None
+        user_state["last_scanned_code"] = None
 
 
 def _get_return_state(user: str) -> ReturnState:
@@ -1001,6 +1012,7 @@ app.include_router(
         set_shared_incoming_counts=_set_shared_incoming_counts,
         get_shared_defect_counts=_get_shared_defect_counts,
         set_shared_defect_counts=_set_shared_defect_counts,
+        set_shared_barcode_data=_set_shared_barcode_data,
     )
 )
 app.include_router(
