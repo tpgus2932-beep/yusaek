@@ -875,8 +875,6 @@ def _get_current_user_optional(authorization: str | None, token: str | None):
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         payload = jwt.decode(raw, JWT_SECRET, algorithms=[JWT_ALG])
-        if payload.get("boot_id") != BOOT_ID:
-            raise HTTPException(status_code=401, detail="Unauthorized")
         username = payload.get("sub")
         if not username:
             raise HTTPException(status_code=401, detail="Unauthorized")
@@ -953,7 +951,7 @@ _ensure_bootstrap_admin()
 
 def _create_access_token(username: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": username, "exp": expire, "boot_id": BOOT_ID}
+    payload = {"sub": username, "exp": expire}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 
@@ -963,8 +961,6 @@ def _get_current_user(authorization: str = Header(None)):
     token = authorization.split(" ", 1)[1].strip()
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-        if payload.get("boot_id") != BOOT_ID:
-            raise HTTPException(status_code=401, detail="Unauthorized")
         username = payload.get("sub")
         if not username:
             raise HTTPException(status_code=401, detail="Unauthorized")
