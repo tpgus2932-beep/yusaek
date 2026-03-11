@@ -503,103 +503,101 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
           <h2 className={styles.title}>아무드</h2>
           <p className={styles.subtitle}>아무드/이지어드민 엑셀 업로드 후 전처리 가공 실행</p>
         </div>
-        {headerExtra}
-      </div>
-      <div className={styles.uploadRow}>
-        <button type="button" className={styles.secondaryBtn} onClick={resetUploads} disabled={resetting}>
-          {resetting ? "초기화 중..." : "업로드 초기화"}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+          {headerExtra}
+          <button type="button" className={styles.secondaryBtn} onClick={resetUploads} disabled={resetting}>
+            {resetting ? "초기화 중..." : "업로드 초기화"}
+          </button>
+        </div>
       </div>
       <div className={styles.stack}>
+        {/* ① ② 엑셀 업로드 */}
         <section className={`${styles.card} ${styles.dualCard}`}>
           <div className={styles.dualGrid}>
             <div className={styles.dualItem}>
               <div className={styles.cardHeader}>
-                <h3 className={styles.cardTitle}>아무드 엑셀</h3>
+                <h3 className={styles.cardTitle}>① 아무드 엑셀</h3>
+                {status?.excel1_loaded && (
+                  <span className={styles.pill} style={{ background: "rgba(34,197,94,0.12)", color: "#15803d" }}>업로드됨</span>
+                )}
               </div>
               <div className={styles.uploadRow}>
-                <label className={styles.fileInput}>
+                <label className={styles.fileInput} style={{ flex: 1, justifyContent: "flex-start" }}>
                   <input
                     key={`file1-${fileInputKey}`}
                     type="file"
                     accept=".xlsx,.xlsm"
                     onChange={(e) => setFile1(e.target.files?.[0] ?? null)}
                   />
-                  파일 선택
+                  {file1 ? file1.name : "파일 선택"}
                 </label>
                 <button type="button" className={styles.primaryBtn} onClick={uploadExcel1} disabled={loading}>
                   업로드
                 </button>
               </div>
-              {status?.excel1_loaded && <div className={styles.statusMsg}>업로드 완료</div>}
             </div>
             <div className={styles.dualItem}>
               <div className={styles.cardHeader}>
-                <h3 className={styles.cardTitle}>이지어드민 엑셀</h3>
+                <h3 className={styles.cardTitle}>② 이지어드민 엑셀</h3>
+                {status?.excel2_loaded && (
+                  <span className={styles.pill} style={{ background: "rgba(34,197,94,0.12)", color: "#15803d" }}>업로드됨</span>
+                )}
               </div>
               <div className={styles.uploadRow}>
-                <label className={styles.fileInput}>
+                <label className={styles.fileInput} style={{ flex: 1, justifyContent: "flex-start" }}>
                   <input
                     key={`file2-${fileInputKey}`}
                     type="file"
                     accept=".xlsx,.xls,.xlsm,.htm,.html"
                     onChange={(e) => setFile2(e.target.files?.[0] ?? null)}
                   />
-                  파일 선택
+                  {file2 ? file2.name : "파일 선택"}
                 </label>
                 <button type="button" className={styles.primaryBtn} onClick={uploadExcel2} disabled={loading}>
                   업로드
                 </button>
               </div>
-              {status?.excel2_loaded && <div className={styles.statusMsg}>업로드 완료</div>}
             </div>
           </div>
         </section>
 
-        <section className={styles.card}>
+        {/* ③ 입고 파일 */}
+        <section className={`${styles.card} ${styles.dualCard}`}>
           <div className={styles.cardHeader}>
-            <h3 className={styles.cardTitle}>입고 파일 업로드</h3>
+            <h3 className={styles.cardTitle}>③ 입고 파일</h3>
+            {loadingIncoming && <span className={styles.pill}>업로드 중...</span>}
+            {incomingCodes !== null && !loadingIncoming && (
+              <span className={styles.pill}>코드 {incomingCodes} · 수량 {incomingTotal ?? 0}</span>
+            )}
           </div>
           <div className={styles.uploadRow}>
-            <label className={styles.fileInput}>
+            <label className={styles.fileInput} style={{ flex: 1, justifyContent: "flex-start" }}>
               <input
                 key={`incoming-${fileInputKey}`}
                 type="file"
                 accept=".xls,.xlsx"
                 onChange={(e) => setIncomingFile(e.target.files?.[0] ?? null)}
               />
-              입고 파일 선택
+              {incomingFile ? incomingFile.name : "입고 파일 선택"}
             </label>
             <button type="button" className={styles.primaryBtn} onClick={uploadIncoming} disabled={loadingIncoming}>
               {loadingIncoming ? "업로드 중..." : "업로드"}
             </button>
           </div>
           {incomingMsg && (
-            <div className={styles.statusMsg}>
+            <div className={styles.statusMsg} style={{
+              borderColor: incomingMsg.includes("실패") ? "rgba(220,53,69,0.4)" : "rgba(34,197,94,0.4)",
+              backgroundColor: incomingMsg.includes("실패") ? "rgba(220,53,69,0.07)" : "rgba(34,197,94,0.07)",
+            }}>
               <strong>{incomingMsg}</strong>
-            </div>
-          )}
-          {(incomingCodes !== null || incomingTotal !== null) && (
-            <div className={styles.metaGrid}>
-              {incomingCodes !== null && (
-                <div className={styles.metaItem}>
-                  <span className={styles.metaLabel}>입고 코드 수</span>
-                  <span className={styles.metaValue}>{incomingCodes}</span>
-                </div>
-              )}
-              {incomingTotal !== null && (
-                <div className={styles.metaItem}>
-                  <span className={styles.metaLabel}>입고 수량</span>
-                  <span className={styles.metaValue}>{incomingTotal}</span>
-                </div>
-              )}
             </div>
           )}
         </section>
 
+        {/* ④ 전처리 가공 */}
         <section className={styles.card}>
           <div className={styles.cardHeader}>
-            <h3 className={styles.cardTitle}>3) 전처리 가공 / 선적바코드 추출</h3>
+            <h3 className={styles.cardTitle}>④ 전처리 가공 / 선적바코드 추출</h3>
           </div>
           <div className={styles.uploadRow}>
             <button
@@ -629,27 +627,31 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
               </>
             )}
           </div>
+          {message && (
+            <div className={styles.statusMsg} style={{
+              borderColor: message.includes("실패") ? "rgba(220,53,69,0.4)" : "rgba(34,197,94,0.4)",
+              backgroundColor: message.includes("실패") ? "rgba(220,53,69,0.07)" : "rgba(34,197,94,0.07)",
+            }}>
+              <strong>{message}</strong>
+            </div>
+          )}
         </section>
 
+        {/* ⑤ 스캔 */}
         <section className={styles.card}>
           <div className={styles.cardHeader}>
-            <h3 className={styles.cardTitle}>5) 스캔</h3>
+            <h3 className={styles.cardTitle}>⑤ 스캔</h3>
           </div>
-          <div className={styles.scanRow}>
+          <div style={{ display: "flex", gap: "0.75rem", alignItems: "stretch" }}>
             <input
               ref={scanRef}
               value={scanText}
               onChange={(e) => {
-                if (e.nativeEvent?.isComposing) {
-                  setScanText(e.target.value);
-                  return;
-                }
+                if (e.nativeEvent?.isComposing) { setScanText(e.target.value); return; }
                 setScanText(toEnglishKey(e.target.value));
               }}
               onCompositionEnd={(e) => setScanText(toEnglishKey(e.currentTarget.value))}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleScan();
-              }}
+              onKeyDown={(e) => { if (e.key === "Enter") handleScan(); }}
               placeholder="송장(SB...) 또는 상품 바코드를 스캔 후 Enter"
               className={styles.scanInput}
             />
@@ -657,63 +659,97 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
               스캔 처리
             </button>
           </div>
-          <div className={styles.infoStack}>
-            <div className={styles.infoItem}>
-              <span className={`${styles.infoLabel} ${styles.infoLabelMuted}`}>현재 송장</span>
-              <span className={`${styles.infoValue} ${styles.infoValueMuted}`}>
-                {currentInvoice || "-"}
-                {invoiceDone && <span className={styles.doneBadge}>완료됨</span>}
+        </section>
+
+        {/* 프리뷰 */}
+        <section className={styles.card} style={{ background: "var(--bg-secondary)" }}>
+          <div className={styles.cardHeader}>
+            <h3 className={styles.cardTitle}>프리뷰</h3>
+            {currentInvoice && (
+              <span className={styles.pill} style={invoiceDone
+                ? { background: "rgba(34,197,94,0.15)", color: "#15803d", border: "1px solid rgba(34,197,94,0.3)" }
+                : {}}>
+                {invoiceDone ? "✓ 완료됨" : `송장 ${currentInvoice}`}
               </span>
-            </div>
-            <div className={`${styles.infoItem} ${styles.infoItemLarge} ${styles.infoItemCurrent}`}>
-              <span className={styles.infoLabel}>현재 상품</span>
+            )}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            {/* 현재 상품 */}
+            <div style={{
+              borderRadius: "var(--radius-md)",
+              border: invoiceDone ? "1px solid rgba(34,197,94,0.4)" : "1px solid var(--border-color)",
+              background: "var(--bg-primary)",
+              padding: "1.9rem 1.8rem",
+              minHeight: "170px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.5rem",
+              justifyContent: "center",
+            }}>
+              <span className={styles.infoLabel} style={{ fontSize: "1.05rem", letterSpacing: "0.06em" }}>현재 상품</span>
               {items.length > 0 ? (
-                <div className={`${styles.infoValue} ${styles.infoValueLarge} ${styles.infoValueCurrent}`}>
-                  <div className={`${styles.infoList} ${styles.infoListLarge} ${styles.infoListCurrent}`}>
-                    {items.map((item, idx) => (
-                      <div
-                        key={`${item.code}-${idx}`}
-                        className={`${styles.infoLine} ${item.remain === 0 ? styles.infoLineDone : ""}`}
-                      >
-                        <span className={`${styles.infoText} ${styles.infoTextLarge} ${styles.infoTextCurrent}`}>
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.85rem" }}>
+                  {items.map((item, idx) => (
+                    <div key={`${item.code}-${idx}`} style={{
+                      paddingBottom: idx < items.length - 1 ? "0.75rem" : 0,
+                      borderBottom: idx < items.length - 1 ? "1px dashed var(--border-color)" : "none",
+                      opacity: item.remain === 0 ? 0.4 : 1,
+                    }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", flexWrap: "wrap" }}>
+                        <span style={{ fontWeight: 700, fontSize: "1.95rem", lineHeight: 1.4, overflowWrap: "anywhere" }}>
                           {renderItemLabel(item)}
                         </span>
                         {item.incoming > 0 && (
-                          <span className={styles.inlineTagIncoming}>입고 {item.incoming}</span>
+                          <span className={styles.inlineTagIncoming} style={{ fontSize: "1.05rem", padding: "0.36rem 0.8rem" }}>
+                            입고 {item.incoming}
+                          </span>
                         )}
                         {item.remain >= 2 && (
-                          <span className={styles.inlineMeta}>(잔여 {item.remain})</span>
+                          <span className={styles.inlineMeta} style={{ fontSize: "1.15rem" }}>잔여 {item.remain}</span>
                         )}
-                        {item.remain === 0 && <span className={styles.doneBadge}>완료됨</span>}
-                      </div>
-                    ))}
-                  </div>
+                        {item.remain === 0 && (
+                          <span className={styles.doneBadge} style={{ fontSize: "1.05rem", padding: "0.36rem 0.8rem" }}>완료</span>
+                        )}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               ) : (
-                <span className={`${styles.infoValue} ${styles.infoValueLarge} ${styles.infoValueCurrent}`}>
-                  -
+                <span style={{ color: "var(--text-muted)", fontSize: "1rem" }}>
+                  {currentInvoice ? "상품 없음" : "송장을 먼저 스캔하세요"}
                 </span>
               )}
             </div>
-            <div className={`${styles.infoItem} ${styles.infoItemLarge}`}>
+            {/* 다음 상품 */}
+            <div style={{
+              borderRadius: "var(--radius-md)",
+              border: "1px dashed var(--border-color)",
+              padding: "1.25rem 1.5rem",
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.5rem",
+            }}>
               <span className={`${styles.infoLabel} ${styles.infoLabelMuted}`}>다음 상품</span>
               {currentNext ? (
-                <div className={`${styles.infoValue} ${styles.infoValueLarge} ${styles.infoValueMuted}`}>
-                  {renderItemLabel(currentNext)}
+                <span style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", flexWrap: "wrap" }}>
+                  <span style={{ fontWeight: 700, fontSize: "1.2rem", overflowWrap: "anywhere", color: "var(--text-secondary)" }}>
+                    {renderItemLabel(currentNext)}
+                  </span>
                   {currentNext.incoming > 0 && (
                     <span className={styles.inlineTagIncoming}>입고 {currentNext.incoming}</span>
                   )}
                   {currentNext.remain >= 2 && (
-                    <span className={styles.inlineMeta}>(잔여 {currentNext.remain})</span>
+                    <span className={styles.inlineMeta}>잔여 {currentNext.remain}</span>
                   )}
-                </div>
+                </span>
               ) : (
-                <span className={`${styles.infoValue} ${styles.infoValueLarge} ${styles.infoValueMuted}`}>-</span>
+                <span style={{ color: "var(--text-muted)", fontSize: "1rem" }}>-</span>
               )}
             </div>
           </div>
         </section>
 
+        {/* 결과 로그 */}
         <section className={styles.card}>
           <div className={styles.cardHeader}>
             <h3 className={styles.cardTitle}>결과 로그</h3>
@@ -724,19 +760,12 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
               <div className={styles.empty}>아직 없음</div>
             ) : (
               log.map((l, i) => (
-                <div key={i} className={styles.logLine}>
-                  {l}
-                </div>
+                <div key={i} className={styles.logLine}>{l}</div>
               ))
             )}
           </div>
         </section>
       </div>
-      {message && (
-        <div className={styles.statusMsg}>
-          <strong>{message}</strong>
-        </div>
-      )}
     </div>
   );
 }
