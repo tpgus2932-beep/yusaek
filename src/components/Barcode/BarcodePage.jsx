@@ -461,14 +461,13 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
             )}
           </div>
 
-          <div className={styles.dualGrid} style={{ alignItems: "stretch" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
             {/* 현재 상품 */}
             <div style={{
               borderRadius: "var(--radius-md)",
               border: "1px solid var(--border-color)",
               background: "var(--bg-primary)",
               padding: "1.25rem 1.5rem",
-              minHeight: "180px",
               display: "flex",
               flexDirection: "column",
               gap: "0.75rem",
@@ -507,7 +506,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               borderRadius: "var(--radius-md)",
               border: "1px dashed var(--border-color)",
               padding: "1.25rem 1.5rem",
-              minHeight: "180px",
               display: "flex",
               flexDirection: "column",
               gap: "0.75rem",
