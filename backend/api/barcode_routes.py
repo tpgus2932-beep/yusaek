@@ -20,6 +20,8 @@ def build_barcode_router(
     content_disposition,
     get_shared_incoming_counts,
     set_shared_incoming_counts,
+    get_shared_defect_counts,
+    set_shared_defect_counts,
 ):
     router = APIRouter()
 
@@ -34,11 +36,12 @@ def build_barcode_router(
             codes = sorted(mapping[inv].keys())
 
         incoming_counts = get_shared_incoming_counts() or {}
+        defect_counts = get_shared_defect_counts()
         items = []
         for code in codes:
             remain = mapping[inv].get(code, 0)
             run_len = (state["runs"] or {}).get(inv, {}).get(code, 0)
-            defect_n = (state["defect_counts"] or {}).get(code, 0)
+            defect_n = defect_counts.get(code, 0)
             incoming_n = incoming_counts.get(code, 0)
             det = (state["details"] or {}).get(inv, {}).get(code, {})
             items.append(
@@ -86,7 +89,7 @@ def build_barcode_router(
     def _invoice_has_defect(state, inv: str | None):
         if not inv:
             return False
-        defect_counts = state.get("defect_counts") or {}
+        defect_counts = get_shared_defect_counts()
         mapping = state.get("mapping") or {}
         if inv not in mapping:
             return False
@@ -107,7 +110,7 @@ def build_barcode_router(
         return {"name": "", "option": ""}
 
     def _get_defect_list(state):
-        defect_counts = state.get("defect_counts") or {}
+        defect_counts = get_shared_defect_counts()
         rows = []
         for code, n in sorted(defect_counts.items()):
             det = _find_item_detail_by_code(state, code)
@@ -122,7 +125,7 @@ def build_barcode_router(
         return rows
 
     def _build_defect_csv(state) -> str:
-        defect_counts = state.get("defect_counts") or {}
+        defect_counts = get_shared_defect_counts()
         code_o_text = state.get("code_o_text") or {}
         lines = ["A열(O왼쪽),B열(O오른쪽),C열(옵션명),D열(불량수량)"]
         for code, n in sorted(defect_counts.items()):
@@ -180,9 +183,9 @@ def build_barcode_router(
                 "code_o_text": code_o_text,
                 "current_invoice": None,
                 "last_scanned_code": None,
-                "defect_counts": {},
             }
         )
+        set_shared_defect_counts({})
 
         return {
             "ok": True,
@@ -362,9 +365,9 @@ def build_barcode_router(
             raise HTTPException(status_code=400, detail="code 값이 비어있음")
 
         code = normalize_to_yusas(raw) or raw
-        defect_counts = state.get("defect_counts") or {}
+        defect_counts = dict(get_shared_defect_counts())
         defect_counts[code] = defect_counts.get(code, 0) + 1
-        state["defect_counts"] = defect_counts
+        set_shared_defect_counts(defect_counts)
 
         inv = state.get("current_invoice")
         return {
@@ -389,7 +392,7 @@ def build_barcode_router(
         state = get_barcode_state(user)
         if not state["loaded"]:
             raise HTTPException(status_code=400, detail="먼저 엑셀을 업로드해주세요")
-        if not (state.get("defect_counts") or {}):
+        if not get_shared_defect_counts():
             raise HTTPException(status_code=400, detail="불량 목록이 비어있습니다")
         csv_text = _build_defect_csv(state)
         filename = f"defects_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
@@ -406,12 +409,12 @@ def build_barcode_router(
         if not raw:
             raise HTTPException(status_code=400, detail="code 값이 비어있음")
         code = normalize_to_yusas(raw) or raw
-        defect_counts = state.get("defect_counts") or {}
+        defect_counts = dict(get_shared_defect_counts())
         if code in defect_counts:
             defect_counts[code] -= 1
             if defect_counts[code] <= 0:
                 del defect_counts[code]
-        state["defect_counts"] = defect_counts
+        set_shared_defect_counts(defect_counts)
         inv = state.get("current_invoice")
         return {
             "ok": True,
@@ -430,10 +433,10 @@ def build_barcode_router(
         if not raw:
             raise HTTPException(status_code=400, detail="code 값이 비어있음")
         code = normalize_to_yusas(raw) or raw
-        defect_counts = state.get("defect_counts") or {}
+        defect_counts = dict(get_shared_defect_counts())
         if code in defect_counts:
             del defect_counts[code]
-        state["defect_counts"] = defect_counts
+        set_shared_defect_counts(defect_counts)
         inv = state.get("current_invoice")
         return {
             "ok": True,

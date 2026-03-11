@@ -115,6 +115,7 @@ RETURN_STATES: dict[str, "ReturnState"] = {}
 AMOOD_STATES: dict[str, "AmoodState"] = {}
 RETURN_COST_BASE_CACHE: dict[str, object] = {"df": None, "mtime": None, "path": None}
 SHARED_INCOMING_COUNTS: dict[str, int] = {}
+SHARED_DEFECT_COUNTS: dict[str, int] = {}
 
 def _get_barcode_state(user: str) -> dict:
     if user not in BARCODE_STATES:
@@ -129,7 +130,6 @@ def _get_barcode_state(user: str) -> dict:
             "current_invoice": None,
             "last_scanned_code": None,
             "processed_path": None,
-            "defect_counts": None,
         }
     return BARCODE_STATES[user]
 
@@ -158,6 +158,16 @@ def _set_shared_incoming_counts(counts: dict[str, int] | None):
     SHARED_INCOMING_COUNTS.clear()
     if counts:
         SHARED_INCOMING_COUNTS.update(counts)
+
+
+def _get_shared_defect_counts() -> dict[str, int]:
+    return SHARED_DEFECT_COUNTS
+
+
+def _set_shared_defect_counts(counts: dict[str, int] | None):
+    SHARED_DEFECT_COUNTS.clear()
+    if counts:
+        SHARED_DEFECT_COUNTS.update(counts)
 
 
 def _load_return_cost_base(state: ReturnState):
@@ -989,6 +999,8 @@ app.include_router(
         content_disposition=_content_disposition,
         get_shared_incoming_counts=_get_shared_incoming_counts,
         set_shared_incoming_counts=_set_shared_incoming_counts,
+        get_shared_defect_counts=_get_shared_defect_counts,
+        set_shared_defect_counts=_set_shared_defect_counts,
     )
 )
 app.include_router(
