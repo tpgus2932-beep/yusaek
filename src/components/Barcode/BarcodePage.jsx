@@ -379,159 +379,158 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
           </section>
         </div>
 
-        {/* 스캔 + 프리뷰 - 2열 */}
-        <div className={styles.dualGrid}>
-          {/* 스캔 컨트롤 */}
-          <section className={`${styles.card} ${styles.dualCard}`}
-            style={defectMode ? { borderColor: "rgba(220,53,69,0.5)", boxShadow: "0 0 0 2px rgba(220,53,69,0.15)" } : {}}>
-            <div className={styles.cardHeader}>
-              <h3 className={styles.cardTitle}>스캔</h3>
-              <div className={styles.headerActions}>
-                <button className={styles.secondaryBtn} onClick={refreshStatus} title="새로고침">↺</button>
-                <button
-                  className={`${styles.toggleBtn} ${defectMode ? styles.toggleOn : ""}`}
-                  onClick={() => setDefectMode((v) => !v)}
-                  style={defectMode ? { background: "rgba(220,53,69,0.9)", borderColor: "rgba(220,53,69,0.9)" } : {}}
-                >
-                  {defectMode ? "🚨 불량 모드" : "불량 모드"}
-                </button>
-                <button className={styles.secondaryBtn} onClick={() => { setShowDefectList(true); fetchDefectList(); }}>
-                  불량 목록
-                  {defectList.length > 0 && (
-                    <span className={styles.inlineTagDanger} style={{ marginLeft: "0.35rem" }}>{defectList.length}</span>
-                  )}
+        {/* 스캔 - 전체 폭 */}
+        <section className={styles.card}
+          style={defectMode ? { borderColor: "rgba(220,53,69,0.5)", boxShadow: "0 0 0 2px rgba(220,53,69,0.15)" } : {}}>
+          <div className={styles.cardHeader}>
+            <h3 className={styles.cardTitle}>스캔</h3>
+            <div className={styles.headerActions}>
+              <button className={styles.secondaryBtn} onClick={refreshStatus} title="새로고침">↺</button>
+              <button
+                className={`${styles.toggleBtn} ${defectMode ? styles.toggleOn : ""}`}
+                onClick={() => setDefectMode((v) => !v)}
+                style={defectMode ? { background: "rgba(220,53,69,0.9)", borderColor: "rgba(220,53,69,0.9)" } : {}}
+              >
+                {defectMode ? "🚨 불량 모드" : "불량 모드"}
+              </button>
+              <button className={styles.secondaryBtn} onClick={() => { setShowDefectList(true); fetchDefectList(); }}>
+                불량 목록
+                {defectList.length > 0 && (
+                  <span className={styles.inlineTagDanger} style={{ marginLeft: "0.35rem" }}>{defectList.length}</span>
+                )}
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: "0.75rem", alignItems: "stretch" }}>
+            <input
+              ref={scanRef}
+              value={scanText}
+              onChange={(e) => {
+                if (e.nativeEvent?.isComposing) { setScanText(e.target.value); return; }
+                setScanText(toEnglishKey(e.target.value));
+              }}
+              onCompositionEnd={(e) => setScanText(toEnglishKey(e.currentTarget.value))}
+              onKeyDown={(e) => { if (e.key === "Enter") handleScan(); }}
+              placeholder={defectMode ? "불량 바코드 스캔 후 Enter" : "송장 또는 상품 바코드 스캔 후 Enter"}
+              className={styles.scanInput}
+              style={defectMode ? { borderColor: "rgba(220,53,69,0.6)", background: "rgba(220,53,69,0.04)" } : {}}
+            />
+            <button className={`${styles.primaryBtn} ${styles.scanBtn}`} onClick={handleScan}
+              style={defectMode ? { background: "rgba(220,53,69,0.9)" } : {}}>
+              {defectMode ? "불량 추가" : "스캔 처리"}
+            </button>
+          </div>
+
+          {/* 최근 로그 */}
+          {log.length > 0 && (
+            <div>
+              <div className={styles.logBox} style={{ maxHeight: "140px" }}>
+                {displayLog.map((l, i) => (
+                  <div key={i} className={styles.logLine}
+                    style={{
+                      color: i === 0
+                        ? l.startsWith("FALSE") ? "#b42318"
+                          : l.startsWith("TRUE") ? "#15803d"
+                            : l.startsWith("불량") ? "#8a5b00"
+                              : "inherit"
+                        : "var(--text-secondary)",
+                      fontWeight: i === 0 ? 700 : 400,
+                    }}>
+                    {l}
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "0.4rem" }}>
+                <button className={styles.secondaryBtn} onClick={downloadLogExcel} style={{ fontSize: "0.8rem", padding: "0.35rem 0.7rem" }}>
+                  엑셀 다운로드
                 </button>
               </div>
             </div>
+          )}
+        </section>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-              <input
-                ref={scanRef}
-                value={scanText}
-                onChange={(e) => {
-                  if (e.nativeEvent?.isComposing) { setScanText(e.target.value); return; }
-                  setScanText(toEnglishKey(e.target.value));
-                }}
-                onCompositionEnd={(e) => setScanText(toEnglishKey(e.currentTarget.value))}
-                onKeyDown={(e) => { if (e.key === "Enter") handleScan(); }}
-                placeholder={defectMode ? "불량 바코드 스캔 후 Enter" : "송장 또는 상품 바코드 스캔 후 Enter"}
-                className={styles.scanInput}
-                style={defectMode ? { borderColor: "rgba(220,53,69,0.6)", background: "rgba(220,53,69,0.04)" } : {}}
-              />
-              <button className={`${styles.primaryBtn} ${styles.scanBtn}`} onClick={handleScan}
-                style={defectMode ? { background: "rgba(220,53,69,0.9)" } : {}}>
-                {defectMode ? "불량 추가" : "스캔 처리"}
-              </button>
-            </div>
+        {/* 프리뷰 - 전체 폭, 2열 내부 */}
+        <section className={styles.card} style={{ background: "var(--bg-secondary)" }}>
+          <div className={styles.cardHeader}>
+            <h3 className={styles.cardTitle}>프리뷰</h3>
+            {currentInvoice && (
+              <span className={styles.pill} style={invoiceDone ? { background: "rgba(34,197,94,0.15)", color: "#15803d", border: "1px solid rgba(34,197,94,0.3)" } : {}}>
+                {invoiceDone ? "✓ 완료됨" : `송장 ${currentInvoice}`}
+              </span>
+            )}
+          </div>
 
-            {/* 최근 로그 (스캔 카드 내 미니) */}
-            {log.length > 0 && (
-              <div style={{ marginTop: "0.25rem" }}>
-                <div className={styles.logBox} style={{ maxHeight: "160px" }}>
-                  {displayLog.map((l, i) => (
-                    <div key={i} className={styles.logLine}
+          <div className={styles.dualGrid} style={{ alignItems: "stretch" }}>
+            {/* 현재 상품 */}
+            <div style={{
+              borderRadius: "var(--radius-md)",
+              border: "1px solid var(--border-color)",
+              background: "var(--bg-primary)",
+              padding: "1.25rem 1.5rem",
+              minHeight: "180px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.75rem",
+            }}>
+              <span className={styles.infoLabel}>현재 상품</span>
+              {items.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+                  {items.map((item, idx) => (
+                    <div key={`${item.code}-${idx}`}
                       style={{
-                        color: i === 0
-                          ? l.startsWith("FALSE") ? "#b42318"
-                            : l.startsWith("TRUE") ? "#15803d"
-                              : l.startsWith("불량") ? "#8a5b00"
-                                : "inherit"
-                          : "var(--text-secondary)",
-                        fontWeight: i === 0 ? 700 : 400,
+                        display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap",
+                        paddingBottom: idx < items.length - 1 ? "0.75rem" : 0,
+                        borderBottom: idx < items.length - 1 ? "1px dashed var(--border-color)" : "none",
+                        opacity: item.remain === 0 ? 0.4 : 1,
                       }}>
-                      {l}
+                      <span style={{ fontWeight: 700, fontSize: "1.2rem", flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
+                        {renderItemLabel(item)}
+                      </span>
+                      {item.run_len > 1 && <span className={styles.inlineTagRun}>연속 {item.run_len}</span>}
+                      {item.incoming > 0 && <span className={styles.inlineTagIncoming}>입고 {item.incoming}</span>}
+                      {item.remain >= 2 && <span className={styles.inlineMeta}>잔여 {item.remain}</span>}
+                      {item.defect > 0 && <span className={styles.inlineTagDanger}>불량 {item.defect}</span>}
+                      {item.remain === 0 && <span className={styles.doneBadge}>완료</span>}
                     </div>
                   ))}
                 </div>
-                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "0.4rem" }}>
-                  <button className={styles.secondaryBtn} onClick={downloadLogExcel} style={{ fontSize: "0.8rem", padding: "0.35rem 0.7rem" }}>
-                    엑셀 다운로드
-                  </button>
-                </div>
-              </div>
-            )}
-          </section>
-
-          {/* 프리뷰 패널 */}
-          <section className={`${styles.card} ${styles.dualCard}`}
-            style={{ background: "var(--bg-secondary)" }}>
-            <div className={styles.cardHeader}>
-              <h3 className={styles.cardTitle}>프리뷰</h3>
-              {currentInvoice && (
-                <span className={styles.pill} style={invoiceDone ? { background: "rgba(34,197,94,0.15)", color: "#15803d", border: "1px solid rgba(34,197,94,0.3)" } : {}}>
-                  {invoiceDone ? "✓ 완료됨" : `송장 ${currentInvoice}`}
+              ) : (
+                <span style={{ color: "var(--text-muted)", fontSize: "1rem" }}>
+                  {currentInvoice ? "상품 없음" : "송장을 먼저 스캔하세요"}
                 </span>
               )}
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-              {/* 현재 상품 */}
-              <div style={{
-                borderRadius: "var(--radius-md)",
-                border: "1px solid var(--border-color)",
-                background: "var(--bg-primary)",
-                padding: "1rem 1.25rem",
-                minHeight: "120px",
-                display: "flex",
-                flexDirection: "column",
-                gap: "0.5rem",
-              }}>
-                <span className={styles.infoLabel}>현재 상품</span>
-                {items.length > 0 ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-                    {items.map((item, idx) => (
-                      <div key={`${item.code}-${idx}`}
-                        style={{
-                          display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap",
-                          paddingBottom: idx < items.length - 1 ? "0.6rem" : 0,
-                          borderBottom: idx < items.length - 1 ? "1px dashed var(--border-color)" : "none",
-                          opacity: item.remain === 0 ? 0.45 : 1,
-                        }}>
-                        <span style={{ fontWeight: 700, fontSize: "1.05rem", flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
-                          {renderItemLabel(item)}
-                        </span>
-                        {item.run_len > 1 && <span className={styles.inlineTagRun}>연속 {item.run_len}</span>}
-                        {item.incoming > 0 && <span className={styles.inlineTagIncoming}>입고 {item.incoming}</span>}
-                        {item.remain >= 2 && <span className={styles.inlineMeta}>잔여 {item.remain}</span>}
-                        {item.defect > 0 && <span className={styles.inlineTagDanger}>불량 {item.defect}</span>}
-                        {item.remain === 0 && <span className={styles.doneBadge}>완료</span>}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <span style={{ color: "var(--text-muted)", fontSize: "0.95rem" }}>
-                    {currentInvoice ? "상품 없음" : "송장을 먼저 스캔하세요"}
+            {/* 다음 상품 */}
+            <div style={{
+              borderRadius: "var(--radius-md)",
+              border: "1px dashed var(--border-color)",
+              padding: "1.25rem 1.5rem",
+              minHeight: "180px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.75rem",
+            }}>
+              <span className={styles.infoLabel}>다음 상품</span>
+              {nextPreview ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                  <span style={{ fontWeight: 700, fontSize: "1.2rem", overflowWrap: "anywhere", color: "var(--text-secondary)" }}>
+                    {renderItemLabel(nextPreview)}
                   </span>
-                )}
-              </div>
-
-              {/* 다음 상품 */}
-              <div style={{
-                borderRadius: "var(--radius-md)",
-                border: "1px dashed var(--border-color)",
-                padding: "0.85rem 1.25rem",
-                display: "flex",
-                flexDirection: "column",
-                gap: "0.35rem",
-              }}>
-                <span className={styles.infoLabel}>다음 상품</span>
-                {nextPreview ? (
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
-                    <span style={{ fontWeight: 600, color: "var(--text-secondary)", flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
-                      {renderItemLabel(nextPreview)}
-                    </span>
+                  <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
                     {nextPreview.run_len > 1 && <span className={styles.inlineTagRun}>연속 {nextPreview.run_len}</span>}
                     {nextPreview.incoming > 0 && <span className={styles.inlineTagIncoming}>입고 {nextPreview.incoming}</span>}
                     {nextPreview.remain >= 2 && <span className={styles.inlineMeta}>잔여 {nextPreview.remain}</span>}
                     {nextPreview.invoice && <span className={styles.inlineTag}>송장 {nextPreview.invoice}</span>}
                   </div>
-                ) : (
-                  <span style={{ color: "var(--text-muted)", fontSize: "0.9rem" }}>—</span>
-                )}
-              </div>
+                </div>
+              ) : (
+                <span style={{ color: "var(--text-muted)", fontSize: "1rem" }}>—</span>
+              )}
             </div>
-          </section>
-        </div>
+          </div>
+        </section>
       </div>
 
       {/* 불량 리스트 모달 */}
