@@ -107,14 +107,17 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   useEffect(() => { refreshStatus(); setTimeout(() => scanRef.current?.focus(), 50); }, []);
 
   useEffect(() => {
-    if (!soundsRef.current) {
-      soundsRef.current = {
-        invoiceDone: new Audio("/sounds/zz.wav"),
-        itemDone: new Audio("/sounds/xx.wav"),
-        bad: new Audio("/sounds/dd.wav"),
-        invoiceDefect: new Audio("/sounds/bb.wav"),
-      };
-    }
+    const makeAudio = (src) => {
+      const a = new Audio(src);
+      a.preload = "auto";
+      return a;
+    };
+    soundsRef.current = {
+      invoiceDone: makeAudio("/sounds/zz.wav"),
+      itemDone: makeAudio("/sounds/xx.wav"),
+      bad: makeAudio("/sounds/dd.wav"),
+      invoiceDefect: makeAudio("/sounds/bb.wav"),
+    };
   }, []);
 
   useEffect(() => {
@@ -386,6 +389,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
             <h3 className={styles.cardTitle}>스캔</h3>
             <div className={styles.headerActions}>
               <button className={styles.secondaryBtn} onClick={refreshStatus} title="새로고침">↺</button>
+              <button className={styles.secondaryBtn} onClick={downloadLogExcel} title="로그 다운로드">
+                로그 다운
+              </button>
               <button
                 className={`${styles.toggleBtn} ${defectMode ? styles.toggleOn : ""}`}
                 onClick={() => setDefectMode((v) => !v)}
@@ -422,32 +428,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
             </button>
           </div>
 
-          {/* 최근 로그 */}
-          {log.length > 0 && (
-            <div>
-              <div className={styles.logBox} style={{ maxHeight: "140px" }}>
-                {displayLog.map((l, i) => (
-                  <div key={i} className={styles.logLine}
-                    style={{
-                      color: i === 0
-                        ? l.startsWith("FALSE") ? "#b42318"
-                          : l.startsWith("TRUE") ? "#15803d"
-                            : l.startsWith("불량") ? "#8a5b00"
-                              : "inherit"
-                        : "var(--text-secondary)",
-                      fontWeight: i === 0 ? 700 : 400,
-                    }}>
-                    {l}
-                  </div>
-                ))}
-              </div>
-              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "0.4rem" }}>
-                <button className={styles.secondaryBtn} onClick={downloadLogExcel} style={{ fontSize: "0.8rem", padding: "0.35rem 0.7rem" }}>
-                  엑셀 다운로드
-                </button>
-              </div>
-            </div>
-          )}
         </section>
 
         {/* 프리뷰 - 전체 폭, 2열 내부 */}
@@ -478,19 +458,20 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                   {items.map((item, idx) => (
                     <div key={`${item.code}-${idx}`}
                       style={{
-                        display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap",
                         paddingBottom: idx < items.length - 1 ? "0.75rem" : 0,
                         borderBottom: idx < items.length - 1 ? "1px dashed var(--border-color)" : "none",
                         opacity: item.remain === 0 ? 0.4 : 1,
                       }}>
-                      <span style={{ fontWeight: 700, fontSize: "1.2rem", flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
-                        {renderItemLabel(item)}
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", flexWrap: "wrap" }}>
+                        <span style={{ fontWeight: 700, fontSize: "1.2rem", overflowWrap: "anywhere" }}>
+                          {renderItemLabel(item)}
+                        </span>
+                        {item.run_len > 1 && <span className={styles.inlineTagRun}>연속 {item.run_len}</span>}
+                        {item.incoming > 0 && <span className={styles.inlineTagIncoming}>입고 {item.incoming}</span>}
+                        {item.remain >= 2 && <span className={styles.inlineMeta}>잔여 {item.remain}</span>}
+                        {item.defect > 0 && <span className={styles.inlineTagDanger}>불량 {item.defect}</span>}
+                        {item.remain === 0 && <span className={styles.doneBadge}>완료</span>}
                       </span>
-                      {item.run_len > 1 && <span className={styles.inlineTagRun}>연속 {item.run_len}</span>}
-                      {item.incoming > 0 && <span className={styles.inlineTagIncoming}>입고 {item.incoming}</span>}
-                      {item.remain >= 2 && <span className={styles.inlineMeta}>잔여 {item.remain}</span>}
-                      {item.defect > 0 && <span className={styles.inlineTagDanger}>불량 {item.defect}</span>}
-                      {item.remain === 0 && <span className={styles.doneBadge}>완료</span>}
                     </div>
                   ))}
                 </div>
