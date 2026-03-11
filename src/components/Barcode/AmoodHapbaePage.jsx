@@ -338,22 +338,19 @@ export default function AmoodHapbaePage({ headerExtra = null }) {
         {headerExtra}
       </div>
 
+      {/* 엑셀 처리 */}
       <section className={styles.card}>
         <div className={styles.cardHeader}>
-          <h3 className={styles.cardTitle}>엑셀 처리</h3>
+          <h3 className={styles.cardTitle}>① 엑셀 처리</h3>
         </div>
         <div className={styles.uploadRow}>
-          <label className={styles.fileInput}>
+          <label className={styles.fileInput} style={{ flex: 1, justifyContent: "flex-start" }}>
             <input type="file" accept=".xlsx,.xlsm" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-            파일 선택
+            {file ? file.name : "파일 선택"}
           </label>
           <label className={styles.checkboxItem}>
-            <input
-              type="checkbox"
-              checked={skipHeader}
-              onChange={(e) => setSkipHeader(e.target.checked)}
-            />
-            1행 헤더, 2행부터 조회
+            <input type="checkbox" checked={skipHeader} onChange={(e) => setSkipHeader(e.target.checked)} />
+            1행 헤더
           </label>
           <button
             type="button"
@@ -361,7 +358,7 @@ export default function AmoodHapbaePage({ headerExtra = null }) {
             onClick={handleFindConflicts}
             disabled={loadingConflicts || loadingExport}
           >
-            {loadingConflicts ? "조회 중..." : "(1) C/D 불일치 찾기"}
+            {loadingConflicts ? "조회 중..." : "C/D 불일치 찾기"}
           </button>
           <button
             type="button"
@@ -369,90 +366,66 @@ export default function AmoodHapbaePage({ headerExtra = null }) {
             onClick={handleExport}
             disabled={loadingConflicts || loadingExport}
           >
-            {loadingExport ? "생성 중..." : "(2) H/J 가공 엑셀 생성"}
+            {loadingExport ? "생성 중..." : "H/J 가공 엑셀 생성"}
           </button>
         </div>
-        <div className={styles.uploadRow}>
-          <label className={styles.checkboxItem}>
-            <input
-              type="checkbox"
-              checked={includeCol1}
-              onChange={(e) => setIncludeCol1(e.target.checked)}
-            />
-            1열
-          </label>
-          <input
-            type="text"
-            className={styles.cellInput}
-            value={headerCol1}
-            onChange={(e) => setHeaderCol1(e.target.value)}
-            placeholder="1열 헤더"
-            disabled={!includeCol1}
-          />
-          <label className={styles.checkboxItem}>
-            <input
-              type="checkbox"
-              checked={includeCol2}
-              onChange={(e) => setIncludeCol2(e.target.checked)}
-            />
-            2열
-          </label>
-          <input
-            type="text"
-            className={styles.cellInput}
-            value={headerCol2}
-            onChange={(e) => setHeaderCol2(e.target.value)}
-            placeholder="2열 헤더"
-            disabled={!includeCol2}
-          />
-          <label className={styles.checkboxItem}>
-            <input
-              type="checkbox"
-              checked={includeCol3}
-              onChange={(e) => setIncludeCol3(e.target.checked)}
-            />
-            3열
-          </label>
-          <input
-            type="text"
-            className={styles.cellInput}
-            value={headerCol3}
-            onChange={(e) => setHeaderCol3(e.target.value)}
-            placeholder="3열 헤더"
-            disabled={!includeCol3}
-          />
-          <label className={styles.checkboxItem}>
-            <input
-              type="checkbox"
-              checked={includeCol4}
-              onChange={(e) => setIncludeCol4(e.target.checked)}
-            />
-            4열
-          </label>
-          <input
-            type="text"
-            className={styles.cellInput}
-            value={headerCol4}
-            onChange={(e) => setHeaderCol4(e.target.value)}
-            placeholder="4열 헤더"
-            disabled={!includeCol4}
-          />
+
+        {/* 열 설정 */}
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+          gap: "0.6rem",
+          padding: "0.9rem 1rem",
+          background: "var(--bg-secondary)",
+          borderRadius: "var(--radius-md)",
+          border: "1px solid var(--border-color)",
+        }}>
+          {[
+            { n: 1, checked: includeCol1, setChecked: setIncludeCol1, val: headerCol1, setVal: setHeaderCol1 },
+            { n: 2, checked: includeCol2, setChecked: setIncludeCol2, val: headerCol2, setVal: setHeaderCol2 },
+            { n: 3, checked: includeCol3, setChecked: setIncludeCol3, val: headerCol3, setVal: setHeaderCol3 },
+            { n: 4, checked: includeCol4, setChecked: setIncludeCol4, val: headerCol4, setVal: setHeaderCol4 },
+          ].map(({ n, checked, setChecked, val, setVal }) => (
+            <div key={n} style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <label className={styles.checkboxItem} style={{ flexShrink: 0 }}>
+                <input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} />
+                {n}열
+              </label>
+              <input
+                type="text"
+                className={styles.cellInput}
+                value={val}
+                onChange={(e) => setVal(e.target.value)}
+                placeholder={`${n}열 헤더`}
+                disabled={!checked}
+                style={{ opacity: checked ? 1 : 0.45 }}
+              />
+            </div>
+          ))}
         </div>
+
         {message && (
-          <div className={styles.statusMsg}>
+          <div className={styles.statusMsg} style={{
+            borderColor: message.includes("실패") || message.includes("없음") ? "rgba(220,53,69,0.4)" : "rgba(34,197,94,0.4)",
+            backgroundColor: message.includes("실패") || message.includes("없음") ? "rgba(220,53,69,0.07)" : "rgba(34,197,94,0.07)",
+          }}>
             <strong>{message}</strong>
           </div>
         )}
       </section>
 
+      {/* 원가베이스 관리 */}
       <section className={styles.card}>
         <div className={styles.cardHeader}>
-          <h3 className={styles.cardTitle}>원가베이스 관리</h3>
+          <h3 className={styles.cardTitle}>② 원가베이스 관리</h3>
+          {costBase?.mtime && (
+            <span className={styles.pill}>수정: {costBase.mtime}</span>
+          )}
         </div>
         <div className={styles.uploadRow}>
-          <label className={styles.fileInput}>
+          <label className={styles.fileInput} style={{ flex: 1, justifyContent: "flex-start" }}>
             <input type="file" accept=".xls,.xlsx,.xlsm" onChange={(e) => setCostBaseFile(e.target.files?.[0] ?? null)} />
-            원가베이스 파일 선택
+            {costBaseFile ? costBaseFile.name : "원가베이스 파일 선택"}
           </label>
           <button type="button" className={styles.primaryBtn} onClick={handleCostBaseUpload} disabled={loadingCostBase}>
             {loadingCostBase ? "업로드 중..." : "업로드"}
@@ -464,41 +437,44 @@ export default function AmoodHapbaePage({ headerExtra = null }) {
             다운로드
           </button>
           <button type="button" className={styles.secondaryBtn} onClick={openCostEditor}>
-            원가베이스 편집
+            편집
           </button>
         </div>
         {costBase?.path && (
-          <div className={styles.statusMsg}>
-            <strong>원가베이스 경로:</strong> {costBase.path}
-            {costBase.mtime ? ` (수정: ${costBase.mtime})` : ""}
+          <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", paddingLeft: "0.1rem" }}>
+            경로: {costBase.path}
           </div>
         )}
         {costMessage && (
-          <div className={styles.statusMsg}>
+          <div className={styles.statusMsg} style={{
+            borderColor: costMessage.includes("실패") ? "rgba(220,53,69,0.4)" : "rgba(34,197,94,0.4)",
+            backgroundColor: costMessage.includes("실패") ? "rgba(220,53,69,0.07)" : "rgba(34,197,94,0.07)",
+          }}>
             <strong>{costMessage}</strong>
           </div>
         )}
       </section>
 
+      {/* 불일치 C값 목록 */}
       <section className={styles.card}>
         <div className={styles.cardHeader}>
           <h3 className={styles.cardTitle}>불일치 C값 목록</h3>
           {sheetName && <span className={styles.pill}>시트: {sheetName}</span>}
         </div>
         {!costBaseExists && (
-          <div className={styles.statusMsg}>
-            <strong>원가베이스 파일이 없어 B열 매칭 점검을 생략했습니다.</strong>
+          <div className={styles.statusMsg} style={{ borderColor: "rgba(220,53,69,0.3)", backgroundColor: "rgba(220,53,69,0.05)" }}>
+            원가베이스 파일이 없어 B열 매칭 점검을 생략했습니다.
           </div>
         )}
         {costBaseExists && unmatchedRowCount > 0 && (
-          <div className={styles.statusMsg}>
-            <strong>매칭 안된 상품이 있습니다. (행 {unmatchedRowCount}건 / 상품 {unmatchedProducts.length}건)</strong>
+          <div className={styles.statusMsg} style={{ borderColor: "rgba(245,158,11,0.4)", backgroundColor: "rgba(245,158,11,0.07)" }}>
+            <strong>매칭 안된 상품 {unmatchedProducts.length}건 (행 {unmatchedRowCount}건)</strong>
             {unmatchedProducts.length > 0 && (
-              <div className={styles.logBox}>
+              <div style={{ marginTop: "0.5rem", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
                 {unmatchedProducts.map((name, idx) => (
-                  <div key={`${name}-${idx}`} className={styles.logLine}>
-                    - {name}
-                  </div>
+                  <span key={`${name}-${idx}`} style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+                    · {name}
+                  </span>
                 ))}
               </div>
             )}
@@ -508,29 +484,51 @@ export default function AmoodHapbaePage({ headerExtra = null }) {
           <div className={styles.empty}>조회 결과가 없습니다.</div>
         ) : (
           <div className={styles.dualGrid}>
-            <div className={styles.logBox}>
+            {/* C값 목록 */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem", maxHeight: "320px", overflowY: "auto" }}>
               {conflicts.map((item, idx) => (
                 <button
                   key={`${item.c}-${idx}`}
                   type="button"
-                  className={styles.secondaryBtn}
                   onClick={() => setSelectedC(item.c)}
+                  style={{
+                    textAlign: "left",
+                    padding: "0.6rem 0.85rem",
+                    borderRadius: "var(--radius-sm)",
+                    border: selectedC === item.c ? "1px solid var(--accent-black)" : "1px solid var(--border-color)",
+                    background: selectedC === item.c ? "var(--accent-black)" : "var(--bg-secondary)",
+                    color: selectedC === item.c ? "var(--accent-white)" : "var(--text-primary)",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontSize: "0.9rem",
+                    transition: "background 0.15s, border-color 0.15s",
+                  }}
                 >
                   {item.c}
                 </button>
               ))}
             </div>
-            <div className={styles.logBox}>
+            {/* 선택된 C값 상세 */}
+            <div style={{
+              background: "var(--bg-secondary)",
+              border: "1px solid var(--border-color)",
+              borderRadius: "var(--radius-md)",
+              padding: "0.9rem 1rem",
+              maxHeight: "320px",
+              overflowY: "auto",
+            }}>
               {!selectedConflict ? (
                 <div className={styles.empty}>왼쪽에서 C값을 선택하세요.</div>
               ) : (
                 <>
-                  <div className={styles.logLine}>C값: {selectedConflict.c}</div>
-                  {selectedConflict.d_values?.map((dVal, idx) => (
-                    <div key={`${selectedConflict.c}-d-${idx}`} className={styles.logLine}>
-                      - {dVal}
-                    </div>
-                  ))}
+                  <div style={{ fontWeight: 700, marginBottom: "0.6rem" }}>{selectedConflict.c}</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem" }}>
+                    {selectedConflict.d_values?.map((dVal, idx) => (
+                      <span key={`${selectedConflict.c}-d-${idx}`} style={{ fontSize: "0.875rem", color: "var(--text-secondary)", paddingLeft: "0.5rem", borderLeft: "2px solid var(--border-color)" }}>
+                        {dVal}
+                      </span>
+                    ))}
+                  </div>
                 </>
               )}
             </div>

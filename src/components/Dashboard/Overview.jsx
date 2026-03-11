@@ -627,10 +627,6 @@ const Overview = ({ currentUser }) => {
         <section className={styles.dashboard}>
             <div className={styles.headerRow}>
                 <h1 className={styles.title}>대시보드</h1>
-                <button className={styles.downloadBtn}>
-                    <Plus size={18} />
-                    Download Report
-                </button>
             </div>
 
             <div className={styles.contentGrid}>
@@ -681,7 +677,7 @@ const Overview = ({ currentUser }) => {
                                 !showAllTodayTodos ? styles.todoListCollapsed : ''
                             }`}
                         >
-                            {loadingTodayTodos && <div className={styles.mutedText}>Loading todos...</div>}
+                            {loadingTodayTodos && <div className={styles.mutedText}>불러오는 중...</div>}
                             {!loadingTodayTodos && orderedTodayTodos.length === 0 && (
                                 <div className={styles.mutedText}>
                                     등록된 오늘 할 일이 없습니다.
@@ -749,7 +745,7 @@ const Overview = ({ currentUser }) => {
                     </div>
                     <form className={styles.requestForm} onSubmit={handleSubmit}>
                         <label className={styles.formLabel}>
-                            Select user
+                            받는 사람
                             <select
                                 className={styles.select}
                                 value={assignee}
@@ -766,7 +762,7 @@ const Overview = ({ currentUser }) => {
                             </select>
                         </label>
                         <label className={styles.formLabel}>
-                            Request 내용
+                            내용
                             <textarea
                                 className={styles.textarea}
                                 rows={4}
@@ -809,7 +805,7 @@ const Overview = ({ currentUser }) => {
                         </div>
                         {error && <div className={styles.errorText}>{error}</div>}
                         <button className={styles.primaryBtn} type="submit" disabled={submitting}>
-                            {submitting ? 'Sending...' : 'Send Request'}
+                            {submitting ? '전송 중...' : '요청 전송'}
                         </button>
                     </form>
                 </div>
@@ -826,9 +822,9 @@ const Overview = ({ currentUser }) => {
                         </button>
                     </div>
                     <div className={styles.activityList}>
-                        {loadingActivity && <div className={styles.mutedText}>Loading activity...</div>}
+                        {loadingActivity && <div className={styles.mutedText}>불러오는 중...</div>}
                         {!loadingActivity && activity.length === 0 && (
-                            <div className={styles.mutedText}>No requests yet.</div>
+                            <div className={styles.mutedText}>받은 요청이 없습니다.</div>
                         )}
                         {!loadingActivity &&
                             activity.map((item) => (
@@ -849,7 +845,7 @@ const Overview = ({ currentUser }) => {
                                     </div>
                                     <div className={styles.activityActions}>
                                         {item.status === 'completed' ? (
-                                            <span className={styles.completedBadge}>Completed</span>
+                                            <span className={styles.completedBadge}>완료됨</span>
                                         ) : (
                                             <button
                                                 className={styles.secondaryBtn}
@@ -920,7 +916,7 @@ const Overview = ({ currentUser }) => {
                             !showAllTodos ? styles.todoListCollapsed : ''
                         }`}
                     >
-                        {loadingTodos && <div className={styles.mutedText}>Loading todos...</div>}
+                        {loadingTodos && <div className={styles.mutedText}>불러오는 중...</div>}
                         {!loadingTodos && visibleTodos.length === 0 && (
                             <div className={styles.mutedText}>
                                 {todoTab === 'completed' ? '완료된 공동 할 일이 없습니다.' : '등록된 공동 할 일이 없습니다.'}
@@ -1023,30 +1019,24 @@ const Overview = ({ currentUser }) => {
                         <div className={styles.filterGroup}>
                             <button
                                 type="button"
-                                className={`${styles.filterBtn} ${
-                                    sentFilter === 'open' ? styles.filterActive : ''
-                                }`}
-                                onClick={() => setSentFilter('open')}
-                            >
-                                요청한 목록만보기
-                            </button>
-                            <button
-                                type="button"
-                                className={`${styles.filterBtn} ${
-                                    sentFilter === 'completed' ? styles.filterActive : ''
-                                }`}
-                                onClick={() => setSentFilter('completed')}
-                            >
-                                완료된 목록만보기
-                            </button>
-                            <button
-                                type="button"
-                                className={`${styles.filterBtn} ${
-                                    sentFilter === 'all' ? styles.filterActive : ''
-                                }`}
+                                className={`${styles.filterBtn} ${sentFilter === 'all' ? styles.filterActive : ''}`}
                                 onClick={() => setSentFilter('all')}
                             >
-                                전체보기
+                                전체
+                            </button>
+                            <button
+                                type="button"
+                                className={`${styles.filterBtn} ${sentFilter === 'open' ? styles.filterActive : ''}`}
+                                onClick={() => setSentFilter('open')}
+                            >
+                                진행중
+                            </button>
+                            <button
+                                type="button"
+                                className={`${styles.filterBtn} ${sentFilter === 'completed' ? styles.filterActive : ''}`}
+                                onClick={() => setSentFilter('completed')}
+                            >
+                                완료
                             </button>
                             <button className={styles.filterBtn} type="button" onClick={handleClearSent}>
                                 목록 지우기
@@ -1054,9 +1044,9 @@ const Overview = ({ currentUser }) => {
                         </div>
                     </div>
                     <div className={styles.resolvedList}>
-                        {loadingResolved && <div className={styles.mutedText}>Loading resolved...</div>}
+                        {loadingResolved && <div className={styles.mutedText}>불러오는 중...</div>}
                         {!loadingResolved && resolved.length === 0 && (
-                            <div className={styles.mutedText}>No sent requests.</div>
+                            <div className={styles.mutedText}>보낸 요청이 없습니다.</div>
                         )}
                         {!loadingResolved &&
                             resolved
@@ -1070,14 +1060,13 @@ const Overview = ({ currentUser }) => {
                                     <div className={styles.resolvedInfo}>
                                         <div className={styles.resolvedTitle}>{item.text}</div>
                                         <div className={styles.resolvedMeta}>
-                                            {item.assignee_display || item.assignee_username}
-                                            {item.status === 'completed' ? ' completed' : ' in progress'}
-                                            {' · '}보낸시간: {formatDateTime(item.created_at)}
+                                            받는사람: {item.assignee_display || item.assignee_username}
+                                            {' · '}{formatDateTime(item.created_at)}
                                         </div>
                                         {renderAttachments(item)}
                                     </div>
                                     <div className={styles.resolvedActions}>
-                                        {item.status === 'completed' && item.can_ack && (
+                                        {item.status === 'completed' && item.can_ack ? (
                                             <>
                                                 <span className={styles.newBadge}>NEW</span>
                                                 <button
@@ -1088,9 +1077,10 @@ const Overview = ({ currentUser }) => {
                                                     확인
                                                 </button>
                                             </>
-                                        )}
-                                        {item.status !== 'completed' && (
-                                            <span className={styles.pendingBadge}>OPEN</span>
+                                        ) : item.status === 'completed' ? (
+                                            <span className={styles.completedStatusBadge}>완료됨</span>
+                                        ) : (
+                                            <span className={styles.pendingBadge}>진행중</span>
                                         )}
                                     </div>
                                 </div>
@@ -1103,7 +1093,7 @@ const Overview = ({ currentUser }) => {
                 <div className={styles.cardTitleRow}>
                     <div className={styles.cardTitle}>회사 계정 정보</div>
                 </div>
-                {loadingCreds && <div className={styles.mutedText}>Loading...</div>}
+                {loadingCreds && <div className={styles.mutedText}>불러오는 중...</div>}
                 {!loadingCreds && (
                     <div className={styles.companyCreds}>
                         <div className={styles.companyPinRow}>
