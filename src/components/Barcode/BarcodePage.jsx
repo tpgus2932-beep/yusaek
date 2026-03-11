@@ -458,19 +458,20 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                   {items.map((item, idx) => (
                     <div key={`${item.code}-${idx}`}
                       style={{
-                        display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap",
                         paddingBottom: idx < items.length - 1 ? "0.75rem" : 0,
                         borderBottom: idx < items.length - 1 ? "1px dashed var(--border-color)" : "none",
                         opacity: item.remain === 0 ? 0.4 : 1,
                       }}>
-                      <span style={{ fontWeight: 700, fontSize: "1.2rem", flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
-                        {renderItemLabel(item)}
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", flexWrap: "wrap" }}>
+                        <span style={{ fontWeight: 700, fontSize: "1.2rem", overflowWrap: "anywhere" }}>
+                          {renderItemLabel(item)}
+                        </span>
+                        {item.run_len > 1 && <span className={styles.inlineTagRun}>연속 {item.run_len}</span>}
+                        {item.incoming > 0 && <span className={styles.inlineTagIncoming}>입고 {item.incoming}</span>}
+                        {item.remain >= 2 && <span className={styles.inlineMeta}>잔여 {item.remain}</span>}
+                        {item.defect > 0 && <span className={styles.inlineTagDanger}>불량 {item.defect}</span>}
+                        {item.remain === 0 && <span className={styles.doneBadge}>완료</span>}
                       </span>
-                      {item.run_len > 1 && <span className={styles.inlineTagRun}>연속 {item.run_len}</span>}
-                      {item.incoming > 0 && <span className={styles.inlineTagIncoming}>입고 {item.incoming}</span>}
-                      {item.remain >= 2 && <span className={styles.inlineMeta}>잔여 {item.remain}</span>}
-                      {item.defect > 0 && <span className={styles.inlineTagDanger}>불량 {item.defect}</span>}
-                      {item.remain === 0 && <span className={styles.doneBadge}>완료</span>}
                     </div>
                   ))}
                 </div>
