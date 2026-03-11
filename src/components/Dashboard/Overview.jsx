@@ -814,53 +814,61 @@ const Overview = ({ currentUser }) => {
                 </div>
 
                 <div className={styles.card}>
-                    <div className={styles.cardTitle}>
-                        요청 목록
-                        <Calendar size={18} className={styles.cardHeaderIcon} />
-                    </div>
-                    <div className={styles.cardActions}>
-                        <button className={styles.secondaryBtn} type="button" onClick={handleClearActivity}>
-                            목록 지우기
+                    <div className={styles.requestListHeader}>
+                        <div className={styles.cardTitle} style={{ margin: 0 }}>
+                            받은 요청
+                            {activity.filter((a) => a.status !== 'completed').length > 0 && (
+                                <span className={styles.requestCountBadge}>
+                                    {activity.filter((a) => a.status !== 'completed').length}
+                                </span>
+                            )}
+                        </div>
+                        <button className={styles.clearBtn} type="button" onClick={handleClearActivity}>
+                            지우기
                         </button>
                     </div>
-                    <div className={styles.activityList}>
+                    <div className={styles.requestList}>
                         {loadingActivity && <div className={styles.mutedText}>불러오는 중...</div>}
                         {!loadingActivity && activity.length === 0 && (
-                            <div className={styles.mutedText}>받은 요청이 없습니다.</div>
+                            <div className={styles.emptyState}>
+                                <div className={styles.emptyStateText}>받은 요청이 없습니다.</div>
+                            </div>
                         )}
                         {!loadingActivity &&
-                            activity.map((item) => (
-                                <div
-                                    key={item.id}
-                                    className={`${styles.activityItem} ${item.status === 'completed' ? styles.activityItemCompleted : ''}`}
-                                >
-                                    <div className={styles.activityDot}></div>
-                                    <div className={styles.activityInfo}>
-                                        <div className={styles.activityText}>{item.text}</div>
-                                        <div className={styles.activityMeta}>
-                                            {item.requester_display || item.requester_username}
+                            activity.map((item) => {
+                                const done = item.status === 'completed';
+                                return (
+                                    <div
+                                        key={item.id}
+                                        className={`${styles.requestItem} ${done ? styles.requestItemDone : styles.requestItemPending}`}
+                                    >
+                                        <div className={styles.requestItemInner}>
+                                            <div className={styles.requestItemTop}>
+                                                <span className={styles.requesterTag}>
+                                                    {item.requester_display || item.requester_username}
+                                                </span>
+                                                <span className={styles.requestTime}>{formatDateTime(item.created_at)}</span>
+                                            </div>
+                                            <div className={styles.requestText}>{item.text}</div>
+                                            {renderAttachments(item)}
                                         </div>
-                                        <div className={styles.activityMeta}>
-                                            받은시간: {formatDateTime(item.created_at)}
+                                        <div className={styles.requestItemAction}>
+                                            {done ? (
+                                                <span className={styles.completedStatusBadge}>완료됨</span>
+                                            ) : (
+                                                <button
+                                                    className={styles.completeBtn}
+                                                    type="button"
+                                                    disabled={!item.can_complete}
+                                                    onClick={() => handleComplete(item.id)}
+                                                >
+                                                    완료
+                                                </button>
+                                            )}
                                         </div>
-                                        {renderAttachments(item)}
                                     </div>
-                                    <div className={styles.activityActions}>
-                                        {item.status === 'completed' ? (
-                                            <span className={styles.completedBadge}>완료됨</span>
-                                        ) : (
-                                            <button
-                                                className={styles.secondaryBtn}
-                                                type="button"
-                                                disabled={!item.can_complete}
-                                                onClick={() => handleComplete(item.id)}
-                                            >
-                                                완료
-                                            </button>
-                                        )}
-                                    </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                     </div>
                 </div>
             </div>

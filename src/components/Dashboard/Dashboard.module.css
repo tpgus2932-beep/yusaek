@@ -181,6 +181,148 @@
     color: #000;
 }
 
+.requestListHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+}
+
+.requestCountBadge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background-color: var(--accent-black);
+    color: var(--accent-white);
+    font-size: 0.7rem;
+    font-weight: 700;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 0.4rem;
+    border-radius: 999px;
+    margin-left: 0.5rem;
+}
+
+.clearBtn {
+    background: none;
+    border: none;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0.2rem 0.4rem;
+    border-radius: var(--radius-sm);
+}
+
+.clearBtn:hover {
+    color: var(--text-secondary);
+    background-color: var(--bg-secondary);
+}
+
+.requestList {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    max-height: 420px;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+    overscroll-behavior: contain;
+}
+
+.requestItem {
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-color);
+    border-left-width: 3px;
+    background-color: var(--bg-secondary);
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.85rem 0.9rem;
+    transition: box-shadow 0.15s ease;
+}
+
+.requestItemPending {
+    border-left-color: var(--accent-black);
+}
+
+.requestItemDone {
+    border-left-color: var(--border-color);
+    opacity: 0.6;
+}
+
+.requestItemInner {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.requestItemTop {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.requesterTag {
+    font-size: 0.75rem;
+    font-weight: 600;
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    color: var(--text-secondary);
+}
+
+.requestTime {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.requestText {
+    font-size: 0.9375rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.45;
+}
+
+.requestItemAction {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+}
+
+.completeBtn {
+    background-color: var(--accent-black);
+    color: var(--accent-white);
+    border: none;
+    padding: 0.35rem 0.9rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.completeBtn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.emptyState {
+    padding: 2rem 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.emptyStateText {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+}
+
 .activityList {
     display: flex;
     flex-direction: column;
