@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import styles from '../Layout/Layout.module.css';
 import pageStyles from './BarcodePage.module.css';
+import { LOCAL_API_BASE as API } from '../../lib/api';
 
 const ProductUploadPage = () => {
-    const API = `http://${window.location.hostname}:8000`;
     const [file, setFile] = useState(null);
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
