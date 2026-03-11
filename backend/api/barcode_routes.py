@@ -11,7 +11,7 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, Upl
 def build_barcode_router(
     *,
     get_current_user,
-    state,
+    get_barcode_state,
     to_int,
     process_and_load_any,
     load_excel_any,
@@ -23,7 +23,7 @@ def build_barcode_router(
 ):
     router = APIRouter()
 
-    def _get_all_items(inv: str):
+    def _get_all_items(state, inv: str):
         mapping = state["mapping"]
         if inv not in mapping:
             return []
@@ -54,15 +54,15 @@ def build_barcode_router(
             )
         return items
 
-    def _get_first_remaining_item(inv: str | None):
+    def _get_first_remaining_item(state, inv: str | None):
         if not inv:
             return None
-        for item in _get_all_items(inv):
+        for item in _get_all_items(state, inv):
             if item.get("remain", 0) > 0:
                 return item
         return None
 
-    def _get_next_item_preview(current_invoice: str | None):
+    def _get_next_item_preview(state, current_invoice: str | None):
         seq = state.get("invoice_seq") or []
         if not seq:
             return None
@@ -72,7 +72,7 @@ def build_barcode_router(
 
         for i in range(start_idx + 1, len(seq)):
             inv = seq[i]
-            item = _get_first_remaining_item(inv)
+            item = _get_first_remaining_item(state, inv)
             if not item:
                 continue
             run_len = item.get("run_len", 0)
@@ -83,7 +83,7 @@ def build_barcode_router(
             return {"invoice": inv, **item}
         return None
 
-    def _invoice_has_defect(inv: str | None):
+    def _invoice_has_defect(state, inv: str | None):
         if not inv:
             return False
         defect_counts = state.get("defect_counts") or {}
@@ -95,7 +95,7 @@ def build_barcode_router(
                 return True
         return False
 
-    def _find_item_detail_by_code(code: str):
+    def _find_item_detail_by_code(state, code: str):
         details = state.get("details") or {}
         for _, codes in details.items():
             det = codes.get(code)
@@ -106,11 +106,11 @@ def build_barcode_router(
                 }
         return {"name": "", "option": ""}
 
-    def _get_defect_list():
+    def _get_defect_list(state):
         defect_counts = state.get("defect_counts") or {}
         rows = []
         for code, n in sorted(defect_counts.items()):
-            det = _find_item_detail_by_code(code)
+            det = _find_item_detail_by_code(state, code)
             rows.append(
                 {
                     "code": code,
@@ -121,12 +121,12 @@ def build_barcode_router(
             )
         return rows
 
-    def _build_defect_csv() -> str:
+    def _build_defect_csv(state) -> str:
         defect_counts = state.get("defect_counts") or {}
         code_o_text = state.get("code_o_text") or {}
         lines = ["A열(O왼쪽),B열(O오른쪽),C열(옵션명),D열(불량수량)"]
         for code, n in sorted(defect_counts.items()):
-            det = _find_item_detail_by_code(code)
+            det = _find_item_detail_by_code(state, code)
             opt = det.get("option", "") or ""
             o_text = (code_o_text.get(code) or "").strip()
             if not o_text:
@@ -167,6 +167,7 @@ def build_barcode_router(
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"가공 실패: {e}")
 
+        state = get_barcode_state(user)
         state.update(
             {
                 "loaded": True,
@@ -242,6 +243,7 @@ def build_barcode_router(
 
     @router.get("/barcode/status")
     def barcode_status(user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
         if not state["loaded"]:
             return {"loaded": False}
         return {
@@ -249,17 +251,18 @@ def build_barcode_router(
             "current_invoice": state["current_invoice"],
             "invoices": len(state["mapping"]),
             "processed_path": state["processed_path"],
-            "items": _get_all_items(state["current_invoice"]) if state["current_invoice"] else [],
-            "current_next": _get_first_remaining_item(state["current_invoice"]),
-            "next_preview": _get_next_item_preview(state["current_invoice"]),
-            "defects": _get_defect_list(),
-            "invoice_has_defect": _invoice_has_defect(state["current_invoice"]),
+            "items": _get_all_items(state, state["current_invoice"]) if state["current_invoice"] else [],
+            "current_next": _get_first_remaining_item(state, state["current_invoice"]),
+            "next_preview": _get_next_item_preview(state, state["current_invoice"]),
+            "defects": _get_defect_list(state),
+            "invoice_has_defect": _invoice_has_defect(state, state["current_invoice"]),
             "incoming_codes": len(get_shared_incoming_counts() or {}),
             "incoming_total": sum((get_shared_incoming_counts() or {}).values()),
         }
 
     @router.post("/barcode/scan/invoice")
     def scan_invoice(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
         if not state["loaded"]:
             raise HTTPException(status_code=400, detail="먼저 엑셀을 업로드해주세요")
 
@@ -271,11 +274,11 @@ def build_barcode_router(
             return {"ok": False, "type": "invoice", "result": "NOT_FOUND", "invoice": invoice}
 
         state["current_invoice"] = invoice
-        first_item = _get_first_remaining_item(invoice)
+        first_item = _get_first_remaining_item(state, invoice)
         if first_item:
             state["last_scanned_code"] = first_item.get("code")
 
-        items = _get_all_items(invoice)
+        items = _get_all_items(state, invoice)
         return {
             "ok": True,
             "type": "invoice",
@@ -283,13 +286,14 @@ def build_barcode_router(
             "invoice": invoice,
             "items": items,
             "current_next": first_item,
-            "next_preview": _get_next_item_preview(invoice),
-            "defects": _get_defect_list(),
-            "invoice_has_defect": _invoice_has_defect(invoice),
+            "next_preview": _get_next_item_preview(state, invoice),
+            "defects": _get_defect_list(state),
+            "invoice_has_defect": _invoice_has_defect(state, invoice),
         }
 
     @router.post("/barcode/scan/item")
     def scan_item(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
         if not state["loaded"]:
             raise HTTPException(status_code=400, detail="먼저 엑셀을 업로드해주세요")
 
@@ -321,10 +325,10 @@ def build_barcode_router(
                 "name": name,
                 "option": opt,
                 "remain": remain,
-                "items": _get_all_items(inv),
-                "current_next": _get_first_remaining_item(inv),
-                "next_preview": _get_next_item_preview(inv),
-                "defects": _get_defect_list(),
+                "items": _get_all_items(state, inv),
+                "current_next": _get_first_remaining_item(state, inv),
+                "next_preview": _get_next_item_preview(state, inv),
+                "defects": _get_defect_list(state),
             }
 
         state["mapping"][inv][code] = remain - 1
@@ -341,14 +345,15 @@ def build_barcode_router(
             "option": opt,
             "remain": state["mapping"][inv][code],
             "invoice_done": all_done,
-            "items": _get_all_items(inv),
-            "current_next": _get_first_remaining_item(inv),
-            "next_preview": _get_next_item_preview(inv),
-            "defects": _get_defect_list(),
+            "items": _get_all_items(state, inv),
+            "current_next": _get_first_remaining_item(state, inv),
+            "next_preview": _get_next_item_preview(state, inv),
+            "defects": _get_defect_list(state),
         }
 
     @router.post("/barcode/defect/add")
     def add_defect(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
         if not state["loaded"]:
             raise HTTPException(status_code=400, detail="먼저 엑셀을 업로드해주세요")
 
@@ -366,25 +371,27 @@ def build_barcode_router(
             "ok": True,
             "code": code,
             "defect_count": defect_counts[code],
-            "items": _get_all_items(inv) if inv else [],
-            "current_next": _get_first_remaining_item(inv),
-            "next_preview": _get_next_item_preview(inv),
-            "defects": _get_defect_list(),
+            "items": _get_all_items(state, inv) if inv else [],
+            "current_next": _get_first_remaining_item(state, inv),
+            "next_preview": _get_next_item_preview(state, inv),
+            "defects": _get_defect_list(state),
         }
 
     @router.get("/barcode/defect/list")
     def list_defects(user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
         if not state["loaded"]:
             raise HTTPException(status_code=400, detail="먼저 엑셀을 업로드해주세요")
-        return {"ok": True, "defects": _get_defect_list()}
+        return {"ok": True, "defects": _get_defect_list(state)}
 
     @router.get("/barcode/defect/export")
     def export_defects(user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
         if not state["loaded"]:
             raise HTTPException(status_code=400, detail="먼저 엑셀을 업로드해주세요")
         if not (state.get("defect_counts") or {}):
             raise HTTPException(status_code=400, detail="불량 목록이 비어있습니다")
-        csv_text = _build_defect_csv()
+        csv_text = _build_defect_csv(state)
         filename = f"defects_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         headers = {"Content-Disposition": content_disposition(filename)}
         csv_bytes = csv_text.encode("utf-8-sig")
@@ -392,6 +399,7 @@ def build_barcode_router(
 
     @router.post("/barcode/defect/dec")
     def decrement_defect(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
         if not state["loaded"]:
             raise HTTPException(status_code=400, detail="먼저 엑셀을 업로드해주세요")
         raw = (payload.get("code") or "").strip()
@@ -407,14 +415,15 @@ def build_barcode_router(
         inv = state.get("current_invoice")
         return {
             "ok": True,
-            "defects": _get_defect_list(),
-            "items": _get_all_items(inv) if inv else [],
-            "current_next": _get_first_remaining_item(inv),
-            "next_preview": _get_next_item_preview(inv),
+            "defects": _get_defect_list(state),
+            "items": _get_all_items(state, inv) if inv else [],
+            "current_next": _get_first_remaining_item(state, inv),
+            "next_preview": _get_next_item_preview(state, inv),
         }
 
     @router.post("/barcode/defect/remove")
     def remove_defect(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
         if not state["loaded"]:
             raise HTTPException(status_code=400, detail="먼저 엑셀을 업로드해주세요")
         raw = (payload.get("code") or "").strip()
@@ -428,10 +437,10 @@ def build_barcode_router(
         inv = state.get("current_invoice")
         return {
             "ok": True,
-            "defects": _get_defect_list(),
-            "items": _get_all_items(inv) if inv else [],
-            "current_next": _get_first_remaining_item(inv),
-            "next_preview": _get_next_item_preview(inv),
+            "defects": _get_defect_list(state),
+            "items": _get_all_items(state, inv) if inv else [],
+            "current_next": _get_first_remaining_item(state, inv),
+            "next_preview": _get_next_item_preview(state, inv),
         }
 
     return router
