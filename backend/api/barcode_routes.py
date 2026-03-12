@@ -183,8 +183,6 @@ def build_barcode_router(
                 "code_o_text": code_o_text,
             }
         )
-        set_shared_defect_counts({})
-
         return {
             "ok": True,
             "invoices": len(mapping),

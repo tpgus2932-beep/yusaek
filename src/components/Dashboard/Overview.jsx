@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, Calendar, Bell, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Calendar, Bell, ChevronDown, ChevronUp, Pin, PinOff, GripVertical } from 'lucide-react';
 import styles from './Dashboard.module.css';
 import { COLLAB_API_BASE as API } from '../../lib/api';
 
@@ -42,7 +42,15 @@ const Overview = ({ currentUser }) => {
     const [selectedTodayTodoIds, setSelectedTodayTodoIds] = useState([]);
     const [sharedTodoOpen, setSharedTodoOpen] = useState(false);
     const [sentRequestsOpen, setSentRequestsOpen] = useState(false);
+    const [activityPanelWidth, setActivityPanelWidth] = useState(420);
+    const [dashboardLayoutLoaded, setDashboardLayoutLoaded] = useState(false);
+    const [pinnedRequestIds, setPinnedRequestIds] = useState([]);
     const isAdmin = useMemo(() => localStorage.getItem('isAdmin') === 'true', []);
+    const resizeStateRef = useRef(null);
+
+    const dashboardUserKey = currentUser || localStorage.getItem('username') || 'guest';
+    const pinnedRequestsStorageKey = `dashboard:pinned-requests:${dashboardUserKey}`;
+    const activityWidthStorageKey = `dashboard:activity-width:${dashboardUserKey}`;
 
     const authHeaders = useMemo(() => {
         const token = localStorage.getItem('token');
@@ -122,6 +130,99 @@ const Overview = ({ currentUser }) => {
         fetchActivity();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [currentUser]);
+
+    useEffect(() => {
+        const storedPins = localStorage.getItem(pinnedRequestsStorageKey);
+        if (!storedPins) {
+            setPinnedRequestIds([]);
+            return;
+        }
+        try {
+            const parsed = JSON.parse(storedPins);
+            setPinnedRequestIds(Array.isArray(parsed) ? parsed.filter((id) => Number.isFinite(id)) : []);
+        } catch {
+            setPinnedRequestIds([]);
+        }
+    }, [pinnedRequestsStorageKey]);
+
+    useEffect(() => {
+        const storedWidth = Number(localStorage.getItem(activityWidthStorageKey));
+        if (Number.isFinite(storedWidth) && storedWidth >= 320 && storedWidth <= 760) {
+            setActivityPanelWidth(storedWidth);
+        } else {
+            setActivityPanelWidth(420);
+        }
+        setDashboardLayoutLoaded(false);
+    }, [activityWidthStorageKey]);
+
+    useEffect(() => {
+        localStorage.setItem(pinnedRequestsStorageKey, JSON.stringify(pinnedRequestIds));
+    }, [pinnedRequestIds, pinnedRequestsStorageKey]);
+
+    useEffect(() => {
+        localStorage.setItem(activityWidthStorageKey, String(Math.round(activityPanelWidth)));
+    }, [activityPanelWidth, activityWidthStorageKey]);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const fetchDashboardLayout = async () => {
+            try {
+                const res = await fetch(`${API}/settings/dashboard-layout`, { headers: authHeaders });
+                if (handleUnauthorized(res)) return;
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data?.detail || 'Failed to load dashboard layout');
+                const width = Number(data?.activity_panel_width);
+                if (!cancelled && Number.isFinite(width) && width >= 320 && width <= 760) {
+                    setActivityPanelWidth(width);
+                    localStorage.setItem(activityWidthStorageKey, String(Math.round(width)));
+                }
+            } catch (err) {
+                if (!cancelled) {
+                    setError((prev) => prev || err.message || 'Failed to load dashboard layout');
+                }
+            } finally {
+                if (!cancelled) {
+                    setDashboardLayoutLoaded(true);
+                }
+            }
+        };
+
+        fetchDashboardLayout();
+
+        return () => {
+            cancelled = true;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activityWidthStorageKey]);
+
+    useEffect(() => {
+        if (!dashboardLayoutLoaded) return undefined;
+
+        const roundedWidth = Math.round(activityPanelWidth);
+        const timer = window.setTimeout(async () => {
+            try {
+                const res = await fetch(`${API}/settings/dashboard-layout`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...authHeaders,
+                    },
+                    body: JSON.stringify({ activity_panel_width: roundedWidth }),
+                });
+                if (handleUnauthorized(res)) return;
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data?.detail || 'Failed to save dashboard layout');
+            } catch (err) {
+                setError((prev) => prev || err.message || 'Failed to save dashboard layout');
+            }
+        }, 250);
+
+        return () => {
+            window.clearTimeout(timer);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activityPanelWidth, dashboardLayoutLoaded]);
 
     const fetchCompanyCreds = async () => {
         try {
@@ -262,6 +363,14 @@ const Overview = ({ currentUser }) => {
         } catch (err) {
             setError(err.message || 'Failed to clear activity');
         }
+    };
+
+    const togglePinnedRequest = (requestId) => {
+        setPinnedRequestIds((prev) => (
+            prev.includes(requestId)
+                ? prev.filter((id) => id !== requestId)
+                : [requestId, ...prev]
+        ));
     };
 
     const handleClearSent = async () => {
@@ -516,6 +625,21 @@ const Overview = ({ currentUser }) => {
         });
     }, [todos]);
 
+    const orderedActivity = useMemo(() => {
+        const pinnedSet = new Set(pinnedRequestIds);
+        return [...activity].sort((a, b) => {
+            const aPinned = pinnedSet.has(a.id);
+            const bPinned = pinnedSet.has(b.id);
+            if (aPinned !== bPinned) return aPinned ? -1 : 1;
+
+            const aDone = a.status === 'completed';
+            const bDone = b.status === 'completed';
+            if (aDone !== bDone) return aDone ? 1 : -1;
+
+            return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+        });
+    }, [activity, pinnedRequestIds]);
+
     const visibleTodos = useMemo(() => {
         if (todoTab === 'completed') return orderedTodos.filter((item) => item.status === 'completed');
         return orderedTodos.filter((item) => item.status !== 'completed');
@@ -624,6 +748,52 @@ const Overview = ({ currentUser }) => {
         });
     }, [todayTodos]);
 
+    useEffect(() => {
+        const activityIds = new Set(activity.map((item) => item.id));
+        setPinnedRequestIds((prev) => prev.filter((id) => activityIds.has(id)));
+    }, [activity]);
+
+    useEffect(() => {
+        const handlePointerMove = (event) => {
+            const state = resizeStateRef.current;
+            if (!state) return;
+            const clientX = 'touches' in event ? event.touches[0]?.clientX : event.clientX;
+            if (typeof clientX !== 'number') return;
+            const delta = state.startX - clientX;
+            const nextWidth = Math.min(760, Math.max(320, state.startWidth + delta));
+            setActivityPanelWidth(nextWidth);
+        };
+
+        const stopResize = () => {
+            resizeStateRef.current = null;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+        };
+
+        window.addEventListener('mousemove', handlePointerMove);
+        window.addEventListener('mouseup', stopResize);
+        window.addEventListener('touchmove', handlePointerMove, { passive: false });
+        window.addEventListener('touchend', stopResize);
+
+        return () => {
+            window.removeEventListener('mousemove', handlePointerMove);
+            window.removeEventListener('mouseup', stopResize);
+            window.removeEventListener('touchmove', handlePointerMove);
+            window.removeEventListener('touchend', stopResize);
+        };
+    }, []);
+
+    const startActivityResize = (event) => {
+        const clientX = 'touches' in event ? event.touches[0]?.clientX : event.clientX;
+        if (typeof clientX !== 'number') return;
+        resizeStateRef.current = {
+            startX: clientX,
+            startWidth: activityPanelWidth,
+        };
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+    };
+
 
     return (
         <section className={styles.dashboard}>
@@ -631,7 +801,10 @@ const Overview = ({ currentUser }) => {
                 <h1 className={styles.title}>대시보드</h1>
             </div>
 
-            <div className={styles.contentGrid}>
+            <div
+                className={styles.contentGrid}
+                style={{ '--activity-panel-width': `${activityPanelWidth}px` }}
+            >
                 <div className={styles.contentColumn}>
                     <div className={styles.card}>
                         <div className={styles.todoHeader}>
@@ -813,13 +986,23 @@ const Overview = ({ currentUser }) => {
                 </div>
                 </div>
 
-                <div className={styles.card}>
+                <button
+                    type="button"
+                    className={styles.resizeHandle}
+                    onMouseDown={startActivityResize}
+                    onTouchStart={startActivityResize}
+                    aria-label="받은 요청 너비 조절"
+                >
+                    <GripVertical size={16} />
+                </button>
+
+                <div className={`${styles.card} ${styles.activityPanelCard}`}>
                     <div className={styles.requestListHeader}>
                         <div className={styles.cardTitle} style={{ margin: 0 }}>
                             받은 요청
-                            {activity.filter((a) => a.status !== 'completed').length > 0 && (
+                            {orderedActivity.filter((a) => a.status !== 'completed').length > 0 && (
                                 <span className={styles.requestCountBadge}>
-                                    {activity.filter((a) => a.status !== 'completed').length}
+                                    {orderedActivity.filter((a) => a.status !== 'completed').length}
                                 </span>
                             )}
                         </div>
@@ -835,24 +1018,34 @@ const Overview = ({ currentUser }) => {
                             </div>
                         )}
                         {!loadingActivity &&
-                            activity.map((item) => {
+                            orderedActivity.map((item) => {
                                 const done = item.status === 'completed';
+                                const pinned = pinnedRequestIds.includes(item.id);
                                 return (
                                     <div
                                         key={item.id}
-                                        className={`${styles.requestItem} ${done ? styles.requestItemDone : styles.requestItemPending}`}
+                                        className={`${styles.requestItem} ${done ? styles.requestItemDone : styles.requestItemPending} ${pinned ? styles.requestItemPinned : ''}`}
                                     >
                                         <div className={styles.requestItemInner}>
                                             <div className={styles.requestItemTop}>
                                                 <span className={styles.requesterTag}>
                                                     {item.requester_display || item.requester_username}
                                                 </span>
+                                                {pinned && <span className={styles.pinnedBadge}>상단고정</span>}
                                                 <span className={styles.requestTime}>{formatDateTime(item.created_at)}</span>
                                             </div>
                                             <div className={styles.requestText}>{item.text}</div>
                                             {renderAttachments(item)}
                                         </div>
                                         <div className={styles.requestItemAction}>
+                                            <button
+                                                type="button"
+                                                className={styles.pinBtn}
+                                                onClick={() => togglePinnedRequest(item.id)}
+                                            >
+                                                {pinned ? <PinOff size={14} /> : <Pin size={14} />}
+                                                {pinned ? '고정 해제' : '상단 고정'}
+                                            </button>
                                             {done ? (
                                                 <span className={styles.completedStatusBadge}>완료됨</span>
                                             ) : (
