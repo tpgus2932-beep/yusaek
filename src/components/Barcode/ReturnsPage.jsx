@@ -1,5 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import pageStyles from './BarcodePage.module.css';
+import styles from './ReturnsPage.module.css';
+import { getDownloadFilename } from '../../lib/download';
 
 const API = `http://${window.location.hostname}:8000`;
 
@@ -67,7 +69,28 @@ const ReturnsPage = () => {
     const hasLoadedRef = useRef(false);
     const lastTypeRef = useRef('-');
 
-    const refreshState = async () => {
+    const queueSummary = useMemo(
+        () => [
+            { key: 'all', label: '전체 대기', count: queues.all.length },
+            { key: 'seller', label: '판매처 대기', count: queues.seller.length },
+            { key: 'customer', label: '고객 대기', count: queues.customer.length },
+            { key: 'unmatched', label: '미매칭', count: queues.unmatched.length },
+            { key: 'onebe', label: '원베 행', count: onebeRows.length },
+        ],
+        [queues, onebeRows]
+    );
+
+    const playSound = useCallback((key) => {
+        const pool = soundsRef.current?.[key];
+        if (!pool || !pool.length) return;
+        const idx = soundIndexRef.current[key] || 0;
+        const audio = pool[idx % pool.length];
+        soundIndexRef.current[key] = (idx + 1) % pool.length;
+        audio.currentTime = 0;
+        audio.play().catch(() => {});
+    }, []);
+
+    const refreshState = useCallback(async () => {
         try {
             const res = await fetch(`${API}/returns/state`, { headers: getAuthHeaders() });
             if (!res.ok) return;
@@ -90,25 +113,12 @@ const ReturnsPage = () => {
         } finally {
             hasLoadedRef.current = true;
         }
-    };
-
-    const getDownloadFilename = (res, fallback) => {
-        const disposition = res.headers.get('content-disposition') || '';
-        const match = disposition.match(/filename\*?=(?:UTF-8''|\"?)([^\";]+)/i);
-        if (match?.[1]) {
-            try {
-                return decodeURIComponent(match[1].replace(/\"/g, ''));
-            } catch {
-                return match[1].replace(/\"/g, '');
-            }
-        }
-        return fallback;
-    };
+    }, [playSound]);
 
     useEffect(() => {
         refreshState();
         setTimeout(() => scanRef.current?.focus(), 50);
-    }, []);
+    }, [refreshState]);
 
     useEffect(() => {
         if (!soundsRef.current) {
@@ -152,16 +162,6 @@ const ReturnsPage = () => {
             window.removeEventListener('pointerdown', onUnlock);
         };
     }, []);
-
-    const playSound = (key) => {
-        const pool = soundsRef.current?.[key];
-        if (!pool || !pool.length) return;
-        const idx = soundIndexRef.current[key] || 0;
-        const audio = pool[idx % pool.length];
-        soundIndexRef.current[key] = (idx + 1) % pool.length;
-        audio.currentTime = 0;
-        audio.play().catch(() => {});
-    };
 
     const handleUpload = async (file, endpoint, label) => {
         if (!file) {
@@ -325,7 +325,7 @@ const ReturnsPage = () => {
             setLastType(nextType);
             const prevType = lastTypeRef.current;
             lastTypeRef.current = nextType;
-            const shouldPlay = nextType !== '-' && nextType !== '';
+            const shouldPlay = nextType !== '-' && nextType !== '' && nextType !== prevType;
             if (shouldPlay) {
                 const norm = String(nextType);
                 if (norm.includes('판매자') || norm.toLowerCase().includes('seller')) playSound('seller');
@@ -355,21 +355,6 @@ const ReturnsPage = () => {
         }
     };
 
-    const handleReset = async () => {
-        if (!window.confirm('대기 리스트를 초기화할까요?')) return;
-        try {
-            const res = await fetch(`${API}/returns/reset`, {
-                method: 'POST',
-                headers: getAuthHeaders(),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '초기화 실패');
-            await refreshState();
-        } catch (err) {
-            setMessage(err.message || '초기화 실패');
-        }
-    };
-
     const handleBuildOnebe = async () => {
         const source = 'customer';
         try {
@@ -384,20 +369,6 @@ const ReturnsPage = () => {
             setActiveTab('onebe');
         } catch (err) {
             setMessage(err.message || '원베양식 생성 실패');
-        }
-    };
-
-    const handleConsolidate = async () => {
-        try {
-            const res = await fetch(`${API}/returns/onebe/consolidate`, {
-                method: 'POST',
-                headers: getAuthHeaders(),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '같은수량가공 실패');
-            setOnebeRows(data.onebe?.rows || []);
-        } catch (err) {
-            setMessage(err.message || '같은수량가공 실패');
         }
     };
 
@@ -446,25 +417,6 @@ const ReturnsPage = () => {
 
     const selectedColumnList = DEFAULT_COLUMNS.filter((c) => selectedCols[c]);
 
-    const handleCopyPreview = async () => {
-        if (!onebeRows.length) {
-            setMessage('먼저 원베양식을 생성하세요.');
-            return;
-        }
-        const cols = selectedColumnList.length ? selectedColumnList : ['상품코드', '요청수량', '입고수량'];
-        const headers = cols.map((c) => (onebeHeaders[c] ?? c).trim() || c);
-        const header = headers.join('\t');
-        const body = onebeRows
-            .map((row) => cols.map((c) => (row?.[c] ?? '')).join('\t'))
-            .join('\n');
-        try {
-            await navigator.clipboard.writeText(`${header}\n${body}`);
-            setMessage('미리보기 복사 완료');
-        } catch {
-            setMessage('복사 실패');
-        }
-    };
-
     const handleDownload = async (endpoint, filenameFallback, payload) => {
         try {
             const res = await fetch(`${API}${endpoint}`, {
@@ -477,10 +429,11 @@ const ReturnsPage = () => {
                 throw new Error(data?.detail || '다운로드 실패');
             }
             const blob = await res.blob();
+            const filename = getDownloadFilename(res, filenameFallback);
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = filenameFallback;
+            a.download = filename;
             document.body.appendChild(a);
             a.click();
             a.remove();
@@ -523,21 +476,32 @@ const ReturnsPage = () => {
     };
 
     return (
-        <div className={pageStyles.page}>
-            <div className={pageStyles.pageHeader}>
+        <div className={`${pageStyles.page} ${styles.page}`}>
+            <div className={`${pageStyles.pageHeader} ${styles.hero}`}>
                 <div>
                     <h2 className={pageStyles.title}>반품</h2>
                     <p className={pageStyles.subtitle}>반품 송장 매칭 / 대기 / 추출 + 원베양식 생성</p>
                 </div>
+                <div className={styles.summaryStrip}>
+                    {queueSummary.map((item) => (
+                        <div
+                            key={item.key}
+                            className={`${styles.summaryCard} ${activeTab === item.key ? styles.summaryCardActive : ''}`}
+                        >
+                            <span className={styles.summaryLabel}>{item.label}</span>
+                            <strong className={styles.summaryValue}>{item.count}</strong>
+                        </div>
+                    ))}
+                </div>
             </div>
 
-            <div className={pageStyles.stack}>
-                <section className={pageStyles.card}>
+            <div className={`${pageStyles.stack} ${styles.layout}`}>
+                <section className={`${pageStyles.card} ${styles.setupCard}`}>
                     <div className={pageStyles.cardHeader}>
                         <h3 className={pageStyles.cardTitle}>엑셀 업로드</h3>
                         {loading && <span className={pageStyles.pill}>처리 중</span>}
                     </div>
-                    <div className={pageStyles.uploadRow}>
+                    <div className={`${pageStyles.uploadRow} ${styles.fileRow}`}>
                         <label className={pageStyles.fileInput}>
                             <input
                                 type="file"
@@ -555,7 +519,7 @@ const ReturnsPage = () => {
                             에이블리 엑셀 선택
                         </label>
                     </div>
-                    <div className={pageStyles.uploadRow}>
+                    <div className={`${pageStyles.uploadRow} ${styles.compactActions}`}>
                         <button className={pageStyles.secondaryBtn} onClick={handleCostReload} disabled={loading}>
                             새로 로드
                         </button>
@@ -564,7 +528,7 @@ const ReturnsPage = () => {
                         </button>
                     </div>
                     {isAdmin && (
-                        <div className={pageStyles.uploadRow}>
+                        <div className={`${pageStyles.uploadRow} ${styles.adminRow}`}>
                             <input
                                 className={pageStyles.searchInput}
                                 value={costAddName}
@@ -584,7 +548,7 @@ const ReturnsPage = () => {
                         </div>
                     )}
                     {status && (
-                        <div className={pageStyles.metaGrid}>
+                        <div className={`${pageStyles.metaGrid} ${styles.statusGrid}`}>
                             <div className={pageStyles.metaItem}>
                                 <span className={pageStyles.metaLabel}>CJ 엑셀</span>
                                 <strong className={pageStyles.metaValue}>
@@ -612,7 +576,7 @@ const ReturnsPage = () => {
                     )}
                 </section>
 
-                <section className={pageStyles.card}>
+                <section className={`${pageStyles.card} ${styles.scanCard}`}>
                     <div className={pageStyles.cardHeader}>
                         <h3 className={pageStyles.cardTitle}>바코드 스캔</h3>
                         <div className={pageStyles.headerActions}>
@@ -622,7 +586,7 @@ const ReturnsPage = () => {
                             </button>
                         </div>
                     </div>
-                    <div className={pageStyles.scanRow}>
+                    <div className={`${pageStyles.scanRow} ${styles.scanRow}`}>
                         <input
                             ref={scanRef}
                             className={pageStyles.scanInput}
@@ -636,21 +600,18 @@ const ReturnsPage = () => {
                             }}
                             placeholder="반품 송장 바코드를 입력 후 Enter"
                         />
-                        <div className={pageStyles.uploadRow}>
+                        <div className={`${pageStyles.uploadRow} ${styles.scanActions}`}>
                             <button className={pageStyles.primaryBtn} onClick={handleScan}>
                                 매칭/대기
-                            </button>
-                            <button className={pageStyles.secondaryBtn} onClick={() => setScanText('')}>
-                                입력칸 비우기
                             </button>
                         </div>
                     </div>
                 </section>
 
-                <section className={pageStyles.card}>
+                <section className={`${pageStyles.card} ${styles.queueCard}`}>
                     <div className={pageStyles.cardHeader}>
                         <h3 className={pageStyles.cardTitle}>대기/원베</h3>
-                        <div className={pageStyles.tabRow}>
+                        <div className={`${pageStyles.tabRow} ${styles.tabRow}`}>
                             {[
                                 ['all', '전체 대기'],
                                 ['seller', '판매자 대기'],
@@ -681,16 +642,10 @@ const ReturnsPage = () => {
                     )}
 
                     {activeTab === 'onebe' && (
-                        <div className={pageStyles.stack}>
-                            <div className={pageStyles.uploadRow}>
+                        <div className={`${pageStyles.stack} ${styles.onebePanel}`}>
+                            <div className={`${pageStyles.uploadRow} ${styles.onebeActions}`}>
                                 <button className={pageStyles.primaryBtn} onClick={handleBuildOnebe}>
                                     고객대기 → 원베양식 생성
-                                </button>
-                                <button className={pageStyles.secondaryBtn} onClick={handleCopyPreview}>
-                                    미리보기 복사(엑셀 붙여넣기)
-                                </button>
-                                <button className={pageStyles.secondaryBtn} onClick={handleConsolidate}>
-                                    같은수량가공
                                 </button>
                                 <button
                                     className={pageStyles.secondaryBtn}
@@ -705,8 +660,8 @@ const ReturnsPage = () => {
                                     원베양식 저장
                                 </button>
                             </div>
-                            <div className={pageStyles.uploadRow}>
-                                <span>파일 형식:</span>
+                            <div className={`${pageStyles.uploadRow} ${styles.formatRow}`}>
+                                <span className={styles.formatLabel}>파일 형식:</span>
                                 <label className={pageStyles.radioItem}>
                                     <input
                                         type="radio"
@@ -728,7 +683,7 @@ const ReturnsPage = () => {
                                     xls
                                 </label>
                             </div>
-                            <div className={pageStyles.checkboxRow}>
+                            <div className={`${pageStyles.checkboxRow} ${styles.checkboxRow}`}>
                                 {DEFAULT_COLUMNS.map((col) => (
                                     <label key={col} className={pageStyles.checkboxItem}>
                                         <input
@@ -796,12 +751,12 @@ const ReturnsPage = () => {
                     )}
                 </section>
 
-                <section className={pageStyles.card}>
+                <section className={`${pageStyles.card} ${styles.exportCard}`}>
                     <div className={pageStyles.cardHeader}>
                         <h3 className={pageStyles.cardTitle}>(기존) 판매자/고객/미매칭 추출</h3>
                     </div>
-                    <div className={pageStyles.uploadRow}>
-                        <span>파일 형식:</span>
+                    <div className={`${pageStyles.uploadRow} ${styles.formatRow}`}>
+                        <span className={styles.formatLabel}>파일 형식:</span>
                         <label className={pageStyles.radioItem}>
                             <input
                                 type="radio"
@@ -831,9 +786,6 @@ const ReturnsPage = () => {
                             }
                         >
                             추출 저장
-                        </button>
-                        <button className={pageStyles.secondaryBtn} onClick={handleReset}>
-                            대기 리스트 초기화
                         </button>
                     </div>
                 </section>

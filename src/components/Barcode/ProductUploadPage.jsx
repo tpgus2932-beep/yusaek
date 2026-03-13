@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import pageStyles from './BarcodePage.module.css';
 import { COLLAB_API_BASE as API } from '../../lib/api';
+import { getDownloadFilename } from '../../lib/download';
 
 const ProductUploadPage = () => {
     const [file, setFile] = useState(null);
@@ -12,17 +13,6 @@ const ProductUploadPage = () => {
     const getAuthHeaders = () => {
         const token = localStorage.getItem('token');
         return token ? { Authorization: `Bearer ${token}` } : {};
-    };
-
-    const getDownloadFilename = (res) => {
-        const disposition = res.headers.get('content-disposition') || '';
-        const match = disposition.match(/filename\\*?=(?:UTF-8''|\"?)([^\";]+)/i);
-        if (match?.[1]) {
-            const name = decodeURIComponent(match[1].replace(/\"/g, ''));
-            return name.toLowerCase().endsWith('.xls') ? name : `${name.replace(/\.[^.]+$/, '')}.xls`;
-        }
-        const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
-        return `easyadmin_products_${stamp}.xls`;
     };
 
     const handleFile = (f) => {
@@ -65,16 +55,20 @@ const ProductUploadPage = () => {
                 throw new Error(msg);
             }
             const blob = await res.blob();
-            const filename = getDownloadFilename(res);
+            const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
+            const filename = getDownloadFilename(res, `easyadmin_products_${stamp}.xls`);
+            const normalizedFilename = filename.toLowerCase().endsWith('.xls')
+                ? filename
+                : `${filename.replace(/\.[^.]+$/, '')}.xls`;
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = filename;
+            link.download = normalizedFilename;
             document.body.appendChild(link);
             link.click();
             link.remove();
             URL.revokeObjectURL(url);
-            setStatus({ type: 'success', msg: filename });
+            setStatus({ type: 'success', msg: normalizedFilename });
             setFile(null);
         } catch (err) {
             setStatus({ type: 'error', msg: err.message || '업로드 실패' });

@@ -314,6 +314,7 @@
     font-size: 0.9375rem;
     font-weight: 500;
     color: var(--text-primary);
+    white-space: pre-wrap;
     overflow-wrap: anywhere;
     word-break: break-word;
     line-height: 1.45;
@@ -1040,6 +1041,9 @@
 .resolvedTitle {
     font-weight: 600;
     font-size: 0.9375rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .resolvedMeta {

@@ -1,21 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styles from "../Barcode/BarcodePage.module.css";
 import * as XLSX from "xlsx";
+import { getDownloadFilename } from "../../lib/download";
 
 const API = `http://${window.location.hostname}:8000`;
 
 const getAuthHeaders = () => {
   const token = localStorage.getItem("token");
   return token ? { Authorization: `Bearer ${token}` } : {};
-};
-
-const getDownloadFilename = (res, fallback) => {
-  const disposition = res.headers.get("content-disposition") || "";
-  const match = disposition.match(/filename\*?=(?:UTF-8''|\"?)([^\";]+)/i);
-  if (match?.[1]) {
-    return decodeURIComponent(match[1].replace(/\"/g, ""));
-  }
-  return fallback;
 };
 
 export default function OrderPage() {
@@ -79,21 +71,21 @@ export default function OrderPage() {
     return false;
   };
 
-  const fetchStatus = async () => {
+  const fetchStatus = useCallback(async () => {
     const res = await fetch(`${API}/order/status`, { headers: getAuthHeaders() });
     if (handleUnauthorized(res)) return;
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.detail || "발주 상태 조회 실패");
     setStatus(data);
-  };
+  }, []);
 
-  const fetchRegistered = async () => {
+  const fetchRegistered = useCallback(async () => {
     const res = await fetch(`${API}/order/registered/list`, { headers: getAuthHeaders() });
     if (handleUnauthorized(res)) return;
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.detail || "등록코드 조회 실패");
     setRegistered(data.items || []);
-  };
+  }, []);
 
   const fetchCostPreview = async (offset = 0, q = costQuery) => {
     const res = await fetch(
@@ -121,7 +113,7 @@ export default function OrderPage() {
         setMessage(err.message || "초기 로드 실패");
       }
     })();
-  }, []);
+  }, [fetchRegistered, fetchStatus]);
 
   const searchSuggestion = async (q) => {
     const v = (q || "").trim();

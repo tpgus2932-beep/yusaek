@@ -12,7 +12,7 @@ const Overview = ({ currentUser }) => {
     const [activity, setActivity] = useState([]);
     const [resolved, setResolved] = useState([]);
     const [loadingUsers, setLoadingUsers] = useState(true);
-    const [loadingActivity, setLoadingActivity] = useState(false);
+    const [loadingActivity, setLoadingActivity] = useState(true);
     const [loadingResolved, setLoadingResolved] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState('');
@@ -45,6 +45,7 @@ const Overview = ({ currentUser }) => {
     const [activityPanelWidth, setActivityPanelWidth] = useState(420);
     const [dashboardLayoutLoaded, setDashboardLayoutLoaded] = useState(false);
     const [pinnedRequestIds, setPinnedRequestIds] = useState([]);
+    const [pinnedRequestsLoaded, setPinnedRequestsLoaded] = useState(false);
     const isAdmin = useMemo(() => localStorage.getItem('isAdmin') === 'true', []);
     const resizeStateRef = useRef(null);
 
@@ -135,6 +136,7 @@ const Overview = ({ currentUser }) => {
         const storedPins = localStorage.getItem(pinnedRequestsStorageKey);
         if (!storedPins) {
             setPinnedRequestIds([]);
+            setPinnedRequestsLoaded(true);
             return;
         }
         try {
@@ -142,6 +144,8 @@ const Overview = ({ currentUser }) => {
             setPinnedRequestIds(Array.isArray(parsed) ? parsed.filter((id) => Number.isFinite(id)) : []);
         } catch {
             setPinnedRequestIds([]);
+        } finally {
+            setPinnedRequestsLoaded(true);
         }
     }, [pinnedRequestsStorageKey]);
 
@@ -156,8 +160,9 @@ const Overview = ({ currentUser }) => {
     }, [activityWidthStorageKey]);
 
     useEffect(() => {
+        if (!pinnedRequestsLoaded) return;
         localStorage.setItem(pinnedRequestsStorageKey, JSON.stringify(pinnedRequestIds));
-    }, [pinnedRequestIds, pinnedRequestsStorageKey]);
+    }, [pinnedRequestIds, pinnedRequestsLoaded, pinnedRequestsStorageKey]);
 
     useEffect(() => {
         localStorage.setItem(activityWidthStorageKey, String(Math.round(activityPanelWidth)));
@@ -749,9 +754,10 @@ const Overview = ({ currentUser }) => {
     }, [todayTodos]);
 
     useEffect(() => {
+        if (loadingActivity) return;
         const activityIds = new Set(activity.map((item) => item.id));
         setPinnedRequestIds((prev) => prev.filter((id) => activityIds.has(id)));
-    }, [activity]);
+    }, [activity, loadingActivity]);
 
     useEffect(() => {
         const handlePointerMove = (event) => {

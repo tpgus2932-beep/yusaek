@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import styles from "./BarcodePage.module.css";
+import { getDownloadFilename } from "../../lib/download";
 
 const API = `http://${window.location.hostname}:8000`;
 
@@ -147,15 +148,6 @@ const toEnglishKey = (text) => {
     out += ch;
   }
   return out;
-};
-
-const getDownloadFilename = (res, fallback) => {
-  const disposition = res.headers.get("content-disposition") || "";
-  const match = disposition.match(/filename\\*?=(?:UTF-8''|\"?)([^\";]+)/i);
-  if (match?.[1]) {
-    return decodeURIComponent(match[1].replace(/\"/g, ""));
-  }
-  return fallback;
 };
 
 export default function AmoodBarcodePage({ headerExtra = null }) {

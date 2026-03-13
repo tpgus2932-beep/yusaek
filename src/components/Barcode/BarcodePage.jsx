@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./BarcodePage.module.css";
 import * as XLSX from "xlsx";
+import { getDownloadFilename } from "../../lib/download";
 const API = `http://${window.location.hostname}:8000`;
 
 const getAuthHeaders = () => {
@@ -54,7 +55,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const scanRef = useRef(null);
   const [currentInvoice, setCurrentInvoice] = useState(null);
   const [invoiceDone, setInvoiceDone] = useState(false);
-  const [currentNext, setCurrentNext] = useState(null);
   const [log, setLog] = useState([]);
   const [items, setItems] = useState([]);
   const [nextPreview, setNextPreview] = useState(null);
@@ -64,8 +64,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const soundsRef = useRef(null);
 
   const pushLog = (msg) => setLog((prev) => [msg, ...prev]);
-  const displayLog = log.slice(0, 12);
-
   const downloadLogExcel = () => {
     if (!log.length) { alert("로그가 없습니다."); return; }
     const rows = [["번호", "로그"], ...log.map((text, idx) => [idx + 1, text])];
@@ -80,7 +78,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     return false;
   };
 
-  const refreshStatus = async () => {
+  const refreshStatus = useCallback(async () => {
     try {
       const res = await fetch(`${API}/barcode/status`, { headers: getAuthHeaders() });
       if (handleUnauthorized(res)) return;
@@ -92,19 +90,18 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (data.loaded) {
         setCurrentInvoice(data.current_invoice ?? null);
         setInvoiceDone(false);
-        setCurrentNext(data.current_next ?? null);
         setNextPreview(data.next_preview ?? null);
         if (data.current_invoice) setItems(data.items ?? []);
         else if (Array.isArray(data.items) && data.items.length > 0) setItems(data.items);
-        setDefectList(data.defects ?? defectList);
+        setDefectList(data.defects ?? []);
       } else {
         setCurrentInvoice(null); setInvoiceDone(false);
-        setCurrentNext(null); setNextPreview(null);
+        setNextPreview(null);
       }
     } catch { /* ignore */ }
-  };
+  }, []);
 
-  useEffect(() => { refreshStatus(); setTimeout(() => scanRef.current?.focus(), 50); }, []);
+  useEffect(() => { refreshStatus(); setTimeout(() => scanRef.current?.focus(), 50); }, [refreshStatus]);
 
   useEffect(() => {
     const makeAudio = (src) => {
@@ -139,7 +136,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       setUploadMsg("업로드 완료");
       setCount(data.invoices ?? null); setCodesTotal(data.codes_total ?? null);
       pushLog(`업로드 완료 (송장 ${data.invoices ?? "-"} / 코드 ${data.codes_total ?? "-"})`);
-      setCurrentInvoice(null); setInvoiceDone(false); setCurrentNext(null);
+      setCurrentInvoice(null); setInvoiceDone(false);
       setItems([]); setNextPreview(null); setScanText("");
       setTimeout(() => scanRef.current?.focus(), 50);
     } catch (err) {
@@ -207,12 +204,10 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "처리 실패");
 
-      if (Object.prototype.hasOwnProperty.call(data, "current_next")) setCurrentNext(data.current_next ?? null);
-
       if (toInvoice) {
         if (data.ok === false && data.result === "NOT_FOUND") {
           pushLog(`송장 없음: ${value}`);
-          setCurrentInvoice(null); setInvoiceDone(false); setCurrentNext(null); setItems([]); setNextPreview(null);
+          setCurrentInvoice(null); setInvoiceDone(false); setItems([]); setNextPreview(null);
         } else {
           setCurrentInvoice(data.invoice); setInvoiceDone(false);
           setItems(data.items ?? []); setNextPreview(data.next_preview ?? null);
@@ -223,12 +218,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       } else {
         if (data.ok === false && data.result === "NO_INVOICE") {
           pushLog("송장이 먼저 필요합니다.");
-          setCurrentInvoice(null); setInvoiceDone(false); setCurrentNext(null); setItems([]); setNextPreview(null);
+          setCurrentInvoice(null); setInvoiceDone(false); setItems([]); setNextPreview(null);
         } else if (data.result === "TRUE") {
           pushLog(`TRUE  ${data.code} (잔여 ${data.remain}) ${data.name || ""} ${data.option || ""}`.trim());
           setItems(data.items ?? []); setDefectList(data.defects ?? defectList);
           if (data.invoice_done) { playSound("invoiceDone"); pushLog(`송장 완료: ${data.invoice}`); setInvoiceDone(true); }
-          else if (data.remain === 0) playSound("itemDone");
+          else playSound("itemDone");
         } else {
           pushLog(`FALSE ${data.code} (잔여 ${data.remain}) ${data.name || ""} ${data.option || ""}`.trim());
           setDefectList(data.defects ?? defectList); playSound("bad");
@@ -277,13 +272,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     } catch (err) { pushLog(`불량 삭제 실패: ${err.message || ""}`.trim()); }
   };
 
-  const getDownloadFilename = (res) => {
-    const disposition = res.headers.get("content-disposition") || "";
-    const match = disposition.match(/filename\\*?=(?:UTF-8''|\"?)([^\";]+)/i);
-    if (match?.[1]) return decodeURIComponent(match[1].replace(/\"/g, ""));
-    return `defects_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}.csv`;
-  };
-
   const handleDefectExport = async () => {
     if (defectList.length === 0) { alert("내보낼 불량 목록이 없습니다."); return; }
     try {
@@ -296,7 +284,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
         throw new Error(message);
       }
       const blob = await res.blob();
-      const filename = getDownloadFilename(res);
+      const fallback = `defects_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}.csv`;
+      const filename = getDownloadFilename(res, fallback);
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url; link.download = filename;

@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import styles from "../Barcode/BarcodePage.module.css";
+import { getDownloadFilename } from "../../lib/download";
 
 const API = `http://${window.location.hostname}:8000`;
 const PAGE_LIMIT = 50;
@@ -7,15 +8,6 @@ const PAGE_LIMIT = 50;
 const getAuthHeaders = () => {
   const token = localStorage.getItem("token");
   return token ? { Authorization: `Bearer ${token}` } : {};
-};
-
-const getDownloadFilename = (res, fallback) => {
-  const disposition = res.headers.get("content-disposition") || "";
-  const match = disposition.match(/filename\*?=(?:UTF-8''|\"?)([^\";]+)/i);
-  if (match?.[1]) {
-    return decodeURIComponent(match[1].replace(/\"/g, ""));
-  }
-  return fallback;
 };
 
 export default function CostBaseManagerPage() {
@@ -40,15 +32,15 @@ export default function CostBaseManagerPage() {
     return false;
   };
 
-  const fetchStatus = async () => {
+  const fetchStatus = useCallback(async () => {
     const res = await fetch(`${API}/amood-hapbae/cost-base/status`, { headers: getAuthHeaders() });
     if (handleUnauthorized(res)) return;
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.detail || "원가베이스 상태 조회 실패");
     setStatus(data.status || null);
-  };
+  }, []);
 
-  const fetchPreview = async (nextOffset = 0, nextQuery = query) => {
+  const fetchPreview = useCallback(async (nextOffset = 0, nextQuery = query) => {
     const res = await fetch(
       `${API}/amood-hapbae/cost-base/preview?offset=${nextOffset}&limit=${PAGE_LIMIT}&q=${encodeURIComponent(
         (nextQuery || "").trim()
@@ -64,7 +56,7 @@ export default function CostBaseManagerPage() {
     setTotal(Number(data.total || 0));
     setOffset(nextOffset);
     setEdits({});
-  };
+  }, [query]);
 
   useEffect(() => {
     (async () => {
@@ -75,7 +67,7 @@ export default function CostBaseManagerPage() {
         setMessage(e.message || "초기 로드 실패");
       }
     })();
-  }, []);
+  }, [fetchPreview, fetchStatus]);
 
   const uploadReplace = async () => {
     if (!replaceFile) {
