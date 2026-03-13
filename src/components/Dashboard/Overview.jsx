@@ -46,12 +46,16 @@ const Overview = ({ currentUser }) => {
     const [dashboardLayoutLoaded, setDashboardLayoutLoaded] = useState(false);
     const [pinnedRequestIds, setPinnedRequestIds] = useState([]);
     const [pinnedRequestsLoaded, setPinnedRequestsLoaded] = useState(false);
+    const [requestAlertsEnabled, setRequestAlertsEnabled] = useState(false);
     const isAdmin = useMemo(() => localStorage.getItem('isAdmin') === 'true', []);
     const resizeStateRef = useRef(null);
+    const previousOpenRequestIdsRef = useRef(new Set());
+    const requestAlertsPrimedRef = useRef(false);
 
     const dashboardUserKey = currentUser || localStorage.getItem('username') || 'guest';
     const pinnedRequestsStorageKey = `dashboard:pinned-requests:${dashboardUserKey}`;
     const activityWidthStorageKey = `dashboard:activity-width:${dashboardUserKey}`;
+    const requestAlertsStorageKey = `dashboard:request-alerts:${dashboardUserKey}`;
 
     const authHeaders = useMemo(() => {
         const token = localStorage.getItem('token');
@@ -96,7 +100,26 @@ const Overview = ({ currentUser }) => {
             if (handleUnauthorized(res)) return;
             const data = await res.json();
             if (!res.ok) throw new Error(data?.detail || 'Failed to load activity');
-            setActivity(data?.requests || []);
+            const requests = Array.isArray(data?.requests) ? data.requests : [];
+            const openRequests = requests.filter((item) => item.status !== 'completed');
+            const openRequestIds = new Set(openRequests.map((item) => item.id));
+
+            if (requestAlertsPrimedRef.current && requestAlertsEnabled && typeof window !== 'undefined' && 'Notification' in window) {
+                const newItems = openRequests.filter((item) => !previousOpenRequestIdsRef.current.has(item.id));
+                if (Notification.permission === 'granted') {
+                    newItems.forEach((item) => {
+                        const body = (item.text || '').trim() || '새 요청이 도착했습니다.';
+                        new Notification('새 받은 요청', {
+                            body: body.length > 80 ? `${body.slice(0, 80)}...` : body,
+                            tag: `request-${item.id}`,
+                        });
+                    });
+                }
+            }
+
+            previousOpenRequestIdsRef.current = openRequestIds;
+            requestAlertsPrimedRef.current = true;
+            setActivity(requests);
         } catch (err) {
             setError(err.message || 'Failed to load activity');
         } finally {
@@ -131,6 +154,22 @@ const Overview = ({ currentUser }) => {
         fetchActivity();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [currentUser]);
+
+    useEffect(() => {
+        const stored = localStorage.getItem(requestAlertsStorageKey);
+        setRequestAlertsEnabled(stored === '1');
+        previousOpenRequestIdsRef.current = new Set();
+        requestAlertsPrimedRef.current = false;
+    }, [requestAlertsStorageKey]);
+
+    useEffect(() => {
+        if (!requestAlertsEnabled) return undefined;
+        const timer = window.setInterval(() => {
+            fetchActivity();
+        }, 15000);
+        return () => window.clearInterval(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [requestAlertsEnabled, currentUser]);
 
     useEffect(() => {
         const storedPins = localStorage.getItem(pinnedRequestsStorageKey);
@@ -376,6 +415,32 @@ const Overview = ({ currentUser }) => {
                 ? prev.filter((id) => id !== requestId)
                 : [requestId, ...prev]
         ));
+    };
+
+    const handleRequestAlertsToggle = async () => {
+        if (typeof window === 'undefined' || !('Notification' in window)) {
+            setError('This browser does not support notifications.');
+            return;
+        }
+
+        if (requestAlertsEnabled) {
+            setRequestAlertsEnabled(false);
+            localStorage.setItem(requestAlertsStorageKey, '0');
+            return;
+        }
+
+        let permission = Notification.permission;
+        if (permission === 'default') {
+            permission = await Notification.requestPermission();
+        }
+
+        if (permission !== 'granted') {
+            setError('Notification permission was not granted.');
+            return;
+        }
+
+        setRequestAlertsEnabled(true);
+        localStorage.setItem(requestAlertsStorageKey, '1');
     };
 
     const handleClearSent = async () => {
@@ -1012,9 +1077,19 @@ const Overview = ({ currentUser }) => {
                                 </span>
                             )}
                         </div>
-                        <button className={styles.clearBtn} type="button" onClick={handleClearActivity}>
-                            지우기
-                        </button>
+                        <div className={styles.requestHeaderActions}>
+                            <button
+                                className={`${styles.alertToggleBtn} ${requestAlertsEnabled ? styles.alertToggleBtnActive : ''}`}
+                                type="button"
+                                onClick={handleRequestAlertsToggle}
+                            >
+                                <Bell size={14} />
+                                {requestAlertsEnabled ? '알림 켜짐' : '알림 받기'}
+                            </button>
+                            <button className={styles.clearBtn} type="button" onClick={handleClearActivity}>
+                                지우기
+                            </button>
+                        </div>
                     </div>
                     <div className={styles.requestList}>
                         {loadingActivity && <div className={styles.mutedText}>불러오는 중...</div>}

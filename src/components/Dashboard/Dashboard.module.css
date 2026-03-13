@@ -214,6 +214,14 @@
     margin-bottom: 1rem;
 }
 
+.requestHeaderActions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
 .requestCountBadge {
     display: inline-flex;
     align-items: center;
@@ -242,6 +250,26 @@
 .clearBtn:hover {
     color: var(--text-secondary);
     background-color: var(--bg-secondary);
+}
+
+.alertToggleBtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-primary);
+    color: var(--text-secondary);
+    border-radius: 999px;
+    padding: 0.35rem 0.7rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.alertToggleBtnActive {
+    border-color: rgba(15, 23, 42, 0.2);
+    background-color: rgba(15, 23, 42, 0.08);
+    color: var(--text-primary);
 }
 
 .requestList {
