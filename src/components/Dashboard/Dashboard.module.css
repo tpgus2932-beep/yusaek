@@ -75,37 +75,41 @@
 }
 
 .contentGrid {
-    display: flex;
-    align-items: stretch;
-    gap: 0;
-}
-
-.resizeDivider {
-    width: 12px;
-    flex-shrink: 0;
-    cursor: col-resize;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    user-select: none;
-}
-
-.resizeDividerHandle {
-    width: 3px;
-    height: 48px;
-    border-radius: 2px;
-    background-color: var(--border-color);
-    transition: background-color 0.15s;
-}
-
-.resizeDivider:hover .resizeDividerHandle {
-    background-color: var(--accent-color, #6366f1);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 14px minmax(320px, var(--activity-panel-width, 420px));
+    gap: 1.5rem;
+    align-items: start;
 }
 
 .contentColumn {
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
+    min-width: 0;
+}
+
+.resizeHandle {
+    width: 14px;
+    min-height: 100%;
+    border: none;
+    border-radius: 999px;
+    background: linear-gradient(180deg, transparent 0%, rgba(15, 23, 42, 0.08) 18%, rgba(15, 23, 42, 0.14) 50%, rgba(15, 23, 42, 0.08) 82%, transparent 100%);
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: col-resize;
+    touch-action: none;
+    align-self: stretch;
+}
+
+.resizeHandle:hover {
+    color: var(--text-primary);
+    background: linear-gradient(180deg, transparent 0%, rgba(15, 23, 42, 0.14) 18%, rgba(15, 23, 42, 0.22) 50%, rgba(15, 23, 42, 0.14) 82%, transparent 100%);
+}
+
+.activityPanelCard {
+    min-width: 0;
 }
 
 .card {
@@ -210,6 +214,14 @@
     margin-bottom: 1rem;
 }
 
+.requestHeaderActions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
 .requestCountBadge {
     display: inline-flex;
     align-items: center;
@@ -238,6 +250,26 @@
 .clearBtn:hover {
     color: var(--text-secondary);
     background-color: var(--bg-secondary);
+}
+
+.alertToggleBtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-primary);
+    color: var(--text-secondary);
+    border-radius: 999px;
+    padding: 0.35rem 0.7rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.alertToggleBtnActive {
+    border-color: rgba(15, 23, 42, 0.2);
+    background-color: rgba(15, 23, 42, 0.08);
+    color: var(--text-primary);
 }
 
 .requestList {
@@ -271,6 +303,11 @@
     opacity: 0.6;
 }
 
+.requestItemPinned {
+    border-color: rgba(15, 23, 42, 0.18);
+    box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
+}
+
 .requestItemInner {
     flex: 1;
     min-width: 0;
@@ -284,34 +321,6 @@
     align-items: center;
     gap: 0.5rem;
     flex-wrap: wrap;
-}
-
-.pinBtn {
-    margin-left: auto;
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 2px 4px;
-    border-radius: 4px;
-    color: var(--text-secondary, #aaa);
-    display: flex;
-    align-items: center;
-    opacity: 0.4;
-    transition: opacity 0.15s, color 0.15s;
-}
-
-.pinBtn:hover {
-    opacity: 1;
-    color: var(--accent-color, #6366f1);
-}
-
-.pinBtnActive {
-    opacity: 1;
-    color: var(--accent-color, #6366f1);
-}
-
-.requestItemPinned {
-    border-left: 3px solid var(--accent-color, #6366f1) !important;
 }
 
 .requesterTag {
@@ -333,6 +342,7 @@
     font-size: 0.9375rem;
     font-weight: 500;
     color: var(--text-primary);
+    white-space: pre-wrap;
     overflow-wrap: anywhere;
     word-break: break-word;
     line-height: 1.45;
@@ -342,6 +352,22 @@
     flex-shrink: 0;
     display: flex;
     align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.pinnedBadge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(15, 23, 42, 0.08);
+    color: var(--text-secondary);
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 0.15rem 0.45rem;
+    border-radius: 999px;
 }
 
 .completeBtn {
@@ -359,6 +385,24 @@
 .completeBtn:disabled {
     opacity: 0.35;
     cursor: not-allowed;
+}
+
+.pinBtn {
+    background-color: transparent;
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    padding: 0.35rem 0.7rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.pinBtn:hover {
+    border-color: var(--text-muted);
 }
 
 .emptyState {
@@ -1025,6 +1069,9 @@
 .resolvedTitle {
     font-weight: 600;
     font-size: 0.9375rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .resolvedMeta {
@@ -1198,9 +1245,9 @@
 
 @media (max-width: 1024px) {
     .contentGrid {
-        flex-direction: column;
+        grid-template-columns: 1fr;
     }
-    .resizeDivider {
+    .resizeHandle {
         display: none;
     }
     .resolvedGrid {

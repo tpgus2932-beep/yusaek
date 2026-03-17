@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, Calendar, Bell, ChevronDown, ChevronUp, Pin } from 'lucide-react';
+import { Plus, Calendar, Bell, ChevronDown, ChevronUp, Pin, PinOff, GripVertical } from 'lucide-react';
 import styles from './Dashboard.module.css';
 import { COLLAB_API_BASE as API } from '../../lib/api';
 
@@ -12,7 +12,7 @@ const Overview = ({ currentUser }) => {
     const [activity, setActivity] = useState([]);
     const [resolved, setResolved] = useState([]);
     const [loadingUsers, setLoadingUsers] = useState(true);
-    const [loadingActivity, setLoadingActivity] = useState(false);
+    const [loadingActivity, setLoadingActivity] = useState(true);
     const [loadingResolved, setLoadingResolved] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState('');
@@ -42,10 +42,20 @@ const Overview = ({ currentUser }) => {
     const [selectedTodayTodoIds, setSelectedTodayTodoIds] = useState([]);
     const [sharedTodoOpen, setSharedTodoOpen] = useState(false);
     const [sentRequestsOpen, setSentRequestsOpen] = useState(false);
+    const [activityPanelWidth, setActivityPanelWidth] = useState(420);
+    const [dashboardLayoutLoaded, setDashboardLayoutLoaded] = useState(false);
     const [pinnedRequestIds, setPinnedRequestIds] = useState([]);
-    const [leftPct, setLeftPct] = useState(65);
-    const contentGridRef = useRef(null);
+    const [pinnedRequestsLoaded, setPinnedRequestsLoaded] = useState(false);
+    const [requestAlertsEnabled, setRequestAlertsEnabled] = useState(false);
     const isAdmin = useMemo(() => localStorage.getItem('isAdmin') === 'true', []);
+    const resizeStateRef = useRef(null);
+    const previousOpenRequestIdsRef = useRef(new Set());
+    const requestAlertsPrimedRef = useRef(false);
+
+    const dashboardUserKey = currentUser || localStorage.getItem('username') || 'guest';
+    const pinnedRequestsStorageKey = `dashboard:pinned-requests:${dashboardUserKey}`;
+    const activityWidthStorageKey = `dashboard:activity-width:${dashboardUserKey}`;
+    const requestAlertsStorageKey = `dashboard:request-alerts:${dashboardUserKey}`;
 
     const authHeaders = useMemo(() => {
         const token = localStorage.getItem('token');
@@ -90,7 +100,26 @@ const Overview = ({ currentUser }) => {
             if (handleUnauthorized(res)) return;
             const data = await res.json();
             if (!res.ok) throw new Error(data?.detail || 'Failed to load activity');
-            setActivity(data?.requests || []);
+            const requests = Array.isArray(data?.requests) ? data.requests : [];
+            const openRequests = requests.filter((item) => item.status !== 'completed');
+            const openRequestIds = new Set(openRequests.map((item) => item.id));
+
+            if (requestAlertsPrimedRef.current && requestAlertsEnabled && typeof window !== 'undefined' && 'Notification' in window) {
+                const newItems = openRequests.filter((item) => !previousOpenRequestIdsRef.current.has(item.id));
+                if (Notification.permission === 'granted') {
+                    newItems.forEach((item) => {
+                        const body = (item.text || '').trim() || '새 요청이 도착했습니다.';
+                        new Notification('새 받은 요청', {
+                            body: body.length > 80 ? `${body.slice(0, 80)}...` : body,
+                            tag: `request-${item.id}`,
+                        });
+                    });
+                }
+            }
+
+            previousOpenRequestIdsRef.current = openRequestIds;
+            requestAlertsPrimedRef.current = true;
+            setActivity(requests);
         } catch (err) {
             setError(err.message || 'Failed to load activity');
         } finally {
@@ -125,6 +154,119 @@ const Overview = ({ currentUser }) => {
         fetchActivity();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [currentUser]);
+
+    useEffect(() => {
+        const stored = localStorage.getItem(requestAlertsStorageKey);
+        setRequestAlertsEnabled(stored === '1');
+        previousOpenRequestIdsRef.current = new Set();
+        requestAlertsPrimedRef.current = false;
+    }, [requestAlertsStorageKey]);
+
+    useEffect(() => {
+        if (!requestAlertsEnabled) return undefined;
+        const timer = window.setInterval(() => {
+            fetchActivity();
+        }, 15000);
+        return () => window.clearInterval(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [requestAlertsEnabled, currentUser]);
+
+    useEffect(() => {
+        const storedPins = localStorage.getItem(pinnedRequestsStorageKey);
+        if (!storedPins) {
+            setPinnedRequestIds([]);
+            setPinnedRequestsLoaded(true);
+            return;
+        }
+        try {
+            const parsed = JSON.parse(storedPins);
+            setPinnedRequestIds(Array.isArray(parsed) ? parsed.filter((id) => Number.isFinite(id)) : []);
+        } catch {
+            setPinnedRequestIds([]);
+        } finally {
+            setPinnedRequestsLoaded(true);
+        }
+    }, [pinnedRequestsStorageKey]);
+
+    useEffect(() => {
+        const storedWidth = Number(localStorage.getItem(activityWidthStorageKey));
+        if (Number.isFinite(storedWidth) && storedWidth >= 320 && storedWidth <= 760) {
+            setActivityPanelWidth(storedWidth);
+        } else {
+            setActivityPanelWidth(420);
+        }
+        setDashboardLayoutLoaded(false);
+    }, [activityWidthStorageKey]);
+
+    useEffect(() => {
+        if (!pinnedRequestsLoaded) return;
+        localStorage.setItem(pinnedRequestsStorageKey, JSON.stringify(pinnedRequestIds));
+    }, [pinnedRequestIds, pinnedRequestsLoaded, pinnedRequestsStorageKey]);
+
+    useEffect(() => {
+        localStorage.setItem(activityWidthStorageKey, String(Math.round(activityPanelWidth)));
+    }, [activityPanelWidth, activityWidthStorageKey]);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const fetchDashboardLayout = async () => {
+            try {
+                const res = await fetch(`${API}/settings/dashboard-layout`, { headers: authHeaders });
+                if (handleUnauthorized(res)) return;
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data?.detail || 'Failed to load dashboard layout');
+                const width = Number(data?.activity_panel_width);
+                if (!cancelled && Number.isFinite(width) && width >= 320 && width <= 760) {
+                    setActivityPanelWidth(width);
+                    localStorage.setItem(activityWidthStorageKey, String(Math.round(width)));
+                }
+            } catch (err) {
+                if (!cancelled) {
+                    setError((prev) => prev || err.message || 'Failed to load dashboard layout');
+                }
+            } finally {
+                if (!cancelled) {
+                    setDashboardLayoutLoaded(true);
+                }
+            }
+        };
+
+        fetchDashboardLayout();
+
+        return () => {
+            cancelled = true;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activityWidthStorageKey]);
+
+    useEffect(() => {
+        if (!dashboardLayoutLoaded) return undefined;
+
+        const roundedWidth = Math.round(activityPanelWidth);
+        const timer = window.setTimeout(async () => {
+            try {
+                const res = await fetch(`${API}/settings/dashboard-layout`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...authHeaders,
+                    },
+                    body: JSON.stringify({ activity_panel_width: roundedWidth }),
+                });
+                if (handleUnauthorized(res)) return;
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data?.detail || 'Failed to save dashboard layout');
+            } catch (err) {
+                setError((prev) => prev || err.message || 'Failed to save dashboard layout');
+            }
+        }, 250);
+
+        return () => {
+            window.clearTimeout(timer);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activityPanelWidth, dashboardLayoutLoaded]);
 
     const fetchCompanyCreds = async () => {
         try {
@@ -265,6 +407,40 @@ const Overview = ({ currentUser }) => {
         } catch (err) {
             setError(err.message || 'Failed to clear activity');
         }
+    };
+
+    const togglePinnedRequest = (requestId) => {
+        setPinnedRequestIds((prev) => (
+            prev.includes(requestId)
+                ? prev.filter((id) => id !== requestId)
+                : [requestId, ...prev]
+        ));
+    };
+
+    const handleRequestAlertsToggle = async () => {
+        if (typeof window === 'undefined' || !('Notification' in window)) {
+            setError('This browser does not support notifications.');
+            return;
+        }
+
+        if (requestAlertsEnabled) {
+            setRequestAlertsEnabled(false);
+            localStorage.setItem(requestAlertsStorageKey, '0');
+            return;
+        }
+
+        let permission = Notification.permission;
+        if (permission === 'default') {
+            permission = await Notification.requestPermission();
+        }
+
+        if (permission !== 'granted') {
+            setError('Notification permission was not granted.');
+            return;
+        }
+
+        setRequestAlertsEnabled(true);
+        localStorage.setItem(requestAlertsStorageKey, '1');
     };
 
     const handleClearSent = async () => {
@@ -519,6 +695,21 @@ const Overview = ({ currentUser }) => {
         });
     }, [todos]);
 
+    const orderedActivity = useMemo(() => {
+        const pinnedSet = new Set(pinnedRequestIds);
+        return [...activity].sort((a, b) => {
+            const aPinned = pinnedSet.has(a.id);
+            const bPinned = pinnedSet.has(b.id);
+            if (aPinned !== bPinned) return aPinned ? -1 : 1;
+
+            const aDone = a.status === 'completed';
+            const bDone = b.status === 'completed';
+            if (aDone !== bDone) return aDone ? 1 : -1;
+
+            return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+        });
+    }, [activity, pinnedRequestIds]);
+
     const visibleTodos = useMemo(() => {
         if (todoTab === 'completed') return orderedTodos.filter((item) => item.status === 'completed');
         return orderedTodos.filter((item) => item.status !== 'completed');
@@ -618,41 +809,6 @@ const Overview = ({ currentUser }) => {
         setSelectedTodayTodoIds((prev) => prev.filter((id) => validIds.has(id)));
     }, [todayTodos]);
 
-    const togglePin = (id) => {
-        setPinnedRequestIds((prev) =>
-            prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id]
-        );
-    };
-
-    const sortedActivity = useMemo(() => {
-        return [...activity].sort((a, b) => {
-            const aPinned = pinnedRequestIds.includes(a.id);
-            const bPinned = pinnedRequestIds.includes(b.id);
-            const aDone = a.status === 'completed';
-            const bDone = b.status === 'completed';
-            if (aPinned !== bPinned) return aPinned ? -1 : 1;
-            if (aDone !== bDone) return aDone ? 1 : -1;
-            return 0;
-        });
-    }, [activity, pinnedRequestIds]);
-
-    const handleDividerDrag = (e) => {
-        e.preventDefault();
-        const startX = e.clientX;
-        const startPct = leftPct;
-        const containerWidth = contentGridRef.current?.offsetWidth || 1;
-        const onMove = (e) => {
-            const dx = e.clientX - startX;
-            setLeftPct(Math.min(75, Math.max(25, startPct + (dx / containerWidth) * 100)));
-        };
-        const onUp = () => {
-            document.removeEventListener('mousemove', onMove);
-            document.removeEventListener('mouseup', onUp);
-        };
-        document.addEventListener('mousemove', onMove);
-        document.addEventListener('mouseup', onUp);
-    };
-
     const orderedTodayTodos = useMemo(() => {
         return [...todayTodos].sort((a, b) => {
             const aDone = a.status === 'completed';
@@ -662,6 +818,53 @@ const Overview = ({ currentUser }) => {
         });
     }, [todayTodos]);
 
+    useEffect(() => {
+        if (loadingActivity) return;
+        const activityIds = new Set(activity.map((item) => item.id));
+        setPinnedRequestIds((prev) => prev.filter((id) => activityIds.has(id)));
+    }, [activity, loadingActivity]);
+
+    useEffect(() => {
+        const handlePointerMove = (event) => {
+            const state = resizeStateRef.current;
+            if (!state) return;
+            const clientX = 'touches' in event ? event.touches[0]?.clientX : event.clientX;
+            if (typeof clientX !== 'number') return;
+            const delta = state.startX - clientX;
+            const nextWidth = Math.min(760, Math.max(320, state.startWidth + delta));
+            setActivityPanelWidth(nextWidth);
+        };
+
+        const stopResize = () => {
+            resizeStateRef.current = null;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+        };
+
+        window.addEventListener('mousemove', handlePointerMove);
+        window.addEventListener('mouseup', stopResize);
+        window.addEventListener('touchmove', handlePointerMove, { passive: false });
+        window.addEventListener('touchend', stopResize);
+
+        return () => {
+            window.removeEventListener('mousemove', handlePointerMove);
+            window.removeEventListener('mouseup', stopResize);
+            window.removeEventListener('touchmove', handlePointerMove);
+            window.removeEventListener('touchend', stopResize);
+        };
+    }, []);
+
+    const startActivityResize = (event) => {
+        const clientX = 'touches' in event ? event.touches[0]?.clientX : event.clientX;
+        if (typeof clientX !== 'number') return;
+        resizeStateRef.current = {
+            startX: clientX,
+            startWidth: activityPanelWidth,
+        };
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+    };
+
 
     return (
         <section className={styles.dashboard}>
@@ -669,8 +872,11 @@ const Overview = ({ currentUser }) => {
                 <h1 className={styles.title}>대시보드</h1>
             </div>
 
-            <div className={styles.contentGrid} ref={contentGridRef}>
-                <div className={styles.contentColumn} style={{ width: `${leftPct}%` }}>
+            <div
+                className={styles.contentGrid}
+                style={{ '--activity-panel-width': `${activityPanelWidth}px` }}
+            >
+                <div className={styles.contentColumn}>
                     <div className={styles.card}>
                         <div className={styles.todoHeader}>
                             <div className={styles.cardTitle}>오늘 할 일</div>
@@ -851,27 +1057,39 @@ const Overview = ({ currentUser }) => {
                 </div>
                 </div>
 
-                <div
-                    className={styles.resizeDivider}
-                    onMouseDown={handleDividerDrag}
-                    title="드래그하여 크기 조정"
+                <button
+                    type="button"
+                    className={styles.resizeHandle}
+                    onMouseDown={startActivityResize}
+                    onTouchStart={startActivityResize}
+                    aria-label="받은 요청 너비 조절"
                 >
-                    <div className={styles.resizeDividerHandle} />
-                </div>
+                    <GripVertical size={16} />
+                </button>
 
-                <div className={styles.card} style={{ flex: 1, minWidth: 0 }}>
+                <div className={`${styles.card} ${styles.activityPanelCard}`}>
                     <div className={styles.requestListHeader}>
                         <div className={styles.cardTitle} style={{ margin: 0 }}>
                             받은 요청
-                            {activity.filter((a) => a.status !== 'completed').length > 0 && (
+                            {orderedActivity.filter((a) => a.status !== 'completed').length > 0 && (
                                 <span className={styles.requestCountBadge}>
-                                    {activity.filter((a) => a.status !== 'completed').length}
+                                    {orderedActivity.filter((a) => a.status !== 'completed').length}
                                 </span>
                             )}
                         </div>
-                        <button className={styles.clearBtn} type="button" onClick={handleClearActivity}>
-                            지우기
-                        </button>
+                        <div className={styles.requestHeaderActions}>
+                            <button
+                                className={`${styles.alertToggleBtn} ${requestAlertsEnabled ? styles.alertToggleBtnActive : ''}`}
+                                type="button"
+                                onClick={handleRequestAlertsToggle}
+                            >
+                                <Bell size={14} />
+                                {requestAlertsEnabled ? '알림 켜짐' : '알림 받기'}
+                            </button>
+                            <button className={styles.clearBtn} type="button" onClick={handleClearActivity}>
+                                지우기
+                            </button>
+                        </div>
                     </div>
                     <div className={styles.requestList}>
                         {loadingActivity && <div className={styles.mutedText}>불러오는 중...</div>}
@@ -881,7 +1099,7 @@ const Overview = ({ currentUser }) => {
                             </div>
                         )}
                         {!loadingActivity &&
-                            sortedActivity.map((item) => {
+                            orderedActivity.map((item) => {
                                 const done = item.status === 'completed';
                                 const pinned = pinnedRequestIds.includes(item.id);
                                 return (
@@ -894,20 +1112,21 @@ const Overview = ({ currentUser }) => {
                                                 <span className={styles.requesterTag}>
                                                     {item.requester_display || item.requester_username}
                                                 </span>
+                                                {pinned && <span className={styles.pinnedBadge}>상단고정</span>}
                                                 <span className={styles.requestTime}>{formatDateTime(item.created_at)}</span>
-                                                <button
-                                                    className={`${styles.pinBtn} ${pinned ? styles.pinBtnActive : ''}`}
-                                                    type="button"
-                                                    onClick={() => togglePin(item.id)}
-                                                    title={pinned ? '고정 해제' : '상단 고정'}
-                                                >
-                                                    <Pin size={13} />
-                                                </button>
                                             </div>
                                             <div className={styles.requestText}>{item.text}</div>
                                             {renderAttachments(item)}
                                         </div>
                                         <div className={styles.requestItemAction}>
+                                            <button
+                                                type="button"
+                                                className={styles.pinBtn}
+                                                onClick={() => togglePinnedRequest(item.id)}
+                                            >
+                                                {pinned ? <PinOff size={14} /> : <Pin size={14} />}
+                                                {pinned ? '고정 해제' : '상단 고정'}
+                                            </button>
                                             {done ? (
                                                 <span className={styles.completedStatusBadge}>완료됨</span>
                                             ) : (

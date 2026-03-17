@@ -122,6 +122,15 @@ app.include_router(
 )
 
 
+@app.get("/")
+def root():
+    return {
+        "status": "ok",
+        "service": "collab",
+        "message": "YUSAEK Collab API is running",
+    }
+
+
 @app.post("/barcode/product/upload")
 async def product_upload(
     file: UploadFile = File(...),
@@ -146,6 +155,11 @@ async def product_upload(
 
 @app.get("/ping")
 def ping():
+    return {"status": "ok", "service": "collab"}
+
+
+@app.get("/healthz")
+def healthz():
     return {"status": "ok", "service": "collab"}
 
 

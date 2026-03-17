@@ -1,0 +1,132 @@
+.page {
+  background:
+    radial-gradient(circle at top right, rgba(15, 23, 42, 0.08), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.92));
+}
+
+.hero {
+  align-items: flex-start;
+  padding: 1.75rem;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 28px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(240, 244, 248, 0.92));
+  box-shadow: 0 24px 44px rgba(15, 23, 42, 0.08);
+}
+
+.summaryStrip {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.75rem;
+}
+
+.summaryCard {
+  padding: 0.85rem 1rem;
+  border-radius: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(255, 255, 255, 0.8);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.summaryCardActive {
+  border-color: rgba(15, 23, 42, 0.2);
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.08), rgba(255, 255, 255, 0.96));
+}
+
+.summaryLabel {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.summaryValue {
+  font-size: 1.4rem;
+  line-height: 1;
+  color: var(--text-primary);
+}
+
+.layout {
+  gap: 1rem;
+}
+
+.setupCard,
+.scanCard,
+.queueCard,
+.exportCard {
+  border-radius: 24px;
+}
+
+.fileRow,
+.compactActions,
+.adminRow,
+.formatRow,
+.onebeActions,
+.scanActions {
+  gap: 0.6rem;
+}
+
+.statusGrid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.scanCard {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(244, 247, 250, 0.95));
+}
+
+.scanRow {
+  gap: 1rem;
+}
+
+.scanActions > button:first-child {
+  min-width: 140px;
+}
+
+.tabRow {
+  gap: 0.5rem;
+}
+
+.onebePanel {
+  gap: 1rem;
+}
+
+.formatLabel {
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.checkboxRow {
+  padding: 0.9rem 1rem;
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.exportCard {
+  background: linear-gradient(180deg, rgba(249, 250, 251, 0.96), rgba(255, 255, 255, 0.96));
+}
+
+@media (min-width: 960px) {
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(360px, 0.9fr);
+    align-items: start;
+  }
+
+  .queueCard,
+  .exportCard {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  .hero {
+    padding: 1.2rem;
+    border-radius: 22px;
+  }
+
+  .summaryStrip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

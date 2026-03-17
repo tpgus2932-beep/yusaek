@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import styles from "./BarcodePage.module.css";
 
 const API = `http://${window.location.hostname}:8000`;
@@ -55,7 +55,7 @@ export default function AmoodHapbaePage({ headerExtra = null }) {
     return false;
   };
 
-  const fetchCostBaseStatus = async () => {
+  const fetchCostBaseStatus = useCallback(async () => {
     try {
       const res = await fetch(`${API}/amood-hapbae/cost-base/status`, { headers: getAuthHeaders() });
       if (handleUnauthorized(res)) return;
@@ -65,7 +65,7 @@ export default function AmoodHapbaePage({ headerExtra = null }) {
     } catch {
       // ignore
     }
-  };
+  }, []);
 
   const fetchCostPreview = async (offset = 0, query = costQuery) => {
     const q = (query || "").trim();
@@ -102,7 +102,7 @@ export default function AmoodHapbaePage({ headerExtra = null }) {
 
   React.useEffect(() => {
     fetchCostBaseStatus();
-  }, []);
+  }, [fetchCostBaseStatus]);
 
   const handleFindConflicts = async () => {
     const formData = buildFormData();

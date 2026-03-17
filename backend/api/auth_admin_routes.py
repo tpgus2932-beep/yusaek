@@ -310,4 +310,41 @@ def build_auth_admin_router(
         set_setting(f"menu_hidden_tabs:{user}", json.dumps(clean, ensure_ascii=False))
         return {"ok": True, "hidden_tabs": clean}
 
+    @router.get("/settings/dashboard-layout")
+    def get_dashboard_layout(user: str = Depends(get_current_user)):
+        raw = get_setting(f"dashboard_layout:{user}") or "{}"
+        try:
+            layout = json.loads(raw)
+        except Exception:
+            layout = {}
+        if not isinstance(layout, dict):
+            layout = {}
+
+        width = layout.get("activity_panel_width")
+        if not isinstance(width, int):
+            width = None
+        elif width < 320 or width > 760:
+            width = max(320, min(760, width))
+
+        return {"ok": True, "activity_panel_width": width}
+
+    @router.patch("/settings/dashboard-layout")
+    def set_dashboard_layout(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        width = payload.get("activity_panel_width")
+        if width is None:
+            set_setting(f"dashboard_layout:{user}", json.dumps({}, ensure_ascii=False))
+            return {"ok": True, "activity_panel_width": None}
+
+        try:
+            width = int(width)
+        except Exception:
+            raise HTTPException(status_code=400, detail="activity_panel_width must be an integer")
+
+        width = max(320, min(760, width))
+        set_setting(
+            f"dashboard_layout:{user}",
+            json.dumps({"activity_panel_width": width}, ensure_ascii=False),
+        )
+        return {"ok": True, "activity_panel_width": width}
+
     return router
