@@ -75,9 +75,31 @@
 }
 
 .contentGrid {
-    display: grid;
-    grid-template-columns: 2fr 1fr;
-    gap: 1.5rem;
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+}
+
+.resizeDivider {
+    width: 12px;
+    flex-shrink: 0;
+    cursor: col-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+}
+
+.resizeDividerHandle {
+    width: 3px;
+    height: 48px;
+    border-radius: 2px;
+    background-color: var(--border-color);
+    transition: background-color 0.15s;
+}
+
+.resizeDivider:hover .resizeDividerHandle {
+    background-color: var(--accent-color, #6366f1);
 }
 
 .contentColumn {
@@ -262,6 +284,34 @@
     align-items: center;
     gap: 0.5rem;
     flex-wrap: wrap;
+}
+
+.pinBtn {
+    margin-left: auto;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    color: var(--text-secondary, #aaa);
+    display: flex;
+    align-items: center;
+    opacity: 0.4;
+    transition: opacity 0.15s, color 0.15s;
+}
+
+.pinBtn:hover {
+    opacity: 1;
+    color: var(--accent-color, #6366f1);
+}
+
+.pinBtnActive {
+    opacity: 1;
+    color: var(--accent-color, #6366f1);
+}
+
+.requestItemPinned {
+    border-left: 3px solid var(--accent-color, #6366f1) !important;
 }
 
 .requesterTag {
@@ -1148,7 +1198,10 @@
 
 @media (max-width: 1024px) {
     .contentGrid {
-        grid-template-columns: 1fr;
+        flex-direction: column;
+    }
+    .resizeDivider {
+        display: none;
     }
     .resolvedGrid {
         grid-template-columns: 1fr;

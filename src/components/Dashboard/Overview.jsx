@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, Calendar, Bell, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Calendar, Bell, ChevronDown, ChevronUp, Pin } from 'lucide-react';
 import styles from './Dashboard.module.css';
 import { COLLAB_API_BASE as API } from '../../lib/api';
 
@@ -42,6 +42,9 @@ const Overview = ({ currentUser }) => {
     const [selectedTodayTodoIds, setSelectedTodayTodoIds] = useState([]);
     const [sharedTodoOpen, setSharedTodoOpen] = useState(false);
     const [sentRequestsOpen, setSentRequestsOpen] = useState(false);
+    const [pinnedRequestIds, setPinnedRequestIds] = useState([]);
+    const [leftPct, setLeftPct] = useState(65);
+    const contentGridRef = useRef(null);
     const isAdmin = useMemo(() => localStorage.getItem('isAdmin') === 'true', []);
 
     const authHeaders = useMemo(() => {
@@ -615,6 +618,41 @@ const Overview = ({ currentUser }) => {
         setSelectedTodayTodoIds((prev) => prev.filter((id) => validIds.has(id)));
     }, [todayTodos]);
 
+    const togglePin = (id) => {
+        setPinnedRequestIds((prev) =>
+            prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id]
+        );
+    };
+
+    const sortedActivity = useMemo(() => {
+        return [...activity].sort((a, b) => {
+            const aPinned = pinnedRequestIds.includes(a.id);
+            const bPinned = pinnedRequestIds.includes(b.id);
+            const aDone = a.status === 'completed';
+            const bDone = b.status === 'completed';
+            if (aPinned !== bPinned) return aPinned ? -1 : 1;
+            if (aDone !== bDone) return aDone ? 1 : -1;
+            return 0;
+        });
+    }, [activity, pinnedRequestIds]);
+
+    const handleDividerDrag = (e) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startPct = leftPct;
+        const containerWidth = contentGridRef.current?.offsetWidth || 1;
+        const onMove = (e) => {
+            const dx = e.clientX - startX;
+            setLeftPct(Math.min(75, Math.max(25, startPct + (dx / containerWidth) * 100)));
+        };
+        const onUp = () => {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+    };
+
     const orderedTodayTodos = useMemo(() => {
         return [...todayTodos].sort((a, b) => {
             const aDone = a.status === 'completed';
@@ -631,8 +669,8 @@ const Overview = ({ currentUser }) => {
                 <h1 className={styles.title}>대시보드</h1>
             </div>
 
-            <div className={styles.contentGrid}>
-                <div className={styles.contentColumn}>
+            <div className={styles.contentGrid} ref={contentGridRef}>
+                <div className={styles.contentColumn} style={{ width: `${leftPct}%` }}>
                     <div className={styles.card}>
                         <div className={styles.todoHeader}>
                             <div className={styles.cardTitle}>오늘 할 일</div>
@@ -813,7 +851,15 @@ const Overview = ({ currentUser }) => {
                 </div>
                 </div>
 
-                <div className={styles.card}>
+                <div
+                    className={styles.resizeDivider}
+                    onMouseDown={handleDividerDrag}
+                    title="드래그하여 크기 조정"
+                >
+                    <div className={styles.resizeDividerHandle} />
+                </div>
+
+                <div className={styles.card} style={{ flex: 1, minWidth: 0 }}>
                     <div className={styles.requestListHeader}>
                         <div className={styles.cardTitle} style={{ margin: 0 }}>
                             받은 요청
@@ -835,12 +881,13 @@ const Overview = ({ currentUser }) => {
                             </div>
                         )}
                         {!loadingActivity &&
-                            activity.map((item) => {
+                            sortedActivity.map((item) => {
                                 const done = item.status === 'completed';
+                                const pinned = pinnedRequestIds.includes(item.id);
                                 return (
                                     <div
                                         key={item.id}
-                                        className={`${styles.requestItem} ${done ? styles.requestItemDone : styles.requestItemPending}`}
+                                        className={`${styles.requestItem} ${done ? styles.requestItemDone : styles.requestItemPending} ${pinned ? styles.requestItemPinned : ''}`}
                                     >
                                         <div className={styles.requestItemInner}>
                                             <div className={styles.requestItemTop}>
@@ -848,6 +895,14 @@ const Overview = ({ currentUser }) => {
                                                     {item.requester_display || item.requester_username}
                                                 </span>
                                                 <span className={styles.requestTime}>{formatDateTime(item.created_at)}</span>
+                                                <button
+                                                    className={`${styles.pinBtn} ${pinned ? styles.pinBtnActive : ''}`}
+                                                    type="button"
+                                                    onClick={() => togglePin(item.id)}
+                                                    title={pinned ? '고정 해제' : '상단 고정'}
+                                                >
+                                                    <Pin size={13} />
+                                                </button>
                                             </div>
                                             <div className={styles.requestText}>{item.text}</div>
                                             {renderAttachments(item)}
