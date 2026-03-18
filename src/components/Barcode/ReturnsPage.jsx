@@ -319,7 +319,7 @@ const ReturnsPage = () => {
             setLastType(nextType);
             const prevType = lastTypeRef.current;
             lastTypeRef.current = nextType;
-            const shouldPlay = nextType !== '-' && nextType !== '' && nextType !== prevType;
+            const shouldPlay = nextType !== '-' && nextType !== '';
             if (shouldPlay) {
                 const norm = String(nextType);
                 if (norm.includes('판매자') || norm.toLowerCase().includes('seller')) playSound('seller');
