@@ -18,6 +18,12 @@ services:
         sync: false
       - key: TURSO_AUTH_TOKEN
         sync: false
+      - key: ALIGO_API_KEY
+        sync: false
+      - key: ALIGO_USER_ID
+        sync: false
+      - key: ALIGO_SENDER
+        sync: false
       - key: COLLAB_DB_PATH
         value: /tmp/collab_app.db
       - key: COLLAB_REQUEST_UPLOAD_BASE

@@ -21,6 +21,7 @@ os.environ.setdefault(
 
 from api.auth_admin_routes import build_auth_admin_router
 from api.collab_routes import build_collab_router
+from api.sms_routes import build_sms_router
 from main import (
     ALLOWED_REQUEST_EXTS,
     ALLOWED_SHARED_EXTS,
@@ -118,6 +119,12 @@ app.include_router(
         allowed_shared_exts=ALLOWED_SHARED_EXTS,
         max_request_file_size_bytes=COLLAB_REQUEST_MAX_BYTES,
         max_shared_file_size_bytes=COLLAB_SHARED_FILE_MAX_BYTES,
+    )
+)
+
+app.include_router(
+    build_sms_router(
+        get_current_user=_get_current_user,
     )
 )
 
