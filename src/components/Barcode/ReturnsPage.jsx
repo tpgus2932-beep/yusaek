@@ -386,6 +386,39 @@ const ReturnsPage = () => {
         }
     };
 
+    const handleCopyPreview = async () => {
+        if (!onebeRows.length) {
+            setMessage('먼저 원베양식을 생성하세요.');
+            return;
+        }
+        const cols = selectedColumnList.length ? selectedColumnList : ['상품코드', '요청수량', '입고수량'];
+        const headers = cols.map((c) => (onebeHeaders[c] ?? c).trim() || c);
+        const header = headers.join('\t');
+        const body = onebeRows
+            .map((row) => cols.map((c) => (row?.[c] ?? '')).join('\t'))
+            .join('\n');
+        try {
+            await navigator.clipboard.writeText(`${header}\n${body}`);
+            setMessage('미리보기 복사 완료');
+        } catch {
+            setMessage('복사 실패');
+        }
+    };
+
+    const handleConsolidate = async () => {
+        try {
+            const res = await fetch(`${API}/returns/onebe/consolidate`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '같은수량가공 실패');
+            setOnebeRows(data.onebe?.rows || []);
+        } catch (err) {
+            setMessage(err.message || '같은수량가공 실패');
+        }
+    };
+
     const handleBuildOnebe = async () => {
         const source = 'customer';
         try {
@@ -663,6 +696,12 @@ const ReturnsPage = () => {
                             <div className={`${pageStyles.uploadRow} ${styles.onebeActions}`}>
                                 <button className={pageStyles.primaryBtn} onClick={handleBuildOnebe}>
                                     고객대기 → 원베양식 생성
+                                </button>
+                                <button className={pageStyles.secondaryBtn} onClick={handleCopyPreview}>
+                                    미리보기 복사(엑셀 붙여넣기)
+                                </button>
+                                <button className={pageStyles.secondaryBtn} onClick={handleConsolidate}>
+                                    같은수량가공
                                 </button>
                                 <button
                                     className={pageStyles.secondaryBtn}
