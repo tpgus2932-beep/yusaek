@@ -2,6 +2,7 @@ import io
 import re
 import tempfile
 import uuid
+from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
@@ -58,17 +59,26 @@ def _jeju_clean_option(value) -> str:
 
 
 def _jeju_combine(name: str, option: str) -> str:
-    return " ".join(p for p in [name.strip(), option.strip()] if p).strip()
+    return " ".join(part for part in [name.strip(), option.strip()] if part).strip()
+
+
+def _jeju_parse_qty(value) -> float:
+    text = _jeju_normalize(value)
+    if not text:
+        return 1.0
+    compact = text.replace(",", "")
+    try:
+        return float(compact)
+    except Exception:
+        return 1.0
+
+
+def _jeju_display_qty(value) -> object:
+    qty = _jeju_parse_qty(value)
+    return int(qty) if float(qty).is_integer() else qty
 
 
 def _jeju_process(path: Path) -> list[tuple[str, str]]:
-    """
-    두 번째 시트에서:
-      - C열(idx 2) 중복 행만 필터
-      - A = clean(G열 idx 6) + clean(I열 idx 8)
-      - B = J열(idx 9) raw값
-    Returns list of (a_val, b_val)
-    """
     ext = path.suffix.lower()
     try:
         if ext == ".xls":
@@ -76,7 +86,7 @@ def _jeju_process(path: Path) -> list[tuple[str, str]]:
         else:
             df = pd.read_excel(path, sheet_name=1, header=None, dtype=object, engine="openpyxl")
     except Exception as e:
-        raise ValueError(f"두 번째 시트를 읽을 수 없습니다: {e}")
+        raise ValueError(f"2번택 시트를 읽을 수 없습니다: {e}")
 
     required_cols = [2, 6, 8, 9]
     if df.shape[1] <= max(required_cols):
@@ -92,16 +102,46 @@ def _jeju_process(path: Path) -> list[tuple[str, str]]:
     if filtered.empty:
         return []
 
-    rows = []
+    rows: list[tuple[str, str]] = []
     for _, row in filtered.iterrows():
         g_clean = _jeju_clean_product_name(row.iloc[6])
         i_clean = _jeju_clean_option(row.iloc[8])
-        a_val = _jeju_combine(g_clean, i_clean)
-        b_val = _jeju_normalize(row.iloc[9])
-        if a_val:
-            rows.append((a_val, b_val))
+        product_name = _jeju_combine(g_clean, i_clean)
+        qty = _jeju_normalize(row.iloc[9])
+        if product_name:
+            rows.append((product_name, qty))
 
     return rows
+
+
+def _jeju_merge_rows(
+    rows: list[tuple[str, str]],
+    cost_map: dict,
+) -> list[tuple[str, object, object]]:
+    merged_rows: list[tuple[str, object, object]] = []
+    code_totals: dict[str, float] = defaultdict(float)
+    code_first_index: dict[str, int] = {}
+
+    for product_name, raw_qty in rows:
+        product_code = cost_map.get(product_name.casefold(), "")
+        code_key = _ah_normalize(product_code)
+
+        if not code_key:
+            merged_rows.append((product_name, _jeju_display_qty(raw_qty), product_code))
+            continue
+
+        code_totals[code_key] += _jeju_parse_qty(raw_qty)
+        if code_key not in code_first_index:
+            code_first_index[code_key] = len(merged_rows)
+            merged_rows.append((product_name, 0, product_code))
+
+        row_index = code_first_index[code_key]
+        first_name, _, first_code = merged_rows[row_index]
+        total = code_totals[code_key]
+        merged_qty: object = int(total) if float(total).is_integer() else total
+        merged_rows[row_index] = (first_name, merged_qty, first_code)
+
+    return merged_rows
 
 
 def _jeju_build_xls(
@@ -112,23 +152,23 @@ def _jeju_build_xls(
 ) -> bytes:
     book = xlwt.Workbook()
     sheet = book.add_sheet("결과")
+    merged_rows = _jeju_merge_rows(rows, cost_map)
 
-    selected_headers = [headers[i - 1] for i in include_cols]
-    for idx, h in enumerate(selected_headers):
-        sheet.write(0, idx, h)
+    selected_headers = [headers[idx - 1] for idx in include_cols]
+    for idx, header in enumerate(selected_headers):
+        sheet.write(0, idx, header)
 
-    for i, (a_val, b_val) in enumerate(rows, start=1):
-        code = cost_map.get(a_val.casefold(), "")
-        selected = []
+    for row_idx, (product_name, qty, product_code) in enumerate(merged_rows, start=1):
+        selected_values: list[object] = []
         for col_no in include_cols:
             if col_no == 1:
-                selected.append(a_val)
+                selected_values.append(product_name)
             elif col_no == 2:
-                selected.append(code)
+                selected_values.append(product_code)
             elif col_no == 3:
-                selected.append(b_val)
-        for j, v in enumerate(selected):
-            sheet.write(i, j, v)
+                selected_values.append(qty)
+        for col_idx, cell_value in enumerate(selected_values):
+            sheet.write(row_idx, col_idx, cell_value)
 
     buf = io.BytesIO()
     book.save(buf)
@@ -169,7 +209,7 @@ async def jeju_hapbae_export(
     try:
         rows = _jeju_process(tmp_path)
         if not rows:
-            raise HTTPException(status_code=400, detail="C열 중복 행이 없거나 가공할 데이터가 없습니다.")
+            raise HTTPException(status_code=400, detail="C열 중복 데이터가 없어 가공할 항목이 없습니다.")
 
         cost_map: dict = {}
         if SHARED_COST_BASE_PATH.exists():
