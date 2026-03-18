@@ -32,7 +32,6 @@ const ReturnsPage = () => {
     const [loading, setLoading] = useState(false);
     const [scanText, setScanText] = useState('');
     const [lastType, setLastType] = useState('-');
-    const [exportFormat, setExportFormat] = useState('xlsx');
     const [onebeFormat, setOnebeFormat] = useState('xls');
     const [onebeHeaders, setOnebeHeaders] = useState(() => ({}));
     const [showCostEditor, setShowCostEditor] = useState(false);
@@ -542,28 +541,7 @@ const ReturnsPage = () => {
                             </button>
                         </div>
                     )}
-                    {status && (
-                        <div className={`${pageStyles.metaGrid} ${styles.statusGrid}`}>
-                            <div className={pageStyles.metaItem}>
-                                <span className={pageStyles.metaLabel}>CJ 엑셀</span>
-                                <strong className={pageStyles.metaValue}>
-                                    {status.excel1_loaded ? 'O' : 'X'} ({status.map_count ?? 0})
-                                </strong>
-                            </div>
-                            <div className={pageStyles.metaItem}>
-                                <span className={pageStyles.metaLabel}>에이블리 엑셀</span>
-                                <strong className={pageStyles.metaValue}>
-                                    {status.excel2_loaded ? 'O' : 'X'} ({status.index_count ?? 0})
-                                </strong>
-                            </div>
-                            <div className={pageStyles.metaItem}>
-                                <span className={pageStyles.metaLabel}>원가베이스</span>
-                                <strong className={pageStyles.metaValue}>
-                                    {status.cost_loaded ? 'O' : 'X'} ({status.cost_count ?? 0})
-                                </strong>
-                            </div>
-                        </div>
-                    )}
+
                     {message && (
                         <div className={pageStyles.statusMsg}>
                             <strong>{message}</strong>
@@ -746,44 +724,7 @@ const ReturnsPage = () => {
                     )}
                 </section>
 
-                <section className={`${pageStyles.card} ${styles.exportCard}`}>
-                    <div className={pageStyles.cardHeader}>
-                        <h3 className={pageStyles.cardTitle}>(기존) 판매자/고객/미매칭 추출</h3>
-                    </div>
-                    <div className={`${pageStyles.uploadRow} ${styles.formatRow}`}>
-                        <span className={styles.formatLabel}>파일 형식:</span>
-                        <label className={pageStyles.radioItem}>
-                            <input
-                                type="radio"
-                                name="exportFormat"
-                                value="xlsx"
-                                checked={exportFormat === 'xlsx'}
-                                onChange={() => setExportFormat('xlsx')}
-                            />
-                            xlsx
-                        </label>
-                        <label className={pageStyles.radioItem}>
-                            <input
-                                type="radio"
-                                name="exportFormat"
-                                value="xls"
-                                checked={exportFormat === 'xls'}
-                                onChange={() => setExportFormat('xls')}
-                            />
-                            xls
-                        </label>
-                        <button
-                            className={pageStyles.primaryBtn}
-                            onClick={() =>
-                                handleDownload('/returns/download/queues', `반품대기_추출.${exportFormat}`, {
-                                    format: exportFormat,
-                                })
-                            }
-                        >
-                            추출 저장
-                        </button>
-                    </div>
-                </section>
+
             </div>
 
             {showCostEditor && (
@@ -810,18 +751,7 @@ const ReturnsPage = () => {
                                     }}
                                     placeholder="검색어 입력"
                                 />
-                                <button
-                                    className={pageStyles.secondaryBtn}
-                                    onClick={() => fetchCostPreview(0, costQuery)}
-                                >
-                                    검색
-                                </button>
-                                <button
-                                    className={pageStyles.secondaryBtn}
-                                    onClick={() => fetchCostPreview(costOffset, costQuery)}
-                                >
-                                    새로고침
-                                </button>
+
                                 <button className={pageStyles.primaryBtn} onClick={handleCostCellCommit}>
                                     변경 적용
                                 </button>
