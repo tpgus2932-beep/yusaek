@@ -403,8 +403,12 @@ def build_noye_kimsungil_router(*, get_current_user):
 
     @router.post("/kdg/date-copy-text")
     def kdg_date_copy_text(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        raw = _safe_str(payload.get("text"))
-        rows = _parse_kdg_text(raw)
+        pre_rows = payload.get("rows")
+        if pre_rows and isinstance(pre_rows, list):
+            rows = pre_rows
+        else:
+            raw = _safe_str(payload.get("text"))
+            rows = _parse_kdg_text(raw)
         df = pd.DataFrame(rows)
         g = (
             df.groupby(["모델번호", "색상", "사이즈", "기장"], as_index=False)[["수량", "금액"]]

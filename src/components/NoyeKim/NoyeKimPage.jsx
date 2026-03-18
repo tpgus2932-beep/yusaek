@@ -147,17 +147,18 @@ export default function NoyeKimPage() {
   };
 
   const copyKdgDate = async () => {
-    if (!kdgText.trim()) {
+    if (kdgRows.length === 0 && !kdgText.trim()) {
       setMessage("원본 텍스트를 먼저 입력하세요.");
       return;
     }
     setLoading(true);
     setMessage("");
     try {
+      const body = kdgRows.length > 0 ? { rows: kdgRows } : { text: kdgText };
       const res = await fetch(`${API}/noye-kimsungil/kdg/date-copy-text`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ text: kdgText }),
+        body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "날짜별 복사 데이터 생성 실패");
