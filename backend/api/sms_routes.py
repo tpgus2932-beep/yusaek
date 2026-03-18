@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 
 import httpx
@@ -92,10 +93,13 @@ def build_sms_router(*, get_current_user):
         result = await _post("/list/", data)
         normalized_query = _normalize_receiver(receiver_query)
 
-        filtered = []
-        for item in result.get("list", []) or []:
-            receivers, total = await _fetch_receivers(item.get("mid"))
+        items = result.get("list", []) or []
 
+        # 모든 메시지의 수신번호를 병렬 조회
+        receivers_list = await asyncio.gather(*[_fetch_receivers(item.get("mid")) for item in items])
+
+        filtered = []
+        for item, (receivers, total) in zip(items, receivers_list):
             # receiver_preview 설정
             if receivers:
                 extra = max(total - 1, len(receivers) - 1)
@@ -103,7 +107,7 @@ def build_sms_router(*, get_current_user):
             else:
                 item["receiver_preview"] = ""
 
-            # 수신번호 필터링 (같은 데이터로 판단)
+            # 수신번호 필터링
             if normalized_query:
                 if any(normalized_query in r for r in receivers):
                     filtered.append(item)
