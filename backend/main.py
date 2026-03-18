@@ -31,6 +31,7 @@ import xlwt
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 from api.amood_hapbae import router as amood_hapbae_router, SHARED_COST_BASE_PATH
+from api.jeju_hapbae import router as jeju_hapbae_router
 from api.auth_admin_routes import build_auth_admin_router
 from api.collab_routes import build_collab_router
 from api.barcode_routes import build_barcode_router
@@ -998,6 +999,10 @@ def _require_admin(user: str = Depends(_get_current_user)):
 
 app.include_router(
     amood_hapbae_router,
+    dependencies=[Depends(_get_current_user)],
+)
+app.include_router(
+    jeju_hapbae_router,
     dependencies=[Depends(_get_current_user)],
 )
 app.include_router(
