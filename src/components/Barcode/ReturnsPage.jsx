@@ -26,6 +26,7 @@ const DEFAULT_COLUMNS = [
 const ReturnsPage = () => {
     const [message, setMessage] = useState('');
     const [status, setStatus] = useState(null);
+    const [savedAt, setSavedAt] = useState('');
     const [queues, setQueues] = useState({ seller: [], customer: [], unmatched: [], all: [] });
     const [onebeRows, setOnebeRows] = useState([]);
     const [activeTab, setActiveTab] = useState('all');
@@ -92,6 +93,7 @@ const ReturnsPage = () => {
             setStatus(data.status || null);
             setQueues(data.queues || { seller: [], customer: [], unmatched: [], all: [] });
             setOnebeRows(data.onebe?.rows || []);
+            setSavedAt(data.saved_at || '');
             const nextType = data.last_type || '-';
             setLastType(nextType);
             const prevType = lastTypeRef.current;
@@ -349,6 +351,41 @@ const ReturnsPage = () => {
         }
     };
 
+    const handleSaveSnapshot = async () => {
+        try {
+            const res = await fetch(`${API}/returns/save`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '임시저장 실패');
+            setSavedAt(data.saved_at || '');
+            setMessage('반품 스캔 상태를 임시저장했습니다.');
+        } catch (err) {
+            setMessage(err.message || '임시저장 실패');
+        }
+    };
+
+    const handleLoadSnapshot = async () => {
+        try {
+            const res = await fetch(`${API}/returns/load`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '불러오기 실패');
+            setStatus(data.status || null);
+            setQueues(data.queues || { seller: [], customer: [], unmatched: [], all: [] });
+            setOnebeRows(data.onebe?.rows || []);
+            setSavedAt(data.saved_at || '');
+            setLastType(data.last_type || '-');
+            lastTypeRef.current = data.last_type || '-';
+            setMessage('임시저장된 반품 스캔 상태를 불러왔습니다.');
+        } catch (err) {
+            setMessage(err.message || '불러오기 실패');
+        }
+    };
+
     const handleBuildOnebe = async () => {
         const source = 'customer';
         try {
@@ -517,10 +554,17 @@ const ReturnsPage = () => {
                         <button className={pageStyles.secondaryBtn} onClick={handleCostReload} disabled={loading}>
                             새로 로드
                         </button>
+                        <button className={pageStyles.secondaryBtn} onClick={handleSaveSnapshot} disabled={loading}>
+                            임시저장
+                        </button>
+                        <button className={pageStyles.secondaryBtn} onClick={handleLoadSnapshot} disabled={loading}>
+                            불러오기
+                        </button>
                         <button className={pageStyles.secondaryBtn} onClick={openCostEditor}>
                             원가베이스 편집
                         </button>
                     </div>
+                    {savedAt && <div className={pageStyles.metaLabel}>마지막 임시저장: {savedAt}</div>}
                     {isAdmin && (
                         <div className={`${pageStyles.uploadRow} ${styles.adminRow}`}>
                             <input

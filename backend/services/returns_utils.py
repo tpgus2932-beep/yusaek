@@ -1,3 +1,5 @@
+import io
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -128,6 +130,59 @@ class ReturnState:
         self.customer_export_df: pd.DataFrame = pd.DataFrame()
         self.last_type: str = "-"
         self.next_id: int = 1
+
+
+def _return_df_to_json(df: pd.DataFrame | None) -> str | None:
+    if df is None:
+        return None
+    return df.to_json(orient="split", force_ascii=False)
+
+
+def _return_df_from_json(raw: str | None) -> pd.DataFrame | None:
+    if not raw:
+        return None
+    return pd.read_json(io.StringIO(raw), orient="split", dtype=False)
+
+
+def _return_state_to_payload(state: ReturnState) -> dict:
+    return {
+        "df1": _return_df_to_json(state.df1),
+        "df2": _return_df_to_json(state.df2),
+        "map_d_to_e": state.map_d_to_e,
+        "df2_index": state.df2_index,
+        "queue_seller": state.queue_seller,
+        "queue_customer": state.queue_customer,
+        "queue_unmatched": state.queue_unmatched,
+        "all_items": state.all_items,
+        "last_added_ids": state.last_added_ids,
+        "scanned_barcodes": sorted(state.scanned_barcodes),
+        "cost_map": state.cost_map,
+        "customer_export_df": _return_df_to_json(state.customer_export_df),
+        "last_type": state.last_type,
+        "next_id": state.next_id,
+    }
+
+
+def _load_return_state_from_payload(state: ReturnState, payload: dict | None):
+    payload = payload or {}
+    state.df1 = _return_df_from_json(payload.get("df1"))
+    state.df2 = _return_df_from_json(payload.get("df2"))
+    state.map_d_to_e = dict(payload.get("map_d_to_e") or {})
+    state.df2_index = {str(k): list(v) for k, v in dict(payload.get("df2_index") or {}).items()}
+    state.queue_seller = list(payload.get("queue_seller") or [])
+    state.queue_customer = list(payload.get("queue_customer") or [])
+    state.queue_unmatched = list(payload.get("queue_unmatched") or [])
+    state.all_items = list(payload.get("all_items") or [])
+    state.last_added_ids = [int(v) for v in list(payload.get("last_added_ids") or [])]
+    state.scanned_barcodes = set(str(v) for v in list(payload.get("scanned_barcodes") or []))
+    state.cost_map = dict(payload.get("cost_map") or {})
+    customer_export_df = _return_df_from_json(payload.get("customer_export_df"))
+    state.customer_export_df = customer_export_df if customer_export_df is not None else pd.DataFrame()
+    state.last_type = str(payload.get("last_type") or "-")
+    try:
+        state.next_id = max(int(payload.get("next_id") or 1), 1)
+    except Exception:
+        state.next_id = 1
 
 
 def _return_status(state: ReturnState) -> dict:

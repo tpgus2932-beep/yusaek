@@ -45,6 +45,7 @@ from services.returns_utils import (
     _clean_invoice,
     _clean_product_name,
     _clean_qty,
+    _load_return_state_from_payload,
     _lowercase_size_words,
     _normalize_key,
     _normalize_spaces,
@@ -54,6 +55,7 @@ from services.returns_utils import (
     _reason_type,
     _return_queue_payload,
     _return_rows,
+    _return_state_to_payload,
     _return_status,
 )
 from services.amood_utils import (
@@ -731,6 +733,24 @@ def _init_order_registered_codes():
 _init_order_registered_codes()
 
 
+def _init_return_saved_states():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS return_saved_states (
+            username TEXT PRIMARY KEY,
+            payload TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_return_saved_states()
+
+
 def _get_user_display(username: str) -> str:
     conn = _get_db()
     row = conn.execute("SELECT display_name FROM users WHERE username = ?", (username,)).fetchone()
@@ -1071,9 +1091,12 @@ app.include_router(
         get_current_user=_get_current_user,
         require_admin=_require_admin,
         get_return_state=_get_return_state,
+        get_db=_get_shared_db,
         return_status=_return_status,
         return_queue_payload=_return_queue_payload,
         return_rows=_return_rows,
+        return_state_to_payload=_return_state_to_payload,
+        load_return_state_from_payload=_load_return_state_from_payload,
         load_return_cost_base=_load_return_cost_base,
         load_cost_base_df=_load_cost_base_df,
         save_cost_base_df=_save_cost_base_df,

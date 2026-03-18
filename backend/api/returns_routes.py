@@ -1,7 +1,9 @@
 import io
+import json
 import shutil
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -14,9 +16,12 @@ def build_returns_router(
     get_current_user,
     require_admin,
     get_return_state,
+    get_db,
     return_status,
     return_queue_payload,
     return_rows,
+    return_state_to_payload,
+    load_return_state_from_payload,
     load_return_cost_base,
     load_cost_base_df,
     save_cost_base_df,
@@ -70,6 +75,12 @@ def build_returns_router(
     @router.get("/returns/state")
     def returns_state(user: str = Depends(get_current_user)):
         state = get_return_state(user)
+        conn = get_db()
+        row = conn.execute(
+            "SELECT updated_at FROM return_saved_states WHERE username = ?",
+            (user,),
+        ).fetchone()
+        conn.close()
         return {
             "ok": True,
             "status": return_status(state),
@@ -77,6 +88,50 @@ def build_returns_router(
             "onebe": {
                 "rows": return_rows(state.customer_export_df),
             },
+            "last_type": state.last_type,
+            "scanned_count": len(state.scanned_barcodes),
+            "saved_at": row["updated_at"] if row else None,
+        }
+
+    @router.post("/returns/save")
+    def returns_save(user: str = Depends(get_current_user)):
+        state = get_return_state(user)
+        payload = json.dumps(return_state_to_payload(state), ensure_ascii=False)
+        updated_at = datetime.now(timezone.utc).isoformat()
+        conn = get_db()
+        conn.execute(
+            """
+            INSERT INTO return_saved_states (username, payload, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(username) DO UPDATE SET
+                payload = excluded.payload,
+                updated_at = excluded.updated_at
+            """,
+            (user, payload, updated_at),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "saved_at": updated_at}
+
+    @router.post("/returns/load")
+    def returns_load(user: str = Depends(get_current_user)):
+        conn = get_db()
+        row = conn.execute(
+            "SELECT payload, updated_at FROM return_saved_states WHERE username = ?",
+            (user,),
+        ).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="임시저장된 반품 상태가 없습니다.")
+        state = get_return_state(user)
+        payload = json.loads(row["payload"])
+        load_return_state_from_payload(state, payload)
+        return {
+            "ok": True,
+            "saved_at": row["updated_at"],
+            "status": return_status(state),
+            "queues": return_queue_payload(state),
+            "onebe": {"rows": return_rows(state.customer_export_df)},
             "last_type": state.last_type,
             "scanned_count": len(state.scanned_barcodes),
         }
