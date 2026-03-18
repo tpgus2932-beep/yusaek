@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   MessageSquare, Send, Wallet, History, RefreshCw,
   X, ChevronLeft, ChevronRight, CheckCircle, XCircle,
-  Clock, AlertCircle,
+  Clock, AlertCircle, Trash2,
 } from 'lucide-react';
 import styles from './SMSPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
@@ -54,6 +54,14 @@ const MsgTypeBadge = ({ bytes }) => {
 };
 
 export default function SMSPage() {
+  const [hiddenHistoryMids, setHiddenHistoryMids] = useState(() => {
+    try {
+      const raw = localStorage.getItem('sms-hidden-history-mids');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
   const [activeTab, setActiveTab] = useState('send');
 
   // ─── 문자보내기 상태 ───
@@ -80,6 +88,7 @@ export default function SMSPage() {
   const [historyNextYn, setHistoryNextYn] = useState('N');
   const [startDate, setStartDate] = useState('');
   const [limitDay, setLimitDay] = useState('7');
+  const [historyReceiverQuery, setHistoryReceiverQuery] = useState('');
 
   // ─── 상세 모달 상태 ───
   const [detailMid, setDetailMid] = useState(null);
@@ -186,6 +195,7 @@ export default function SMSPage() {
       const body = { page, page_size: 30 };
       if (startDate) body.start_date = startDate.replace(/-/g, '');
       if (limitDay) body.limit_day = Number(limitDay);
+      if (historyReceiverQuery.trim()) body.receiver_query = historyReceiverQuery.trim();
       const res = await fetch(`${API}/sms/list`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -194,7 +204,8 @@ export default function SMSPage() {
       if (handleUnauthorized(res)) return;
       const data = await res.json();
       if (data.result_code > 0) {
-        setHistoryList(data.list || []);
+        const filtered = (data.list || []).filter((item) => !hiddenHistoryMids.includes(item.mid));
+        setHistoryList(filtered);
         setHistoryNextYn(data.next_yn || 'N');
         setHistoryPage(page);
       }
@@ -203,7 +214,7 @@ export default function SMSPage() {
     } finally {
       setHistoryLoading(false);
     }
-  }, [startDate, limitDay]);
+  }, [hiddenHistoryMids, historyReceiverQuery, startDate, limitDay]);
 
   // ─── 상세 조회 ───
   const fetchDetail = useCallback(async (mid, page = 1) => {
@@ -244,6 +255,20 @@ export default function SMSPage() {
     setDetailItem(null);
   };
 
+  const handleHideHistoryItem = (mid) => {
+    if (!mid) return;
+    setHiddenHistoryMids((prev) => {
+      if (prev.includes(mid)) return prev;
+      const next = [...prev, mid];
+      localStorage.setItem('sms-hidden-history-mids', JSON.stringify(next));
+      return next;
+    });
+    setHistoryList((prev) => prev.filter((item) => item.mid !== mid));
+    if (detailMid === mid) {
+      closeDetail();
+    }
+  };
+
   // ─── 예약취소 ───
   const handleCancel = async () => {
     if (!detailMid) return;
@@ -276,6 +301,14 @@ export default function SMSPage() {
     if (activeTab === 'remain') fetchRemain();
     if (activeTab === 'history') fetchHistory(1);
   }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'history') return;
+    const timer = setTimeout(() => {
+      fetchHistory(1);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [activeTab, historyReceiverQuery, startDate, limitDay, fetchHistory]);
 
   const isReserved = detailItem?.reserve_state === '예약대기중';
   const byteClass = bytes > LMS_MAX ? styles.byteCountOver : bytes > SMS_MAX ? styles.byteCountWarn : styles.byteCount;
@@ -510,6 +543,16 @@ export default function SMSPage() {
               <div className={styles.label}>조회 시작일</div>
               <input type="date" className={styles.input} value={startDate} onChange={(e) => setStartDate(e.target.value)} />
             </div>
+            <div className={styles.fieldGroup} style={{ flex: '1', minWidth: 180 }}>
+              <div className={styles.label}>수신번호 검색</div>
+              <input
+                className={styles.input}
+                value={historyReceiverQuery}
+                onChange={(e) => setHistoryReceiverQuery(e.target.value.replace(/[^0-9]/g, ''))}
+                placeholder="번호 일부 입력"
+                inputMode="numeric"
+              />
+            </div>
             <div className={styles.fieldGroup} style={{ minWidth: 120 }}>
               <div className={styles.label}>조회 기간(일)</div>
               <select className={styles.select} value={limitDay} onChange={(e) => setLimitDay(e.target.value)}>
@@ -533,20 +576,37 @@ export default function SMSPage() {
                   <thead>
                     <tr>
                       <th>유형</th>
+                      <th>수신번호</th>
                       <th>전송수</th>
                       <th>상태</th>
                       <th>내용</th>
                       <th>등록일</th>
+                      <th>관리</th>
                     </tr>
                   </thead>
                   <tbody>
                     {historyList.map((item, idx) => (
                       <tr key={item.mid ?? idx} onClick={() => openDetail(item)}>
                         <td><span className={`${styles.badge} ${styles.badgeGray}`}>{item.type}</span></td>
+                        <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{item.receiver_preview || '-'}</td>
                         <td>{item.sms_count}명</td>
                         <td><BadgeColor status={item.reserve_state} /></td>
                         <td><div className={styles.msgPreview}>{item.msg}</div></td>
                         <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{item.reg_date}</td>
+                        <td>
+                          {!item.receiver_preview && (
+                            <button
+                              className={styles.dangerBtn}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleHideHistoryItem(item.mid);
+                              }}
+                            >
+                              <Trash2 size={12} />
+                              삭제
+                            </button>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
