@@ -2,13 +2,9 @@ import React, { useCallback, useEffect, useState } from "react";
 import styles from "../Barcode/BarcodePage.module.css";
 import { getDownloadFilename } from "../../lib/download";
 
-const API = `http://${window.location.hostname}:8000`;
-const PAGE_LIMIT = 50;
+import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
-const getAuthHeaders = () => {
-  const token = localStorage.getItem("token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-};
+const PAGE_LIMIT = 50;
 
 export default function CostBaseManagerPage() {
   const [status, setStatus] = useState(null);
@@ -22,15 +18,6 @@ export default function CostBaseManagerPage() {
   const [columns, setColumns] = useState([]);
   const [rows, setRows] = useState([]);
   const [edits, setEdits] = useState({});
-
-  const handleUnauthorized = (res) => {
-    if (res.status === 401) {
-      localStorage.removeItem("token");
-      window.location.reload();
-      return true;
-    }
-    return false;
-  };
 
   const fetchStatus = useCallback(async () => {
     const res = await fetch(`${API}/amood-hapbae/cost-base/status`, { headers: getAuthHeaders() });

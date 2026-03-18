@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import pageStyles from './BarcodePage.module.css';
-import { COLLAB_API_BASE as API } from '../../lib/api';
+import { COLLAB_API_BASE as API, getAuthHeaders } from '../../lib/api';
 
 const SharedFilesPage = () => {
     const [file, setFile] = useState(null);
@@ -10,11 +10,6 @@ const SharedFilesPage = () => {
     const [loadingList, setLoadingList] = useState(false);
     const [isDragging, setIsDragging] = useState(false);
     const isAdmin = useMemo(() => localStorage.getItem('isAdmin') === 'true', []);
-
-    const getAuthHeaders = () => {
-        const token = localStorage.getItem('token');
-        return token ? { Authorization: `Bearer ${token}` } : {};
-    };
 
     const getDownloadUrl = (item) => {
         const token = localStorage.getItem('token');

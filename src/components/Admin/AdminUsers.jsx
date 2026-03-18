@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import styles from './AdminUsers.module.css';
-import { COLLAB_API_BASE as API } from '../../lib/api';
+import { COLLAB_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
 const ALL_MENU_TABS = [
   { key: 'dashboard', label: '대시보드' },
@@ -21,22 +21,7 @@ const AdminUsers = ({ currentUser }) => {
   const [menuPanel, setMenuPanel] = useState(null); // { username, hiddenTabs }
   const [menuSaving, setMenuSaving] = useState(false);
 
-  const authHeaders = useMemo(() => {
-    const token = localStorage.getItem('token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }, []);
-
-  const handleUnauthorized = (res) => {
-    if (res.status === 401) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('displayName');
-      localStorage.removeItem('username');
-      localStorage.removeItem('isAdmin');
-      window.location.reload();
-      return true;
-    }
-    return false;
-  };
+  const authHeaders = getAuthHeaders();
 
   const fetchUsers = async () => {
     try {

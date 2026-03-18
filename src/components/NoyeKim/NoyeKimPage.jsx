@@ -2,12 +2,7 @@ import React, { useEffect, useState } from "react";
 import styles from "../Barcode/BarcodePage.module.css";
 import { getDownloadFilename } from "../../lib/download";
 
-const API = `http://${window.location.hostname}:8000`;
-
-const getAuthHeaders = () => {
-  const token = localStorage.getItem("token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-};
+import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
 export default function NoyeKimPage() {
   const [activeTab, setActiveTab] = useState("kdg");
@@ -152,17 +147,18 @@ export default function NoyeKimPage() {
   };
 
   const copyKdgDate = async () => {
-    if (!kdgText.trim()) {
+    if (kdgRows.length === 0 && !kdgText.trim()) {
       setMessage("원본 텍스트를 먼저 입력하세요.");
       return;
     }
     setLoading(true);
     setMessage("");
     try {
+      const body = kdgRows.length > 0 ? { rows: kdgRows } : { text: kdgText };
       const res = await fetch(`${API}/noye-kimsungil/kdg/date-copy-text`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ text: kdgText }),
+        body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "날짜별 복사 데이터 생성 실패");

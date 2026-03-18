@@ -80,8 +80,6 @@ from services.amood_utils import (
     _amood_ws_cell,
 )
 
-print("### barcode_core file =", barcode_core.__file__)
-
 app = FastAPI()
 
 app.add_middleware(
