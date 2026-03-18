@@ -38,6 +38,7 @@ from api.amood_routes import build_amood_router
 from api.returns_routes import build_returns_router
 from api.order_routes import build_order_router
 from api.noye_kimsungil_routes import build_noye_kimsungil_router
+from api.sms_routes import build_sms_router
 from services.easyadmin_product import _content_disposition, _process_easyadmin_product_upload
 from services.returns_utils import (
     ReturnState,
@@ -1099,6 +1100,12 @@ app.include_router(
 )
 app.include_router(
     build_noye_kimsungil_router(
+        get_current_user=_get_current_user,
+    )
+)
+
+app.include_router(
+    build_sms_router(
         get_current_user=_get_current_user,
     )
 )

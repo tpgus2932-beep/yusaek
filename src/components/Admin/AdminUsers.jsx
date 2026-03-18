@@ -9,6 +9,7 @@ const ALL_MENU_TABS = [
   { key: 'barcode-product-upload', label: '상품 업로드' },
   { key: 'shared-files', label: '유색 공용 파일' },
   { key: 'noye-kimsungil', label: '노예김승일' },
+  { key: 'sms', label: '문자 발송' },
 ];
 
 const AdminUsers = ({ currentUser }) => {

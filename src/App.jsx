@@ -13,6 +13,7 @@ import OrderPage from './components/Admin/OrderPage';
 import CostBaseManagerPage from './components/Admin/CostBaseManagerPage';
 import SettingsPage from './components/Layout/SettingsPage';
 import NoyeKimPage from './components/NoyeKim/NoyeKimPage';
+import SMSPage from './components/SMS/SMSPage';
 import MobileRequestKimsungilPage from './components/Mobile/MobileRequestKimsungilPage';
 import CollabPortalPage from './components/Collab/CollabPortalPage';
 import { COLLAB_API_BASE } from './lib/api';
@@ -43,7 +44,7 @@ const App = () => {
 
   const getFallbackTab = (adminFlag = isAdmin, hidden = hiddenTabs, userRole = role) => {
     if (userRole === 'viewer') return 'dashboard';
-    const candidates = ['dashboard', 'barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil'];
+    const candidates = ['dashboard', 'barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'sms'];
     if (adminFlag) candidates.push('order', 'cost-base-manager', 'admin');
     candidates.push('settings');
     return candidates.find((tab) => isTabAllowed(tab, adminFlag, hidden, userRole)) || 'settings';
@@ -230,6 +231,7 @@ const App = () => {
         {visibleActiveTab === 'barcode-product-upload' && !hiddenTabs.includes('barcode-product-upload') && <ProductUploadPage />}
         {visibleActiveTab === 'shared-files' && !hiddenTabs.includes('shared-files') && <SharedFilesPage />}
         {visibleActiveTab === 'noye-kimsungil' && !hiddenTabs.includes('noye-kimsungil') && <NoyeKimPage />}
+        {visibleActiveTab === 'sms' && !hiddenTabs.includes('sms') && <SMSPage />}
         {visibleActiveTab === 'order' && isAdmin && !hiddenTabs.includes('order') && <OrderPage />}
         {visibleActiveTab === 'cost-base-manager' && isAdmin && !hiddenTabs.includes('cost-base-manager') && <CostBaseManagerPage />}
         {visibleActiveTab === 'admin' && isAdmin && !hiddenTabs.includes('admin') && <AdminUsers currentUser={username} />}
@@ -243,6 +245,7 @@ const App = () => {
           visibleActiveTab !== 'barcode-product-upload' &&
           visibleActiveTab !== 'shared-files' &&
           visibleActiveTab !== 'noye-kimsungil' &&
+          visibleActiveTab !== 'sms' &&
           visibleActiveTab !== 'order' &&
           visibleActiveTab !== 'cost-base-manager' &&
           visibleActiveTab !== 'admin' &&
