@@ -4,6 +4,7 @@ import Header from './components/Layout/Header';
 import Overview from './components/Dashboard/Overview';
 import styles from './components/Layout/Layout.module.css';
 import BarcodeTabs from './components/Barcode/BarcodeTabs';
+import AmoodHapbaePage from './components/Barcode/AmoodHapbaePage';
 import ProductUploadPage from './components/Barcode/ProductUploadPage';
 import SharedFilesPage from './components/Barcode/SharedFilesPage';
 import ReturnsPage from './components/Barcode/ReturnsPage';
@@ -44,7 +45,7 @@ const App = () => {
 
   const getFallbackTab = (adminFlag = isAdmin, hidden = hiddenTabs, userRole = role) => {
     if (userRole === 'viewer') return 'dashboard';
-    const candidates = ['dashboard', 'barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'sms'];
+    const candidates = ['dashboard', 'barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'sms', 'hapbae-management'];
     if (adminFlag) candidates.push('order', 'cost-base-manager', 'admin');
     candidates.push('settings');
     return candidates.find((tab) => isTabAllowed(tab, adminFlag, hidden, userRole)) || 'settings';
@@ -151,7 +152,7 @@ const App = () => {
 
   // viewer 역할이면 hiddenTabs 무시하고 대시보드만 허용
   const effectiveHiddenTabs = role === 'viewer'
-    ? ['barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'order', 'cost-base-manager', 'admin', 'settings']
+    ? ['barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'order', 'cost-base-manager', 'admin', 'settings', 'hapbae-management']
     : hiddenTabs;
 
   const handleLogout = () => {
@@ -232,6 +233,7 @@ const App = () => {
         {visibleActiveTab === 'shared-files' && !hiddenTabs.includes('shared-files') && <SharedFilesPage />}
         {visibleActiveTab === 'noye-kimsungil' && !hiddenTabs.includes('noye-kimsungil') && <NoyeKimPage />}
         {visibleActiveTab === 'sms' && !hiddenTabs.includes('sms') && <SMSPage />}
+        {visibleActiveTab === 'hapbae-management' && !hiddenTabs.includes('hapbae-management') && <AmoodHapbaePage />}
         {visibleActiveTab === 'order' && isAdmin && !hiddenTabs.includes('order') && <OrderPage />}
         {visibleActiveTab === 'cost-base-manager' && isAdmin && !hiddenTabs.includes('cost-base-manager') && <CostBaseManagerPage />}
         {visibleActiveTab === 'admin' && isAdmin && !hiddenTabs.includes('admin') && <AdminUsers currentUser={username} />}
@@ -246,6 +248,7 @@ const App = () => {
           visibleActiveTab !== 'shared-files' &&
           visibleActiveTab !== 'noye-kimsungil' &&
           visibleActiveTab !== 'sms' &&
+          visibleActiveTab !== 'hapbae-management' &&
           visibleActiveTab !== 'order' &&
           visibleActiveTab !== 'cost-base-manager' &&
           visibleActiveTab !== 'admin' &&

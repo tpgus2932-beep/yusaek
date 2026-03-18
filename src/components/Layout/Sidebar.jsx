@@ -15,6 +15,7 @@ import {
     RotateCcw,
     Activity,
     MessageSquare,
+    PackageCheck,
 } from 'lucide-react';
 import styles from './Sidebar.module.css';
 import ServerStatsModal from '../Admin/ServerStatsModal';
@@ -94,6 +95,15 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                 >
                     <MessageSquare size={20} />
                     문자 발송
+                </div>
+                )}
+                {!isHidden('hapbae-management') && (
+                <div
+                    className={`${styles.navItem} ${activeTab === 'hapbae-management' ? styles.active : ''}`}
+                    onClick={() => setActiveTab('hapbae-management')}
+                >
+                    <PackageCheck size={20} />
+                    합배송관리
                 </div>
                 )}
 
