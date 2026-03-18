@@ -9,6 +9,7 @@ const menuLabels = {
   "barcode-product-upload": "상품 업로드",
   "shared-files": "유색 공용 파일",
   "noye-kimsungil": "노예김승일",
+  sms: "문자 발송",
   order: "발주",
   "cost-base-manager": "원가베이스 관리",
   admin: "관리자",
@@ -26,6 +27,7 @@ const SettingsPage = ({ hiddenTabs, setHiddenTabs, isAdmin }) => {
       "barcode-product-upload",
       "shared-files",
       "noye-kimsungil",
+      "sms",
     ];
     if (isAdmin) {
       base.push("order", "cost-base-manager", "admin");
