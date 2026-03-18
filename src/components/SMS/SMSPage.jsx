@@ -141,17 +141,30 @@ export default function SMSPage() {
       if (handleUnauthorized(res)) return;
       const data = await res.json();
       if (data.result_code > 0) {
-        setSendResult({ ok: true, msg: `전송 성공 ${data.success_cnt}건 / 실패 ${data.error_cnt}건 (${data.msg_type})` });
+        const hasError = Number(data.error_cnt) > 0;
+        setSendResult({
+          ok: !hasError,
+          warn: hasError,
+          msg: hasError
+            ? `${data.success_cnt}건 성공 / ${data.error_cnt}건 실패 — 실패 번호는 상세보기에서 확인하세요`
+            : `${data.success_cnt}건 전송 완료 (${data.msg_type})`,
+          msgId: data.msg_id,
+        });
         setReceivers([]);
         setMsg('');
         setTitle('');
         setRdate('');
         setRtime('');
       } else {
-        setSendResult({ ok: false, msg: data.message || '전송 실패' });
+        setSendResult({
+          ok: false,
+          msg: data.message
+            ? `${data.message} (코드: ${data.result_code})`
+            : `전송 실패 (코드: ${data.result_code})`,
+        });
       }
     } catch (err) {
-      setSendResult({ ok: false, msg: err.message || '오류 발생' });
+      setSendResult({ ok: false, msg: err.message ? `오류: ${err.message}` : '알 수 없는 오류' });
     } finally {
       setSending(false);
     }
@@ -435,9 +448,26 @@ export default function SMSPage() {
             </div>
 
             {sendResult && (
-              <div className={`${styles.resultBanner} ${sendResult.ok ? styles.resultSuccess : styles.resultError}`}>
-                {sendResult.ok ? <CheckCircle size={16} /> : <XCircle size={16} />}
-                {sendResult.msg}
+              <div className={`${styles.resultBanner} ${
+                sendResult.ok ? styles.resultSuccess
+                : sendResult.warn ? styles.resultWarn
+                : styles.resultError
+              }`}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flex: 1 }}>
+                  {sendResult.ok ? <CheckCircle size={16} /> : sendResult.warn ? <AlertCircle size={16} /> : <XCircle size={16} />}
+                  {sendResult.msg}
+                </span>
+                {sendResult.warn && sendResult.msgId && (
+                  <button
+                    className={styles.secondaryBtn}
+                    style={{ flexShrink: 0, fontSize: '0.78rem', padding: '0.25rem 0.6rem' }}
+                    onClick={() => {
+                      setActiveTab('history');
+                    }}
+                  >
+                    전송내역 확인
+                  </button>
+                )}
               </div>
             )}
           </div>

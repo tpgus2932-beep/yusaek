@@ -414,6 +414,12 @@
   color: #c0392b;
 }
 
+.resultWarn {
+  background: #fffbea;
+  border: 1px solid #f5d97a;
+  color: #9a6800;
+}
+
 /* ── Remain cards ── */
 .remainGrid {
   display: grid;
