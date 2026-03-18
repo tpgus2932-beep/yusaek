@@ -4,7 +4,7 @@ import Header from './components/Layout/Header';
 import Overview from './components/Dashboard/Overview';
 import styles from './components/Layout/Layout.module.css';
 import BarcodeTabs from './components/Barcode/BarcodeTabs';
-import AmoodHapbaePage from './components/Barcode/AmoodHapbaePage';
+import HapbaeManagementTabs from './components/Barcode/HapbaeManagementTabs';
 import ProductUploadPage from './components/Barcode/ProductUploadPage';
 import SharedFilesPage from './components/Barcode/SharedFilesPage';
 import ReturnsPage from './components/Barcode/ReturnsPage';
@@ -233,7 +233,7 @@ const App = () => {
         {visibleActiveTab === 'shared-files' && !hiddenTabs.includes('shared-files') && <SharedFilesPage />}
         {visibleActiveTab === 'noye-kimsungil' && !hiddenTabs.includes('noye-kimsungil') && <NoyeKimPage />}
         {visibleActiveTab === 'sms' && !hiddenTabs.includes('sms') && <SMSPage />}
-        {visibleActiveTab === 'hapbae-management' && !hiddenTabs.includes('hapbae-management') && <AmoodHapbaePage />}
+        {visibleActiveTab === 'hapbae-management' && !hiddenTabs.includes('hapbae-management') && <HapbaeManagementTabs />}
         {visibleActiveTab === 'order' && isAdmin && !hiddenTabs.includes('order') && <OrderPage />}
         {visibleActiveTab === 'cost-base-manager' && isAdmin && !hiddenTabs.includes('cost-base-manager') && <CostBaseManagerPage />}
         {visibleActiveTab === 'admin' && isAdmin && !hiddenTabs.includes('admin') && <AdminUsers currentUser={username} />}
