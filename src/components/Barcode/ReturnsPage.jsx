@@ -386,6 +386,20 @@ const ReturnsPage = () => {
         }
     };
 
+    const handleConsolidate = async () => {
+        try {
+            const res = await fetch(`${API}/returns/onebe/consolidate`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '같은수량가공 실패');
+            setOnebeRows(data.onebe?.rows || []);
+        } catch (err) {
+            setMessage(err.message || '같은수량가공 실패');
+        }
+    };
+
     const handleBuildOnebe = async () => {
         const source = 'customer';
         try {
@@ -663,6 +677,9 @@ const ReturnsPage = () => {
                             <div className={`${pageStyles.uploadRow} ${styles.onebeActions}`}>
                                 <button className={pageStyles.primaryBtn} onClick={handleBuildOnebe}>
                                     고객대기 → 원베양식 생성
+                                </button>
+                                <button className={pageStyles.secondaryBtn} onClick={handleConsolidate}>
+                                    같은수량가공
                                 </button>
                                 <button
                                     className={pageStyles.secondaryBtn}
