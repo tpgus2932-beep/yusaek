@@ -62,6 +62,14 @@ export default function SMSPage() {
       return [];
     }
   });
+  const [receiverCache, setReceiverCache] = useState(() => {
+    try {
+      const raw = localStorage.getItem('sms-receiver-cache');
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
   const [activeTab, setActiveTab] = useState('send');
 
   // ─── 문자보내기 상태 ───
@@ -159,6 +167,17 @@ export default function SMSPage() {
             : `${data.success_cnt}건 전송 완료 (${data.msg_type})`,
           msgId: data.msg_id,
         });
+        // 발송 즉시 수신번호 캐싱 (msg_id → 미리보기)
+        if (data.msg_id && receivers.length > 0) {
+          const preview = receivers.length === 1
+            ? receivers[0]
+            : `${receivers[0]} 외 ${receivers.length - 1}명`;
+          setReceiverCache((prev) => {
+            const next = { ...prev, [data.msg_id]: preview };
+            localStorage.setItem('sms-receiver-cache', JSON.stringify(next));
+            return next;
+          });
+        }
         setReceivers([]);
         setMsg('');
         setTitle('');
@@ -618,7 +637,7 @@ export default function SMSPage() {
                     {historyList.map((item, idx) => (
                       <tr key={item.mid ?? idx} onClick={() => openDetail(item)}>
                         <td><span className={`${styles.badge} ${styles.badgeGray}`}>{item.type}</span></td>
-                        <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{item.receiver_preview || '-'}</td>
+                        <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{item.receiver_preview || receiverCache[item.mid] || '-'}</td>
                         <td>{item.sms_count}명</td>
                         <td><BadgeColor status={item.reserve_state} /></td>
                         <td><div className={styles.msgPreview}>{item.msg}</div></td>
