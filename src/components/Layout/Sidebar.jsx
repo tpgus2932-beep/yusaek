@@ -14,6 +14,7 @@ import {
     FolderOpen,
     RotateCcw,
     Activity,
+    MessageSquare,
 } from 'lucide-react';
 import styles from './Sidebar.module.css';
 import ServerStatsModal from '../Admin/ServerStatsModal';
@@ -86,7 +87,16 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     노예김승일
                 </div>
                 )}
-                
+                {!isHidden('sms') && (
+                <div
+                    className={`${styles.navItem} ${activeTab === 'sms' ? styles.active : ''}`}
+                    onClick={() => setActiveTab('sms')}
+                >
+                    <MessageSquare size={20} />
+                    문자 발송
+                </div>
+                )}
+
                 {isAdmin && !isHidden('order') && (
                     <div
                         className={`${styles.navItem} ${activeTab === 'order' ? styles.active : ''}`}
