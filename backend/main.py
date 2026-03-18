@@ -1116,6 +1116,14 @@ def ping():
     return {"status": "ok"}
 
 
+@app.get("/my-ip")
+async def my_ip():
+    """서버 아웃바운드 IP 확인용 (알리고 IP 등록에 사용)"""
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        res = await client.get("https://api.ipify.org?format=json")
+    return res.json()
+
+
 @app.get("/admin/stats")
 def get_admin_stats(_: str = Depends(_require_admin)):
     tables = [
