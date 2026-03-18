@@ -41,48 +41,22 @@ def build_sms_router(*, get_current_user):
             detail = res.text.strip() or "Aligo API returned a non-JSON response"
             raise HTTPException(status_code=502, detail=detail) from exc
 
-    async def _history_matches_receiver(mid: str | None, receiver_query: str) -> bool:
+    async def _fetch_receivers(mid: str | None) -> tuple[list[str], int]:
+        """해당 mid의 수신번호 목록과 총 건수를 반환한다 (첫 페이지 50건)."""
         if not mid:
-            return False
-        normalized_query = _normalize_receiver(receiver_query)
-        if not normalized_query:
-            return True
-
-        page = 1
-        while page <= 20:
-            key, user_id = _creds()
-            detail = await _post(
-                "/sms_list/",
-                {"key": key, "user_id": user_id, "mid": mid, "page": page, "page_size": 500},
-            )
-            for item in detail.get("list", []) or []:
-                receiver = _normalize_receiver(item.get("receiver", ""))
-                if normalized_query in receiver:
-                    return True
-            if detail.get("next_yn") != "Y":
-                break
-            page += 1
-        return False
-
-    async def _history_receiver_preview(mid: str | None) -> str:
-        if not mid:
-            return ""
+            return [], 0
         key, user_id = _creds()
         detail = await _post(
             "/sms_list/",
-            {"key": key, "user_id": user_id, "mid": mid, "page": 1, "page_size": 10},
+            {"key": key, "user_id": user_id, "mid": mid, "page": 1, "page_size": 50},
         )
         receivers: list[str] = []
         for item in detail.get("list", []) or []:
-            receiver = _normalize_receiver(item.get("receiver", ""))
-            if receiver and receiver not in receivers:
-                receivers.append(receiver)
-        if not receivers:
-            return ""
-        if len(receivers) == 1:
-            return receivers[0]
-        extra = max(int(detail.get("total_count", 0) or 0) - 1, len(receivers) - 1)
-        return f"{receivers[0]} 외 {extra}명"
+            r = _normalize_receiver(item.get("receiver", ""))
+            if r and r not in receivers:
+                receivers.append(r)
+        total = int(detail.get("total_count") or 0)
+        return receivers, total
 
     @router.post("/send")
     async def sms_send(payload: dict = Body(...), user: str = Depends(get_current_user)):
@@ -116,19 +90,30 @@ def build_sms_router(*, get_current_user):
             if payload.get(field) is not None:
                 data[field] = payload[field]
         result = await _post("/list/", data)
-        for item in result.get("list", []) or []:
-            item["receiver_preview"] = await _history_receiver_preview(item.get("mid"))
-
         normalized_query = _normalize_receiver(receiver_query)
-        if not normalized_query:
-            return result
 
         filtered = []
         for item in result.get("list", []) or []:
-            if await _history_matches_receiver(item.get("mid"), normalized_query):
+            receivers, total = await _fetch_receivers(item.get("mid"))
+
+            # receiver_preview 설정
+            if receivers:
+                extra = max(total - 1, len(receivers) - 1)
+                item["receiver_preview"] = receivers[0] if extra == 0 else f"{receivers[0]} 외 {extra}명"
+            else:
+                item["receiver_preview"] = ""
+
+            # 수신번호 필터링 (같은 데이터로 판단)
+            if normalized_query:
+                if any(normalized_query in r for r in receivers):
+                    filtered.append(item)
+            else:
                 filtered.append(item)
-        result["list"] = filtered
-        result["next_yn"] = "N"
+
+        if normalized_query:
+            result["list"] = filtered
+            result["next_yn"] = "N"
+
         return result
 
     @router.post("/detail")
