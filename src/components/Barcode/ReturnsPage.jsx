@@ -34,6 +34,7 @@ const ReturnsPage = () => {
     const [scanText, setScanText] = useState('');
     const [lastType, setLastType] = useState('-');
     const [onebeFormat, setOnebeFormat] = useState('xls');
+    const [exportFormat, setExportFormat] = useState('xlsx');
     const [onebeHeaders, setOnebeHeaders] = useState(() => ({}));
     const [showCostEditor, setShowCostEditor] = useState(false);
     const [costColumns, setCostColumns] = useState([]);
@@ -383,6 +384,21 @@ const ReturnsPage = () => {
             setMessage('임시저장된 반품 스캔 상태를 불러왔습니다.');
         } catch (err) {
             setMessage(err.message || '불러오기 실패');
+        }
+    };
+
+    const handleReset = async () => {
+        if (!window.confirm('대기 리스트를 초기화할까요?')) return;
+        try {
+            const res = await fetch(`${API}/returns/reset`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '초기화 실패');
+            await refreshState();
+        } catch (err) {
+            setMessage(err.message || '초기화 실패');
         }
     };
 
@@ -807,6 +823,47 @@ const ReturnsPage = () => {
                     )}
                 </section>
 
+                <section className={pageStyles.card}>
+                    <div className={pageStyles.cardHeader}>
+                        <h3 className={pageStyles.cardTitle}>판매자/고객/미매칭 추출</h3>
+                    </div>
+                    <div className={pageStyles.uploadRow}>
+                        <span>파일 형식:</span>
+                        <label className={pageStyles.radioItem}>
+                            <input
+                                type="radio"
+                                name="exportFormat"
+                                value="xlsx"
+                                checked={exportFormat === 'xlsx'}
+                                onChange={() => setExportFormat('xlsx')}
+                            />
+                            xlsx
+                        </label>
+                        <label className={pageStyles.radioItem}>
+                            <input
+                                type="radio"
+                                name="exportFormat"
+                                value="xls"
+                                checked={exportFormat === 'xls'}
+                                onChange={() => setExportFormat('xls')}
+                            />
+                            xls
+                        </label>
+                        <button
+                            className={pageStyles.primaryBtn}
+                            onClick={() =>
+                                handleDownload('/returns/download/queues', `반품대기_추출.${exportFormat}`, {
+                                    format: exportFormat,
+                                })
+                            }
+                        >
+                            추출 저장
+                        </button>
+                        <button className={pageStyles.secondaryBtn} onClick={handleReset}>
+                            대기 리스트 초기화
+                        </button>
+                    </div>
+                </section>
 
             </div>
 
