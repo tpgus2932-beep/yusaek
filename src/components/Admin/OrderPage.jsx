@@ -732,12 +732,7 @@ export default function OrderPage() {
                   }}
                   placeholder="검색어 입력"
                 />
-                <button className={styles.secondaryBtn} onClick={() => fetchCostPreview(0, costQuery).catch(() => {})}>
-                  검색
-                </button>
-                <button className={styles.secondaryBtn} onClick={() => fetchCostPreview(costOffset, costQuery).catch(() => {})}>
-                  새로고침
-                </button>
+
                 <button className={styles.primaryBtn} onClick={handleCostCellCommit}>변경 적용</button>
                 <button className={styles.secondaryBtn} onClick={() => setShowCostEditor(false)}>닫기</button>
               </div>

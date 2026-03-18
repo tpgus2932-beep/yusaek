@@ -83,7 +83,7 @@ const AdminUsers = ({ currentUser }) => {
 
   const handleRoleChange = async (username, role) => {
     if (username === currentUser) {
-      setError('You cannot change your own role.');
+      setError('본인 계정의 권한은 변경할 수 없습니다.');
       return;
     }
     const label = role === 'admin' ? '관리자로 승격' : role === 'viewer' ? '배포용으로 변경' : '일반 유저로 변경';
@@ -100,7 +100,7 @@ const AdminUsers = ({ currentUser }) => {
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || 'Failed to update role');
-      setMessage(`${username} role updated to ${role}.`);
+      setMessage(`${username} 권한이 변경되었습니다.`);
       await fetchUsers();
     } catch (err) {
       setError(err.message || 'Failed to update role');
@@ -158,10 +158,10 @@ const AdminUsers = ({ currentUser }) => {
 
   const handleDelete = async (username) => {
     if (username === currentUser) {
-      setError('You cannot delete your own account.');
+      setError('본인 계정은 삭제할 수 없습니다.');
       return;
     }
-    if (!window.confirm(`Delete account for ${username}? This cannot be undone.`)) return;
+    if (!window.confirm(`${username} 계정을 삭제할까요? 이 작업은 되돌릴 수 없습니다.`)) return;
     try {
       setWorkingUser(username);
       setError('');
@@ -173,7 +173,7 @@ const AdminUsers = ({ currentUser }) => {
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || 'Failed to delete user');
-      setMessage(`${username} deleted.`);
+      setMessage(`${username} 계정이 삭제되었습니다.`);
       await fetchUsers();
     } catch (err) {
       setError(err.message || 'Failed to delete user');
@@ -185,9 +185,9 @@ const AdminUsers = ({ currentUser }) => {
   return (
     <section className={styles.admin}>
       <div className={styles.headerRow}>
-        <h1 className={styles.title}>Admin Users</h1>
+        <h1 className={styles.title}>사용자 관리</h1>
         <button className={styles.secondaryBtn} onClick={fetchUsers} disabled={loading}>
-          Refresh
+          새로고침
         </button>
       </div>
 
@@ -233,18 +233,18 @@ const AdminUsers = ({ currentUser }) => {
       </div>
 
       <div className={styles.card}>
-        {loading && <div className={styles.mutedText}>Loading users...</div>}
-        {!loading && users.length === 0 && <div className={styles.mutedText}>No users found.</div>}
+        {loading && <div className={styles.mutedText}>불러오는 중...</div>}
+        {!loading && users.length === 0 && <div className={styles.mutedText}>등록된 계정이 없습니다.</div>}
         {!loading && users.length > 0 && (
           <table className={styles.table}>
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Username</th>
-                <th>Role</th>
-                <th>Approval</th>
-                <th>Created</th>
-                <th className={styles.actionsCol}>Actions</th>
+                <th>이름</th>
+                <th>아이디</th>
+                <th>권한</th>
+                <th>승인</th>
+                <th>가입일</th>
+                <th className={styles.actionsCol}>관리</th>
               </tr>
             </thead>
             <tbody>
@@ -279,7 +279,7 @@ const AdminUsers = ({ currentUser }) => {
                               : styles.statusRejected
                         }`}
                       >
-                        {approvalStatus}
+                        {approvalStatus === 'approved' ? '승인' : approvalStatus === 'pending' ? '대기' : '거절'}
                       </span>
                     </td>
                     <td>{user.created_at || '-'}</td>
@@ -366,7 +366,7 @@ const AdminUsers = ({ currentUser }) => {
                         disabled={isSelf || isWorking}
                         onClick={() => handleDelete(user.username)}
                       >
-                        Delete
+                        삭제
                       </button>
                     </td>
                   </tr>
@@ -410,7 +410,7 @@ const AdminUsers = ({ currentUser }) => {
           </table>
         )}
         {!loading && users.length > 0 && visibleUsers.length === 0 && (
-          <div className={styles.mutedText}>선택한 조건에 맞는 계정이 없습니다.</div>
+          <div className={styles.mutedText}>해당 조건의 계정이 없습니다.</div>
         )}
       </div>
     </section>
