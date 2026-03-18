@@ -2,13 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import styles from "../Barcode/BarcodePage.module.css";
 import * as XLSX from "xlsx";
 import { getDownloadFilename } from "../../lib/download";
-
-const API = `http://${window.location.hostname}:8000`;
-
-const getAuthHeaders = () => {
-  const token = localStorage.getItem("token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-};
+import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
 export default function OrderPage() {
   const [activeSubTab, setActiveSubTab] = useState("order-check");
@@ -62,14 +56,6 @@ export default function OrderPage() {
     });
   }, [registered, registeredQuery]);
 
-  const handleUnauthorized = (res) => {
-    if (res.status === 401) {
-      localStorage.removeItem("token");
-      window.location.reload();
-      return true;
-    }
-    return false;
-  };
 
   const fetchStatus = useCallback(async () => {
     const res = await fetch(`${API}/order/status`, { headers: getAuthHeaders() });

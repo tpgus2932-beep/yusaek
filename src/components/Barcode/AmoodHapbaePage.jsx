@@ -1,12 +1,7 @@
 import React, { useCallback, useMemo, useState } from "react";
 import styles from "./BarcodePage.module.css";
 
-const API = `http://${window.location.hostname}:8000`;
-
-const getAuthHeaders = () => {
-  const token = localStorage.getItem("token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-};
+import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
 export default function AmoodHapbaePage({ headerExtra = null }) {
   const [file, setFile] = useState(null);
@@ -46,14 +41,6 @@ export default function AmoodHapbaePage({ headerExtra = null }) {
     [conflicts, selectedC]
   );
 
-  const handleUnauthorized = (res) => {
-    if (res.status === 401) {
-      localStorage.removeItem("token");
-      window.location.reload();
-      return true;
-    }
-    return false;
-  };
 
   const fetchCostBaseStatus = useCallback(async () => {
     try {

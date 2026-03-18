@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import pageStyles from './BarcodePage.module.css';
-import { COLLAB_API_BASE as API } from '../../lib/api';
+import { COLLAB_API_BASE as API, getAuthHeaders } from '../../lib/api';
 import { getDownloadFilename } from '../../lib/download';
 
 const ProductUploadPage = () => {
@@ -9,11 +9,6 @@ const ProductUploadPage = () => {
     const [status, setStatus] = useState(null); // { type: 'success'|'error', msg: string }
     const [dragging, setDragging] = useState(false);
     const inputRef = useRef(null);
-
-    const getAuthHeaders = () => {
-        const token = localStorage.getItem('token');
-        return token ? { Authorization: `Bearer ${token}` } : {};
-    };
 
     const handleFile = (f) => {
         if (!f) return;

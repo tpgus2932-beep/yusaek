@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Calendar, Bell, ChevronDown, ChevronUp, Pin, PinOff, GripVertical } from 'lucide-react';
 import styles from './Dashboard.module.css';
-import { COLLAB_API_BASE as API } from '../../lib/api';
+import { COLLAB_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
 const Overview = ({ currentUser }) => {
     const [users, setUsers] = useState([]);
@@ -57,22 +57,7 @@ const Overview = ({ currentUser }) => {
     const activityWidthStorageKey = `dashboard:activity-width:${dashboardUserKey}`;
     const requestAlertsStorageKey = `dashboard:request-alerts:${dashboardUserKey}`;
 
-    const authHeaders = useMemo(() => {
-        const token = localStorage.getItem('token');
-        return token ? { Authorization: `Bearer ${token}` } : {};
-    }, []);
-
-    const handleUnauthorized = (res) => {
-        if (res.status === 401) {
-            localStorage.removeItem('token');
-            localStorage.removeItem('displayName');
-            localStorage.removeItem('username');
-            localStorage.removeItem('isAdmin');
-            window.location.reload();
-            return true;
-        }
-        return false;
-    };
+    const authHeaders = getAuthHeaders();
 
     const fetchUsers = async () => {
         try {

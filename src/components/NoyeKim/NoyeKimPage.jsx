@@ -2,12 +2,7 @@ import React, { useEffect, useState } from "react";
 import styles from "../Barcode/BarcodePage.module.css";
 import { getDownloadFilename } from "../../lib/download";
 
-const API = `http://${window.location.hostname}:8000`;
-
-const getAuthHeaders = () => {
-  const token = localStorage.getItem("token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-};
+import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
 export default function NoyeKimPage() {
   const [activeTab, setActiveTab] = useState("kdg");

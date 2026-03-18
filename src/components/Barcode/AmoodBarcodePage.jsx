@@ -1,13 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import styles from "./BarcodePage.module.css";
 import { getDownloadFilename } from "../../lib/download";
-
-const API = `http://${window.location.hostname}:8000`;
-
-const getAuthHeaders = () => {
-  const token = localStorage.getItem("token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-};
+import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
 const HANGUL_BASE = 0xac00;
 const HANGUL_LAST = 0xd7a3;

@@ -2,12 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./BarcodePage.module.css";
 import * as XLSX from "xlsx";
 import { getDownloadFilename } from "../../lib/download";
-const API = `http://${window.location.hostname}:8000`;
-
-const getAuthHeaders = () => {
-  const token = localStorage.getItem("token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-};
+import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
 const HANGUL_BASE = 0xac00;
 const HANGUL_LAST = 0xd7a3;
@@ -71,11 +66,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "결과로그");
     XLSX.writeFile(wb, "barcode_result_log.xlsx");
-  };
-
-  const handleUnauthorized = (res) => {
-    if (res.status === 401) { localStorage.removeItem("token"); window.location.reload(); return true; }
-    return false;
   };
 
   const refreshStatus = useCallback(async () => {
