@@ -177,6 +177,51 @@ def _jeju_build_xls(
     return buf.getvalue()
 
 
+def _jeju_find_unmatched(rows: list[tuple[str, str]], cost_map: dict) -> list[str]:
+    seen: set[str] = set()
+    unmatched: list[str] = []
+    for product_name, _ in rows:
+        key = product_name.casefold()
+        if cost_map.get(key, "") == "" and key not in seen:
+            seen.add(key)
+            unmatched.append(product_name)
+    return unmatched
+
+
+@router.post("/jeju-hapbae/unmatched")
+async def jeju_hapbae_unmatched(file: UploadFile = File(...)):
+    name = file.filename or "jeju_hapbae.xlsx"
+    ext = Path(name).suffix.lower()
+    if ext not in JEJU_ALLOWED_EXCEL:
+        raise HTTPException(status_code=400, detail="xlsx / xlsm / xls 파일만 업로드 가능합니다.")
+
+    tmp_path = Path(tempfile.gettempdir()) / f"jeju_hapbae_unmatched_{uuid.uuid4().hex}{ext}"
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="업로드 파일이 비어 있습니다.")
+    tmp_path.write_bytes(data)
+
+    try:
+        rows = _jeju_process(tmp_path)
+        cost_map: dict = {}
+        if SHARED_COST_BASE_PATH.exists():
+            try:
+                cost_map = _ah_load_base_cost_map(SHARED_COST_BASE_PATH)
+            except Exception:
+                cost_map = {}
+        unmatched = _jeju_find_unmatched(rows, cost_map)
+        return {"ok": True, "unmatched": unmatched, "cost_base_exists": SHARED_COST_BASE_PATH.exists()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 @router.post("/jeju-hapbae/export")
 async def jeju_hapbae_export(
     file: UploadFile = File(...),
