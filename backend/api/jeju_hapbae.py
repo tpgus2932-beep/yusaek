@@ -88,16 +88,18 @@ def _jeju_process(path: Path) -> list[tuple[str, str]]:
     except Exception as e:
         raise ValueError(f"2번택 시트를 읽을 수 없습니다: {e}")
 
-    required_cols = [2, 6, 8, 9]
+    required_cols = [2, 6, 8, 9, 16]
     if df.shape[1] <= max(required_cols):
         raise ValueError(
-            f"입력 파일에 C(3), G(7), I(9), J(10)열이 모두 있어야 합니다. "
+            f"입력 파일에 C(3), G(7), I(9), J(10), Q(17)열이 모두 있어야 합니다. "
             f"(현재 열 수: {df.shape[1]})"
         )
 
     c_vals = df.iloc[:, 2].map(_jeju_normalize)
+    q_vals = df.iloc[:, 16].map(_jeju_normalize)
     duplicate_mask = c_vals.ne("") & c_vals.duplicated(keep=False)
-    filtered = df.loc[duplicate_mask].copy()
+    jeju_mask = q_vals.str.contains("제주", na=False)
+    filtered = df.loc[duplicate_mask & jeju_mask].copy()
 
     if filtered.empty:
         return []
@@ -209,7 +211,7 @@ async def jeju_hapbae_export(
     try:
         rows = _jeju_process(tmp_path)
         if not rows:
-            raise HTTPException(status_code=400, detail="C열 중복 데이터가 없어 가공할 항목이 없습니다.")
+            raise HTTPException(status_code=400, detail="C열 중복이면서 Q열에 '제주'가 포함된 데이터가 없어 가공할 항목이 없습니다.")
 
         cost_map: dict = {}
         if SHARED_COST_BASE_PATH.exists():
