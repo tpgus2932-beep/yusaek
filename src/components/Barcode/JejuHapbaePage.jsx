@@ -14,6 +14,7 @@ export default function JejuHapbaePage({ headerExtra = null }) {
   const [includes, setIncludes] = useState([true, true, true]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const [unmatchedProducts, setUnmatchedProducts] = useState([]);
 
   const [costBase, setCostBase] = useState(null);
   const [costBaseFile, setCostBaseFile] = useState(null);
@@ -89,6 +90,7 @@ export default function JejuHapbaePage({ headerExtra = null }) {
 
     setLoading(true);
     setMessage("");
+    setUnmatchedProducts([]);
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -128,6 +130,23 @@ export default function JejuHapbaePage({ headerExtra = null }) {
       URL.revokeObjectURL(url);
 
       setMessage(`가공 파일 다운로드 완료: ${filename}`);
+
+      // 매칭 안된 상품 조회
+      try {
+        const unmatchedForm = new FormData();
+        unmatchedForm.append("file", file);
+        const unmatchedRes = await fetch(`${API}/jeju-hapbae/unmatched`, {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: unmatchedForm,
+        });
+        if (!handleUnauthorized(unmatchedRes) && unmatchedRes.ok) {
+          const unmatchedData = await unmatchedRes.json().catch(() => ({}));
+          setUnmatchedProducts(unmatchedData.unmatched || []);
+        }
+      } catch {
+        // ignore
+      }
     } catch (err) {
       setMessage(err.message || "가공 파일 생성 실패");
     } finally {
@@ -460,6 +479,25 @@ export default function JejuHapbaePage({ headerExtra = null }) {
             }}
           >
             <strong>{message}</strong>
+          </div>
+        )}
+
+        {unmatchedProducts.length > 0 && (
+          <div
+            className={styles.statusMsg}
+            style={{
+              borderColor: "rgba(245,158,11,0.4)",
+              backgroundColor: "rgba(245,158,11,0.07)",
+            }}
+          >
+            <strong>상품코드 매칭 안된 상품 {unmatchedProducts.length}건</strong>
+            <div style={{ marginTop: "0.5rem", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+              {unmatchedProducts.map((name, idx) => (
+                <span key={idx} style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+                  · {name}
+                </span>
+              ))}
+            </div>
           </div>
         )}
       </section>
