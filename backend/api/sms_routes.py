@@ -4,6 +4,9 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+KST = ZoneInfo("Asia/Seoul")
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -87,7 +90,7 @@ def build_sms_router(*, get_current_user, get_db):
                     item.get("reserve_state"),
                     item.get("reg_date"),
                     json.dumps(receivers, ensure_ascii=False),
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(KST).isoformat(),
                 ),
             )
             conn.commit()
@@ -134,7 +137,7 @@ def build_sms_router(*, get_current_user, get_db):
                         "sms_count": len(receivers),
                         "fail_count": 0,
                         "reserve_state": "전송중" if not payload.get("rdate") else "예약대기중",
-                        "reg_date": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                        "reg_date": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
                     },
                     receivers,
                 )
@@ -274,7 +277,7 @@ def build_sms_router(*, get_current_user, get_db):
         from datetime import datetime as _dt, timedelta
 
         months_back = int(payload.get("months_back") or 3)
-        end_dt = _dt.now()
+        end_dt = _dt.now(KST)
         start_dt = end_dt - timedelta(days=30 * months_back)
 
         saved = 0
@@ -302,12 +305,15 @@ def build_sms_router(*, get_current_user, get_db):
                     mid = item.get("mid")
                     if not mid:
                         return
-                    async with sem:
-                        receivers = await _fetch_all_receivers(mid)
-                    _save_to_db(item, receivers)
-                    saved += 1
+                    try:
+                        async with sem:
+                            receivers = await _fetch_all_receivers(mid)
+                        _save_to_db(item, receivers)
+                        saved += 1
+                    except Exception:
+                        skipped += 1
 
-                await asyncio.gather(*[_process(item) for item in items])
+                await asyncio.gather(*[_process(item) for item in items], return_exceptions=True)
 
                 if result.get("next_yn") != "Y":
                     break
