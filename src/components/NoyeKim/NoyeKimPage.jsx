@@ -339,7 +339,7 @@ export default function NoyeKimPage() {
         .filter((row) => String(row[6] ?? "").trim() !== "")
         .map((row) => ({
           A: String(row[6] ?? ""),
-          B: String(row[4] ?? ""),
+          B: String(Math.max(0, Number(row[4] ?? 0))),
         }));
 
       setTodayRows(processed);
