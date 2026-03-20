@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   MessageSquare, Send, Wallet, History, RefreshCw,
   X, ChevronLeft, ChevronRight, CheckCircle, XCircle,
-  Clock, AlertCircle, Trash2,
+  Clock, AlertCircle, Trash2, Download,
 } from 'lucide-react';
 import styles from './SMSPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
@@ -107,6 +107,11 @@ export default function SMSPage() {
   const [detailNextYn, setDetailNextYn] = useState('N');
   const [cancelLoading, setCancelLoading] = useState(false);
   const [cancelMsg, setCancelMsg] = useState('');
+
+  // ─── 마이그레이션 상태 ───
+  const [migrateLoading, setMigrateLoading] = useState(false);
+  const [migrateResult, setMigrateResult] = useState(null);
+  const [monthsBack, setMonthsBack] = useState('3');
 
   const receiverInputRef = useRef(null);
   const bytes = getByteLength(msg);
@@ -225,7 +230,7 @@ export default function SMSPage() {
     setHistoryLoading(true);
     try {
       const body = { page, page_size: 30 };
-      if (startDate) body.start_date = startDate.replace(/-/g, '');
+      if (startDate) body.start_date = startDate; // YYYY-MM-DD 그대로 전송 (로컬 DB용)
       if (limitDay) body.limit_day = Number(limitDay);
       if (historyReceiverQuery.trim()) body.receiver_query = historyReceiverQuery.trim();
       const res = await fetch(`${API}/sms/list`, {
@@ -325,6 +330,27 @@ export default function SMSPage() {
       setCancelMsg(err.message || '오류 발생');
     } finally {
       setCancelLoading(false);
+    }
+  };
+
+  // ─── 마이그레이션 ───
+  const handleMigrate = async () => {
+    setMigrateLoading(true);
+    setMigrateResult(null);
+    try {
+      const res = await fetch(`${API}/sms/migrate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ months_back: Number(monthsBack) }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json();
+      setMigrateResult(data);
+      if (data.ok) fetchHistory(1);
+    } catch (err) {
+      setMigrateResult({ ok: false, error: err.message });
+    } finally {
+      setMigrateLoading(false);
     }
   };
 
@@ -582,10 +608,35 @@ export default function SMSPage() {
         <div className={styles.card}>
           <div className={styles.cardHeader}>
             <div className={styles.cardTitle}><History size={16} /> 전송내역</div>
-            <button className={styles.secondaryBtn} onClick={() => fetchHistory(1)} disabled={historyLoading}>
-              <RefreshCw size={14} /> 조회
-            </button>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+              <button className={styles.secondaryBtn} onClick={() => fetchHistory(1)} disabled={historyLoading}>
+                <RefreshCw size={14} className={historyLoading ? styles.spinning : ''} /> 새로고침
+              </button>
+              <select
+                className={styles.select}
+                style={{ fontSize: '0.8rem', padding: '0.25rem 0.5rem' }}
+                value={monthsBack}
+                onChange={(e) => setMonthsBack(e.target.value)}
+                disabled={migrateLoading}
+              >
+                <option value="1">최근 1개월</option>
+                <option value="3">최근 3개월</option>
+                <option value="6">최근 6개월</option>
+                <option value="12">최근 12개월</option>
+              </select>
+              <button className={styles.secondaryBtn} onClick={handleMigrate} disabled={migrateLoading}>
+                <Download size={14} className={migrateLoading ? styles.spinning : ''} />
+                {migrateLoading ? '가져오는 중...' : 'Aligo 내역 가져오기'}
+              </button>
+            </div>
           </div>
+          {migrateResult && (
+            <div className={`${styles.resultBanner} ${migrateResult.ok ? styles.resultSuccess : styles.resultError}`} style={{ marginBottom: '0.75rem' }}>
+              {migrateResult.ok
+                ? <><CheckCircle size={15} /> {migrateResult.saved}건 저장 완료</>
+                : <><XCircle size={15} /> 오류: {migrateResult.error || '마이그레이션 실패'}</>}
+            </div>
+          )}
 
           <div className={styles.filterRow}>
             <div className={styles.fieldGroup} style={{ flex: '1', minWidth: 160 }}>
