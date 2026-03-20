@@ -119,8 +119,8 @@ def build_sms_router(*, get_current_user, get_db):
 
         result = await _post("/send/", data)
 
-        # 발송 성공 시 로컬 DB에 저장
-        if result.get("result_code", 0) > 0:
+        # 발송 성공 시 로컬 DB에 저장 (result_code는 문자열로 올 수 있음)
+        if int(result.get("result_code", 0) or 0) > 0:
             mid = str(result.get("msg_id", ""))
             receivers = [_normalize_receiver(r) for r in str(payload.get("receiver", "")).split(",") if r.strip()]
             receivers = [r for r in receivers if r]
@@ -160,12 +160,14 @@ def build_sms_router(*, get_current_user, get_db):
         params: list = []
 
         if start_date:
-            conditions.append("reg_date >= ?")
-            params.append(start_date)
-            # limit_day 적용: start_date 기준 limit_day일 이후까지
             from datetime import datetime as _dt, timedelta
+            # start_date를 YYYY-MM-DD 형식으로 정규화 (YYYYMMDD도 허용)
+            raw = start_date.replace("-", "")
             try:
-                end_dt = _dt.strptime(start_date[:10], "%Y-%m-%d") + timedelta(days=limit_day)
+                dt = _dt.strptime(raw[:8], "%Y%m%d")
+                conditions.append("reg_date >= ?")
+                params.append(dt.strftime("%Y-%m-%d"))
+                end_dt = dt + timedelta(days=limit_day)
                 conditions.append("reg_date < ?")
                 params.append(end_dt.strftime("%Y-%m-%d"))
             except Exception:
@@ -252,7 +254,7 @@ def build_sms_router(*, get_current_user, get_db):
         key, user_id = _creds()
         result = await _post("/cancel/", {"key": key, "user_id": user_id, "mid": payload.get("mid")})
         # 취소 성공 시 로컬 DB 상태 업데이트
-        if result.get("result_code", 0) > 0:
+        if int(result.get("result_code", 0) or 0) > 0:
             mid = payload.get("mid")
             conn = get_db()
             try:
