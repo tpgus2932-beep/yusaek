@@ -345,9 +345,13 @@ def build_noye_kimsungil_router(*, get_current_user):
 
     @router.post("/kdg/export-xls")
     def kdg_export_xls(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        raw = _safe_str(payload.get("text"))
-        rows = _parse_kdg_text(raw)
-        if bool(payload.get("with_match", True)):
+        pre_rows = payload.get("rows")
+        if pre_rows and isinstance(pre_rows, list):
+            rows = pre_rows
+        else:
+            raw = _safe_str(payload.get("text"))
+            rows = _parse_kdg_text(raw)
+        if bool(payload.get("with_match", True)) and not (pre_rows and isinstance(pre_rows, list)):
             base_map = _load_kdg_base_map(KDG_BASE_PATH)
             rows, _ = _match_kdg_rows(rows, base_map)
 

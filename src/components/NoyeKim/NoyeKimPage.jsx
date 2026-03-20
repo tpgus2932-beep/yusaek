@@ -118,17 +118,18 @@ export default function NoyeKimPage() {
   };
 
   const downloadKdgXls = async () => {
-    if (!kdgText.trim()) {
+    if (kdgRows.length === 0 && !kdgText.trim()) {
       setMessage("원본 텍스트를 먼저 입력하세요.");
       return;
     }
     setLoading(true);
     setMessage("");
     try {
+      const body = kdgRows.length > 0 ? { rows: kdgRows } : { text: kdgText, with_match: true };
       const res = await fetch(`${API}/noye-kimsungil/kdg/export-xls`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ text: kdgText, with_match: true }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
