@@ -626,6 +626,44 @@ def build_collab_router(
         conn.close()
         return {"ok": True}
 
+    @router.patch("/requests/{request_id}")
+    def edit_request(request_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
+        text = (payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text required")
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT * FROM requests WHERE id = ?", (request_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="request not found")
+            if row["requester_username"] != user:
+                raise HTTPException(status_code=403, detail="forbidden")
+            if row["status"] != "open":
+                raise HTTPException(status_code=400, detail="완료된 요청은 수정할 수 없습니다")
+            conn.execute("UPDATE requests SET text = ? WHERE id = ?", (text, request_id))
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True}
+
+    @router.delete("/requests/{request_id}")
+    def delete_request(request_id: int, user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT * FROM requests WHERE id = ?", (request_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="request not found")
+            if row["requester_username"] != user:
+                raise HTTPException(status_code=403, detail="forbidden")
+            if row["status"] != "open":
+                raise HTTPException(status_code=400, detail="완료된 요청은 삭제할 수 없습니다")
+            conn.execute("DELETE FROM request_attachments WHERE request_id = ?", (request_id,))
+            conn.execute("DELETE FROM requests WHERE id = ?", (request_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True}
+
     @router.post("/requests/{request_id}/ack")
     def acknowledge_request(request_id: int, user: str = Depends(get_current_user)):
         conn = get_db()

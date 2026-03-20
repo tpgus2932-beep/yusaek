@@ -740,6 +740,21 @@
     cursor: pointer;
 }
 
+.dangerBtn {
+    background-color: transparent;
+    color: #e53e3e;
+    border: 1px solid #e53e3e;
+    padding: 0.375rem 0.75rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.dangerBtn:hover {
+    background-color: #e53e3e;
+    color: #fff;
+}
+
 .credSectionHeader {
     display: flex;
     align-items: center;
