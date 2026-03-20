@@ -115,18 +115,18 @@ def _process_easyadmin_product_upload(path: Path) -> bytes:
     else:
         raise ValueError("지원 형식: xlsx, xls, csv")
 
-    if df.shape[1] < 12:
-        raise ValueError("원본 파일에 최소 12열(C, H, L 포함)이 필요합니다.")
+    if df.shape[1] < 15:
+        raise ValueError("원본 파일에 최소 15열(C, H, K, O 포함)이 필요합니다.")
 
     series_b = df.iloc[:, 1]
     series_c = df.iloc[:, 2]
-    series_h = df.iloc[:, 7]
-    series_l = df.iloc[:, 11]
+    series_k = df.iloc[:, 10]
+    series_o = df.iloc[:, 14]
 
     col_a = series_c.apply(_strip_edge_brackets)
     col_b = pd.Series(["유색"] * len(df), index=df.index)
     ch_df = series_b.apply(lambda v: pd.Series(_split_b_to_c_and_h(v)))
-    lmn_df = series_l.apply(lambda v: pd.Series(_split_l_values(v)))
+    lmn_df = series_o.apply(lambda v: pd.Series(_split_l_values(v)))
 
     out = pd.DataFrame("", index=df.index, columns=HEADER_LIST).astype(object)
     out.iloc[:, _pos0("A")] = col_a
@@ -137,6 +137,6 @@ def _process_easyadmin_product_upload(path: Path) -> bytes:
     out.iloc[:, _pos0("M")] = lmn_df.iloc[:, 1]
     out.iloc[:, _pos0("N")] = lmn_df.iloc[:, 2]
     out.iloc[:, _pos0("O")] = 1
-    out.iloc[:, _pos0("BG")] = series_h
+    out.iloc[:, _pos0("BG")] = series_k
 
     return _save_as_xls_bytes(out)
