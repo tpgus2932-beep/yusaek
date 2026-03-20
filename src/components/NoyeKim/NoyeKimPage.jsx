@@ -28,6 +28,9 @@ export default function NoyeKimPage() {
   const [janggiFile, setJanggiFile] = useState(null);
   const [janggiRows, setJanggiRows] = useState([]);
 
+  const [todayFile, setTodayFile] = useState(null);
+  const [todayRows, setTodayRows] = useState([]);
+
   const fetchBaseStatus = async () => {
     try {
       const res = await fetch(`${API}/noye-kimsungil/kdg/base/status`, { headers: getAuthHeaders() });
@@ -317,6 +320,91 @@ export default function NoyeKimPage() {
     }
   };
 
+  const processTodayFile = async () => {
+    if (!todayFile) {
+      setMessage("가공할 XLS 파일을 선택하세요.");
+      return;
+    }
+    setLoading(true);
+    setMessage("");
+    try {
+      const XLSX = await import("xlsx");
+      const arrayBuffer = await todayFile.arrayBuffer();
+      const workbook = XLSX.read(arrayBuffer, { type: "array" });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+      const rows = rawData.slice(1);
+      const processed = rows
+        .filter((row) => String(row[6] ?? "").trim() !== "")
+        .map((row) => ({
+          A: String(row[6] ?? ""),
+          B: String(row[4] ?? ""),
+        }));
+
+      setTodayRows(processed);
+      setMessage(`가공 완료: ${processed.length}행 (빈 G열 제거됨)`);
+    } catch (err) {
+      setMessage(err.message || "가공 실패");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const downloadTodayFile = async () => {
+    if (!todayRows.length) {
+      setMessage("먼저 가공 버튼을 눌러주세요.");
+      return;
+    }
+    setLoading(true);
+    setMessage("");
+    try {
+      const XLSX = await import("xlsx");
+      const wsData = [
+        ["에이블리 옵션 번호", "재고 수량"],
+        ...todayRows.map((r) => [r.A, r.B]),
+      ];
+      const ws = XLSX.utils.aoa_to_sheet(wsData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+      XLSX.writeFile(wb, "오늘출발.xlsx");
+      setMessage("다운로드 완료");
+    } catch (err) {
+      setMessage(err.message || "다운로드 실패");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copyTodayFile = async () => {
+    if (!todayRows.length) {
+      setMessage("먼저 가공 버튼을 눌러주세요.");
+      return;
+    }
+    setLoading(true);
+    setMessage("");
+    try {
+      const header = "에이블리 옵션 번호\t재고 수량";
+      const body = todayRows.map((r) => `${r.A}\t${r.B}`).join("\n");
+      const tsv = `${header}\n${body}`;
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(tsv);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = tsv;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      setMessage(`엑셀 복사 완료: ${todayRows.length}행`);
+    } catch (err) {
+      setMessage(err.message || "엑셀 복사 실패");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const processJanggi = async () => {
     if (!janggiFile) {
       setMessage("가공할 XLS 파일을 선택하세요.");
@@ -436,7 +524,7 @@ export default function NoyeKimPage() {
       <div className={styles.pageHeader}>
         <div>
           <h2 className={styles.title}>노예김승일</h2>
-          <p className={styles.subtitle}>케이디지가공2 / 날짜별장끼정리 / 장끼가공</p>
+          <p className={styles.subtitle}>케이디지가공2 / 날짜별장끼정리 / 장끼가공 / 오늘출발</p>
         </div>
       </div>
 
@@ -455,6 +543,12 @@ export default function NoyeKimPage() {
           onClick={() => setActiveTab("janggi")}
         >
           장끼가공
+        </button>
+        <button
+          className={`${styles.tabBtn} ${activeTab === "today" ? styles.tabActive : ""}`}
+          onClick={() => setActiveTab("today")}
+        >
+          오늘출발
         </button>
       </div>
 
@@ -569,6 +663,68 @@ export default function NoyeKimPage() {
             <strong>동작:</strong> A~G 가공, 마지막 행 삭제, G열 오늘 날짜 채움 후 표 형태로 클립보드 복사
           </div>
         </section>
+      )}
+
+      {activeTab === "today" && (
+        <>
+          <section className={styles.card}>
+            <div className={styles.cardHeader}>
+              <h3 className={styles.cardTitle}>오늘출발</h3>
+            </div>
+            <div className={styles.uploadRow}>
+              <label className={styles.fileInput}>
+                <input
+                  type="file"
+                  accept=".xls,.xlsx,.xlsm"
+                  onChange={(e) => {
+                    setTodayFile(e.target.files?.[0] ?? null);
+                    setTodayRows([]);
+                  }}
+                />
+                {todayFile ? todayFile.name : "XLS 파일 선택"}
+              </label>
+              <button className={styles.primaryBtn} onClick={processTodayFile} disabled={loading}>
+                가공
+              </button>
+              <button className={styles.secondaryBtn} onClick={downloadTodayFile} disabled={loading || !todayRows.length}>
+                다운로드
+              </button>
+              <button className={styles.secondaryBtn} onClick={copyTodayFile} disabled={loading || !todayRows.length}>
+                엑셀 복사
+              </button>
+            </div>
+            <div className={styles.statusMsg}>
+              <strong>동작:</strong> G열 빈 행 제거 → A열(에이블리 옵션 번호)=G열 / B열(재고 수량)=E열
+            </div>
+          </section>
+
+          {todayRows.length > 0 && (
+            <section className={styles.card}>
+              <div className={styles.cardHeader}>
+                <h3 className={styles.cardTitle}>가공 결과</h3>
+                <span className={styles.pill}>{todayRows.length}행</span>
+              </div>
+              <div className={`${styles.tableWrap} ${styles.registeredTableWrap}`}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th>에이블리 옵션 번호 (G열)</th>
+                      <th>재고 수량 (E열)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {todayRows.map((r, i) => (
+                      <tr key={i}>
+                        <td>{r.A}</td>
+                        <td>{r.B}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+        </>
       )}
 
       {activeTab === "janggi" && (
