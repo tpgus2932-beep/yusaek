@@ -125,6 +125,7 @@ app.include_router(
 app.include_router(
     build_sms_router(
         get_current_user=_get_current_user,
+        get_db=_get_db,
     )
 )
 
