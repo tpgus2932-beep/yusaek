@@ -1132,9 +1132,37 @@ app.include_router(
     )
 )
 
+def _init_sms_history():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sms_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mid TEXT UNIQUE NOT NULL,
+            type TEXT,
+            msg TEXT,
+            sender TEXT,
+            sms_count INTEGER DEFAULT 0,
+            fail_count INTEGER DEFAULT 0,
+            reserve_state TEXT,
+            reg_date TEXT,
+            receivers TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sms_history_reg_date ON sms_history(reg_date DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sms_history_mid ON sms_history(mid)")
+    conn.commit()
+    conn.close()
+
+
+_init_sms_history()
+
 app.include_router(
     build_sms_router(
         get_current_user=_get_current_user,
+        get_db=_get_shared_db,
     )
 )
 
