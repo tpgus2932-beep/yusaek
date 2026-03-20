@@ -25,6 +25,9 @@ export default function NoyeKimPage() {
 
   const [chunkFile, setChunkFile] = useState(null);
 
+  const [janggiFile, setJanggiFile] = useState(null);
+  const [janggiRows, setJanggiRows] = useState([]);
+
   const fetchBaseStatus = async () => {
     try {
       const res = await fetch(`${API}/noye-kimsungil/kdg/base/status`, { headers: getAuthHeaders() });
@@ -314,12 +317,126 @@ export default function NoyeKimPage() {
     }
   };
 
+  const processJanggi = async () => {
+    if (!janggiFile) {
+      setMessage("가공할 XLS 파일을 선택하세요.");
+      return;
+    }
+    setLoading(true);
+    setMessage("");
+    try {
+      const XLSX = await import("xlsx");
+      const arrayBuffer = await janggiFile.arrayBuffer();
+      const workbook = XLSX.read(arrayBuffer, { type: "array" });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+      const rows = rawData.slice(1);
+      const processed = rows
+        .map((row) => {
+          const colB = row[1] ?? "";
+          const colC = row[2] ?? "";
+          const colD = row[3] ?? "";
+          const colH = row[7] ?? "";
+          const colJ = row[9] ?? "";
+
+          // C열: [그레이-free] 또는 [7560블랙-롱-m] → 첫 번째 토큰=색상, 나머지=사이즈
+          let parsedC = "";
+          let parsedD = "";
+          const bracketMatch = String(colC).match(/\[([^\]]+)\]/);
+          if (bracketMatch) {
+            const parts = bracketMatch[1].split("-");
+            parsedC = parts[0] || "";
+            parsedD = parts.slice(1).join(" ");
+          } else {
+            parsedC = String(colC);
+          }
+
+          // D열: "에스빈 생지백비죠포인트와이드팬츠" → 첫 단어=브랜드, 나머지=상품명
+          const dStr = String(colD).trim();
+          const spaceIdx = dStr.indexOf(" ");
+          const parsedF = spaceIdx > -1 ? dStr.slice(0, spaceIdx) : dStr;
+          const parsedG = spaceIdx > -1 ? dStr.slice(spaceIdx + 1) : "";
+
+          return {
+            A: String(colJ),
+            B: String(colB),
+            C: parsedC,
+            D: parsedD,
+            E: String(colH),
+            F: parsedF,
+            G: parsedG,
+          };
+        })
+        .filter((r) => r.A || r.B || r.C || r.D || r.E || r.F || r.G);
+
+      setJanggiRows(processed);
+      setMessage(`가공 완료: ${processed.length}행`);
+    } catch (err) {
+      setMessage(err.message || "가공 실패");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const downloadJanggi = async () => {
+    if (!janggiRows.length) {
+      setMessage("먼저 가공 버튼을 눌러주세요.");
+      return;
+    }
+    setLoading(true);
+    setMessage("");
+    try {
+      const XLSX = await import("xlsx");
+      const wsData = [
+        ["A", "B", "C", "D", "E", "F", "G"],
+        ...janggiRows.map((r) => [r.A, r.B, r.C, r.D, r.E, r.F, r.G]),
+      ];
+      const ws = XLSX.utils.aoa_to_sheet(wsData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+      XLSX.writeFile(wb, "가공결과.xlsx");
+      setMessage("다운로드 완료");
+    } catch (err) {
+      setMessage(err.message || "다운로드 실패");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copyJanggi = async () => {
+    if (!janggiRows.length) {
+      setMessage("먼저 가공 버튼을 눌러주세요.");
+      return;
+    }
+    setLoading(true);
+    setMessage("");
+    try {
+      const tsv = janggiRows.map((r) => [r.A, r.B, r.C, r.D, r.E, r.F, r.G].join("\t")).join("\n");
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(tsv);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = tsv;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      setMessage(`엑셀 복사 완료: ${janggiRows.length}행`);
+    } catch (err) {
+      setMessage(err.message || "엑셀 복사 실패");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className={styles.page}>
       <div className={styles.pageHeader}>
         <div>
           <h2 className={styles.title}>노예김승일</h2>
-          <p className={styles.subtitle}>케이디지가공2 / 날짜별장끼정리</p>
+          <p className={styles.subtitle}>케이디지가공2 / 날짜별장끼정리 / 장끼가공</p>
         </div>
       </div>
 
@@ -332,6 +449,12 @@ export default function NoyeKimPage() {
           onClick={() => setActiveTab("date-chunk")}
         >
           날짜별장끼정리
+        </button>
+        <button
+          className={`${styles.tabBtn} ${activeTab === "janggi" ? styles.tabActive : ""}`}
+          onClick={() => setActiveTab("janggi")}
+        >
+          장끼가공
         </button>
       </div>
 
@@ -446,6 +569,78 @@ export default function NoyeKimPage() {
             <strong>동작:</strong> A~G 가공, 마지막 행 삭제, G열 오늘 날짜 채움 후 표 형태로 클립보드 복사
           </div>
         </section>
+      )}
+
+      {activeTab === "janggi" && (
+        <>
+          <section className={styles.card}>
+            <div className={styles.cardHeader}>
+              <h3 className={styles.cardTitle}>장끼가공</h3>
+            </div>
+            <div className={styles.uploadRow}>
+              <label className={styles.fileInput}>
+                <input
+                  type="file"
+                  accept=".xls,.xlsx,.xlsm"
+                  onChange={(e) => {
+                    setJanggiFile(e.target.files?.[0] ?? null);
+                    setJanggiRows([]);
+                  }}
+                />
+                {janggiFile ? janggiFile.name : "XLS 파일 선택"}
+              </label>
+              <button className={styles.primaryBtn} onClick={processJanggi} disabled={loading}>
+                가공
+              </button>
+              <button className={styles.secondaryBtn} onClick={downloadJanggi} disabled={loading || !janggiRows.length}>
+                다운로드
+              </button>
+              <button className={styles.secondaryBtn} onClick={copyJanggi} disabled={loading || !janggiRows.length}>
+                엑셀 복사
+              </button>
+            </div>
+            <div className={styles.statusMsg}>
+              <strong>매핑:</strong> J열→A / B열→B / C열([색상-사이즈] 파싱)→C,D / H열→E / D열(브랜드 상품명)→F,G
+            </div>
+          </section>
+
+          {janggiRows.length > 0 && (
+            <section className={styles.card}>
+              <div className={styles.cardHeader}>
+                <h3 className={styles.cardTitle}>가공 결과</h3>
+                <span className={styles.pill}>{janggiRows.length}행</span>
+              </div>
+              <div className={`${styles.tableWrap} ${styles.registeredTableWrap}`}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th>A (J열)</th>
+                      <th>B (B열)</th>
+                      <th>C (색상)</th>
+                      <th>D (사이즈)</th>
+                      <th>E (H열)</th>
+                      <th>F (브랜드)</th>
+                      <th>G (상품명)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {janggiRows.map((r, i) => (
+                      <tr key={i}>
+                        <td>{r.A}</td>
+                        <td>{r.B}</td>
+                        <td>{r.C}</td>
+                        <td>{r.D}</td>
+                        <td>{r.E}</td>
+                        <td>{r.F}</td>
+                        <td>{r.G}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+        </>
       )}
 
       {message && (
