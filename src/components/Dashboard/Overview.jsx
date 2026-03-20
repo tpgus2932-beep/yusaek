@@ -47,6 +47,8 @@ const Overview = ({ currentUser }) => {
     const [pinnedRequestIds, setPinnedRequestIds] = useState([]);
     const [pinnedRequestsLoaded, setPinnedRequestsLoaded] = useState(false);
     const [requestAlertsEnabled, setRequestAlertsEnabled] = useState(false);
+    const [editingRequestId, setEditingRequestId] = useState(null);
+    const [editingRequestText, setEditingRequestText] = useState('');
     const isAdmin = useMemo(() => localStorage.getItem('isAdmin') === 'true', []);
     const resizeStateRef = useRef(null);
     const previousOpenRequestIdsRef = useRef(new Set());
@@ -441,6 +443,47 @@ const Overview = ({ currentUser }) => {
             await fetchResolved();
         } catch (err) {
             setError(err.message || 'Failed to clear sent requests');
+        }
+    };
+
+    const handleEditRequest = (item) => {
+        setEditingRequestId(item.id);
+        setEditingRequestText(item.text);
+    };
+
+    const handleSaveEditRequest = async (id) => {
+        const text = editingRequestText.trim();
+        if (!text) return;
+        try {
+            const res = await fetch(`${API}/requests/${id}`, {
+                method: 'PATCH',
+                headers: { ...authHeaders, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text }),
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '수정에 실패했습니다');
+            setEditingRequestId(null);
+            setEditingRequestText('');
+            await fetchResolved();
+        } catch (err) {
+            setError(err.message || '수정에 실패했습니다');
+        }
+    };
+
+    const handleDeleteRequest = async (id) => {
+        if (!window.confirm('이 요청을 삭제할까요?')) return;
+        try {
+            const res = await fetch(`${API}/requests/${id}`, {
+                method: 'DELETE',
+                headers: authHeaders,
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '삭제에 실패했습니다');
+            await fetchResolved();
+        } catch (err) {
+            setError(err.message || '삭제에 실패했습니다');
         }
     };
 
@@ -1358,7 +1401,25 @@ const Overview = ({ currentUser }) => {
                                         .map((item) => (
                                         <div key={item.id} className={styles.resolvedItem}>
                                             <div className={styles.resolvedInfo}>
-                                                <div className={styles.resolvedTitle}>{item.text}</div>
+                                                {editingRequestId === item.id ? (
+                                                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                                                        <input
+                                                            className={styles.credentialInput}
+                                                            value={editingRequestText}
+                                                            onChange={(e) => setEditingRequestText(e.target.value)}
+                                                            onKeyDown={(e) => {
+                                                                if (e.key === 'Enter') handleSaveEditRequest(item.id);
+                                                                if (e.key === 'Escape') { setEditingRequestId(null); setEditingRequestText(''); }
+                                                            }}
+                                                            autoFocus
+                                                            style={{ flex: 1 }}
+                                                        />
+                                                        <button className={styles.primaryBtn} type="button" onClick={() => handleSaveEditRequest(item.id)}>저장</button>
+                                                        <button className={styles.secondaryBtn} type="button" onClick={() => { setEditingRequestId(null); setEditingRequestText(''); }}>취소</button>
+                                                    </div>
+                                                ) : (
+                                                    <div className={styles.resolvedTitle}>{item.text}</div>
+                                                )}
                                                 <div className={styles.resolvedMeta}>
                                                     받는사람: {item.assignee_display || item.assignee_username}
                                                     {' · '}{formatDateTime(item.created_at)}
@@ -1380,7 +1441,29 @@ const Overview = ({ currentUser }) => {
                                                 ) : item.status === 'completed' ? (
                                                     <span className={styles.completedStatusBadge}>완료됨</span>
                                                 ) : (
-                                                    <span className={styles.pendingBadge}>진행중</span>
+                                                    <>
+                                                        <span className={styles.pendingBadge}>진행중</span>
+                                                        {editingRequestId !== item.id && (
+                                                            <>
+                                                                <button
+                                                                    className={styles.secondaryBtn}
+                                                                    type="button"
+                                                                    onClick={() => handleEditRequest(item)}
+                                                                    style={{ marginLeft: '0.4rem' }}
+                                                                >
+                                                                    수정
+                                                                </button>
+                                                                <button
+                                                                    className={styles.dangerBtn}
+                                                                    type="button"
+                                                                    onClick={() => handleDeleteRequest(item.id)}
+                                                                    style={{ marginLeft: '0.25rem' }}
+                                                                >
+                                                                    삭제
+                                                                </button>
+                                                            </>
+                                                        )}
+                                                    </>
                                                 )}
                                             </div>
                                         </div>
