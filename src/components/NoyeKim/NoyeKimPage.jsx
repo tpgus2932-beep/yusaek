@@ -4,6 +4,206 @@ import { getDownloadFilename } from "../../lib/download";
 
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
+const RECEIPT_FOOTER_LABEL = "전표제목";
+const RECEIPT_NOISE_PATTERNS = [
+  "항목설정",
+  "추가기능",
+  "바코드출력",
+  "입고수량변경",
+  "다운로드",
+  "입고요청전표상세",
+  "즐겨찾기",
+  "재고관리",
+  "재고부족",
+  "전표명",
+  "상태",
+  "요청",
+  "완료",
+  "전표 메모",
+  "수정",
+  "전표 번호",
+];
+
+function formatLocalDate(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeRawText(text) {
+  return String(text || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\t+/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .replace(/[\u200b-\u200d\ufeff]/g, "")
+    .replace(/[ ]+/g, " ")
+    .replace(/\n{2,}/g, "\n\n");
+}
+
+function parseNumber(value) {
+  return Number(String(value || "").replace(/,/g, "").trim()) || 0;
+}
+
+function getReceiptLines(text) {
+  const rawLines = normalizeRawText(text)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !RECEIPT_NOISE_PATTERNS.some((pattern) => line.includes(pattern)));
+  const footerIndex = rawLines.indexOf(RECEIPT_FOOTER_LABEL);
+  return footerIndex >= 0 ? rawLines.slice(0, footerIndex) : rawLines;
+}
+
+function extractProductName(supplierProductName) {
+  const cleaned = String(supplierProductName || "").trim();
+  const [head = "", ...rest] = cleaned.split(/\s+/);
+
+  return {
+    supplierPrefix: head,
+    supplierSuffix: rest.join(" "),
+  };
+}
+
+function extractOptionParts(optionText) {
+  if (!optionText) {
+    return { color: "", size: "" };
+  }
+
+  const [color = "", ...rest] = String(optionText)
+    .trim()
+    .split("-")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  return {
+    color,
+    size: rest.join(" "),
+  };
+}
+
+function isOptionLine(line) {
+  return /\[[^\]]+\]/.test(String(line || ""));
+}
+
+function findSupplierProductName(lines, optionIndex) {
+  const fixedLine = String(lines[optionIndex - 2] || "").trim();
+  if (
+    fixedLine &&
+    !/^[A-Z]\d+$/i.test(fixedLine) &&
+    !/^\d+$/.test(fixedLine) &&
+    !/^\d[\d,]*$/.test(fixedLine) &&
+    !/^(세현1|yusaek|유색)$/i.test(fixedLine) &&
+    !isOptionLine(fixedLine)
+  ) {
+    return fixedLine;
+  }
+
+  for (let index = optionIndex - 1; index >= Math.max(0, optionIndex - 6); index -= 1) {
+    const line = String(lines[index] || "").trim();
+    if (!line) continue;
+    if (/^[A-Z]\d+$/i.test(line)) continue;
+    if (/^\d+$/.test(line)) continue;
+    if (/^\d[\d,]*$/.test(line)) continue;
+    if (/^(세현1|yusaek|유색)$/i.test(line)) continue;
+    if (isOptionLine(line)) continue;
+    return line;
+  }
+  return "";
+}
+
+function findNextNumericLines(lines, startIndex, count) {
+  const values = [];
+  for (let index = startIndex; index < lines.length && values.length < count; index += 1) {
+    const line = String(lines[index] || "").trim();
+    if (/^\d[\d,]*$/.test(line)) {
+      values.push(line);
+    }
+  }
+  return values;
+}
+
+function extractQuantities(receivedQtyValue, pendingQtyValue) {
+  const receivedQty = parseNumber(receivedQtyValue);
+  const pendingQty = parseNumber(pendingQtyValue);
+
+  if (pendingQty > 0) {
+    return {
+      quantity: String(pendingQty),
+      remark: "미송",
+    };
+  }
+
+  return {
+    quantity: receivedQty > 0 ? String(receivedQty) : "",
+    remark: "ㅇ",
+  };
+}
+
+function convertSlipTextToRows(text) {
+  const date = formatLocalDate();
+  const lines = getReceiptLines(text);
+  const rows = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const optionLine = lines[index] || "";
+    if (!isOptionLine(optionLine)) {
+      continue;
+    }
+
+    const supplierProductName = findSupplierProductName(lines, index);
+    const numericValues = findNextNumericLines(lines, index + 1, 7);
+    const costValue = numericValues[0] || "";
+    const receivedQtyValue = numericValues[4] || "";
+    const pendingQtyValue = numericValues[5] || "";
+
+    if (!supplierProductName || numericValues.length < 7 || !/^\d[\d,]*$/.test(costValue)) {
+      continue;
+    }
+
+    const optionMatch = optionLine.match(/\[([^\]]+)\]/);
+    const optionText = optionMatch ? optionMatch[1] : "";
+    const { supplierPrefix, supplierSuffix } = extractProductName(supplierProductName);
+    const { color, size } = extractOptionParts(optionText);
+    const { quantity, remark } = extractQuantities(receivedQtyValue, pendingQtyValue);
+
+    if (!supplierPrefix && !supplierSuffix && !color && !size && !quantity) {
+      continue;
+    }
+
+    rows.push({
+      A: supplierPrefix,
+      B: supplierSuffix,
+      C: "",
+      D: color,
+      E: size,
+      F: quantity,
+      G: date,
+      H: remark,
+    });
+  }
+
+  return rows;
+}
+
+function rowsToTsv(rows) {
+  return rows.map((row) => [row.A, row.B, row.C, row.D, row.E, row.F, row.G, row.H].join("\t")).join("\n");
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand("copy");
+  ta.remove();
+}
+
 export default function NoyeKimPage() {
   const [activeTab, setActiveTab] = useState("kdg");
   const [message, setMessage] = useState("");
@@ -30,6 +230,9 @@ export default function NoyeKimPage() {
 
   const [todayFile, setTodayFile] = useState(null);
   const [todayRows, setTodayRows] = useState([]);
+  const [excelSlipInput, setExcelSlipInput] = useState("");
+  const [excelSlipRows, setExcelSlipRows] = useState([]);
+  const [excelSlipOutput, setExcelSlipOutput] = useState("");
 
   const fetchBaseStatus = async () => {
     try {
@@ -520,6 +723,43 @@ export default function NoyeKimPage() {
     }
   };
 
+  const runExcelSlipConvert = () => {
+    if (!excelSlipInput.trim()) {
+      setMessage("\uc6d0\ubcf8 \ub370\uc774\ud130\ub97c \uba3c\uc800 \ubd99\uc5ec\ub123\uc5b4 \uc8fc\uc138\uc694.");
+      return;
+    }
+
+    const rows = convertSlipTextToRows(excelSlipInput);
+    if (!rows.length) {
+      setExcelSlipRows([]);
+      setExcelSlipOutput("");
+      setMessage("\ubcc0\ud658 \uac00\ub2a5\ud55c \uc0c1\ud488 \ube14\ub85d\uc744 \ucc3e\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.");
+      return;
+    }
+
+    setExcelSlipRows(rows);
+    setExcelSlipOutput(rowsToTsv(rows));
+    setMessage(`\uc5d1\uc140 \ubcc0\ud658 \uc644\ub8cc: ${rows.length}\uac74`);
+  };
+
+  const copyExcelSlipResult = async () => {
+    if (!excelSlipOutput) {
+      setMessage("\ubcc0\ud658 \uacb0\uacfc\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.");
+      return;
+    }
+
+    setLoading(true);
+    setMessage("");
+    try {
+      await copyText(excelSlipOutput);
+      setMessage(`\uacb0\uacfc \ubcf5\uc0ac \uc644\ub8cc: ${excelSlipRows.length}\uac74`);
+    } catch (err) {
+      setMessage(err.message || "\uacb0\uacfc \ubcf5\uc0ac\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className={styles.page}>
       <div className={styles.pageHeader}>
@@ -550,6 +790,12 @@ export default function NoyeKimPage() {
           onClick={() => setActiveTab("today")}
         >
           오늘출발
+        </button>
+        <button
+          className={`${styles.tabBtn} ${activeTab === "receipt-excel" ? styles.tabActive : ""}`}
+          onClick={() => setActiveTab("receipt-excel")}
+        >
+          {"\uc785\uace0\uc804\ud45c \uc5d1\uc140\uc804\ud658"}
         </button>
       </div>
 
@@ -790,6 +1036,100 @@ export default function NoyeKimPage() {
                         <td>{r.E}</td>
                         <td>{r.F}</td>
                         <td>{r.G}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+        </>
+      )}
+
+      {activeTab === "receipt-excel" && (
+        <>
+          <section className={styles.card}>
+            <div className={styles.cardHeader}>
+              <h3 className={styles.cardTitle}>{"\uc785\uace0\uc804\ud45c \uc5d1\uc140\uc804\ud658"}</h3>
+              <span className={styles.pill}>{excelSlipRows.length}{"\uac74"}</span>
+            </div>
+            <div className={styles.statusMsg}>
+              {"\uacf5\uae09\ucc98\uc0c1\ud488\uba85, \uc635\uc158, \uc218\ub7c9 \ubb36\uc74c\uc744 \uc790\ub3d9 \ud30c\uc2f1\ud574\uc11c A~H TSV \ud615\uc2dd\uc73c\ub85c \ubcc0\ud658\ud569\ub2c8\ub2e4. \ubbf8\uc1a1 \ud328\ud134 0 X 0\uc774 \uc788\uc73c\uba74 \uc218\ub7c9\uc740 \uac00\uc6b4\ub370 \uac12, H\uc5f4\uc740 \ubbf8\uc1a1\uc73c\ub85c \ucc98\ub9ac\ud569\ub2c8\ub2e4."}
+            </div>
+            <textarea
+              className={styles.scanInput}
+              style={{ minHeight: 220, width: "100%" }}
+              value={excelSlipInput}
+              onChange={(e) => setExcelSlipInput(e.target.value)}
+              placeholder={"\uc785\uace0\uc694\uccad \uc804\ud45c \uc0c1\uc138 \ub370\uc774\ud130\ub97c \uadf8\ub300\ub85c \ubd99\uc5ec\ub123\uc5b4 \uc8fc\uc138\uc694."}
+            />
+            <div className={styles.uploadRow}>
+              <button className={styles.primaryBtn} onClick={runExcelSlipConvert} disabled={loading}>
+                {"\uc5d1\uc140 \ubcc0\ud658"}
+              </button>
+              <button
+                className={styles.secondaryBtn}
+                onClick={() => {
+                  setExcelSlipInput("");
+                  setExcelSlipRows([]);
+                  setExcelSlipOutput("");
+                  setMessage("");
+                }}
+                disabled={loading}
+              >
+                {"\ucd08\uae30\ud654"}
+              </button>
+            </div>
+          </section>
+
+          <section className={styles.card}>
+            <div className={styles.cardHeader}>
+              <h3 className={styles.cardTitle}>TSV</h3>
+            </div>
+            <textarea
+              className={styles.scanInput}
+              style={{ minHeight: 220, width: "100%", fontSize: "0.95rem" }}
+              value={excelSlipOutput}
+              onChange={(e) => setExcelSlipOutput(e.target.value)}
+              placeholder={"\ubcc0\ud658 \uacb0\uacfc\uac00 \uc5ec\uae30\uc5d0 \ud45c\uc2dc\ub429\ub2c8\ub2e4."}
+            />
+            <div className={styles.uploadRow}>
+              <button className={styles.secondaryBtn} onClick={copyExcelSlipResult} disabled={loading || !excelSlipOutput}>
+                {"\uacb0\uacfc \ubcf5\uc0ac"}
+              </button>
+            </div>
+          </section>
+
+          {excelSlipRows.length > 0 && (
+            <section className={styles.card}>
+              <div className={styles.cardHeader}>
+                <h3 className={styles.cardTitle}>{"\ubbf8\ub9ac\ubcf4\uae30"}</h3>
+              </div>
+              <div className={`${styles.tableWrap} ${styles.registeredTableWrap}`}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th>A</th>
+                      <th>B</th>
+                      <th>C</th>
+                      <th>D</th>
+                      <th>E</th>
+                      <th>F</th>
+                      <th>G</th>
+                      <th>H</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {excelSlipRows.map((row, index) => (
+                      <tr key={`${row.A}-${row.B}-${index}`}>
+                        <td>{row.A}</td>
+                        <td>{row.B}</td>
+                        <td>{row.C}</td>
+                        <td>{row.D}</td>
+                        <td>{row.E}</td>
+                        <td>{row.F}</td>
+                        <td>{row.G}</td>
+                        <td>{row.H}</td>
                       </tr>
                     ))}
                   </tbody>
