@@ -115,6 +115,7 @@ function preprocessBaseSheet(rawRows) {
       G: toDisplayText(row[6]),
       H: toDisplayText(row[11]),
       I: '',
+      srcI: toDisplayText(row[8]),
     });
   });
 
@@ -203,17 +204,13 @@ function mergeScheduleRows(baseRows, mergeRows, baseDate) {
   );
 }
 
-function readIncomingPairs(rawRows) {
-  const rows = ensureWidth(Array.isArray(rawRows) ? rawRows : [], 1);
-  const pairs = new Set();
-  rows.forEach((row) => {
-    const left = toDisplayText(row[0]);
-    const right = toDisplayText(row[1]);
-    if (left && right) {
-      pairs.add(`${left}||${right}`);
-    }
+function readIncomingKeys(rawRows) {
+  const keys = new Set();
+  (Array.isArray(rawRows) ? rawRows : []).forEach((row) => {
+    const val = toDisplayText(Array.isArray(row) ? row[0] : row);
+    if (val) keys.add(val);
   });
-  return pairs;
+  return keys;
 }
 
 function buildItemText(row) {
@@ -427,9 +424,9 @@ export default function ClientSchedulePage() {
       let removedCount = 0;
       if (incomingFile) {
         const { rows: inRows } = await readWorkbook(incomingFile);
-        const incomingPairs = readIncomingPairs(inRows);
+        const incomingKeys = readIncomingKeys(inRows);
         const before = processed.length;
-        processed = withIds(processed.filter((row) => !incomingPairs.has(`${toDisplayText(row.A)}||${toDisplayText(row.F)}`)));
+        processed = withIds(processed.filter((row) => !incomingKeys.has(toDisplayText(row.srcI))));
         removedCount = before - processed.length;
       }
 
