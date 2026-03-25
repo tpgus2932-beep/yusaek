@@ -415,9 +415,11 @@ export default function ClientSchedulePage() {
       const { rows } = await readWorkbook(baseFile);
       let processed = preprocessBaseSheet(rows);
 
-      // DB에 저장된 일정이 있으면 자동 병합
-      if (dbRows.length > 0) {
-        processed = mergeScheduleRows(processed, dbRows, baseDate);
+      // 현재 테이블에 데이터가 있으면 그걸로 병합 (DB 저장 여부 무관하게 날짜 유지)
+      // 없으면 DB 데이터로 병합
+      const mergeSource = sheet2Rows.length > 0 ? sheet2Rows : dbRows;
+      if (mergeSource.length > 0) {
+        processed = mergeScheduleRows(processed, mergeSource, baseDate);
       }
 
       // 입고 파일로 행 삭제
@@ -432,7 +434,7 @@ export default function ClientSchedulePage() {
 
       setSheet2Rows(processed);
       setSheet1Rows([HEADER_SHEET1]);
-      const mergeNote = dbRows.length > 0 ? ` · DB ${dbRows.length}행 병합` : ' · DB 없음(빈 상태)';
+      const mergeNote = mergeSource.length > 0 ? ` · ${sheet2Rows.length > 0 ? '현재 테이블' : 'DB'} ${mergeSource.length}행 병합` : ' · 병합 데이터 없음';
       const incomingNote = removedCount > 0 ? ` · 입고 삭제 ${removedCount}행` : '';
       setStatus(`가공 완료: ${processed.length}행${mergeNote}${incomingNote}`);
     } catch (error) {
