@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { CalendarDays, Download, FileSpreadsheet, GitMerge, Search, Sparkles } from 'lucide-react';
+import { CalendarDays, Download, FileSpreadsheet, GitMerge, Search, Sparkles, FileUp } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import styles from './ClientSchedulePage.module.css';
 
@@ -416,155 +416,128 @@ export default function ClientSchedulePage() {
 
   return (
     <div className={styles.page}>
-      <section className={styles.hero}>
-        <div className={styles.heroText}>
-          <span className={styles.eyebrow}>CLIENT SCHEDULE STUDIO</span>
-          <h2 className={styles.title}>&#xac70;&#xb798;&#xcc98; &#xc77c;&#xc815;</h2>
-          <p className={styles.subtitle}>
-            <code>CSCS.py</code> \ud575\uc2ec \ud750\ub984\uc744 \uc6f9\uc73c\ub85c \uc62e\uacbc\uc2b5\ub2c8\ub2e4. \uae30\uc900 \ud30c\uc77c \uac00\uacf5,
-            \uc804\ub0a0 \uc77c\uc815 \ubcd1\ud569, \uc785\uace0 \uae30\uc900 \uc0ad\uc81c, Sheet1 \ubb38\uc790 \uc0dd\uc131,
-            Sheet2 \uc77c\uc815 \ubbf8\ub9ac\ubcf4\uae30\uc640 \ub2e4\uc6b4\ub85c\ub4dc\uae4c\uc9c0 \ud55c \ud654\uba74\uc5d0\uc11c \ucc98\ub9ac\ud569\ub2c8\ub2e4.
-          </p>
+      {/* ── 헤더 ── */}
+      <div className={styles.header}>
+        <h2 className={styles.headerTitle}>거래처 일정</h2>
+        <div className={styles.headerStats}>
+          <span className={styles.statBadge}>Sheet2 <strong>{sheet2Rows.length}</strong>행</span>
+          <span className={styles.statBadge}>문자 <strong>{Math.max(sheet1Rows.length - 1, 0)}</strong>건</span>
         </div>
-        <div className={styles.heroStats}>
-          <div className={styles.statCard}>
-            <strong>{sheet2Rows.length}</strong>
-            <span>Sheet2 \ud589</span>
-          </div>
-          <div className={styles.statCard}>
-            <strong>{Math.max(sheet1Rows.length - 1, 0)}</strong>
-            <span>\ubb38\uc790 \ub300\uc0c1</span>
-          </div>
-        </div>
-      </section>
+      </div>
 
-      <section className={styles.controlGrid}>
-        <div className={styles.card}>
-          <div className={styles.cardHead}>
-            <div>
-              <h3 className={styles.cardTitle}><FileSpreadsheet size={18} /> &#xd30c;&#xc77c; &#xc900;&#xbe44;</h3>
-              <p className={styles.cardDesc}>&#xae30;&#xc900; &#xd30c;&#xc77c;, &#xbcd1;&#xd569; &#xd30c;&#xc77c;, &#xc785;&#xace0; &#xd30c;&#xc77c;&#xc744; &#xc21c;&#xc11c;&#xb300;&#xb85c; &#xb123;&#xc744; &#xc218; &#xc788;&#xc2b5;&#xb2c8;&#xb2e4;.</p>
-            </div>
-          </div>
-          <div className={styles.fieldGrid}>
+      {/* ── 컨트롤 패널 ── */}
+      <div className={styles.controlPanel}>
+        <div className={styles.controlLeft}>
+          {/* 파일 선택 */}
+          <div className={styles.fileRow}>
             <div className={styles.fileField}>
-              <span>&#xae30;&#xc900; &#xd30c;&#xc77c;</span>
-              <label className={styles.fileInput}>
+              <span className={styles.fieldLabel}>기준 파일</span>
+              <label className={`${styles.fileInput} ${baseFile ? styles.fileSelected : ''}`}>
+                <FileUp size={14} />
                 <input type="file" accept=".xls,.xlsx,.xlsm" onChange={(e) => setBaseFile(e.target.files?.[0] ?? null)} />
-                {baseFile ? baseFile.name : '\ub2f9\uc77c \ubc1c\uc8fc \ud30c\uc77c \uc120\ud0dd'}
+                {baseFile ? baseFile.name : '당일 발주 파일 선택'}
               </label>
-              <em>{baseFile ? baseFile.name : '\ub2f9\uc77c \ubc1c\uc8fc \ud30c\uc77c \uc120\ud0dd'}</em>
             </div>
             <div className={styles.fileField}>
-              <span>&#xbcd1;&#xd569; &#xd30c;&#xc77c;</span>
-              <label className={styles.fileInput}>
+              <span className={styles.fieldLabel}>병합 파일</span>
+              <label className={`${styles.fileInput} ${mergeFile ? styles.fileSelected : ''}`}>
+                <FileUp size={14} />
                 <input type="file" accept=".xls,.xlsx,.xlsm" onChange={(e) => setMergeFile(e.target.files?.[0] ?? null)} />
-                {mergeFile ? mergeFile.name : '\uc804\ub0a0 \uc77c\uc815 \ud30c\uc77c \uc120\ud0dd'}
+                {mergeFile ? mergeFile.name : '전날 일정 파일 선택'}
               </label>
-              <em>{mergeFile ? mergeFile.name : '\uc804\ub0a0 \uc77c\uc815 \ud30c\uc77c \uc120\ud0dd'}</em>
             </div>
             <div className={styles.fileField}>
-              <span>&#xc785;&#xace0; &#xd30c;&#xc77c;</span>
-              <label className={styles.fileInput}>
+              <span className={styles.fieldLabel}>입고 파일 <small>(선택)</small></span>
+              <label className={`${styles.fileInput} ${incomingFile ? styles.fileSelected : ''}`}>
+                <FileUp size={14} />
                 <input type="file" accept=".xls,.xlsx,.xlsm" onChange={(e) => setIncomingFile(e.target.files?.[0] ?? null)} />
-                {incomingFile ? incomingFile.name : '\uc120\ud0dd \uc2dc (A,F) \uae30\uc900 \uc0ad\uc81c \ubc18\uc601'}
+                {incomingFile ? incomingFile.name : '(A,F) 기준 행 삭제'}
               </label>
-              <em>{incomingFile ? incomingFile.name : '\uc120\ud0dd \uc2dc (A,F) \uae30\uc900 \uc0ad\uc81c \ubc18\uc601'}</em>
             </div>
           </div>
-          <div className={styles.actionRow}>
+          {/* 액션 버튼 */}
+          <div className={styles.btnRow}>
             <button className={styles.primaryBtn} onClick={handleBaseProcess} disabled={loading}>
-              <Sparkles size={16} />
-              &#xae30;&#xc900; &#xd30c;&#xc77c; &#xac00;&#xacf5;
+              <Sparkles size={14} /> 기준 가공
             </button>
-            <button className={styles.secondaryBtn} onClick={handleMerge} disabled={loading}>
-              <GitMerge size={16} />
-              &#xbcd1;&#xd569; &#xbc18;&#xc601;
+            <button className={styles.ghostBtn} onClick={handleMerge} disabled={loading}>
+              <GitMerge size={14} /> 병합 반영
             </button>
-            <button className={styles.secondaryBtn} onClick={handleRunAll} disabled={loading}>
-              <CalendarDays size={16} />
-              &#xd1b5;&#xd569; &#xc2e4;&#xd589;
+            <button className={styles.ghostBtn} onClick={handleRunAll} disabled={loading}>
+              <CalendarDays size={14} /> 통합 실행
             </button>
-            <button className={styles.secondaryBtn} onClick={handleDownload} disabled={loading}>
-              <Download size={16} />
-              &#xacb0;&#xacfc; &#xb2e4;&#xc6b4;&#xb85c;&#xb4dc;
+            <button className={styles.ghostBtn} onClick={handleDownload} disabled={loading}>
+              <Download size={14} /> 다운로드
             </button>
           </div>
         </div>
 
-        <div className={styles.card}>
-          <div className={styles.cardHead}>
-            <div>
-              <h3 className={styles.cardTitle}><CalendarDays size={18} /> &#xc77c;&#xc815; &#xc124;&#xc815;</h3>
-              <p className={styles.cardDesc}>&#xae30;&#xc900; &#xb0a0;&#xc9dc;&#xc640; Sheet1 &#xbb38;&#xc790; &#xba38;&#xb9ac;&#xb9d0;/&#xb9c8;&#xbb34;&#xb9ac;&#xb97c; &#xbc14;&#xb85c; &#xbc14;&#xafc0; &#xc218; &#xc788;&#xc2b5;&#xb2c8;&#xb2e4;.</p>
-            </div>
+        {/* 설정 */}
+        <div className={styles.controlRight}>
+          <div className={styles.settingGroup}>
+            <span className={styles.fieldLabel}>기준 날짜</span>
+            <input type="date" value={baseDateText} onChange={(e) => setBaseDateText(e.target.value)} />
           </div>
-          <div className={styles.fieldGrid}>
-            <label className={styles.textField}>
-              <span>&#xae30;&#xc900; &#xb0a0;&#xc9dc;</span>
-              <input type="date" value={baseDateText} onChange={(e) => setBaseDateText(e.target.value)} />
-            </label>
-            <label className={styles.textField}>
-              <span>&#xbb38;&#xc790; &#xc2dc;&#xc791;</span>
-              <input value={msgPrefix} onChange={(e) => setMsgPrefix(e.target.value)} placeholder={DEFAULT_PREFIX} />
-            </label>
-            <label className={`${styles.textField} ${styles.fullWidth}`}>
-              <span>&#xbb38;&#xc790; &#xb9c8;&#xbb34;&#xb9ac;</span>
-              <input value={msgSuffix} onChange={(e) => setMsgSuffix(e.target.value)} placeholder={DEFAULT_SUFFIX} />
-            </label>
+          <div className={styles.settingGroup}>
+            <span className={styles.fieldLabel}>문자 시작</span>
+            <input value={msgPrefix} onChange={(e) => setMsgPrefix(e.target.value)} placeholder={DEFAULT_PREFIX} />
           </div>
-          <div className={styles.noteBox}>
-            <strong>&#xae30;&#xbcf8; &#xaddc;&#xce59;</strong>
-            <p>&#xae30;&#xc900; &#xd30c;&#xc77c;&#xc740; 1&#xd589; &#xd5e4;&#xb354; &#xc81c;&#xc678; &#xd6c4; &#xac00;&#xacf5;&#xd569;&#xb2c8;&#xb2e4;. &#xb9c8;&#xc9c0;&#xb9c9; &#xd569;&#xacc4; &#xd589;&#xc740; &#xc81c;&#xac70;&#xd558;&#xace0;, B&#xc5f4; &#xae30;&#xc900; &#xc815;&#xb82c; &#xd6c4; &#xbcd1;&#xd569;&#xacfc; &#xbb38;&#xc790; &#xc0dd;&#xc131;&#xc744; &#xc9c4;&#xd589;&#xd569;&#xb2c8;&#xb2e4;.</p>
-            <p>&#xbcd1;&#xd569;&#xc740; <code>(A,B,C,F)</code> &#xd0a4;&#xb85c; D/E&#xb97c; &#xb36e;&#xc5b4;&#xc4f0;&#xace0;, &#xc785;&#xace0; &#xd30c;&#xc77c;&#xc744; &#xb123;&#xc73c;&#xba74; <code>(A,F)</code> &#xc30d;&#xacfc; &#xc77c;&#xce58;&#xd558;&#xb294; &#xd589;&#xc744; &#xc0ad;&#xc81c;&#xd569;&#xb2c8;&#xb2e4;.</p>
-            <p>Sheet1&#xc740; D&#xac00; &#xbe44;&#xc5b4; &#xc788;&#xb294; &#xd589;&#xb9cc; &#xb300;&#xc0c1;&#xc73c;&#xb85c; &#xc0dd;&#xc131;&#xb418;&#xba70;, G &#xc218;&#xb7c9;&#xacfc; H &#xbbf8;&#xc1a1;&#xd53d;&#xc5c5; &#xac12;&#xc73c;&#xb85c; &#xd488;&#xbaa9; &#xbb38;&#xad6c;&#xb97c; &#xb9cc;&#xB4ED;&#xb2c8;&#xb2e4;.</p>
+          <div className={styles.settingGroup}>
+            <span className={styles.fieldLabel}>문자 마무리</span>
+            <input value={msgSuffix} onChange={(e) => setMsgSuffix(e.target.value)} placeholder={DEFAULT_SUFFIX} />
           </div>
         </div>
-      </section>
+      </div>
 
-      <section className={styles.statusBar}>
-        <span>{status}</span>
+      {/* ── 상태 + 검색 ── */}
+      <div className={styles.statusRow}>
+        <span className={styles.statusText}>{status}</span>
         <label className={styles.searchBox}>
-          <Search size={16} />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="\uac70\ub798\ucc98, \uc0c1\ud488\uba85, \uc77c\uc815 \uac80\uc0c9" />
+          <Search size={14} />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="거래처, 상품명, 일정 검색" />
         </label>
-      </section>
+      </div>
 
-      <section className={styles.previewGrid}>
-        <div className={styles.previewCard}>
-          <div className={styles.previewHead}>
-            <h3>Sheet1 &#xbb38;&#xc790; &#xbbf8;&#xb9ac;&#xbcf4;&#xae30;</h3>
-            <span>{Math.max(sheet1Rows.length - 1, 0)}\uac74</span>
+      {/* ── 미리보기 ── */}
+      <div className={styles.previewGrid}>
+        {/* Sheet1 문자 */}
+        <div className={styles.panel}>
+          <div className={styles.panelHead}>
+            <span className={styles.panelTitle}>Sheet1 문자 미리보기</span>
+            <span className={styles.panelCount}>{Math.max(sheet1Rows.length - 1, 0)}건</span>
           </div>
           <div className={styles.messageList}>
             {sheet1Rows.slice(1).map((row, index) => (
               <article key={`${row[0]}-${index}`} className={styles.messageCard}>
-                <strong>{row[0]}</strong>
+                <strong className={styles.messageClient}>{row[0]}</strong>
                 <pre>{row[1]}</pre>
               </article>
             ))}
-            {sheet1Rows.length <= 1 && <div className={styles.empty}>&#xd1b5;&#xd569; &#xc2e4;&#xd589; &#xd6c4; &#xbb38;&#xc790; &#xbbf8;&#xb9ac;&#xbcf4;&#xae30;&#xac00; &#xc0dd;&#xc131;&#xb429;&#xb2c8;&#xb2e4;.</div>}
+            {sheet1Rows.length <= 1 && (
+              <div className={styles.empty}>통합 실행 후 문자 미리보기가 생성됩니다.</div>
+            )}
           </div>
         </div>
 
-        <div className={styles.previewCard}>
-          <div className={styles.previewHead}>
-            <h3>Sheet2 &#xc77c;&#xc815; &#xd3b8;&#xc9d1;</h3>
-            <span>{filteredRows.length}\ud589</span>
+        {/* Sheet2 테이블 */}
+        <div className={styles.panel}>
+          <div className={styles.panelHead}>
+            <span className={styles.panelTitle}>Sheet2 일정 편집</span>
+            <span className={styles.panelCount}>{filteredRows.length}행</span>
           </div>
           <div className={styles.tableWrap}>
             <table className={styles.table}>
               <thead>
                 <tr>
-                  <th>A</th>
-                  <th>B</th>
-                  <th>C</th>
-                  <th>D</th>
-                  <th>E</th>
-                  <th>F</th>
-                  <th>G</th>
-                  <th>H</th>
-                  <th>I</th>
+                  <th>그룹</th>
+                  <th>거래처</th>
+                  <th>상세</th>
+                  <th>일정</th>
+                  <th>보조</th>
+                  <th>상품코드</th>
+                  <th>수량</th>
+                  <th>미송</th>
+                  <th>안내문구</th>
                 </tr>
               </thead>
               <tbody>
@@ -578,7 +551,7 @@ export default function ClientSchedulePage() {
                         className={styles.cellInput}
                         value={toDisplayText(row.D)}
                         onChange={(e) => handleSheet2Change(row.id, 'D', e.target.value)}
-                        placeholder="\ub0a0\uc9dc \ub610\ub294 \uc774\ubc88\uc8fc\uc911"
+                        placeholder="날짜 또는 이번주중"
                       />
                     </td>
                     <td>
@@ -586,32 +559,23 @@ export default function ClientSchedulePage() {
                         className={styles.cellInput}
                         value={toDisplayText(row.E)}
                         onChange={(e) => handleSheet2Change(row.id, 'E', e.target.value)}
-                        placeholder="\ubcf4\uc870 \uc77c\uc815"
+                        placeholder="보조 일정"
                       />
                     </td>
                     <td>{row.F}</td>
                     <td>{row.G}</td>
                     <td>{row.H}</td>
-                    <td className={styles.guideCell}>{row.I}</td>
+                    <td className={styles.colGuide}>{row.I}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            {filteredRows.length === 0 && <div className={styles.empty}>&#xd45c;&#xc2dc;&#xd560; &#xb370;&#xc774;&#xd130;&#xac00; &#xc5c6;&#xc2b5;&#xb2c8;&#xb2e4;.</div>}
+            {filteredRows.length === 0 && (
+              <div className={styles.empty}>표시할 데이터가 없습니다.</div>
+            )}
           </div>
         </div>
-      </section>
-
-      <section className={styles.ribbon}>
-        <div>
-          <strong>&#xbe60;&#xb978; &#xc2dc;&#xc791;</strong>
-          <p>1. &#xae30;&#xc900; &#xd30c;&#xc77c; &#xac00;&#xacf5; 2. &#xbcd1;&#xd569; &#xbc18;&#xc601; 3. &#xd1b5;&#xd569; &#xc2e4;&#xd589; 4. &#xacb0;&#xacfc; &#xb2e4;&#xc6b4;&#xb85c;&#xb4dc;</p>
-        </div>
-        <div>
-          <strong>&#xcd08;&#xae30; &#xbb38;&#xc790;</strong>
-          <p>{DEFAULT_TEXT_MSG}</p>
-        </div>
-      </section>
+      </div>
     </div>
   );
 }
