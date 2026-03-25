@@ -752,6 +752,31 @@ def _init_return_saved_states():
 _init_return_saved_states()
 
 
+def _init_client_schedule_db():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS client_schedule_db (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            row_a TEXT NOT NULL DEFAULT '',
+            row_b TEXT NOT NULL DEFAULT '',
+            row_c TEXT NOT NULL DEFAULT '',
+            row_d TEXT NOT NULL DEFAULT '',
+            row_e TEXT NOT NULL DEFAULT '',
+            row_f TEXT NOT NULL DEFAULT '',
+            row_g TEXT NOT NULL DEFAULT '',
+            row_h TEXT NOT NULL DEFAULT '',
+            saved_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_client_schedule_db()
+
+
 def _get_user_display(username: str) -> str:
     conn = _get_db()
     row = conn.execute("SELECT display_name FROM users WHERE username = ?", (username,)).fetchone()

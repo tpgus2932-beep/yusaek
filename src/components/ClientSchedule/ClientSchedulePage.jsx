@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from 'react';
-import { CalendarDays, Download, FileSpreadsheet, GitMerge, Search, Sparkles, FileUp } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { CalendarDays, Database, Download, GitMerge, Search, Sparkles, FileUp, Trash2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { COLLAB_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import styles from './ClientSchedulePage.module.css';
 
 const DEFAULT_PREFIX = '\uc548\ub155\ud558\uc138\uc694';
@@ -303,16 +304,19 @@ async function readWorkbook(file, preferredSheetName) {
 
 export default function ClientSchedulePage() {
   const [baseFile, setBaseFile] = useState(null);
-  const [mergeFile, setMergeFile] = useState(null);
   const [incomingFile, setIncomingFile] = useState(null);
   const [baseDateText, setBaseDateText] = useState(formatInputDate());
   const [msgPrefix, setMsgPrefix] = useState(DEFAULT_PREFIX);
   const [msgSuffix, setMsgSuffix] = useState(DEFAULT_SUFFIX);
   const [sheet1Rows, setSheet1Rows] = useState([HEADER_SHEET1]);
   const [sheet2Rows, setSheet2Rows] = useState([]);
-  const [status, setStatus] = useState('\uae30\uc900 \ud30c\uc77c\uc744 \uc5c5\ub85c\ub4dc\ud558\uba74 \uac70\ub798\ucc98 \uc77c\uc815\uc6a9 Sheet2\uac00 \uc0dd\uc131\ub429\ub2c8\ub2e4.');
+  const [status, setStatus] = useState('DB에서 일정을 불러오는 중...');
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
+  const [dbRows, setDbRows] = useState([]);
+  const [dbSavedAt, setDbSavedAt] = useState(null);
+  const [dbLoading, setDbLoading] = useState(false);
+  const authHeaders = getAuthHeaders();
 
   const filteredRows = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -324,58 +328,102 @@ export default function ClientSchedulePage() {
 
   const baseDate = useMemo(() => coerceDate(baseDateText) || new Date(), [baseDateText]);
 
+  const fetchDbRows = async () => {
+    setDbLoading(true);
+    try {
+      const res = await fetch(`${API}/client-schedule/db`, { headers: authHeaders });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.detail || 'DB 로드 실패');
+      const loaded = withIds(data.rows || []);
+      setDbRows(loaded);
+      setDbSavedAt(data.saved_at || null);
+      setStatus(data.count > 0
+        ? `DB 일정 ${data.count}행 로드됨 · 기준 파일을 올리면 자동 병합됩니다.`
+        : 'DB가 비어있습니다. 기준 파일을 가공한 뒤 DB에 저장하세요.');
+    } catch (err) {
+      setStatus(err.message || 'DB 로드 실패');
+    } finally {
+      setDbLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchDbRows(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleSaveToDb = async () => {
+    if (!sheet2Rows.length) { setStatus('저장할 데이터가 없습니다.'); return; }
+    setDbLoading(true);
+    try {
+      const payload = sheet2Rows.map((r) => ({
+        A: r.A, B: r.B, C: r.C, D: r.D, E: r.E, F: r.F, G: r.G, H: r.H,
+      }));
+      const res = await fetch(`${API}/client-schedule/db`, {
+        method: 'PUT',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: payload }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.detail || 'DB 저장 실패');
+      setDbRows(withIds(payload));
+      setDbSavedAt(data.saved_at);
+      setStatus(`DB 저장 완료: ${data.count}행`);
+    } catch (err) {
+      setStatus(err.message || 'DB 저장 실패');
+    } finally {
+      setDbLoading(false);
+    }
+  };
+
+  const handleClearDb = async () => {
+    if (!window.confirm('DB의 일정 데이터를 모두 삭제할까요?')) return;
+    setDbLoading(true);
+    try {
+      const res = await fetch(`${API}/client-schedule/db`, { method: 'DELETE', headers: authHeaders });
+      if (handleUnauthorized(res)) return;
+      setDbRows([]);
+      setDbSavedAt(null);
+      setStatus('DB 초기화 완료');
+    } catch (err) {
+      setStatus(err.message || 'DB 초기화 실패');
+    } finally {
+      setDbLoading(false);
+    }
+  };
+
   const handleBaseProcess = async () => {
     if (!baseFile) {
-      setStatus('\uae30\uc900 \ud30c\uc77c\uc744 \uba3c\uc800 \uc120\ud0dd\ud558\uc138\uc694.');
+      setStatus('기준 파일을 먼저 선택하세요.');
       return;
     }
 
     setLoading(true);
     try {
       const { rows } = await readWorkbook(baseFile);
-      const processed = preprocessBaseSheet(rows);
-      setSheet2Rows(processed);
-      setSheet1Rows([HEADER_SHEET1]);
-      setStatus(`\uae30\uc900 \ud30c\uc77c \uac00\uacf5 \uc644\ub8cc: ${processed.length}\ud589`);
-    } catch (error) {
-      setStatus(error.message || '\uae30\uc900 \ud30c\uc77c \ucc98\ub9ac\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4.');
-    } finally {
-      setLoading(false);
-    }
-  };
+      let processed = preprocessBaseSheet(rows);
 
-  const handleMerge = async () => {
-    if (!sheet2Rows.length) {
-      setStatus('\uba3c\uc800 \uae30\uc900 \ud30c\uc77c\uc744 \uac00\uacf5\ud558\uc138\uc694.');
-      return;
-    }
-    if (!mergeFile) {
-      setStatus('\ubcd1\ud569 \ud30c\uc77c\uc744 \uba3c\uc800 \uc120\ud0dd\ud558\uc138\uc694.');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const mergeWorkbook = await readWorkbook(mergeFile, 'Sheet2');
-      const mergeRows = mergeWorkbook.sheetName === 'Sheet2'
-        ? parseScheduleSheet2Rows(mergeWorkbook.rows)
-        : preprocessBaseSheet(mergeWorkbook.rows);
-
-      let nextRows = mergeScheduleRows(sheet2Rows, mergeRows, baseDate);
-
-      let removedCount = 0;
-      if (incomingFile) {
-        const { rows } = await readWorkbook(incomingFile);
-        const incomingPairs = readIncomingPairs(rows);
-        const before = nextRows.length;
-        nextRows = withIds(nextRows.filter((row) => !incomingPairs.has(`${toDisplayText(row.A)}||${toDisplayText(row.F)}`)));
-        removedCount = before - nextRows.length;
+      // DB에 저장된 일정이 있으면 자동 병합
+      if (dbRows.length > 0) {
+        processed = mergeScheduleRows(processed, dbRows, baseDate);
       }
 
-      setSheet2Rows(nextRows);
-      setStatus(`\ubcd1\ud569 \ubc18\uc601 \uc644\ub8cc: ${nextRows.length}\ud589, \uc785\uace0 \uae30\uc900 \uc0ad\uc81c ${removedCount}\ud589`);
+      // 입고 파일로 행 삭제
+      let removedCount = 0;
+      if (incomingFile) {
+        const { rows: inRows } = await readWorkbook(incomingFile);
+        const incomingPairs = readIncomingPairs(inRows);
+        const before = processed.length;
+        processed = withIds(processed.filter((row) => !incomingPairs.has(`${toDisplayText(row.A)}||${toDisplayText(row.F)}`)));
+        removedCount = before - processed.length;
+      }
+
+      setSheet2Rows(processed);
+      setSheet1Rows([HEADER_SHEET1]);
+      const mergeNote = dbRows.length > 0 ? ` · DB ${dbRows.length}행 병합` : ' · DB 없음(빈 상태)';
+      const incomingNote = removedCount > 0 ? ` · 입고 삭제 ${removedCount}행` : '';
+      setStatus(`가공 완료: ${processed.length}행${mergeNote}${incomingNote}`);
     } catch (error) {
-      setStatus(error.message || '\ubcd1\ud569 \ucc98\ub9ac\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4.');
+      setStatus(error.message || '기준 파일 처리에 실패했습니다.');
     } finally {
       setLoading(false);
     }
@@ -420,6 +468,10 @@ export default function ClientSchedulePage() {
       <div className={styles.header}>
         <h2 className={styles.headerTitle}>거래처 일정</h2>
         <div className={styles.headerStats}>
+          <span className={styles.statBadge}>
+            <Database size={12} /> DB <strong>{dbRows.length}</strong>행
+            {dbSavedAt && <span className={styles.savedAt}>{new Date(dbSavedAt).toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} 저장</span>}
+          </span>
           <span className={styles.statBadge}>Sheet2 <strong>{sheet2Rows.length}</strong>행</span>
           <span className={styles.statBadge}>문자 <strong>{Math.max(sheet1Rows.length - 1, 0)}</strong>건</span>
         </div>
@@ -431,43 +483,39 @@ export default function ClientSchedulePage() {
           {/* 파일 선택 */}
           <div className={styles.fileRow}>
             <div className={styles.fileField}>
-              <span className={styles.fieldLabel}>기준 파일</span>
+              <span className={styles.fieldLabel}>기준 파일 <small>(당일 발주)</small></span>
               <label className={`${styles.fileInput} ${baseFile ? styles.fileSelected : ''}`}>
                 <FileUp size={14} />
                 <input type="file" accept=".xls,.xlsx,.xlsm" onChange={(e) => setBaseFile(e.target.files?.[0] ?? null)} />
-                {baseFile ? baseFile.name : '당일 발주 파일 선택'}
+                {baseFile ? baseFile.name : '파일 선택 → DB 자동 병합'}
               </label>
             </div>
             <div className={styles.fileField}>
-              <span className={styles.fieldLabel}>병합 파일</span>
-              <label className={`${styles.fileInput} ${mergeFile ? styles.fileSelected : ''}`}>
-                <FileUp size={14} />
-                <input type="file" accept=".xls,.xlsx,.xlsm" onChange={(e) => setMergeFile(e.target.files?.[0] ?? null)} />
-                {mergeFile ? mergeFile.name : '전날 일정 파일 선택'}
-              </label>
-            </div>
-            <div className={styles.fileField}>
-              <span className={styles.fieldLabel}>입고 파일 <small>(선택)</small></span>
+              <span className={styles.fieldLabel}>입고 파일 <small>(선택 · (A,F) 삭제)</small></span>
               <label className={`${styles.fileInput} ${incomingFile ? styles.fileSelected : ''}`}>
                 <FileUp size={14} />
                 <input type="file" accept=".xls,.xlsx,.xlsm" onChange={(e) => setIncomingFile(e.target.files?.[0] ?? null)} />
-                {incomingFile ? incomingFile.name : '(A,F) 기준 행 삭제'}
+                {incomingFile ? incomingFile.name : '파일 선택'}
               </label>
             </div>
           </div>
           {/* 액션 버튼 */}
           <div className={styles.btnRow}>
-            <button className={styles.primaryBtn} onClick={handleBaseProcess} disabled={loading}>
-              <Sparkles size={14} /> 기준 가공
-            </button>
-            <button className={styles.ghostBtn} onClick={handleMerge} disabled={loading}>
-              <GitMerge size={14} /> 병합 반영
+            <button className={styles.primaryBtn} onClick={handleBaseProcess} disabled={loading || dbLoading}>
+              <Sparkles size={14} /> 기준 가공 + 병합
             </button>
             <button className={styles.ghostBtn} onClick={handleRunAll} disabled={loading}>
               <CalendarDays size={14} /> 통합 실행
             </button>
             <button className={styles.ghostBtn} onClick={handleDownload} disabled={loading}>
               <Download size={14} /> 다운로드
+            </button>
+            <span className={styles.btnDivider} />
+            <button className={styles.dbSaveBtn} onClick={handleSaveToDb} disabled={dbLoading || !sheet2Rows.length}>
+              <Database size={14} /> DB 저장
+            </button>
+            <button className={styles.dbClearBtn} onClick={handleClearDb} disabled={dbLoading || !dbRows.length}>
+              <Trash2 size={14} />
             </button>
           </div>
         </div>

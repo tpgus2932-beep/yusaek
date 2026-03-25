@@ -45,6 +45,12 @@
   color: var(--text-primary);
 }
 
+.savedAt {
+  margin-left: 6px;
+  font-weight: 400;
+  opacity: 0.75;
+}
+
 /* ── Control Panel ── */
 .controlPanel {
   display: grid;
@@ -201,6 +207,48 @@
   cursor: not-allowed;
   transform: none;
 }
+
+.btnDivider {
+  width: 1px;
+  height: 24px;
+  background: var(--border-color);
+  margin: 0 2px;
+  align-self: center;
+}
+
+.dbSaveBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid #2d6d56;
+  background: transparent;
+  color: #1a4a38;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.dbSaveBtn:hover { background: rgba(45, 109, 86, 0.08); }
+.dbSaveBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.dbClearBtn {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: #e53e3e;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.dbClearBtn:hover { background: rgba(229, 62, 62, 0.07); }
+.dbClearBtn:disabled { opacity: 0.35; cursor: not-allowed; }
 
 /* ── Status + Search ── */
 .statusRow {
