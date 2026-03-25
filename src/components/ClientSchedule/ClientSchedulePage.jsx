@@ -5,7 +5,7 @@ import { COLLAB_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../.
 import styles from './ClientSchedulePage.module.css';
 
 const DEFAULT_PREFIX = '\uc548\ub155\ud558\uc138\uc694';
-const DEFAULT_SUFFIX = '\uc77c\uc815 \ud655\uc778 \ud6c4 \uc548\ub0b4\ub4dc\ub9ac\uaca0\uc2b5\ub2c8\ub2e4. \uac10\uc0ac\ud569\ub2c8\ub2e4.';
+const DEFAULT_SUFFIX = '일정 알 수 있을까요?';
 const DEFAULT_TEXT_MSG = '\uc624\ub298 \uc8fc\ubb38 \uac00\ub2a5\ud558\uc2e4\uae4c\uc694? \uac00\ub2a5\ud558\uc2dc\uba74 \uc77c\uc815 \ubd80\ud0c1\ub4dc\ub9bd\ub2c8\ub2e4.';
 const HEADER_SHEET1 = ['\uac70\ub798\ucc98', '\ubb38\uc790'];
 const WEEKDAY_LABELS = [
@@ -289,6 +289,20 @@ function rowsToSheet2AoA(rows) {
   return rows.map((row) => [row.A, row.B, row.C, row.D, row.E, row.F, row.G, row.H, row.I]);
 }
 
+function expandDateShorthand(value) {
+  const text = (value || '').trim();
+  // "0325" → "2026-03-25", "325" → "2026-03-25"
+  if (/^\d{3,4}$/.test(text)) {
+    const year = new Date().getFullYear();
+    const padded = text.padStart(4, '0');
+    const month = padded.slice(0, 2);
+    const day = padded.slice(2, 4);
+    const d = new Date(year, Number(month) - 1, Number(day));
+    if (!Number.isNaN(d.getTime())) return `${year}-${month}-${day}`;
+  }
+  return text;
+}
+
 async function readWorkbook(file, preferredSheetName) {
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
@@ -338,8 +352,12 @@ export default function ClientSchedulePage() {
       const loaded = withIds(data.rows || []);
       setDbRows(loaded);
       setDbSavedAt(data.saved_at || null);
+      if (loaded.length > 0) {
+        const { sheet2Rows: s2 } = buildSheet1AndSheet2(loaded, DEFAULT_PREFIX, DEFAULT_SUFFIX);
+        setSheet2Rows(s2);
+      }
       setStatus(data.count > 0
-        ? `DB 일정 ${data.count}행 로드됨 · 기준 파일을 올리면 자동 병합됩니다.`
+        ? `DB 일정 ${data.count}행 불러옴 · 기준 파일을 올리면 자동 병합됩니다.`
         : 'DB가 비어있습니다. 기준 파일을 가공한 뒤 DB에 저장하세요.');
     } catch (err) {
       setStatus(err.message || 'DB 로드 실패');
@@ -445,6 +463,66 @@ export default function ClientSchedulePage() {
     setSheet2Rows((prev) => prev.map((row) => (row.id === id ? { ...row, [field]: value } : row)));
   };
 
+  const handleDBlur = (id, value) => {
+    const expanded = expandDateShorthand(value);
+    if (expanded !== value) {
+      setSheet2Rows((prev) => prev.map((row) => (row.id === id ? { ...row, D: expanded } : row)));
+    }
+  };
+
+  const DB_HEADERS = ['그룹', '거래처', '상세', '일정', '보조', '상품코드', '수량', '미송'];
+
+  const handleDbExport = () => {
+    const rows = sheet2Rows.length ? sheet2Rows : dbRows;
+    if (!rows.length) { setStatus('내보낼 데이터가 없습니다.'); return; }
+    const aoa = [
+      DB_HEADERS,
+      ...rows.map((r) => [r.A, r.B, r.C, r.D, r.E, r.F, r.G, r.H]),
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'DB');
+    XLSX.writeFile(wb, '거래처일정_DB.xlsx');
+    setStatus('DB 엑셀 내보내기 완료');
+  };
+
+  const handleDbImport = async (file) => {
+    if (!file) return;
+    setDbLoading(true);
+    try {
+      const { rows: raw } = await readWorkbook(file, 'DB');
+      // 첫 행이 헤더면 제거
+      const dataRows = raw.length > 0 && String(raw[0][0] || '').trim() === '그룹' ? raw.slice(1) : raw;
+      const parsed = withIds(
+        dataRows
+          .filter((r) => r.some((v) => String(v ?? '').trim()))
+          .map((r) => ({
+            A: toDisplayText(r[0]), B: toDisplayText(r[1]), C: toDisplayText(r[2]),
+            D: toDisplayText(r[3]), E: toDisplayText(r[4]), F: toDisplayText(r[5]),
+            G: toDisplayText(r[6]), H: toDisplayText(r[7]),
+          }))
+      );
+      const payload = parsed.map(({ A, B, C, D, E, F, G, H }) => ({ A, B, C, D, E, F, G, H }));
+      const res = await fetch(`${API}/client-schedule/db`, {
+        method: 'PUT',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: payload }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.detail || 'DB 저장 실패');
+      setDbRows(parsed);
+      setDbSavedAt(data.saved_at);
+      const { sheet2Rows: s2 } = buildSheet1AndSheet2(parsed, msgPrefix, msgSuffix);
+      setSheet2Rows(s2);
+      setSheet1Rows([HEADER_SHEET1]);
+      setStatus(`엑셀 업로드 완료: ${data.count}행 DB 반영`);
+    } catch (err) {
+      setStatus(err.message || '엑셀 업로드 실패');
+    } finally {
+      setDbLoading(false);
+    }
+  };
+
   const handleDownload = () => {
     if (!sheet2Rows.length) {
       setStatus('\ub2e4\uc6b4\ub85c\ub4dc\ud560 \ub370\uc774\ud130\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.');
@@ -472,8 +550,7 @@ export default function ClientSchedulePage() {
             <Database size={12} /> DB <strong>{dbRows.length}</strong>행
             {dbSavedAt && <span className={styles.savedAt}>{new Date(dbSavedAt).toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} 저장</span>}
           </span>
-          <span className={styles.statBadge}>Sheet2 <strong>{sheet2Rows.length}</strong>행</span>
-          <span className={styles.statBadge}>문자 <strong>{Math.max(sheet1Rows.length - 1, 0)}</strong>건</span>
+          <span className={styles.statBadge}>현재 <strong>{sheet2Rows.length}</strong>행</span>
         </div>
       </div>
 
@@ -508,12 +585,19 @@ export default function ClientSchedulePage() {
               <CalendarDays size={14} /> 통합 실행
             </button>
             <button className={styles.ghostBtn} onClick={handleDownload} disabled={loading}>
-              <Download size={14} /> 다운로드
+              <Download size={14} /> 결과 다운로드
             </button>
             <span className={styles.btnDivider} />
             <button className={styles.dbSaveBtn} onClick={handleSaveToDb} disabled={dbLoading || !sheet2Rows.length}>
               <Database size={14} /> DB 저장
             </button>
+            <button className={styles.ghostBtn} onClick={handleDbExport} disabled={dbLoading && !sheet2Rows.length && !dbRows.length}>
+              <Download size={14} /> DB 엑셀
+            </button>
+            <label className={`${styles.ghostBtn} ${styles.uploadLabel}`}>
+              <FileUp size={14} /> 엑셀 업로드
+              <input type="file" accept=".xls,.xlsx,.xlsm" style={{ display: 'none' }} onChange={(e) => { handleDbImport(e.target.files?.[0] ?? null); e.target.value = ''; }} />
+            </label>
             <button className={styles.dbClearBtn} onClick={handleClearDb} disabled={dbLoading || !dbRows.length}>
               <Trash2 size={14} />
             </button>
@@ -546,28 +630,8 @@ export default function ClientSchedulePage() {
         </label>
       </div>
 
-      {/* ── 미리보기 ── */}
-      <div className={styles.previewGrid}>
-        {/* Sheet1 문자 */}
-        <div className={styles.panel}>
-          <div className={styles.panelHead}>
-            <span className={styles.panelTitle}>Sheet1 문자 미리보기</span>
-            <span className={styles.panelCount}>{Math.max(sheet1Rows.length - 1, 0)}건</span>
-          </div>
-          <div className={styles.messageList}>
-            {sheet1Rows.slice(1).map((row, index) => (
-              <article key={`${row[0]}-${index}`} className={styles.messageCard}>
-                <strong className={styles.messageClient}>{row[0]}</strong>
-                <pre>{row[1]}</pre>
-              </article>
-            ))}
-            {sheet1Rows.length <= 1 && (
-              <div className={styles.empty}>통합 실행 후 문자 미리보기가 생성됩니다.</div>
-            )}
-          </div>
-        </div>
-
-        {/* Sheet2 테이블 */}
+      {/* ── 테이블 ── */}
+      <div className={styles.tablePanel}>
         <div className={styles.panel}>
           <div className={styles.panelHead}>
             <span className={styles.panelTitle}>Sheet2 일정 편집</span>
@@ -599,6 +663,7 @@ export default function ClientSchedulePage() {
                         className={styles.cellInput}
                         value={toDisplayText(row.D)}
                         onChange={(e) => handleSheet2Change(row.id, 'D', e.target.value)}
+                        onBlur={(e) => handleDBlur(row.id, e.target.value)}
                         placeholder="날짜 또는 이번주중"
                       />
                     </td>
@@ -626,4 +691,5 @@ export default function ClientSchedulePage() {
       </div>
     </div>
   );
+
 }
