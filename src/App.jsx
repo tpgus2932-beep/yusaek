@@ -14,6 +14,7 @@ import OrderPage from './components/Admin/OrderPage';
 import CostBaseManagerPage from './components/Admin/CostBaseManagerPage';
 import SettingsPage from './components/Layout/SettingsPage';
 import NoyeKimPage from './components/NoyeKim/NoyeKimPage';
+import ClientSchedulePage from './components/ClientSchedule/ClientSchedulePage';
 import SMSPage from './components/SMS/SMSPage';
 import MobileRequestKimsungilPage from './components/Mobile/MobileRequestKimsungilPage';
 import CollabPortalPage from './components/Collab/CollabPortalPage';
@@ -45,7 +46,7 @@ const App = () => {
 
   const getFallbackTab = (adminFlag = isAdmin, hidden = hiddenTabs, userRole = role) => {
     if (userRole === 'viewer') return 'dashboard';
-    const candidates = ['dashboard', 'barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'sms', 'hapbae-management'];
+    const candidates = ['dashboard', 'barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'client-schedule', 'sms', 'hapbae-management'];
     if (adminFlag) candidates.push('order', 'cost-base-manager', 'admin');
     candidates.push('settings');
     return candidates.find((tab) => isTabAllowed(tab, adminFlag, hidden, userRole)) || 'settings';
@@ -152,7 +153,7 @@ const App = () => {
 
   // viewer 역할이면 hiddenTabs 무시하고 대시보드만 허용
   const effectiveHiddenTabs = role === 'viewer'
-    ? ['barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'order', 'cost-base-manager', 'admin', 'settings', 'hapbae-management']
+    ? ['barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'client-schedule', 'order', 'cost-base-manager', 'admin', 'settings', 'hapbae-management']
     : hiddenTabs;
 
   const handleLogout = () => {
@@ -232,6 +233,7 @@ const App = () => {
         {visibleActiveTab === 'barcode-product-upload' && !hiddenTabs.includes('barcode-product-upload') && <ProductUploadPage />}
         {visibleActiveTab === 'shared-files' && !hiddenTabs.includes('shared-files') && <SharedFilesPage />}
         {visibleActiveTab === 'noye-kimsungil' && !hiddenTabs.includes('noye-kimsungil') && <NoyeKimPage />}
+        {visibleActiveTab === 'client-schedule' && !hiddenTabs.includes('client-schedule') && <ClientSchedulePage />}
         {visibleActiveTab === 'sms' && !hiddenTabs.includes('sms') && <SMSPage />}
         {visibleActiveTab === 'hapbae-management' && !hiddenTabs.includes('hapbae-management') && <HapbaeManagementTabs />}
         {visibleActiveTab === 'order' && isAdmin && !hiddenTabs.includes('order') && <OrderPage />}
@@ -247,6 +249,7 @@ const App = () => {
           visibleActiveTab !== 'barcode-product-upload' &&
           visibleActiveTab !== 'shared-files' &&
           visibleActiveTab !== 'noye-kimsungil' &&
+          visibleActiveTab !== 'client-schedule' &&
           visibleActiveTab !== 'sms' &&
           visibleActiveTab !== 'hapbae-management' &&
           visibleActiveTab !== 'order' &&

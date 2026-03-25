@@ -9,6 +9,7 @@ const menuLabels = {
   "barcode-product-upload": "상품 업로드",
   "shared-files": "유색 공용 파일",
   "noye-kimsungil": "노예김승일",
+  "client-schedule": "거래처 일정",
   sms: "문자 발송",
   order: "발주",
   "cost-base-manager": "원가베이스 관리",
@@ -19,6 +20,7 @@ const SettingsPage = ({ hiddenTabs, setHiddenTabs, isAdmin }) => {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
   const [msgType, setMsgType] = useState("");
+
   const visibleMenuTabs = useMemo(() => {
     const base = [
       "dashboard",
@@ -27,6 +29,7 @@ const SettingsPage = ({ hiddenTabs, setHiddenTabs, isAdmin }) => {
       "barcode-product-upload",
       "shared-files",
       "noye-kimsungil",
+      "client-schedule",
       "sms",
     ];
     if (isAdmin) {
@@ -39,13 +42,13 @@ const SettingsPage = ({ hiddenTabs, setHiddenTabs, isAdmin }) => {
     setMsg("");
     setMsgType("");
     if (hiddenTabs.includes(tab)) {
-      setHiddenTabs(hiddenTabs.filter((v) => v !== tab));
+      setHiddenTabs(hiddenTabs.filter((value) => value !== tab));
       return;
     }
     setHiddenTabs([...hiddenTabs, tab]);
   };
 
-  const showCount = visibleMenuTabs.length - hiddenTabs.filter((t) => visibleMenuTabs.includes(t)).length;
+  const showCount = visibleMenuTabs.length - hiddenTabs.filter((tab) => visibleMenuTabs.includes(tab)).length;
 
   const save = async () => {
     setSaving(true);
@@ -68,8 +71,8 @@ const SettingsPage = ({ hiddenTabs, setHiddenTabs, isAdmin }) => {
       setHiddenTabs(Array.isArray(data.hidden_tabs) ? data.hidden_tabs : hiddenTabs);
       setMsg("저장 완료");
       setMsgType("ok");
-    } catch (e) {
-      setMsg(`오류: ${e.message}`);
+    } catch (error) {
+      setMsg(`오류: ${error.message}`);
       setMsgType("error");
     } finally {
       setSaving(false);
@@ -81,7 +84,7 @@ const SettingsPage = ({ hiddenTabs, setHiddenTabs, isAdmin }) => {
       <section className={styles.hero}>
         <div>
           <h2 className={styles.title}>설정</h2>
-          <p className={styles.subtitle}>계정별 사이드메뉴 표시를 관리합니다.</p>
+          <p className={styles.subtitle}>계정과 사이드메뉴 표시 상태를 관리합니다.</p>
         </div>
         <div className={styles.stats}>
           <span className={styles.statBadge}>표시 {showCount}</span>
@@ -119,27 +122,27 @@ const SettingsPage = ({ hiddenTabs, setHiddenTabs, isAdmin }) => {
         </div>
 
         <div className={styles.menuGrid}>
-        {visibleMenuTabs.map((tab) => {
-          const isShown = !hiddenTabs.includes(tab);
-          return (
-            <button
-              key={tab}
-              type="button"
-              className={`${styles.menuItem} ${isShown ? styles.menuOn : styles.menuOff}`}
-              onClick={() => toggleHidden(tab)}
-            >
-              <span className={styles.menuName}>{menuLabels[tab] || tab}</span>
-              <span className={`${styles.switch} ${isShown ? styles.switchOn : ""}`}>
-                <span className={styles.knob} />
-              </span>
-            </button>
-          );
-        })}
+          {visibleMenuTabs.map((tab) => {
+            const isShown = !hiddenTabs.includes(tab);
+            return (
+              <button
+                key={tab}
+                type="button"
+                className={`${styles.menuItem} ${isShown ? styles.menuOn : styles.menuOff}`}
+                onClick={() => toggleHidden(tab)}
+              >
+                <span className={styles.menuName}>{menuLabels[tab] || tab}</span>
+                <span className={`${styles.switch} ${isShown ? styles.switchOn : ""}`}>
+                  <span className={styles.knob} />
+                </span>
+              </button>
+            );
+          })}
         </div>
 
         <div className={styles.footer}>
           <button type="button" className={styles.primaryBtn} onClick={save} disabled={saving}>
-          {saving ? "저장 중..." : "저장"}
+            {saving ? "저장 중..." : "저장"}
           </button>
           {msg && <span className={`${styles.message} ${msgType === "ok" ? styles.ok : styles.error}`}>{msg}</span>}
         </div>

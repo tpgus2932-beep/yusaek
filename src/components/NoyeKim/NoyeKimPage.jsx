@@ -186,6 +186,89 @@ function convertSlipTextToRows(text) {
   return rows;
 }
 
+function convertCurrentReceiptExcelRowsLegacy(rawData) {
+  const rows = [];
+  const dataRows = Array.isArray(rawData) ? rawData.slice(1) : [];
+  const date = formatLocalDate();
+
+  for (const row of dataRows) {
+    const supplierProductName = String(row?.[0] ?? "").trim();
+    const optionCell = String(row?.[1] ?? "").trim();
+    const originalQty = String(row?.[2] ?? "").trim();
+    const requestQty = parseNumber(row?.[3]);
+    const pickupText = String(row?.[4] ?? "").trim();
+
+    if (!supplierProductName && !optionCell && !originalQty && !requestQty && !pickupText) {
+      continue;
+    }
+
+    const { supplierPrefix, supplierSuffix } = extractProductName(supplierProductName);
+    const optionMatch = optionCell.match(/\[([^\]]+)\]/);
+    const optionText = optionMatch ? optionMatch[1] : optionCell.replace(/^\[|\]$/g, "");
+    const { color, size } = extractOptionParts(optionText);
+    const isPickup = pickupText.includes("미송픽업");
+
+    rows.push({
+      A: supplierPrefix,
+      B: supplierSuffix,
+      C: isPickup ? "미송픽업" : "",
+      D: color,
+      E: size,
+      F: originalQty,
+      G: date,
+      H: isPickup ? "미송픽업" : pendingQty > 0 ? "미송" : "",
+    });
+  }
+
+  if (rows.length > 0) {
+    rows.pop();
+  }
+
+  return rows;
+}
+
+function convertCurrentReceiptExcelRows(rawData) {
+  const rows = [];
+  const dataRows = Array.isArray(rawData) ? rawData.slice(1) : [];
+  const date = formatLocalDate();
+
+  for (const row of dataRows) {
+    const supplierProductName = String(row?.[0] ?? "").trim();
+    const optionCell = String(row?.[1] ?? "").trim();
+    const originalQty = String(row?.[2] ?? "").trim();
+    const requestQty = parseNumber(row?.[3]);
+    const pickupText = String(row?.[4] ?? "").trim();
+
+    if (!supplierProductName && !optionCell && !originalQty && !requestQty && !pickupText) {
+      continue;
+    }
+
+    const { supplierPrefix, supplierSuffix } = extractProductName(supplierProductName);
+    const optionMatch = optionCell.match(/\[([^\]]+)\]/);
+    const optionText = optionMatch ? optionMatch[1] : optionCell.replace(/^\[|\]$/g, "");
+    const { color, size } = extractOptionParts(optionText);
+    const isPickup = pickupText.includes("미송픽업");
+    const isMissing = requestQty > 1;
+
+    rows.push({
+      A: supplierPrefix,
+      B: supplierSuffix,
+      C: isPickup ? "미송픽업" : "",
+      D: color,
+      E: size,
+      F: isMissing ? String(requestQty) : originalQty,
+      G: date,
+      H: isPickup ? "미송픽업" : isMissing ? "미송" : "",
+    });
+  }
+
+  if (rows.length > 0) {
+    rows.pop();
+  }
+
+  return rows;
+}
+
 function rowsToTsv(rows) {
   return rows.map((row) => [row.A, row.B, row.C, row.D, row.E, row.F, row.G, row.H].join("\t")).join("\n");
 }
@@ -230,7 +313,7 @@ export default function NoyeKimPage() {
 
   const [todayFile, setTodayFile] = useState(null);
   const [todayRows, setTodayRows] = useState([]);
-  const [excelSlipInput, setExcelSlipInput] = useState("");
+  const [excelSlipFile, setExcelSlipFile] = useState(null);
   const [excelSlipRows, setExcelSlipRows] = useState([]);
   const [excelSlipOutput, setExcelSlipOutput] = useState("");
 
@@ -724,22 +807,38 @@ export default function NoyeKimPage() {
   };
 
   const runExcelSlipConvert = () => {
-    if (!excelSlipInput.trim()) {
-      setMessage("\uc6d0\ubcf8 \ub370\uc774\ud130\ub97c \uba3c\uc800 \ubd99\uc5ec\ub123\uc5b4 \uc8fc\uc138\uc694.");
+    if (!excelSlipFile) {
+      setMessage("가공할 엑셀 파일을 먼저 선택하세요.");
       return;
     }
 
-    const rows = convertSlipTextToRows(excelSlipInput);
-    if (!rows.length) {
-      setExcelSlipRows([]);
-      setExcelSlipOutput("");
-      setMessage("\ubcc0\ud658 \uac00\ub2a5\ud55c \uc0c1\ud488 \ube14\ub85d\uc744 \ucc3e\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.");
-      return;
-    }
+    setLoading(true);
+    setMessage("");
+    (async () => {
+      try {
+        const XLSX = await import("xlsx");
+        const arrayBuffer = await excelSlipFile.arrayBuffer();
+        const workbook = XLSX.read(arrayBuffer, { type: "array" });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+        const rows = convertCurrentReceiptExcelRows(rawData);
 
-    setExcelSlipRows(rows);
-    setExcelSlipOutput(rowsToTsv(rows));
-    setMessage(`\uc5d1\uc140 \ubcc0\ud658 \uc644\ub8cc: ${rows.length}\uac74`);
+        if (!rows.length) {
+          setExcelSlipRows([]);
+          setExcelSlipOutput("");
+          setMessage("변환 가능한 행을 찾지 못했습니다.");
+          return;
+        }
+
+        setExcelSlipRows(rows);
+        setExcelSlipOutput(rowsToTsv(rows));
+        setMessage(`엑셀 변환 완료: ${rows.length}건`);
+      } catch (err) {
+        setMessage(err.message || "엑셀 변환에 실패했습니다.");
+      } finally {
+        setLoading(false);
+      }
+    })();
   };
 
   const copyExcelSlipResult = async () => {
@@ -765,7 +864,7 @@ export default function NoyeKimPage() {
       <div className={styles.pageHeader}>
         <div>
           <h2 className={styles.title}>노예김승일</h2>
-          <p className={styles.subtitle}>케이디지가공2 / 날짜별장끼정리 / 장끼가공 / 오늘출발</p>
+          <p className={styles.subtitle}>케이디지가공2 / 날짜별장끼정리 / 신상 업로드 날짜별 시트2 / 오늘출발</p>
         </div>
       </div>
 
@@ -783,7 +882,7 @@ export default function NoyeKimPage() {
           className={`${styles.tabBtn} ${activeTab === "janggi" ? styles.tabActive : ""}`}
           onClick={() => setActiveTab("janggi")}
         >
-          장끼가공
+          신상 업로드 날짜별 시트2
         </button>
         <button
           className={`${styles.tabBtn} ${activeTab === "today" ? styles.tabActive : ""}`}
@@ -907,7 +1006,7 @@ export default function NoyeKimPage() {
             </button>
           </div>
           <div className={styles.statusMsg}>
-            <strong>동작:</strong> A~G 가공, 마지막 행 삭제, G열 오늘 날짜 채움 후 표 형태로 클립보드 복사
+            <strong>동작:</strong> 재고부족요청 엑셀 넣으면 날짜별장끼정리 시트1 양식으로 가공
           </div>
         </section>
       )}
@@ -941,7 +1040,7 @@ export default function NoyeKimPage() {
               </button>
             </div>
             <div className={styles.statusMsg}>
-              <strong>동작:</strong> G열 빈 행 제거 → A열(에이블리 옵션 번호)=G열 / B열(재고 수량)=E열
+              <strong>설명:</strong> 이지어드민 현재고조회 다운로드항목4 파일 넣기
             </div>
           </section>
 
@@ -978,7 +1077,7 @@ export default function NoyeKimPage() {
         <>
           <section className={styles.card}>
             <div className={styles.cardHeader}>
-              <h3 className={styles.cardTitle}>장끼가공</h3>
+              <h3 className={styles.cardTitle}>신상 업로드 날짜별 시트2</h3>
             </div>
             <div className={styles.uploadRow}>
               <label className={styles.fileInput}>
@@ -1003,7 +1102,7 @@ export default function NoyeKimPage() {
               </button>
             </div>
             <div className={styles.statusMsg}>
-              <strong>매핑:</strong> J열→A / B열→B / C열([색상-사이즈] 파싱)→C,D / H열→E / D열(브랜드 상품명)→F,G
+              <strong>설명:</strong> 현재고조회 다운로드항목4 신상 다운로드 후 버튼 누르면 날짜별 시트2 양식으로 가공
             </div>
           </section>
 
@@ -1054,23 +1153,29 @@ export default function NoyeKimPage() {
               <span className={styles.pill}>{excelSlipRows.length}{"\uac74"}</span>
             </div>
             <div className={styles.statusMsg}>
-              {"\uacf5\uae09\ucc98\uc0c1\ud488\uba85, \uc635\uc158, \uc218\ub7c9 \ubb36\uc74c\uc744 \uc790\ub3d9 \ud30c\uc2f1\ud574\uc11c A~H TSV \ud615\uc2dd\uc73c\ub85c \ubcc0\ud658\ud569\ub2c8\ub2e4. \ubbf8\uc1a1 \ud328\ud134 0 X 0\uc774 \uc788\uc73c\uba74 \uc218\ub7c9\uc740 \uac00\uc6b4\ub370 \uac12, H\uc5f4\uc740 \ubbf8\uc1a1\uc73c\ub85c \ucc98\ub9ac\ud569\ub2c8\ub2e4."}
+              {"원본 엑셀 1행은 헤더로 건너뛰고, A열 공급처 상품명은 첫 띄어쓰기 기준으로 A/B, B열 옵션은 D/E, F열은 원본 C열로 옮깁니다. 원본 D열이 0 초과면 H열에 미송, 원본 E열에 미송픽업이 있으면 C/H열에 미송픽업을 넣습니다."}
             </div>
-            <textarea
-              className={styles.scanInput}
-              style={{ minHeight: 220, width: "100%" }}
-              value={excelSlipInput}
-              onChange={(e) => setExcelSlipInput(e.target.value)}
-              placeholder={"\uc785\uace0\uc694\uccad \uc804\ud45c \uc0c1\uc138 \ub370\uc774\ud130\ub97c \uadf8\ub300\ub85c \ubd99\uc5ec\ub123\uc5b4 \uc8fc\uc138\uc694."}
-            />
             <div className={styles.uploadRow}>
+              <label className={styles.fileInput}>
+                <input
+                  type="file"
+                  accept=".xls,.xlsx,.xlsm"
+                  onChange={(e) => {
+                    setExcelSlipFile(e.target.files?.[0] ?? null);
+                    setExcelSlipRows([]);
+                    setExcelSlipOutput("");
+                    setMessage("");
+                  }}
+                />
+                {excelSlipFile ? excelSlipFile.name : "입고전표 엑셀 선택"}
+              </label>
               <button className={styles.primaryBtn} onClick={runExcelSlipConvert} disabled={loading}>
                 {"\uc5d1\uc140 \ubcc0\ud658"}
               </button>
               <button
                 className={styles.secondaryBtn}
                 onClick={() => {
-                  setExcelSlipInput("");
+                  setExcelSlipFile(null);
                   setExcelSlipRows([]);
                   setExcelSlipOutput("");
                   setMessage("");

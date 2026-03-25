@@ -16,6 +16,7 @@ import {
     Activity,
     MessageSquare,
     PackageCheck,
+    CalendarDays,
 } from 'lucide-react';
 import styles from './Sidebar.module.css';
 import ServerStatsModal from '../Admin/ServerStatsModal';
@@ -86,6 +87,15 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                 >
                     <Users size={20} />
                     노예김승일
+                </div>
+                )}
+                {!isHidden('client-schedule') && (
+                <div
+                    className={`${styles.navItem} ${activeTab === 'client-schedule' ? styles.active : ''}`}
+                    onClick={() => setActiveTab('client-schedule')}
+                >
+                    <CalendarDays size={20} />
+                    거래처 일정
                 </div>
                 )}
                 {!isHidden('sms') && (
