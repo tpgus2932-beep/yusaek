@@ -250,6 +250,10 @@
 .dbClearBtn:hover { background: rgba(229, 62, 62, 0.07); }
 .dbClearBtn:disabled { opacity: 0.35; cursor: not-allowed; }
 
+.uploadLabel {
+  cursor: pointer;
+}
+
 /* ── Status + Search ── */
 .statusRow {
   display: flex;
@@ -286,11 +290,8 @@
   color: var(--text-primary);
 }
 
-/* ── Preview Grid ── */
-.previewGrid {
-  display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: 14px;
+/* ── Table Panel ── */
+.tablePanel {
   flex: 1;
   min-height: 0;
 }
@@ -432,12 +433,6 @@
 }
 
 /* ── Responsive ── */
-@media (max-width: 1100px) {
-  .previewGrid {
-    grid-template-columns: 1fr;
-  }
-}
-
 @media (max-width: 860px) {
   .controlPanel {
     grid-template-columns: 1fr;
