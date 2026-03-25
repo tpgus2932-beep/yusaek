@@ -683,6 +683,53 @@ def build_collab_router(
         conn.close()
         return {"ok": True}
 
+    @router.get("/client-schedule/db")
+    def get_client_schedule_db(user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT row_a,row_b,row_c,row_d,row_e,row_f,row_g,row_h,saved_at FROM client_schedule_db ORDER BY id"
+            ).fetchall()
+        finally:
+            conn.close()
+        items = [
+            {"A": r["row_a"], "B": r["row_b"], "C": r["row_c"],
+             "D": r["row_d"], "E": r["row_e"], "F": r["row_f"],
+             "G": r["row_g"], "H": r["row_h"]}
+            for r in rows
+        ]
+        saved_at = rows[-1]["saved_at"] if rows else None
+        return {"ok": True, "rows": items, "saved_at": saved_at, "count": len(items)}
+
+    @router.put("/client-schedule/db")
+    def save_client_schedule_db(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        rows = payload.get("rows") or []
+        now = datetime.now(timezone.utc).isoformat()
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM client_schedule_db")
+            for row in rows:
+                conn.execute(
+                    "INSERT INTO client_schedule_db (row_a,row_b,row_c,row_d,row_e,row_f,row_g,row_h,saved_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (str(row.get("A","")), str(row.get("B","")), str(row.get("C","")),
+                     str(row.get("D","")), str(row.get("E","")), str(row.get("F","")),
+                     str(row.get("G","")), str(row.get("H","")), now),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "saved_at": now, "count": len(rows)}
+
+    @router.delete("/client-schedule/db")
+    def clear_client_schedule_db(user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM client_schedule_db")
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True}
+
     @router.get("/company-credentials")
     def list_company_credentials(user: str = Depends(get_current_user)):
         admin_flag = is_admin(user)
