@@ -93,9 +93,9 @@ function withIds(rows) {
 }
 
 function preprocessBaseSheet(rawRows) {
-  // 헤더(첫 행) 제거 후, A열에 "합계" 포함된 행 제거
+  // 헤더(첫 행) 제거 후, 상품코드(row[5])가 없는 행(합계·소계·빈 행 등) 모두 제거
   const allRows = ensureWidth(Array.isArray(rawRows) ? rawRows.slice(1) : [], 11);
-  const rows = allRows.filter((row) => !String(row[0] ?? '').trim().includes('합계'));
+  const rows = allRows.filter((row) => String(row[5] ?? '').trim() !== '');
   const sheet2 = [];
   let currentA = '';
 
