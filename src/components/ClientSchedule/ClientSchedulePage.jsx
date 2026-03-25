@@ -338,8 +338,12 @@ export default function ClientSchedulePage() {
       const loaded = withIds(data.rows || []);
       setDbRows(loaded);
       setDbSavedAt(data.saved_at || null);
+      if (loaded.length > 0) {
+        const { sheet2Rows: s2 } = buildSheet1AndSheet2(loaded, DEFAULT_PREFIX, DEFAULT_SUFFIX);
+        setSheet2Rows(s2);
+      }
       setStatus(data.count > 0
-        ? `DB 일정 ${data.count}행 로드됨 · 기준 파일을 올리면 자동 병합됩니다.`
+        ? `DB 일정 ${data.count}행 불러옴 · 기준 파일을 올리면 자동 병합됩니다.`
         : 'DB가 비어있습니다. 기준 파일을 가공한 뒤 DB에 저장하세요.');
     } catch (err) {
       setStatus(err.message || 'DB 로드 실패');
