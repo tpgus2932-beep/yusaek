@@ -93,7 +93,8 @@ function withIds(rows) {
 }
 
 function preprocessBaseSheet(rawRows) {
-  const rows = ensureWidth(Array.isArray(rawRows) ? rawRows.slice(1) : [], 11);
+  // 헤더(첫 행) + 합계(마지막 행) 제거 후 처리
+  const rows = ensureWidth(Array.isArray(rawRows) ? rawRows.slice(1, -1) : [], 11);
   const sheet2 = [];
   let currentA = '';
 
@@ -115,10 +116,6 @@ function preprocessBaseSheet(rawRows) {
       I: '',
     });
   });
-
-  if (sheet2.length > 0) {
-    sheet2.pop();
-  }
 
   sheet2.sort((left, right) => left.B.localeCompare(right.B, 'ko'));
   return withIds(sheet2);
@@ -523,6 +520,17 @@ export default function ClientSchedulePage() {
     }
   };
 
+  const handleSheet1Download = () => {
+    if (!sheet2Rows.length) { setStatus('먼저 기준 파일을 가공하세요.'); return; }
+    const { sheet1Rows: built } = buildSheet1AndSheet2(sheet2Rows, msgPrefix, msgSuffix);
+    const final = sheet1Rows.length > 1 ? sheet1Rows : built;
+    if (final.length <= 1) { setStatus('문자 대상이 없습니다. 통합 실행 후 시도하세요.'); return; }
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(final), 'Sheet1');
+    XLSX.writeFile(wb, '거래처일정_Sheet1.xlsx');
+    setStatus(`Sheet1 다운로드 완료: ${final.length - 1}건`);
+  };
+
   const handleDownload = () => {
     if (!sheet2Rows.length) {
       setStatus('\ub2e4\uc6b4\ub85c\ub4dc\ud560 \ub370\uc774\ud130\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.');
@@ -586,6 +594,9 @@ export default function ClientSchedulePage() {
             </button>
             <button className={styles.ghostBtn} onClick={handleDownload} disabled={loading}>
               <Download size={14} /> 결과 다운로드
+            </button>
+            <button className={styles.ghostBtn} onClick={handleSheet1Download} disabled={loading}>
+              <Download size={14} /> Sheet1
             </button>
             <span className={styles.btnDivider} />
             <button className={styles.dbSaveBtn} onClick={handleSaveToDb} disabled={dbLoading || !sheet2Rows.length}>
