@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { CalendarDays, Database, Download, GitMerge, Search, Sparkles, FileUp, Trash2 } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { CalendarDays, Database, Download, GitMerge, Search, Sparkles, FileUp, Trash2, X } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { COLLAB_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import styles from './ClientSchedulePage.module.css';
@@ -245,7 +245,22 @@ function buildGuideMessage(dValue) {
   return '\ud574\ub2f9 \uc0c1\ud488 \ud604\uc7ac \uc77c\uc815 \ud655\uc778\uc911\uc774\uba70 \uc785\uace0 \ud655\uc778\ub418\ub294\ub300\ub85c \uc77c\uc815 \uc548\ub0b4\ub4dc\ub9ac\uaca0\uc2b5\ub2c8\ub2e4. \uac10\uc0ac\ud569\ub2c8\ub2e4.';
 }
 
-function buildSheet1AndSheet2(rows, prefix, suffix) {
+function parseExcludedClients(text) {
+  return String(text || '')
+    .split(/\r?\n|,/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function matchesExcludedClient(clientName, excludedClients) {
+  const name = toDisplayText(clientName);
+  if (!name || excludedClients.length === 0) {
+    return false;
+  }
+  return excludedClients.some((keyword) => name.includes(keyword));
+}
+
+function buildSheet1AndSheet2(rows, prefix, suffix, excludedClients = []) {
   const rolled = rows.map((row) => {
     if (!toDisplayText(row.D) && toDisplayText(row.E)) {
       return { ...row, D: toDisplayText(row.E), E: '' };
@@ -254,8 +269,18 @@ function buildSheet1AndSheet2(rows, prefix, suffix) {
   });
 
   const grouped = new Map();
+  const excludedMatchedClients = new Set();
   rolled
-    .filter((row) => !toDisplayText(row.D) && toDisplayText(row.B))
+    .filter((row) => {
+      if (toDisplayText(row.D) || !toDisplayText(row.B)) {
+        return false;
+      }
+      const isExcluded = matchesExcludedClient(row.B, excludedClients);
+      if (isExcluded) {
+        excludedMatchedClients.add(toDisplayText(row.B));
+      }
+      return !isExcluded;
+    })
     .forEach((row) => {
       const key = toDisplayText(row.B);
       if (!grouped.has(key)) grouped.set(key, []);
@@ -277,7 +302,7 @@ function buildSheet1AndSheet2(rows, prefix, suffix) {
     }))
   );
 
-  return { sheet1Rows, sheet2Rows };
+  return { sheet1Rows, sheet2Rows, excludedMatchedClients: Array.from(excludedMatchedClients) };
 }
 
 function rowsToSheet2AoA(rows) {
@@ -317,6 +342,15 @@ export default function ClientSchedulePage() {
   const [baseDateText, setBaseDateText] = useState(formatInputDate());
   const [msgPrefix, setMsgPrefix] = useState(DEFAULT_PREFIX);
   const [msgSuffix, setMsgSuffix] = useState(DEFAULT_SUFFIX);
+  const [excludedClients, setExcludedClients] = useState(() => {
+    try {
+      const raw = localStorage.getItem('client-schedule-excluded-clients');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [excludedClientInput, setExcludedClientInput] = useState('');
   const [sheet1Rows, setSheet1Rows] = useState([HEADER_SHEET1]);
   const [sheet2Rows, setSheet2Rows] = useState([]);
   const [status, setStatus] = useState('DB에서 일정을 불러오는 중...');
@@ -326,6 +360,7 @@ export default function ClientSchedulePage() {
   const [dbSavedAt, setDbSavedAt] = useState(null);
   const [dbLoading, setDbLoading] = useState(false);
   const authHeaders = getAuthHeaders();
+  const excludedClientInputRef = useRef(null);
 
   const filteredRows = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -336,6 +371,34 @@ export default function ClientSchedulePage() {
   }, [query, sheet2Rows]);
 
   const baseDate = useMemo(() => coerceDate(baseDateText) || new Date(), [baseDateText]);
+
+  useEffect(() => {
+    localStorage.setItem('client-schedule-excluded-clients', JSON.stringify(excludedClients));
+  }, [excludedClients]);
+
+  const addExcludedClients = (raw) => {
+    const items = parseExcludedClients(raw);
+    if (!items.length) return;
+    setExcludedClients((prev) => {
+      const next = new Set(prev);
+      items.forEach((item) => next.add(item));
+      return [...next];
+    });
+    setExcludedClientInput('');
+  };
+
+  const removeExcludedClient = (value) => {
+    setExcludedClients((prev) => prev.filter((item) => item !== value));
+  };
+
+  const handleExcludedClientKeyDown = (e) => {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      addExcludedClients(excludedClientInput);
+    } else if (e.key === 'Backspace' && !excludedClientInput && excludedClients.length > 0) {
+      setExcludedClients((prev) => prev.slice(0, -1));
+    }
+  };
 
   const fetchDbRows = async () => {
     setDbLoading(true);
@@ -348,7 +411,7 @@ export default function ClientSchedulePage() {
       setDbRows(loaded);
       setDbSavedAt(data.saved_at || null);
       if (loaded.length > 0) {
-        const { sheet2Rows: s2 } = buildSheet1AndSheet2(loaded, DEFAULT_PREFIX, DEFAULT_SUFFIX);
+        const { sheet2Rows: s2 } = buildSheet1AndSheet2(loaded, DEFAULT_PREFIX, DEFAULT_SUFFIX, excludedClients);
         setSheet2Rows(s2);
       }
       setStatus(data.count > 0
@@ -450,10 +513,18 @@ export default function ClientSchedulePage() {
       return;
     }
 
-    const { sheet1Rows: nextSheet1, sheet2Rows: nextSheet2 } = buildSheet1AndSheet2(sheet2Rows, msgPrefix, msgSuffix);
+    const {
+      sheet1Rows: nextSheet1,
+      sheet2Rows: nextSheet2,
+      excludedMatchedClients,
+    } = buildSheet1AndSheet2(sheet2Rows, msgPrefix, msgSuffix, excludedClients);
     setSheet1Rows(nextSheet1);
     setSheet2Rows(nextSheet2);
-    setStatus(`\ud1b5\ud569 \uc2e4\ud589 \uc644\ub8cc: Sheet1 ${Math.max(nextSheet1.length - 1, 0)}\uac74, Sheet2 ${nextSheet2.length}\ud589`);
+    setStatus(
+      `\ud1b5\ud569 \uc2e4\ud589 \uc644\ub8cc: Sheet1 ${Math.max(nextSheet1.length - 1, 0)}\uac74, Sheet2 ${nextSheet2.length}\ud589${
+        excludedMatchedClients.length ? `, \uc81c\uc678 \uac70\ub798\ucc98 ${excludedMatchedClients.length}\uacf3` : ''
+      }`
+    );
   };
 
   const handleSheet2Change = (id, field, value) => {
@@ -509,7 +580,7 @@ export default function ClientSchedulePage() {
       if (!res.ok) throw new Error(data?.detail || 'DB 저장 실패');
       setDbRows(parsed);
       setDbSavedAt(data.saved_at);
-      const { sheet2Rows: s2 } = buildSheet1AndSheet2(parsed, msgPrefix, msgSuffix);
+      const { sheet2Rows: s2 } = buildSheet1AndSheet2(parsed, msgPrefix, msgSuffix, excludedClients);
       setSheet2Rows(s2);
       setSheet1Rows([HEADER_SHEET1]);
       setStatus(`엑셀 업로드 완료: ${data.count}행 DB 반영`);
@@ -522,8 +593,8 @@ export default function ClientSchedulePage() {
 
   const handleSheet1Download = () => {
     if (!sheet2Rows.length) { setStatus('먼저 기준 파일을 가공하세요.'); return; }
-    const { sheet1Rows: built } = buildSheet1AndSheet2(sheet2Rows, msgPrefix, msgSuffix);
-    const final = sheet1Rows.length > 1 ? sheet1Rows : built;
+    const { sheet1Rows: built, excludedMatchedClients } = buildSheet1AndSheet2(sheet2Rows, msgPrefix, msgSuffix, excludedClients);
+    const final = built;
     if (final.length <= 1) { setStatus('문자 대상이 없습니다. 통합 실행 후 시도하세요.'); return; }
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(final), 'Sheet1');
@@ -537,8 +608,8 @@ export default function ClientSchedulePage() {
       return;
     }
 
-    const result = buildSheet1AndSheet2(sheet2Rows, msgPrefix, msgSuffix);
-    const finalSheet1 = sheet1Rows.length > 1 ? sheet1Rows : result.sheet1Rows;
+    const result = buildSheet1AndSheet2(sheet2Rows, msgPrefix, msgSuffix, excludedClients);
+    const finalSheet1 = result.sheet1Rows;
     const finalSheet2 = sheet1Rows.length > 1 ? sheet2Rows : result.sheet2Rows;
 
     const workbook = XLSX.utils.book_new();
@@ -628,6 +699,36 @@ export default function ClientSchedulePage() {
           <div className={styles.settingGroup}>
             <span className={styles.fieldLabel}>문자 마무리</span>
             <input value={msgSuffix} onChange={(e) => setMsgSuffix(e.target.value)} placeholder={DEFAULT_SUFFIX} />
+          </div>
+          <div className={styles.settingGroup}>
+            <span className={styles.fieldLabel}>제외 거래처</span>
+            <div className={styles.receiverBox} onClick={() => excludedClientInputRef.current?.focus()}>
+              {excludedClients.map((client) => (
+                <span key={client} className={styles.tag}>
+                  {client}
+                  <button
+                    type="button"
+                    className={styles.tagRemove}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeExcludedClient(client);
+                    }}
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+              <input
+                ref={excludedClientInputRef}
+                className={styles.receiverInput}
+                value={excludedClientInput}
+                onChange={(e) => setExcludedClientInput(e.target.value)}
+                onKeyDown={handleExcludedClientKeyDown}
+                onBlur={() => excludedClientInput && addExcludedClients(excludedClientInput)}
+                placeholder={excludedClients.length === 0 ? '거래처 입력 후 Enter 또는 콤마로 등록' : ''}
+              />
+            </div>
+            <span className={styles.hint}>등록된 제외 거래처는 이 브라우저에 계속 저장됩니다.</span>
           </div>
         </div>
       </div>

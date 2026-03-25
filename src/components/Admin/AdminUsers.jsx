@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import styles from './AdminUsers.module.css';
 import { COLLAB_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
+const CLIENT_SCHEDULE_MENU_TAB = { key: 'client-schedule', label: '거래처 일정' };
+
 const ALL_MENU_TABS = [
   { key: 'dashboard', label: '대시보드' },
   { key: 'barcode', label: '바코드' },
@@ -376,7 +378,7 @@ const AdminUsers = ({ currentUser }) => {
                         <div className={styles.menuPanel}>
                           <span className={styles.menuPanelTitle}>메뉴 표시 설정 — {user.display_name || user.username}</span>
                           <div className={styles.menuPanelGrid}>
-                            {ALL_MENU_TABS.map((tab) => {
+                            {[...ALL_MENU_TABS, CLIENT_SCHEDULE_MENU_TAB].map((tab) => {
                               const isShown = !menuPanel.hiddenTabs.includes(tab.key);
                               return (
                                 <button
