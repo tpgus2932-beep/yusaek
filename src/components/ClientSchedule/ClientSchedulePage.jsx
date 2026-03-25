@@ -93,8 +93,9 @@ function withIds(rows) {
 }
 
 function preprocessBaseSheet(rawRows) {
-  // 헤더(첫 행) + 합계(마지막 행) 제거 후 처리
-  const rows = ensureWidth(Array.isArray(rawRows) ? rawRows.slice(1, -1) : [], 11);
+  // 헤더(첫 행) 제거 후, A열에 "합계" 포함된 행 제거
+  const allRows = ensureWidth(Array.isArray(rawRows) ? rawRows.slice(1) : [], 11);
+  const rows = allRows.filter((row) => !String(row[0] ?? '').trim().includes('합계'));
   const sheet2 = [];
   let currentA = '';
 
