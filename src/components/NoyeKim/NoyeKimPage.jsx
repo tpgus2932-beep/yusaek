@@ -248,7 +248,7 @@ function convertCurrentReceiptExcelRows(rawData) {
     const optionText = optionMatch ? optionMatch[1] : optionCell.replace(/^\[|\]$/g, "");
     const { color, size } = extractOptionParts(optionText);
     const isPickup = pickupText.includes("미송픽업");
-    const isMissing = requestQty > 1;
+    const isMissing = requestQty > 0;
 
     rows.push({
       A: supplierPrefix,
