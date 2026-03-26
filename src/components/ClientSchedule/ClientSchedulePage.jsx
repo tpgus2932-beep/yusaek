@@ -560,16 +560,40 @@ export default function ClientSchedulePage() {
       const { rows: raw } = await readWorkbook(file, 'DB');
       // 첫 행이 헤더면 제거
       const dataRows = raw.length > 0 && String(raw[0][0] || '').trim() === '그룹' ? raw.slice(1) : raw;
-      const parsed = withIds(
-        dataRows
-          .filter((r) => r.some((v) => String(v ?? '').trim()))
-          .map((r) => ({
-            A: toDisplayText(r[0]), B: toDisplayText(r[1]), C: toDisplayText(r[2]),
-            D: toDisplayText(r[3]), E: toDisplayText(r[4]), F: toDisplayText(r[5]),
-            G: toDisplayText(r[6]), H: toDisplayText(r[7]),
-          }))
-      );
-      const payload = parsed.map(({ A, B, C, D, E, F, G, H }) => ({ A, B, C, D, E, F, G, H }));
+
+      // 날짜(D열)가 입력된 행만 추출 → (A,B,C,F) 키로 맵 구성
+      const dateUpdateMap = new Map();
+      dataRows
+        .filter((r) => r.some((v) => String(v ?? '').trim()))
+        .forEach((r) => {
+          const D = toDisplayText(r[3]);
+          if (!D) return;
+          const key = [toDisplayText(r[0]), toDisplayText(r[1]), toDisplayText(r[2]), toDisplayText(r[5])].join('||');
+          dateUpdateMap.set(key, { D, E: toDisplayText(r[4]) });
+        });
+
+      if (dateUpdateMap.size === 0) {
+        setStatus('날짜가 입력된 행이 없습니다. D열에 날짜를 입력 후 업로드하세요.');
+        return;
+      }
+
+      // 현재 테이블(또는 DB)에서 매칭되는 행의 날짜만 업데이트
+      const currentRows = sheet2Rows.length > 0 ? sheet2Rows : dbRows;
+      if (!currentRows.length) {
+        setStatus('현재 테이블에 데이터가 없습니다. 기준 파일을 먼저 가공하세요.');
+        return;
+      }
+
+      let updatedCount = 0;
+      const updated = currentRows.map((row) => {
+        const key = [row.A, row.B, row.C, row.F].map(toDisplayText).join('||');
+        const match = dateUpdateMap.get(key);
+        if (!match) return row;
+        updatedCount += 1;
+        return { ...row, D: match.D, E: match.E };
+      });
+
+      const payload = updated.map(({ A, B, C, D, E, F, G, H }) => ({ A, B, C, D, E, F, G, H }));
       const res = await fetch(`${API}/client-schedule/db`, {
         method: 'PUT',
         headers: { ...authHeaders, 'Content-Type': 'application/json' },
@@ -578,12 +602,14 @@ export default function ClientSchedulePage() {
       if (handleUnauthorized(res)) return;
       const data = await res.json();
       if (!res.ok) throw new Error(data?.detail || 'DB 저장 실패');
-      setDbRows(parsed);
+
+      const withIdsUpdated = withIds(updated);
+      setDbRows(withIdsUpdated);
       setDbSavedAt(data.saved_at);
-      const { sheet2Rows: s2 } = buildSheet1AndSheet2(parsed, msgPrefix, msgSuffix, excludedClients);
+      const { sheet2Rows: s2 } = buildSheet1AndSheet2(withIdsUpdated, msgPrefix, msgSuffix, excludedClients);
       setSheet2Rows(s2);
       setSheet1Rows([HEADER_SHEET1]);
-      setStatus(`엑셀 업로드 완료: ${data.count}행 DB 반영`);
+      setStatus(`엑셀 업로드 완료: ${updatedCount}행 날짜 업데이트 · DB 저장`);
     } catch (err) {
       setStatus(err.message || '엑셀 업로드 실패');
     } finally {
@@ -701,7 +727,24 @@ export default function ClientSchedulePage() {
             <input value={msgSuffix} onChange={(e) => setMsgSuffix(e.target.value)} placeholder={DEFAULT_SUFFIX} />
           </div>
           <div className={styles.settingGroup}>
-            <span className={styles.fieldLabel}>제외 거래처</span>
+            <div className={styles.excludedHeader}>
+              <span className={styles.fieldLabel}>
+                제외 거래처
+                {excludedClients.length > 0 && (
+                  <span className={styles.excludedCount}>{excludedClients.length}건</span>
+                )}
+              </span>
+              {excludedClients.length > 0 && (
+                <button
+                  type="button"
+                  className={styles.clearAllBtn}
+                  onClick={() => setExcludedClients([])}
+                  title="전체 삭제"
+                >
+                  전체 삭제
+                </button>
+              )}
+            </div>
             <div className={styles.receiverBox} onClick={() => excludedClientInputRef.current?.focus()}>
               {excludedClients.map((client) => (
                 <span key={client} className={styles.tag}>
@@ -725,10 +768,10 @@ export default function ClientSchedulePage() {
                 onChange={(e) => setExcludedClientInput(e.target.value)}
                 onKeyDown={handleExcludedClientKeyDown}
                 onBlur={() => excludedClientInput && addExcludedClients(excludedClientInput)}
-                placeholder={excludedClients.length === 0 ? '거래처 입력 후 Enter 또는 콤마로 등록' : ''}
+                placeholder={excludedClients.length === 0 ? '거래처 입력 후 Enter / 콤마' : '추가 입력...'}
               />
             </div>
-            <span className={styles.hint}>등록된 제외 거래처는 이 브라우저에 계속 저장됩니다.</span>
+            <span className={styles.hint}>키워드 포함 거래처는 Sheet1에서 제외됩니다.</span>
           </div>
         </div>
       </div>
