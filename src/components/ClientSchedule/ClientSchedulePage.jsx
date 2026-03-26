@@ -359,8 +359,15 @@ export default function ClientSchedulePage() {
   const [dbRows, setDbRows] = useState([]);
   const [dbSavedAt, setDbSavedAt] = useState(null);
   const [dbLoading, setDbLoading] = useState(false);
+  const [showAllExcluded, setShowAllExcluded] = useState(false);
   const authHeaders = getAuthHeaders();
   const excludedClientInputRef = useRef(null);
+
+  const VISIBLE_TAG_COUNT = 2;
+  const hiddenTagCount = Math.max(0, excludedClients.length - VISIBLE_TAG_COUNT);
+  const visibleClients = showAllExcluded || excludedClients.length <= VISIBLE_TAG_COUNT
+    ? excludedClients
+    : excludedClients.slice(-VISIBLE_TAG_COUNT);
 
   const filteredRows = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -745,8 +752,20 @@ export default function ClientSchedulePage() {
                 </button>
               )}
             </div>
-            <div className={styles.receiverBox} onClick={() => excludedClientInputRef.current?.focus()}>
-              {excludedClients.map((client) => (
+            <div
+              className={`${styles.receiverBox} ${showAllExcluded ? styles.receiverBoxExpanded : ''}`}
+              onClick={() => excludedClientInputRef.current?.focus()}
+            >
+              {hiddenTagCount > 0 && !showAllExcluded && (
+                <button
+                  type="button"
+                  className={styles.moreTagsBtn}
+                  onClick={(e) => { e.stopPropagation(); setShowAllExcluded(true); }}
+                >
+                  +{hiddenTagCount} 전체보기
+                </button>
+              )}
+              {visibleClients.map((client) => (
                 <span key={client} className={styles.tag}>
                   {client}
                   <button
@@ -761,6 +780,15 @@ export default function ClientSchedulePage() {
                   </button>
                 </span>
               ))}
+              {showAllExcluded && excludedClients.length > VISIBLE_TAG_COUNT && (
+                <button
+                  type="button"
+                  className={styles.moreTagsBtn}
+                  onClick={(e) => { e.stopPropagation(); setShowAllExcluded(false); }}
+                >
+                  접기
+                </button>
+              )}
               <input
                 ref={excludedClientInputRef}
                 className={styles.receiverInput}
