@@ -172,15 +172,21 @@
 
 .receiverBox {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 0.45rem;
   align-items: center;
   padding: 0.45rem 0.7rem;
   min-height: 38px;
+  overflow: hidden;
   border: 1px solid var(--border-color);
   border-radius: 8px;
   background: var(--bg-primary);
   cursor: text;
+}
+
+.receiverBoxExpanded {
+  flex-wrap: wrap;
+  overflow: visible;
 }
 
 .receiverBox:focus-within {
@@ -218,7 +224,7 @@
 
 .receiverInput {
   flex: 1;
-  min-width: 150px;
+  min-width: 80px;
   border: 0;
   outline: 0;
   background: transparent;
@@ -271,6 +277,24 @@
 .clearAllBtn:hover {
   opacity: 1;
   text-decoration: underline;
+}
+
+.moreTagsBtn {
+  flex-shrink: 0;
+  padding: 0.15rem 0.6rem;
+  border: 1px solid rgba(45, 109, 86, 0.35);
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #2d6d56;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.moreTagsBtn:hover {
+  background: rgba(45, 109, 86, 0.08);
 }
 
 /* ── Buttons ── */
