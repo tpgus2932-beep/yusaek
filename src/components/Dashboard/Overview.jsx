@@ -3,10 +3,11 @@ import { Plus, Calendar, Bell, ChevronDown, ChevronUp, Pin, PinOff, GripVertical
 import styles from './Dashboard.module.css';
 import { COLLAB_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
-function AuthImage({ src, headers, className, alt, onClick }) {
+function AuthImage({ src, token, className, alt, onClick }) {
     const [blobUrl, setBlobUrl] = useState('');
     useEffect(() => {
         let objectUrl = '';
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
         fetch(src, { headers })
             .then((r) => (r.ok ? r.blob() : null))
             .then((blob) => {
@@ -17,7 +18,7 @@ function AuthImage({ src, headers, className, alt, onClick }) {
             })
             .catch(() => {});
         return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
-    }, [src, headers]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [src, token]);
     if (!blobUrl) return null;
     return <img src={blobUrl} className={className} alt={alt} onClick={onClick} />;
 }
@@ -598,7 +599,7 @@ const Overview = ({ currentUser }) => {
                             <AuthImage
                                 className={styles.attachmentThumb}
                                 src={getAttachmentUrl(file)}
-                                headers={authHeaders}
+                                token={localStorage.getItem('token')}
                                 alt={file.filename}
                                 onClick={() => openImagePreview(file)}
                             />
