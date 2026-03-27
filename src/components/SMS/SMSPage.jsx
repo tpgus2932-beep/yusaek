@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   MessageSquare, Send, Wallet, History, RefreshCw,
   X, ChevronLeft, ChevronRight, CheckCircle, XCircle,
-  Clock, AlertCircle, Trash2, Download,
+  Clock, AlertCircle, Trash2, Download, FileText, Plus, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import styles from './SMSPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
@@ -112,6 +112,19 @@ export default function SMSPage() {
   const [migrateLoading, setMigrateLoading] = useState(false);
   const [migrateResult, setMigrateResult] = useState(null);
   const [monthsBack, setMonthsBack] = useState('3');
+
+  // ─── 답변 템플릿 상태 ───
+  const [templates, setTemplates] = useState(() => {
+    try {
+      const raw = localStorage.getItem('sms-templates');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [templateInput, setTemplateInput] = useState('');
+  const [templateLabelInput, setTemplateLabelInput] = useState('');
 
   const receiverInputRef = useRef(null);
   const bytes = getByteLength(msg);
@@ -354,6 +367,28 @@ export default function SMSPage() {
     }
   };
 
+  // ─── 템플릿 관리 ───
+  const saveTemplates = (list) => {
+    setTemplates(list);
+    localStorage.setItem('sms-templates', JSON.stringify(list));
+  };
+
+  const addTemplate = () => {
+    const content = templateInput.trim();
+    if (!content) return;
+    const label = templateLabelInput.trim() || content.slice(0, 12) + (content.length > 12 ? '…' : '');
+    const next = [...templates, { id: Date.now(), label, content }];
+    saveTemplates(next);
+    setTemplateInput('');
+    setTemplateLabelInput('');
+  };
+
+  const deleteTemplate = (id) => saveTemplates(templates.filter((t) => t.id !== id));
+
+  const insertTemplate = (content) => {
+    setMsg((prev) => (prev ? prev + '\n' + content : content));
+  };
+
   // 탭 진입 시 자동 조회
   useEffect(() => {
     if (activeTab === 'remain') fetchRemain();
@@ -457,6 +492,87 @@ export default function SMSPage() {
               </div>
               {bytes > SMS_MAX && (
                 <span className={styles.hint}>90 byte 초과 → LMS(장문)으로 자동 전환됩니다</span>
+              )}
+            </div>
+
+            {/* 답변 템플릿 */}
+            <div className={styles.templateSection}>
+              <button
+                type="button"
+                className={styles.templateToggle}
+                onClick={() => setShowTemplates((v) => !v)}
+              >
+                <FileText size={14} />
+                답변 템플릿
+                {templates.length > 0 && (
+                  <span className={styles.templateCount}>{templates.length}</span>
+                )}
+                {showTemplates ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+              </button>
+
+              {showTemplates && (
+                <div className={styles.templatePanel}>
+                  {templates.length === 0 && (
+                    <div className={styles.templateEmpty}>
+                      저장된 템플릿이 없습니다. 아래에서 추가해보세요.
+                    </div>
+                  )}
+                  {templates.length > 0 && (
+                    <div className={styles.templateList}>
+                      {templates.map((t) => (
+                        <div key={t.id} className={styles.templateItem}>
+                          <button
+                            type="button"
+                            className={styles.templateInsertBtn}
+                            onClick={() => insertTemplate(t.content)}
+                            title={t.content}
+                          >
+                            <span className={styles.templateLabel}>{t.label}</span>
+                            <span className={styles.templatePreview}>{t.content}</span>
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.templateDeleteBtn}
+                            onClick={() => deleteTemplate(t.id)}
+                            title="삭제"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className={styles.templateAddRow}>
+                    <div className={styles.templateAddInputs}>
+                      <input
+                        className={styles.input}
+                        value={templateLabelInput}
+                        onChange={(e) => setTemplateLabelInput(e.target.value)}
+                        placeholder="템플릿 이름 (선택)"
+                        maxLength={20}
+                        style={{ flex: '0 0 130px' }}
+                      />
+                      <textarea
+                        className={styles.textarea}
+                        value={templateInput}
+                        onChange={(e) => setTemplateInput(e.target.value)}
+                        placeholder="템플릿 내용 입력..."
+                        rows={2}
+                        style={{ flex: 1, minHeight: 54, resize: 'vertical' }}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className={styles.primaryBtn}
+                      onClick={addTemplate}
+                      disabled={!templateInput.trim()}
+                      style={{ flexShrink: 0 }}
+                    >
+                      <Plus size={14} /> 추가
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
 
