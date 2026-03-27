@@ -15,7 +15,6 @@ from fastapi import APIRouter, Body, Depends, File, Header, HTTPException, Form,
 from fastapi.responses import FileResponse
 
 KST = ZoneInfo("Asia/Seoul")
-ALIGO_BASE = "https://apis.aligo.in"
 
 
 def build_collab_router(
@@ -109,63 +108,113 @@ def build_collab_router(
             preview = f"{preview[:57]}..."
         return f"[요청알림]\n보낸사람: {requester_display}\n담당자: {assignee_display}\n내용: {preview}"
 
-    async def _send_request_sms_async(
+    async def _post_request_sms_webhook_async(
         *,
+        receiver: str,
+        fallback_receiver: str,
         requester_display: str,
         assignee_display: str,
         text: str,
     ) -> None:
-        receiver = _normalize_receiver(
-            get_setting("request_sms_receiver") or os.environ.get("REQUEST_SMS_RECEIVER", "01095806927")
-        )
-        if not receiver or not _is_request_sms_time_allowed():
+        webhook_url = (os.environ.get("REQUEST_SMS_WEBHOOK_URL") or "").strip()
+        if not webhook_url:
             return
+        headers = {}
+        token = (os.environ.get("REQUEST_SMS_WEBHOOK_TOKEN") or "").strip()
+        if token:
+            headers["X-Internal-Token"] = token
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            await client.post(
+                webhook_url,
+                json={
+                    "receiver": receiver,
+                    "fallback_receiver": fallback_receiver,
+                    "requester_display": requester_display,
+                    "assignee_display": assignee_display,
+                    "text": text,
+                },
+                headers=headers,
+            )
 
+    async def _send_request_sms_direct_async(
+        *,
+        receiver: str,
+        requester_display: str,
+        assignee_display: str,
+        text: str,
+    ) -> None:
         key = os.environ.get("ALIGO_API_KEY", "").strip()
         user_id = os.environ.get("ALIGO_USER_ID", "").strip()
         sender = os.environ.get("ALIGO_SENDER", "").strip()
         if not key or not user_id or not sender:
             return
-
-        payload = {
-            "key": key,
-            "user_id": user_id,
-            "sender": sender,
-            "receiver": receiver,
-            "msg": _build_request_sms_message(
-                requester_display=requester_display,
-                assignee_display=assignee_display,
-                text=text,
-            ),
-            "msg_type": "LMS",
-            "title": "새 요청 알림",
-        }
-
         async with httpx.AsyncClient(timeout=15.0) as client:
-            await client.post(f"{ALIGO_BASE}/send/", data=payload)
+            await client.post(
+                "https://apis.aligo.in/send/",
+                data={
+                    "key": key,
+                    "user_id": user_id,
+                    "sender": sender,
+                    "receiver": receiver,
+                    "msg": _build_request_sms_message(
+                        requester_display=requester_display,
+                        assignee_display=assignee_display,
+                        text=text,
+                    ),
+                    "msg_type": "LMS",
+                    "title": "새 요청 알림",
+                },
+            )
 
     def _send_request_sms_best_effort(
         *,
+        receiver: str,
+        fallback_receiver: str,
         requester_display: str,
         assignee_display: str,
         text: str,
     ) -> None:
+        receiver = _normalize_receiver(receiver)
+        fallback_receiver = _normalize_receiver(fallback_receiver)
+        if not (receiver or fallback_receiver) or not _is_request_sms_time_allowed():
+            return
         def _runner() -> None:
             try:
                 import asyncio
 
-                asyncio.run(
-                    _send_request_sms_async(
-                        requester_display=requester_display,
-                        assignee_display=assignee_display,
-                        text=text,
-                    )
-                )
+                async def _dispatch() -> None:
+                    if (os.environ.get("REQUEST_SMS_WEBHOOK_URL") or "").strip():
+                        await _post_request_sms_webhook_async(
+                            receiver=receiver,
+                            fallback_receiver=fallback_receiver,
+                            requester_display=requester_display,
+                            assignee_display=assignee_display,
+                            text=text,
+                        )
+                        return
+                    target_receiver = receiver or fallback_receiver
+                    if target_receiver:
+                        await _send_request_sms_direct_async(
+                            receiver=target_receiver,
+                            requester_display=requester_display,
+                            assignee_display=assignee_display,
+                            text=text,
+                        )
+
+                asyncio.run(_dispatch())
             except Exception:
                 # Keep request creation successful even if SMS delivery fails.
                 return
 
         threading.Thread(target=_runner, daemon=True).start()
+
+    def _get_user_phone_number(username: str) -> str:
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT phone_number FROM users WHERE username = ?", (username,)).fetchone()
+            return _normalize_receiver(row["phone_number"]) if row and row["phone_number"] else ""
+        finally:
+            conn.close()
 
     def _get_upload_size(file: UploadFile) -> int:
         current_pos = file.file.tell()
@@ -242,7 +291,12 @@ def build_collab_router(
             item["attachments"] = attachments
             item["can_complete"] = item.get("status") == "open" and assignee == requester_username
             item["can_ack"] = False
+            fallback_receiver = _normalize_receiver(
+                get_setting("request_sms_receiver") or os.environ.get("REQUEST_SMS_RECEIVER", "01095806927")
+            )
             _send_request_sms_best_effort(
+                receiver=_get_user_phone_number(assignee),
+                fallback_receiver=fallback_receiver,
                 requester_display=requester_display,
                 assignee_display=assignee_display,
                 text=text,

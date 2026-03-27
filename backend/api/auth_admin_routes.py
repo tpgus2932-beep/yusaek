@@ -159,7 +159,7 @@ def build_auth_admin_router(
         rows = conn.execute(
             """
             SELECT username, display_name, role, created_at,
-                   approval_status, approved_at, approved_by
+                   approval_status, approved_at, approved_by, phone_number
             FROM users
             ORDER BY
                 CASE approval_status
@@ -178,6 +178,7 @@ def build_auth_admin_router(
                     "username": r["username"],
                     "display_name": r["display_name"],
                     "role": r["role"] if r["role"] else "user",
+                    "phone_number": r["phone_number"] if r["phone_number"] else "",
                     "created_at": r["created_at"],
                     "approval_status": r["approval_status"] if r["approval_status"] else "approved",
                     "approved_at": r["approved_at"],
@@ -242,6 +243,20 @@ def build_auth_admin_router(
         finally:
             conn.close()
         return {"ok": True, "username": target, "role": role}
+
+    @router.patch("/admin/users/{target}/phone-number")
+    def admin_set_phone_number(target: str, payload: dict = Body(...), admin: str = Depends(require_admin)):
+        phone_number = _normalize_receiver(payload.get("phone_number") or "")
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT username FROM users WHERE username = ?", (target,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="user not found")
+            conn.execute("UPDATE users SET phone_number = ? WHERE username = ?", (phone_number, target))
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "username": target, "phone_number": phone_number}
 
     @router.get("/admin/users/{target}/menu-visibility")
     def admin_get_user_menu_visibility(target: str, admin: str = Depends(require_admin)):

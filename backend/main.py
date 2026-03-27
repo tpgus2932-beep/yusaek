@@ -481,6 +481,7 @@ def _init_db():
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             display_name TEXT NOT NULL DEFAULT '',
+            phone_number TEXT NOT NULL DEFAULT '',
             role TEXT NOT NULL DEFAULT 'user',
             created_at TEXT NOT NULL
         )
@@ -501,6 +502,7 @@ def _ensure_user_column(column: str, ddl: str):
 
 _init_db()
 _ensure_user_column("display_name", "ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+_ensure_user_column("phone_number", "ALTER TABLE users ADD COLUMN phone_number TEXT NOT NULL DEFAULT ''")
 _ensure_user_column("role", "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
 _ensure_user_column("approval_status", "ALTER TABLE users ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'")
 _ensure_user_column("approved_at", "ALTER TABLE users ADD COLUMN approved_at TEXT")

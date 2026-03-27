@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 KST = ZoneInfo("Asia/Seoul")
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException
 
 ALIGO_BASE = "https://apis.aligo.in"
 
@@ -143,6 +143,55 @@ def build_sms_router(*, get_current_user, get_db):
                 )
 
         return result
+
+    @router.post("/internal/request-notify")
+    async def sms_internal_request_notify(
+        payload: dict = Body(...),
+        x_internal_token: str | None = Header(None),
+    ):
+        expected_token = (os.environ.get("REQUEST_SMS_WEBHOOK_TOKEN") or "").strip()
+        if expected_token and (x_internal_token or "").strip() != expected_token:
+            raise HTTPException(status_code=403, detail="invalid internal token")
+
+        receiver = _normalize_receiver(payload.get("receiver") or payload.get("fallback_receiver") or "")
+        if not receiver:
+            return {"ok": True, "skipped": True, "reason": "receiver missing"}
+
+        requester_display = (payload.get("requester_display") or "").strip() or "익명"
+        assignee_display = (payload.get("assignee_display") or "").strip() or "담당자"
+        text = " ".join(str(payload.get("text") or "").split())
+        if len(text) > 60:
+            text = f"{text[:57]}..."
+
+        result = await _post(
+            "/send/",
+            {
+                "key": _creds()[0],
+                "user_id": _creds()[1],
+                "sender": os.environ.get("ALIGO_SENDER", "").strip(),
+                "receiver": receiver,
+                "msg": f"[요청알림]\n보낸사람: {requester_display}\n담당자: {assignee_display}\n내용: {text}",
+                "msg_type": "LMS",
+                "title": "새 요청 알림",
+            },
+        )
+        if int(result.get("result_code", 0) or 0) > 0:
+            mid = str(result.get("msg_id", ""))
+            if mid:
+                _save_to_db(
+                    {
+                        "mid": mid,
+                        "type": "LMS",
+                        "msg": f"[요청알림]\n보낸사람: {requester_display}\n담당자: {assignee_display}\n내용: {text}",
+                        "sender": os.environ.get("ALIGO_SENDER", "").strip(),
+                        "sms_count": 1,
+                        "fail_count": 0,
+                        "reserve_state": "전송중",
+                        "reg_date": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+                    },
+                    [receiver],
+                )
+        return {"ok": True, "result": result}
 
     @router.post("/remain")
     async def sms_remain(user: str = Depends(get_current_user)):

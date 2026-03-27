@@ -16,6 +16,7 @@ const ALL_MENU_TABS = [
 
 const AdminUsers = ({ currentUser }) => {
   const [users, setUsers] = useState([]);
+  const [phoneDrafts, setPhoneDrafts] = useState({});
   const [loading, setLoading] = useState(true);
   const [smsSettingsLoading, setSmsSettingsLoading] = useState(true);
   const [smsSettingsSaving, setSmsSettingsSaving] = useState(false);
@@ -40,7 +41,9 @@ const AdminUsers = ({ currentUser }) => {
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || 'Failed to load users');
-      setUsers(data?.users || []);
+      const nextUsers = data?.users || [];
+      setUsers(nextUsers);
+      setPhoneDrafts(Object.fromEntries(nextUsers.map((user) => [user.username, user.phone_number || ''])));
     } catch (err) {
       setError(err.message || 'Failed to load users');
     } finally {
@@ -209,6 +212,40 @@ const AdminUsers = ({ currentUser }) => {
     }
   };
 
+  const handlePhoneDraftChange = (username, value) => {
+    setPhoneDrafts((prev) => ({
+      ...prev,
+      [username]: value.replace(/[^0-9]/g, ''),
+    }));
+  };
+
+  const savePhoneNumber = async (username) => {
+    try {
+      setWorkingUser(username);
+      setError('');
+      setMessage('');
+      const res = await fetch(`${API}/admin/users/${encodeURIComponent(username)}/phone-number`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ phone_number: phoneDrafts[username] || '' }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || 'Failed to save phone number');
+      setUsers((prev) => prev.map((user) => (
+        user.username === username
+          ? { ...user, phone_number: data.phone_number || '' }
+          : user
+      )));
+      setPhoneDrafts((prev) => ({ ...prev, [username]: data.phone_number || '' }));
+      setMessage(`${username} 전화번호가 저장되었습니다.`);
+    } catch (err) {
+      setError(err.message || 'Failed to save phone number');
+    } finally {
+      setWorkingUser('');
+    }
+  };
+
   const saveRequestSmsSettings = async () => {
     try {
       setSmsSettingsSaving(true);
@@ -293,7 +330,7 @@ const AdminUsers = ({ currentUser }) => {
         <div className={styles.settingsHeader}>
           <div>
             <h2 className={styles.sectionTitle}>요청 SMS 알림</h2>
-            <p className={styles.mutedText}>대시보드 요청 생성 시 지정 시간대에만 문자 발송</p>
+            <p className={styles.mutedText}>수신자 전화번호 우선 발송, 없으면 기본 번호로 대체</p>
           </div>
           <button
             className={styles.secondaryBtn}
@@ -317,7 +354,7 @@ const AdminUsers = ({ currentUser }) => {
               />
             </label>
             <label className={styles.fieldBlock}>
-              <span className={styles.fieldLabel}>수신 번호</span>
+              <span className={styles.fieldLabel}>기본 수신 번호</span>
               <input
                 className={styles.textInput}
                 value={requestSmsReceiver}
@@ -355,7 +392,7 @@ const AdminUsers = ({ currentUser }) => {
             {smsSettingsSaving ? '저장 중...' : '저장'}
           </button>
           <span className={styles.mutedText}>
-            시작/종료 시간을 둘 다 비우면 항상 발송됩니다.
+            사용자별 전화번호는 아래 표에서 저장하고, 기본 수신 번호는 대체용으로만 사용됩니다.
           </span>
         </div>
       </div>
@@ -369,6 +406,7 @@ const AdminUsers = ({ currentUser }) => {
               <tr>
                 <th>이름</th>
                 <th>아이디</th>
+                <th>전화번호</th>
                 <th>권한</th>
                 <th>승인</th>
                 <th>가입일</th>
@@ -386,6 +424,24 @@ const AdminUsers = ({ currentUser }) => {
                   <tr>
                     <td>{user.display_name || user.username}</td>
                     <td>{user.username}</td>
+                    <td>
+                      <div className={styles.phoneEditor}>
+                        <input
+                          className={styles.phoneInput}
+                          value={phoneDrafts[user.username] || ''}
+                          onChange={(e) => handlePhoneDraftChange(user.username, e.target.value)}
+                          placeholder="01012345678"
+                        />
+                        <button
+                          className={styles.secondaryBtn}
+                          type="button"
+                          disabled={isWorking}
+                          onClick={() => savePhoneNumber(user.username)}
+                        >
+                          저장
+                        </button>
+                      </div>
+                    </td>
                     <td>
                       <span
                         className={`${styles.roleBadge} ${
@@ -500,7 +556,7 @@ const AdminUsers = ({ currentUser }) => {
                   </tr>
                   {menuPanel?.username === user.username && (
                     <tr>
-                      <td colSpan={6} className={styles.menuPanelCell}>
+                      <td colSpan={7} className={styles.menuPanelCell}>
                         <div className={styles.menuPanel}>
                           <span className={styles.menuPanelTitle}>메뉴 표시 설정 — {user.display_name || user.username}</span>
                           <div className={styles.menuPanelGrid}>
