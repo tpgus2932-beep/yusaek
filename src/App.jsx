@@ -37,6 +37,7 @@ const App = () => {
   const [authChecked, setAuthChecked] = useState(() => !localStorage.getItem('token'));
   const [displayName, setDisplayName] = useState(localStorage.getItem('displayName'));
   const [username, setUsername] = useState(localStorage.getItem('username'));
+  const [phoneNumber, setPhoneNumber] = useState(localStorage.getItem('phoneNumber') || '');
   const [isAdmin, setIsAdmin] = useState(localStorage.getItem('isAdmin') === 'true');
   const [role, setRole] = useState(localStorage.getItem('role') || 'user');
   const [hiddenTabs, setHiddenTabs] = useState([]);
@@ -66,7 +67,7 @@ const App = () => {
   };
 
   useEffect(() => {
-    const t = localStorage.getItem('token');
+    const t = token || localStorage.getItem('token');
     if (!t) return;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
@@ -81,9 +82,11 @@ const App = () => {
           localStorage.removeItem('displayName');
           localStorage.removeItem('username');
           localStorage.removeItem('isAdmin');
+          localStorage.removeItem('phoneNumber');
           setToken(null);
           setDisplayName(null);
           setUsername(null);
+          setPhoneNumber('');
           setIsAdmin(false);
           return;
         }
@@ -98,6 +101,9 @@ const App = () => {
           setUsername(data.username);
           localStorage.setItem('username', data.username);
         }
+        const nextPhoneNumber = String(data.phone_number || '').replace(/[^0-9]/g, '');
+        setPhoneNumber(nextPhoneNumber);
+        localStorage.setItem('phoneNumber', nextPhoneNumber);
         const adminFlag = !!data.is_admin;
         setIsAdmin(adminFlag);
         localStorage.setItem('isAdmin', adminFlag ? 'true' : 'false');
@@ -109,7 +115,7 @@ const App = () => {
         // 네트워크 오류면 토큰 유지
       })
       .finally(() => setAuthChecked(true));
-  }, []);
+  }, [token]);
 
   useEffect(() => {
     localStorage.setItem('activeTab', visibleActiveTab);
@@ -130,18 +136,21 @@ const App = () => {
       .catch(() => {});
   }, [token]);
 
-  const handleAuth = (newToken, name) => {
+  const handleAuth = (newToken, name, nextPhoneNumber = '') => {
     localStorage.setItem('token', newToken);
     setToken(newToken);
     if (name) {
       localStorage.setItem('displayName', name);
       setDisplayName(name);
     }
+    const normalizedPhoneNumber = String(nextPhoneNumber || '').replace(/[^0-9]/g, '');
+    localStorage.setItem('phoneNumber', normalizedPhoneNumber);
+    setPhoneNumber(normalizedPhoneNumber);
     setAuthChecked(true);
   };
 
-  const handleAuthWithUser = (newToken, name, user, adminFlag, userRole) => {
-    handleAuth(newToken, name);
+  const handleAuthWithUser = (newToken, name, user, adminFlag, userRole, nextPhoneNumber = '') => {
+    handleAuth(newToken, name, nextPhoneNumber);
     if (user) {
       localStorage.setItem('username', user);
       setUsername(user);
@@ -168,9 +177,11 @@ const App = () => {
     localStorage.removeItem('username');
     localStorage.removeItem('isAdmin');
     localStorage.removeItem('role');
+    localStorage.removeItem('phoneNumber');
     setToken(null);
     setDisplayName(null);
     setUsername(null);
+    setPhoneNumber('');
     setIsAdmin(false);
     setRole('user');
     setHiddenTabs([]);
@@ -233,7 +244,7 @@ const App = () => {
           }}
         />
 
-        {visibleActiveTab === 'dashboard' && !effectiveHiddenTabs.includes('dashboard') && <Overview currentUser={username} />}
+        {visibleActiveTab === 'dashboard' && !effectiveHiddenTabs.includes('dashboard') && <Overview currentUser={username} currentUserPhone={phoneNumber} />}
         {visibleActiveTab === 'barcode' && !effectiveHiddenTabs.includes('barcode') && <BarcodeTabs />}
         {visibleActiveTab === 'returns' && !effectiveHiddenTabs.includes('returns') && <ReturnsPage />}
         {visibleActiveTab === 'barcode-product-upload' && !effectiveHiddenTabs.includes('barcode-product-upload') && <ProductUploadPage />}

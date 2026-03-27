@@ -95,6 +95,7 @@ def build_auth_admin_router(
             "token": token,
             "username": username,
             "display_name": row["display_name"],
+            "phone_number": row["phone_number"] if row["phone_number"] else "",
             "role": role,
             "is_admin": role == "admin",
             "approval_status": approval_status,
@@ -108,7 +109,7 @@ def build_auth_admin_router(
     def me(user: str = Depends(get_current_user)):
         conn = get_db()
         row = conn.execute(
-            "SELECT display_name, role, approval_status FROM users WHERE username = ?",
+            "SELECT display_name, role, approval_status, phone_number FROM users WHERE username = ?",
             (user,),
         ).fetchone()
         conn.close()
@@ -119,6 +120,7 @@ def build_auth_admin_router(
             "ok": True,
             "username": user,
             "display_name": display_name,
+            "phone_number": row["phone_number"] if row and row["phone_number"] else "",
             "role": role,
             "is_admin": role == "admin",
             "approval_status": approval_status,

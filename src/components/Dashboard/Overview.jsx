@@ -23,7 +23,7 @@ function AuthImage({ src, token, className, alt, onClick }) {
     return <img src={blobUrl} className={className} alt={alt} onClick={onClick} />;
 }
 
-const Overview = ({ currentUser }) => {
+const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
     const [users, setUsers] = useState([]);
     const [assignee, setAssignee] = useState('');
     const [requestText, setRequestText] = useState('');
@@ -85,9 +85,10 @@ const Overview = ({ currentUser }) => {
 
     const authHeaders = getAuthHeaders();
     const currentUserPhone = useMemo(() => {
-        const me = users.find((user) => user.username === dashboardUserKey);
-        return String(me?.phone_number || '').replace(/[^0-9]/g, '');
-    }, [users, dashboardUserKey]);
+        const fromAuth = String(authPhoneNumber || '').replace(/[^0-9]/g, '');
+        if (fromAuth) return fromAuth;
+        return String(localStorage.getItem('phoneNumber') || '').replace(/[^0-9]/g, '');
+    }, [authPhoneNumber]);
     const canSendLocalRequestSms = useMemo(() => {
         if (typeof window === 'undefined') return false;
         const host = (window.location.hostname || '').trim();
@@ -132,10 +133,41 @@ const Overview = ({ currentUser }) => {
     }, [requestSmsWatchSinceStorageKey]);
 
     const sendLocalRequestSms = useCallback(async (item) => {
-        if (!canSendLocalRequestSms || !currentUserPhone || !item?.id || hasRequestSmsBeenSent(item.id)) return;
+        if (!canSendLocalRequestSms) {
+            console.debug('[request-sms] skipped non-local host', {
+                host: typeof window !== 'undefined' ? window.location.hostname : '',
+                requestId: item?.id,
+            });
+            return;
+        }
+        if (!currentUserPhone) {
+            console.debug('[request-sms] skipped missing phone', {
+                dashboardUserKey,
+                requestId: item?.id,
+                authPhoneNumber,
+            });
+            return;
+        }
+        if (!item?.id) {
+            console.debug('[request-sms] skipped missing request id', { item });
+            return;
+        }
+        if (hasRequestSmsBeenSent(item.id)) {
+            console.debug('[request-sms] skipped already sent', { requestId: item.id });
+            return;
+        }
         const body = (item.text || '').trim();
-        if (!body) return;
+        if (!body) {
+            console.debug('[request-sms] skipped empty text', { requestId: item.id });
+            return;
+        }
         const preview = body.length > 80 ? `${body.slice(0, 80)}...` : body;
+        console.debug('[request-sms] sending', {
+            requestId: item.id,
+            receiver: currentUserPhone,
+            createdAt: item.created_at,
+            requester: item.requester_display || item.requester_username,
+        });
         const res = await fetch(`${LOCAL_API_BASE}/sms/send`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...authHeaders },
@@ -149,10 +181,19 @@ const Overview = ({ currentUser }) => {
         if (handleUnauthorized(res)) return;
         const data = await res.json().catch(() => ({}));
         if (!res.ok || Number(data?.result_code || 0) <= 0) {
+            console.debug('[request-sms] send failed', {
+                requestId: item.id,
+                status: res.status,
+                data,
+            });
             throw new Error(data?.detail || data?.message || 'Failed to send request SMS');
         }
+        console.debug('[request-sms] send success', {
+            requestId: item.id,
+            data,
+        });
         markRequestSmsSent(item.id);
-    }, [authHeaders, canSendLocalRequestSms, currentUserPhone, dashboardUserKey, hasRequestSmsBeenSent, markRequestSmsSent]);
+    }, [authHeaders, authPhoneNumber, canSendLocalRequestSms, currentUserPhone, dashboardUserKey, hasRequestSmsBeenSent, markRequestSmsSent]);
 
     const fetchUsers = async () => {
         try {
@@ -185,14 +226,39 @@ const Overview = ({ currentUser }) => {
             const openRequestIds = new Set(openRequests.map((item) => item.id));
 
             const newItems = openRequests.filter((item) => !previousOpenRequestIdsRef.current.has(item.id));
+            console.debug('[request-sms] poll', {
+                dashboardUserKey,
+                requestAlertsEnabled,
+                currentUserPhone,
+                openRequestIds: Array.from(openRequestIds),
+                previousOpenRequestIds: Array.from(previousOpenRequestIdsRef.current),
+                newItemIds: newItems.map((item) => item.id),
+            });
 
             if (requestSmsWatchPrimedRef.current && canSendLocalRequestSms) {
                 const watchSince = getRequestSmsWatchSince();
+                console.debug('[request-sms] watch active', {
+                    watchSince,
+                    previousSmsWatchIds: Array.from(previousSmsWatchIdsRef.current),
+                });
                 newItems.forEach((item) => {
                     const createdAt = String(item?.created_at || '');
-                    if (!previousSmsWatchIdsRef.current.has(item.id) && (!watchSince || createdAt > watchSince)) {
+                    const isNewForSms = !previousSmsWatchIdsRef.current.has(item.id);
+                    const isAfterWatchSince = !watchSince || createdAt > watchSince;
+                    console.debug('[request-sms] evaluate item', {
+                        requestId: item.id,
+                        createdAt,
+                        isNewForSms,
+                        isAfterWatchSince,
+                    });
+                    if (isNewForSms && isAfterWatchSince) {
                         sendLocalRequestSms(item).catch(() => {});
                     }
+                });
+            } else {
+                console.debug('[request-sms] watch inactive', {
+                    requestSmsWatchPrimed: requestSmsWatchPrimedRef.current,
+                    canSendLocalRequestSms,
                 });
             }
 

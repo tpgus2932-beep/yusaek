@@ -60,7 +60,7 @@ export default function AuthPage({
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "로그인 실패");
 
-      if (data?.token) onAuth(data.token, data.display_name || data.username, data.username, !!data.is_admin, data.role || 'user');
+      if (data?.token) onAuth(data.token, data.display_name || data.username, data.username, !!data.is_admin, data.role || 'user', data.phone_number || '');
     } catch (err) {
       setError(err.message || "요청 실패");
     } finally {
