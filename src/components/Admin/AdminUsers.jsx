@@ -17,6 +17,12 @@ const ALL_MENU_TABS = [
 const AdminUsers = ({ currentUser }) => {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [smsSettingsLoading, setSmsSettingsLoading] = useState(true);
+  const [smsSettingsSaving, setSmsSettingsSaving] = useState(false);
+  const [requestSmsEnabled, setRequestSmsEnabled] = useState(true);
+  const [requestSmsReceiver, setRequestSmsReceiver] = useState('01095806927');
+  const [requestSmsStart, setRequestSmsStart] = useState('');
+  const [requestSmsEnd, setRequestSmsEnd] = useState('');
   const [workingUser, setWorkingUser] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -42,8 +48,27 @@ const AdminUsers = ({ currentUser }) => {
     }
   };
 
+  const fetchRequestSmsSettings = async () => {
+    try {
+      setSmsSettingsLoading(true);
+      const res = await fetch(`${API}/admin/request-sms-settings`, { headers: authHeaders });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || 'Failed to load request SMS settings');
+      setRequestSmsEnabled(Boolean(data?.enabled));
+      setRequestSmsReceiver(data?.receiver || '01095806927');
+      setRequestSmsStart(data?.start || '');
+      setRequestSmsEnd(data?.end || '');
+    } catch (err) {
+      setError(err.message || 'Failed to load request SMS settings');
+    } finally {
+      setSmsSettingsLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchUsers();
+    fetchRequestSmsSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -184,6 +209,36 @@ const AdminUsers = ({ currentUser }) => {
     }
   };
 
+  const saveRequestSmsSettings = async () => {
+    try {
+      setSmsSettingsSaving(true);
+      setError('');
+      setMessage('');
+      const res = await fetch(`${API}/admin/request-sms-settings`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({
+          enabled: requestSmsEnabled,
+          receiver: requestSmsReceiver,
+          start: requestSmsStart,
+          end: requestSmsEnd,
+        }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || 'Failed to save request SMS settings');
+      setRequestSmsEnabled(Boolean(data?.enabled));
+      setRequestSmsReceiver(data?.receiver || '01095806927');
+      setRequestSmsStart(data?.start || '');
+      setRequestSmsEnd(data?.end || '');
+      setMessage('요청 SMS 설정이 저장되었습니다.');
+    } catch (err) {
+      setError(err.message || 'Failed to save request SMS settings');
+    } finally {
+      setSmsSettingsSaving(false);
+    }
+  };
+
   return (
     <section className={styles.admin}>
       <div className={styles.headerRow}>
@@ -232,6 +287,77 @@ const AdminUsers = ({ currentUser }) => {
           <span className={styles.summaryLabel}>전체 계정</span>
           <strong className={styles.summaryValue}>{users.length}</strong>
         </button>
+      </div>
+
+      <div className={styles.card}>
+        <div className={styles.settingsHeader}>
+          <div>
+            <h2 className={styles.sectionTitle}>요청 SMS 알림</h2>
+            <p className={styles.mutedText}>대시보드 요청 생성 시 지정 시간대에만 문자 발송</p>
+          </div>
+          <button
+            className={styles.secondaryBtn}
+            type="button"
+            onClick={fetchRequestSmsSettings}
+            disabled={smsSettingsLoading || smsSettingsSaving}
+          >
+            새로고침
+          </button>
+        </div>
+        {smsSettingsLoading ? (
+          <div className={styles.mutedText}>설정을 불러오는 중...</div>
+        ) : (
+          <div className={styles.smsSettingsGrid}>
+            <label className={styles.fieldBlock}>
+              <span className={styles.fieldLabel}>발송 사용</span>
+              <input
+                type="checkbox"
+                checked={requestSmsEnabled}
+                onChange={(e) => setRequestSmsEnabled(e.target.checked)}
+              />
+            </label>
+            <label className={styles.fieldBlock}>
+              <span className={styles.fieldLabel}>수신 번호</span>
+              <input
+                className={styles.textInput}
+                value={requestSmsReceiver}
+                onChange={(e) => setRequestSmsReceiver(e.target.value)}
+                placeholder="01095806927"
+              />
+            </label>
+            <label className={styles.fieldBlock}>
+              <span className={styles.fieldLabel}>발송 시작</span>
+              <input
+                className={styles.textInput}
+                type="time"
+                value={requestSmsStart}
+                onChange={(e) => setRequestSmsStart(e.target.value)}
+              />
+            </label>
+            <label className={styles.fieldBlock}>
+              <span className={styles.fieldLabel}>발송 종료</span>
+              <input
+                className={styles.textInput}
+                type="time"
+                value={requestSmsEnd}
+                onChange={(e) => setRequestSmsEnd(e.target.value)}
+              />
+            </label>
+          </div>
+        )}
+        <div className={styles.settingsActions}>
+          <button
+            className={styles.primaryBtn}
+            type="button"
+            onClick={saveRequestSmsSettings}
+            disabled={smsSettingsLoading || smsSettingsSaving}
+          >
+            {smsSettingsSaving ? '저장 중...' : '저장'}
+          </button>
+          <span className={styles.mutedText}>
+            시작/종료 시간을 둘 다 비우면 항상 발송됩니다.
+          </span>
+        </div>
       </div>
 
       <div className={styles.card}>

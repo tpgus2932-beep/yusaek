@@ -1,14 +1,21 @@
 import mimetypes
+import os
 import re
 import shutil
+import threading
 import time
 import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
+import httpx
 from fastapi import APIRouter, Body, Depends, File, Header, HTTPException, Form, Request, UploadFile
 from fastapi.responses import FileResponse
+
+KST = ZoneInfo("Asia/Seoul")
+ALIGO_BASE = "https://apis.aligo.in"
 
 
 def build_collab_router(
@@ -53,6 +60,112 @@ def build_collab_router(
         _public_rate_store[client_ip] = recent
     # my_todos는 개인 데이터 → 로컬 DB 우선
     _local_db = get_local_db if get_local_db is not None else get_db
+
+    def _normalize_receiver(value: str) -> str:
+        return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+    def _parse_hhmm(raw: str) -> tuple[int, int] | None:
+        value = str(raw or "").strip()
+        if not value:
+            return None
+        match = re.fullmatch(r"(\d{1,2}):(\d{2})", value)
+        if not match:
+            return None
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            return None
+        return hour, minute
+
+    def _is_request_sms_time_allowed() -> bool:
+        enabled_raw = (get_setting("request_sms_enabled") or os.environ.get("REQUEST_SMS_ENABLED", "1")).strip().lower()
+        if enabled_raw in ("0", "false", "off", "no"):
+            return False
+
+        start = _parse_hhmm(get_setting("request_sms_start") or os.environ.get("REQUEST_SMS_START", ""))
+        end = _parse_hhmm(get_setting("request_sms_end") or os.environ.get("REQUEST_SMS_END", ""))
+        if not start or not end:
+            return True
+
+        now = datetime.now(KST)
+        now_minutes = now.hour * 60 + now.minute
+        start_minutes = start[0] * 60 + start[1]
+        end_minutes = end[0] * 60 + end[1]
+
+        if start_minutes == end_minutes:
+            return True
+        if start_minutes < end_minutes:
+            return start_minutes <= now_minutes < end_minutes
+        return now_minutes >= start_minutes or now_minutes < end_minutes
+
+    def _build_request_sms_message(
+        *,
+        requester_display: str,
+        assignee_display: str,
+        text: str,
+    ) -> str:
+        preview = " ".join((text or "").split())
+        if len(preview) > 60:
+            preview = f"{preview[:57]}..."
+        return f"[요청알림]\n보낸사람: {requester_display}\n담당자: {assignee_display}\n내용: {preview}"
+
+    async def _send_request_sms_async(
+        *,
+        requester_display: str,
+        assignee_display: str,
+        text: str,
+    ) -> None:
+        receiver = _normalize_receiver(
+            get_setting("request_sms_receiver") or os.environ.get("REQUEST_SMS_RECEIVER", "01095806927")
+        )
+        if not receiver or not _is_request_sms_time_allowed():
+            return
+
+        key = os.environ.get("ALIGO_API_KEY", "").strip()
+        user_id = os.environ.get("ALIGO_USER_ID", "").strip()
+        sender = os.environ.get("ALIGO_SENDER", "").strip()
+        if not key or not user_id or not sender:
+            return
+
+        payload = {
+            "key": key,
+            "user_id": user_id,
+            "sender": sender,
+            "receiver": receiver,
+            "msg": _build_request_sms_message(
+                requester_display=requester_display,
+                assignee_display=assignee_display,
+                text=text,
+            ),
+            "msg_type": "LMS",
+            "title": "새 요청 알림",
+        }
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            await client.post(f"{ALIGO_BASE}/send/", data=payload)
+
+    def _send_request_sms_best_effort(
+        *,
+        requester_display: str,
+        assignee_display: str,
+        text: str,
+    ) -> None:
+        def _runner() -> None:
+            try:
+                import asyncio
+
+                asyncio.run(
+                    _send_request_sms_async(
+                        requester_display=requester_display,
+                        assignee_display=assignee_display,
+                        text=text,
+                    )
+                )
+            except Exception:
+                # Keep request creation successful even if SMS delivery fails.
+                return
+
+        threading.Thread(target=_runner, daemon=True).start()
 
     def _get_upload_size(file: UploadFile) -> int:
         current_pos = file.file.tell()
@@ -129,6 +242,11 @@ def build_collab_router(
             item["attachments"] = attachments
             item["can_complete"] = item.get("status") == "open" and assignee == requester_username
             item["can_ack"] = False
+            _send_request_sms_best_effort(
+                requester_display=requester_display,
+                assignee_display=assignee_display,
+                text=text,
+            )
             return item
         except HTTPException:
             conn.rollback()

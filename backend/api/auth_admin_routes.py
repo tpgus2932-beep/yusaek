@@ -19,6 +19,25 @@ def build_auth_admin_router(
 ):
     router = APIRouter()
 
+    def _normalize_receiver(value: str) -> str:
+        return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+    def _normalize_hhmm(value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        parts = raw.split(":")
+        if len(parts) != 2:
+            raise HTTPException(status_code=400, detail="time must be in HH:MM format")
+        try:
+            hour = int(parts[0])
+            minute = int(parts[1])
+        except Exception:
+            raise HTTPException(status_code=400, detail="time must be in HH:MM format")
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            raise HTTPException(status_code=400, detail="time must be in HH:MM format")
+        return f"{hour:02d}:{minute:02d}"
+
     @router.post("/auth/register")
     def register(payload: dict = Body(...)):
         username = (payload.get("username") or "").strip()
@@ -278,6 +297,45 @@ def build_auth_admin_router(
         finally:
             conn.close()
         return {"ok": True}
+
+    @router.get("/admin/request-sms-settings")
+    def admin_get_request_sms_settings(admin: str = Depends(require_admin)):
+        enabled_raw = (get_setting("request_sms_enabled") or "").strip().lower()
+        receiver = _normalize_receiver(get_setting("request_sms_receiver") or "01095806927")
+        start = (get_setting("request_sms_start") or "").strip()
+        end = (get_setting("request_sms_end") or "").strip()
+        return {
+            "ok": True,
+            "enabled": enabled_raw not in ("0", "false", "off", "no"),
+            "receiver": receiver or "01095806927",
+            "start": start,
+            "end": end,
+        }
+
+    @router.patch("/admin/request-sms-settings")
+    def admin_set_request_sms_settings(payload: dict = Body(...), admin: str = Depends(require_admin)):
+        enabled = bool(payload.get("enabled", True))
+        receiver = _normalize_receiver(payload.get("receiver") or "01095806927")
+        start = _normalize_hhmm(payload.get("start") or "")
+        end = _normalize_hhmm(payload.get("end") or "")
+
+        if not receiver:
+            raise HTTPException(status_code=400, detail="receiver required")
+        if bool(start) != bool(end):
+            raise HTTPException(status_code=400, detail="start and end must both be set")
+
+        set_setting("request_sms_enabled", "1" if enabled else "0")
+        set_setting("request_sms_receiver", receiver)
+        set_setting("request_sms_start", start or None)
+        set_setting("request_sms_end", end or None)
+
+        return {
+            "ok": True,
+            "enabled": enabled,
+            "receiver": receiver,
+            "start": start,
+            "end": end,
+        }
 
     @router.get("/settings/menu-visibility")
     def get_menu_visibility(user: str = Depends(get_current_user)):

@@ -141,7 +141,7 @@ const toEnglishKey = (text) => {
     }
     out += ch;
   }
-  return out;
+  return out.toUpperCase();
 };
 
 export default function AmoodBarcodePage({ headerExtra = null }) {

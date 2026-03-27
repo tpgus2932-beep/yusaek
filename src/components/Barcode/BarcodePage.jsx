@@ -32,7 +32,7 @@ const toEnglishKey = (text) => {
     if (HANGUL_COMPAT[ch]) { out += HANGUL_COMPAT[ch]; continue; }
     out += ch;
   }
-  return out;
+  return out.toUpperCase();
 };
 
 export default function BarcodePage({ title = "Barcode", headerExtra = null }) {

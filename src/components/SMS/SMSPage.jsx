@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   MessageSquare, Send, Wallet, History, RefreshCw,
   X, ChevronLeft, ChevronRight, CheckCircle, XCircle,
-  Clock, AlertCircle, Trash2, Download, FileText, Plus, ChevronDown, ChevronUp,
+  Clock, AlertCircle, Trash2, Download,
 } from 'lucide-react';
 import styles from './SMSPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
@@ -54,6 +54,15 @@ const MsgTypeBadge = ({ bytes }) => {
 };
 
 export default function SMSPage() {
+  const [templates, setTemplates] = useState(() => {
+    try {
+      const raw = localStorage.getItem('sms-message-templates');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [templateName, setTemplateName] = useState('');
   const [hiddenHistoryMids, setHiddenHistoryMids] = useState(() => {
     try {
       const raw = localStorage.getItem('sms-hidden-history-mids');
@@ -112,22 +121,15 @@ export default function SMSPage() {
   const [migrateLoading, setMigrateLoading] = useState(false);
   const [migrateResult, setMigrateResult] = useState(null);
   const [monthsBack, setMonthsBack] = useState('3');
-
-  // ─── 답변 템플릿 상태 ───
-  const [templates, setTemplates] = useState(() => {
-    try {
-      const raw = localStorage.getItem('sms-templates');
-      return raw ? JSON.parse(raw) : [];
-    } catch {
-      return [];
-    }
-  });
-  const [showTemplates, setShowTemplates] = useState(false);
-  const [templateInput, setTemplateInput] = useState('');
-  const [templateLabelInput, setTemplateLabelInput] = useState('');
+  const [draggingTemplateId, setDraggingTemplateId] = useState(null);
+  const [dragOverTemplateId, setDragOverTemplateId] = useState(null);
 
   const receiverInputRef = useRef(null);
   const bytes = getByteLength(msg);
+
+  useEffect(() => {
+    localStorage.setItem('sms-message-templates', JSON.stringify(templates));
+  }, [templates]);
 
   // ─── 수신번호 태그 입력 ───
   const addReceiver = (raw) => {
@@ -151,6 +153,74 @@ export default function SMSPage() {
   };
 
   const removeReceiver = (num) => setReceivers((prev) => prev.filter((r) => r !== num));
+
+  const handleSaveTemplate = () => {
+    const name = templateName.trim();
+    if (!name) {
+      setSendResult({ ok: false, msg: '템플릿 이름을 입력해 주세요.' });
+      return;
+    }
+    if (!msg.trim()) {
+      setSendResult({ ok: false, msg: '저장할 메시지 내용을 입력해 주세요.' });
+      return;
+    }
+
+    const nextItem = {
+      id: `${Date.now()}`,
+      name,
+      msg,
+      title,
+      msgType,
+    };
+
+    setTemplates((prev) => {
+      const existingIndex = prev.findIndex((item) => item.name === name);
+      if (existingIndex >= 0) {
+        const next = [...prev];
+        next[existingIndex] = { ...prev[existingIndex], ...nextItem, id: prev[existingIndex].id };
+        return next;
+      }
+      return [nextItem, ...prev];
+    });
+    setTemplateName('');
+    setSendResult({ ok: true, msg: `템플릿 "${name}" 저장 완료` });
+  };
+
+  const applyTemplate = (template) => {
+    setMsg(template.msg || '');
+    setTitle(template.title || '');
+    setMsgType(template.msgType || '');
+    setSendResult({ ok: true, msg: `템플릿 "${template.name}" 적용 완료` });
+  };
+
+  const deleteTemplate = (templateId) => {
+    setTemplates((prev) => prev.filter((item) => item.id !== templateId));
+  };
+
+  const moveTemplateToIndex = (templateId, targetTemplateId) => {
+    setTemplates((prev) => {
+      const index = prev.findIndex((item) => item.id === templateId);
+      const targetIndex = prev.findIndex((item) => item.id === targetTemplateId);
+      if (index < 0 || targetIndex < 0 || index === targetIndex) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(index, 1);
+      next.splice(targetIndex, 0, moved);
+      return next;
+    });
+  };
+
+  const moveTemplate = (templateId, direction) => {
+    setTemplates((prev) => {
+      const index = prev.findIndex((item) => item.id === templateId);
+      if (index < 0) return prev;
+      const targetIndex = direction === 'up' ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= prev.length) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(index, 1);
+      next.splice(targetIndex, 0, moved);
+      return next;
+    });
+  };
 
   // ─── 문자 보내기 ───
   const handleSend = async () => {
@@ -367,28 +437,6 @@ export default function SMSPage() {
     }
   };
 
-  // ─── 템플릿 관리 ───
-  const saveTemplates = (list) => {
-    setTemplates(list);
-    localStorage.setItem('sms-templates', JSON.stringify(list));
-  };
-
-  const addTemplate = () => {
-    const content = templateInput.trim();
-    if (!content) return;
-    const label = templateLabelInput.trim() || content.slice(0, 12) + (content.length > 12 ? '…' : '');
-    const next = [...templates, { id: Date.now(), label, content }];
-    saveTemplates(next);
-    setTemplateInput('');
-    setTemplateLabelInput('');
-  };
-
-  const deleteTemplate = (id) => saveTemplates(templates.filter((t) => t.id !== id));
-
-  const insertTemplate = (content) => {
-    setMsg((prev) => (prev ? prev + '\n' + content : content));
-  };
-
   // 탭 진입 시 자동 조회
   useEffect(() => {
     if (activeTab === 'remain') fetchRemain();
@@ -441,6 +489,101 @@ export default function SMSPage() {
             <div className={styles.cardTitle}><MessageSquare size={16} /> 수신번호</div>
 
             {/* 태그 입력 */}
+            <div className={styles.templatePanel}>
+              <div className={styles.templateHeader}>
+                <div>
+                  <div className={styles.label}>답변 템플릿</div>
+                  <div className={styles.hint}>현재 제목과 본문을 저장해두고 바로 적용할 수 있습니다.</div>
+                  <div className={styles.dragHint}>템플릿 카드를 길게 누르듯 끌어서 순서를 바꿀 수 있습니다.</div>
+                </div>
+                <div className={styles.templateSaveRow}>
+                  <input
+                    className={styles.input}
+                    value={templateName}
+                    onChange={(e) => setTemplateName(e.target.value)}
+                    placeholder="템플릿 이름"
+                  />
+                  <button className={styles.secondaryBtn} type="button" onClick={handleSaveTemplate}>
+                    저장
+                  </button>
+                </div>
+              </div>
+
+              {templates.length > 0 ? (
+                <div className={styles.templateList}>
+                  {templates.map((template, index) => (
+                    <div
+                      key={template.id}
+                      className={`${styles.templateItem} ${draggingTemplateId === template.id ? styles.templateItemDragging : ''} ${dragOverTemplateId === template.id && draggingTemplateId !== template.id ? styles.templateItemDropTarget : ''}`}
+                      draggable
+                      onDragStart={() => setDraggingTemplateId(template.id)}
+                      onDragEnd={() => {
+                        setDraggingTemplateId(null);
+                        setDragOverTemplateId(null);
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (draggingTemplateId && draggingTemplateId !== template.id) {
+                          setDragOverTemplateId(template.id);
+                        }
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverTemplateId === template.id) {
+                          setDragOverTemplateId(null);
+                        }
+                      }}
+                      onDrop={() => {
+                        if (draggingTemplateId) {
+                          moveTemplateToIndex(draggingTemplateId, template.id);
+                        }
+                        setDraggingTemplateId(null);
+                        setDragOverTemplateId(null);
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className={styles.templateApplyBtn}
+                        onClick={() => applyTemplate(template)}
+                      >
+                        <strong>{template.name}</strong>
+                        <span className={styles.templatePreview}>
+                          {(template.msg || '').replace(/\s+/g, ' ').trim().slice(0, 70) || '내용 없음'}
+                        </span>
+                      </button>
+                      <div className={styles.templateActions}>
+                        <button
+                          type="button"
+                          className={styles.secondaryBtn}
+                          onClick={() => moveTemplate(template.id, 'up')}
+                          disabled={index === 0}
+                        >
+                          위로
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.secondaryBtn}
+                          onClick={() => moveTemplate(template.id, 'down')}
+                          disabled={index === templates.length - 1}
+                        >
+                          아래로
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        className={styles.dangerBtn}
+                        onClick={() => deleteTemplate(template.id)}
+                      >
+                        <Trash2 size={13} />
+                        삭제
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className={styles.emptyTemplate}>저장된 템플릿이 없습니다.</div>
+              )}
+            </div>
+
             <div className={styles.fieldGroup}>
               <div className={styles.receiverBox} onClick={() => receiverInputRef.current?.focus()}>
                 {receivers.map((num) => (
@@ -492,87 +635,6 @@ export default function SMSPage() {
               </div>
               {bytes > SMS_MAX && (
                 <span className={styles.hint}>90 byte 초과 → LMS(장문)으로 자동 전환됩니다</span>
-              )}
-            </div>
-
-            {/* 답변 템플릿 */}
-            <div className={styles.templateSection}>
-              <button
-                type="button"
-                className={styles.templateToggle}
-                onClick={() => setShowTemplates((v) => !v)}
-              >
-                <FileText size={14} />
-                답변 템플릿
-                {templates.length > 0 && (
-                  <span className={styles.templateCount}>{templates.length}</span>
-                )}
-                {showTemplates ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-              </button>
-
-              {showTemplates && (
-                <div className={styles.templatePanel}>
-                  {templates.length === 0 && (
-                    <div className={styles.templateEmpty}>
-                      저장된 템플릿이 없습니다. 아래에서 추가해보세요.
-                    </div>
-                  )}
-                  {templates.length > 0 && (
-                    <div className={styles.templateList}>
-                      {templates.map((t) => (
-                        <div key={t.id} className={styles.templateItem}>
-                          <button
-                            type="button"
-                            className={styles.templateInsertBtn}
-                            onClick={() => insertTemplate(t.content)}
-                            title={t.content}
-                          >
-                            <span className={styles.templateLabel}>{t.label}</span>
-                            <span className={styles.templatePreview}>{t.content}</span>
-                          </button>
-                          <button
-                            type="button"
-                            className={styles.templateDeleteBtn}
-                            onClick={() => deleteTemplate(t.id)}
-                            title="삭제"
-                          >
-                            <X size={12} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className={styles.templateAddRow}>
-                    <div className={styles.templateAddInputs}>
-                      <input
-                        className={styles.input}
-                        value={templateLabelInput}
-                        onChange={(e) => setTemplateLabelInput(e.target.value)}
-                        placeholder="템플릿 이름 (선택)"
-                        maxLength={20}
-                        style={{ flex: '0 0 130px' }}
-                      />
-                      <textarea
-                        className={styles.textarea}
-                        value={templateInput}
-                        onChange={(e) => setTemplateInput(e.target.value)}
-                        placeholder="템플릿 내용 입력..."
-                        rows={2}
-                        style={{ flex: 1, minHeight: 54, resize: 'vertical' }}
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      className={styles.primaryBtn}
-                      onClick={addTemplate}
-                      disabled={!templateInput.trim()}
-                      style={{ flexShrink: 0 }}
-                    >
-                      <Plus size={14} /> 추가
-                    </button>
-                  </div>
-                </div>
               )}
             </div>
 
