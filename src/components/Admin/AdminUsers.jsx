@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import styles from './AdminUsers.module.css';
 import { COLLAB_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
+const COLLABORATION_MENU_TAB = { key: 'collaboration-menu', label: '협업메뉴' };
 const CLIENT_SCHEDULE_MENU_TAB = { key: 'client-schedule', label: '거래처 일정' };
 
 const ALL_MENU_TABS = [
@@ -12,6 +13,7 @@ const ALL_MENU_TABS = [
   { key: 'shared-files', label: '유색 공용 파일' },
   { key: 'noye-kimsungil', label: '노예김승일' },
   { key: 'sms', label: '문자 발송' },
+  COLLABORATION_MENU_TAB,
 ];
 
 const AdminUsers = ({ currentUser }) => {

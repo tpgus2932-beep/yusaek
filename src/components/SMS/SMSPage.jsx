@@ -247,13 +247,16 @@ export default function SMSPage() {
       const data = await res.json();
       if (data.result_code > 0) {
         const hasError = Number(data.error_cnt) > 0;
+        const queued = !!data.queued;
         setSendResult({
           ok: !hasError,
           warn: hasError,
           msg: hasError
-            ? `${data.success_cnt}건 성공 / ${data.error_cnt}건 실패 — 실패 번호는 상세보기에서 확인하세요`
-            : `${data.success_cnt}건 전송 완료 (${data.msg_type})`,
-          msgId: data.msg_id,
+            ? `${data.success_cnt}건 성공 / ${data.error_cnt}건 실패 - 실패 번호는 상세보기에서 확인하세요`
+            : queued
+              ? `${data.success_cnt}건 전송 대기열 저장 완료 (${data.msg_type})`
+              : `${data.success_cnt}건 전송 완료 (${data.msg_type})`,
+          msgId: data.msg_id || data.queue_id,
         });
         // 발송 즉시 수신번호 캐싱 (msg_id → 미리보기)
         if (data.msg_id && receivers.length > 0) {

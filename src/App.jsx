@@ -16,6 +16,7 @@ import SettingsPage from './components/Layout/SettingsPage';
 import NoyeKimPage from './components/NoyeKim/NoyeKimPage';
 import ClientSchedulePage from './components/ClientSchedule/ClientSchedulePage';
 import SMSPage from './components/SMS/SMSPage';
+import CollaborationMenuPage from './components/CollabTools/CollaborationMenuPage';
 import MobileRequestKimsungilPage from './components/Mobile/MobileRequestKimsungilPage';
 import CollabPortalPage from './components/Collab/CollabPortalPage';
 import { COLLAB_API_BASE } from './lib/api';
@@ -23,7 +24,7 @@ import { COLLAB_API_BASE } from './lib/api';
 
 const KNOWN_TABS = [
   'dashboard', 'barcode', 'returns', 'barcode-product-upload', 'shared-files',
-  'noye-kimsungil', 'client-schedule', 'sms', 'hapbae-management',
+  'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'hapbae-management',
   'order', 'cost-base-manager', 'admin', 'settings',
 ];
 
@@ -168,7 +169,7 @@ const App = () => {
 
   // viewer 역할이면 hiddenTabs 무시하고 대시보드만 허용
   const effectiveHiddenTabs = role === 'viewer'
-    ? ['barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'client-schedule', 'order', 'cost-base-manager', 'admin', 'settings', 'hapbae-management']
+    ? ['barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'order', 'cost-base-manager', 'admin', 'settings', 'hapbae-management']
     : hiddenTabs;
 
   const handleLogout = () => {
@@ -252,6 +253,7 @@ const App = () => {
         {visibleActiveTab === 'noye-kimsungil' && !effectiveHiddenTabs.includes('noye-kimsungil') && <NoyeKimPage />}
         {visibleActiveTab === 'client-schedule' && !effectiveHiddenTabs.includes('client-schedule') && <ClientSchedulePage />}
         {visibleActiveTab === 'sms' && !effectiveHiddenTabs.includes('sms') && <SMSPage />}
+        {visibleActiveTab === 'collaboration-menu' && !effectiveHiddenTabs.includes('collaboration-menu') && <CollaborationMenuPage />}
         {visibleActiveTab === 'hapbae-management' && !effectiveHiddenTabs.includes('hapbae-management') && <HapbaeManagementTabs />}
         {visibleActiveTab === 'order' && isAdmin && !effectiveHiddenTabs.includes('order') && <OrderPage />}
         {visibleActiveTab === 'cost-base-manager' && isAdmin && !effectiveHiddenTabs.includes('cost-base-manager') && <CostBaseManagerPage />}

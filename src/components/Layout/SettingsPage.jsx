@@ -11,6 +11,7 @@ const menuLabels = {
   "noye-kimsungil": "노예김승일",
   "client-schedule": "거래처 일정",
   sms: "문자 발송",
+  "collaboration-menu": "협업메뉴",
   order: "발주",
   "cost-base-manager": "원가베이스 관리",
   admin: "관리자",
@@ -31,6 +32,7 @@ const SettingsPage = ({ hiddenTabs, setHiddenTabs, isAdmin }) => {
       "noye-kimsungil",
       "client-schedule",
       "sms",
+      "collaboration-menu",
     ];
     if (isAdmin) {
       base.push("order", "cost-base-manager", "admin");

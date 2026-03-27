@@ -3,32 +3,96 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import datetime, timezone
+import threading
+import time
+import uuid
+from datetime import datetime
 from zoneinfo import ZoneInfo
-
-KST = ZoneInfo("Asia/Seoul")
 
 import httpx
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
 
+KST = ZoneInfo("Asia/Seoul")
 ALIGO_BASE = "https://apis.aligo.in"
 
 
-def build_sms_router(*, get_current_user, get_db):
+def build_sms_router(*, get_current_user, get_db, run_local_dispatcher: bool = False):
     router = APIRouter(prefix="/sms")
+    dispatcher_stop = threading.Event()
+    dispatcher_thread: threading.Thread | None = None
 
     def _normalize_receiver(value: str) -> str:
         return "".join(ch for ch in str(value or "") if ch.isdigit())
 
+    def _normalize_receivers_csv(value: str) -> str:
+        nums = [_normalize_receiver(part) for part in str(value or "").split(",")]
+        nums = [num for num in nums if num]
+        return ",".join(dict.fromkeys(nums))
+
+    def _receiver_list(value: str) -> list[str]:
+        return [part for part in _normalize_receivers_csv(value).split(",") if part]
+
     def _creds():
-        key = os.environ.get("ALIGO_API_KEY", "")
-        user_id = os.environ.get("ALIGO_USER_ID", "")
+        key = os.environ.get("ALIGO_API_KEY", "").strip()
+        user_id = os.environ.get("ALIGO_USER_ID", "").strip()
         if not key or not user_id:
-            raise HTTPException(
-                status_code=500,
-                detail="ALIGO_API_KEY / ALIGO_USER_ID 환경변수가 설정되지 않았습니다.",
-            )
+            raise HTTPException(status_code=500, detail="ALIGO_API_KEY / ALIGO_USER_ID 환경변수가 설정되지 않았습니다.")
         return key, user_id
+
+    def _sender():
+        sender = os.environ.get("ALIGO_SENDER", "").strip()
+        if not sender:
+            raise HTTPException(status_code=500, detail="ALIGO_SENDER 환경변수가 설정되지 않았습니다.")
+        return sender
+
+    def _ensure_tables():
+        conn = get_db()
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sms_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mid TEXT UNIQUE NOT NULL,
+                    type TEXT,
+                    msg TEXT,
+                    sender TEXT,
+                    sms_count INTEGER DEFAULT 0,
+                    fail_count INTEGER DEFAULT 0,
+                    reserve_state TEXT,
+                    reg_date TEXT,
+                    receivers TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sms_history_reg_date ON sms_history(reg_date DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sms_history_mid ON sms_history(mid)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sms_outbox (
+                    id TEXT PRIMARY KEY,
+                    receiver TEXT NOT NULL,
+                    msg TEXT NOT NULL,
+                    msg_type TEXT,
+                    title TEXT,
+                    rdate TEXT,
+                    rtime TEXT,
+                    testmode_yn TEXT,
+                    sender TEXT,
+                    created_by TEXT,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    sent_at TEXT,
+                    error_message TEXT,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    last_attempted_at TEXT
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sms_outbox_status_created ON sms_outbox(status, created_at)")
+            conn.commit()
+        finally:
+            conn.close()
 
     async def _post(path: str, data: dict) -> dict:
         try:
@@ -47,27 +111,7 @@ def build_sms_router(*, get_current_user, get_db):
             detail = res.text.strip() or "Aligo API returned a non-JSON response"
             raise HTTPException(status_code=502, detail=detail) from exc
 
-    async def _fetch_all_receivers(mid: str) -> list[str]:
-        """해당 mid의 전체 수신번호를 페이지네이션으로 모두 가져온다."""
-        key, user_id = _creds()
-        all_receivers: list[str] = []
-        page = 1
-        while True:
-            detail = await _post(
-                "/sms_list/",
-                {"key": key, "user_id": user_id, "mid": mid, "page": page, "page_size": 500},
-            )
-            for item in detail.get("list", []) or []:
-                r = _normalize_receiver(item.get("receiver", ""))
-                if r and r not in all_receivers:
-                    all_receivers.append(r)
-            if detail.get("next_yn") != "Y":
-                break
-            page += 1
-        return all_receivers
-
-    def _save_to_db(item: dict, receivers: list[str]):
-        """sms_history 테이블에 저장 (이미 있으면 상태 업데이트)."""
+    def _save_history(item: dict, receivers: list[str]):
         conn = get_db()
         try:
             conn.execute(
@@ -84,7 +128,7 @@ def build_sms_router(*, get_current_user, get_db):
                     item.get("mid"),
                     item.get("type"),
                     item.get("msg"),
-                    item.get("sender", os.environ.get("ALIGO_SENDER", "")),
+                    item.get("sender", _sender()),
                     int(item.get("sms_count") or 0),
                     int(item.get("fail_count") or 0),
                     item.get("reserve_state"),
@@ -103,52 +147,183 @@ def build_sms_router(*, get_current_user, get_db):
         extra = max(total - 1, len(receivers) - 1)
         return receivers[0] if extra == 0 else f"{receivers[0]} 외 {extra}명"
 
+    def _enqueue_sms(payload: dict, created_by: str) -> tuple[str, list[str]]:
+        receivers_csv = _normalize_receivers_csv(payload.get("receiver", ""))
+        receivers = _receiver_list(receivers_csv)
+        if not receivers:
+            raise HTTPException(status_code=400, detail="receiver required")
+        msg = str(payload.get("msg") or "").strip()
+        if not msg:
+            raise HTTPException(status_code=400, detail="msg required")
+
+        outbox_id = uuid.uuid4().hex
+        conn = get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO sms_outbox (
+                    id, receiver, msg, msg_type, title, rdate, rtime, testmode_yn,
+                    sender, created_by, created_at, status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                """,
+                (
+                    outbox_id,
+                    receivers_csv,
+                    msg,
+                    str(payload.get("msg_type") or "SMS"),
+                    str(payload.get("title") or ""),
+                    str(payload.get("rdate") or ""),
+                    str(payload.get("rtime") or ""),
+                    "Y" if str(payload.get("testmode_yn") or "").upper() == "Y" else "",
+                    str(payload.get("sender") or _sender()),
+                    created_by,
+                    datetime.now(KST).isoformat(),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return outbox_id, receivers
+
+    async def _dispatch_outbox_once():
+        _ensure_tables()
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, receiver, msg, msg_type, title, rdate, rtime, testmode_yn, sender
+                FROM sms_outbox
+                WHERE status = 'pending'
+                ORDER BY created_at ASC
+                LIMIT 10
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+
+        for row in rows:
+            outbox_id = row["id"]
+            claim_conn = get_db()
+            try:
+                current = claim_conn.execute("SELECT status FROM sms_outbox WHERE id = ?", (outbox_id,)).fetchone()
+                if not current or current["status"] != "pending":
+                    continue
+                claim_conn.execute(
+                    "UPDATE sms_outbox SET status = 'processing', last_attempted_at = ? WHERE id = ?",
+                    (datetime.now(KST).isoformat(), outbox_id),
+                )
+                claim_conn.commit()
+            finally:
+                claim_conn.close()
+
+            receivers = _receiver_list(row["receiver"])
+            try:
+                key, user_id = _creds()
+                data = {
+                    "key": key,
+                    "user_id": user_id,
+                    "sender": row["sender"] or _sender(),
+                    "receiver": row["receiver"],
+                    "msg": row["msg"],
+                }
+                if row["msg_type"]:
+                    data["msg_type"] = row["msg_type"]
+                if row["title"]:
+                    data["title"] = row["title"]
+                if row["rdate"]:
+                    data["rdate"] = row["rdate"]
+                if row["rtime"]:
+                    data["rtime"] = row["rtime"]
+                if row["testmode_yn"]:
+                    data["testmode_yn"] = row["testmode_yn"]
+
+                result = await _post("/send/", data)
+                if int(result.get("result_code", 0) or 0) <= 0:
+                    raise HTTPException(status_code=502, detail=result.get("message") or "Failed to send SMS")
+
+                mid = str(result.get("msg_id", ""))
+                if mid:
+                    _save_history(
+                        {
+                            "mid": mid,
+                            "type": row["msg_type"] or "SMS",
+                            "msg": row["msg"],
+                            "sender": row["sender"] or _sender(),
+                            "sms_count": len(receivers),
+                            "fail_count": 0,
+                            "reserve_state": "예약대기중" if row["rdate"] else "전송중",
+                            "reg_date": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+                        },
+                        receivers,
+                    )
+
+                done_conn = get_db()
+                try:
+                    done_conn.execute(
+                        "UPDATE sms_outbox SET status = 'sent', sent_at = ?, error_message = NULL WHERE id = ?",
+                        (datetime.now(KST).isoformat(), outbox_id),
+                    )
+                    done_conn.commit()
+                finally:
+                    done_conn.close()
+            except Exception as exc:
+                fail_conn = get_db()
+                try:
+                    fail_conn.execute(
+                        """
+                        UPDATE sms_outbox
+                        SET status = 'failed',
+                            retry_count = COALESCE(retry_count, 0) + 1,
+                            error_message = ?,
+                            last_attempted_at = ?
+                        WHERE id = ?
+                        """,
+                        (str(exc), datetime.now(KST).isoformat(), outbox_id),
+                    )
+                    fail_conn.commit()
+                finally:
+                    fail_conn.close()
+
+    def _dispatcher_loop():
+        while not dispatcher_stop.is_set():
+            try:
+                asyncio.run(_dispatch_outbox_once())
+            except Exception:
+                pass
+            dispatcher_stop.wait(3.0)
+
+    @router.on_event("startup")
+    def _startup():
+        nonlocal dispatcher_thread
+        _ensure_tables()
+        if not run_local_dispatcher:
+            return
+        if dispatcher_thread and dispatcher_thread.is_alive():
+            return
+        dispatcher_stop.clear()
+        dispatcher_thread = threading.Thread(target=_dispatcher_loop, daemon=True, name="sms-outbox-dispatcher")
+        dispatcher_thread.start()
+
+    @router.on_event("shutdown")
+    def _shutdown():
+        dispatcher_stop.set()
+
     @router.post("/send")
     async def sms_send(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        key, user_id = _creds()
-        sender = os.environ.get("ALIGO_SENDER", "")
-        if not (payload.get("sender") or sender):
-            raise HTTPException(status_code=500, detail="ALIGO_SENDER 환경변수가 설정되지 않았습니다.")
-        data: dict = {
-            "key": key,
-            "user_id": user_id,
-            "sender": payload.get("sender") or sender,
-            "receiver": payload.get("receiver", ""),
-            "msg": payload.get("msg", ""),
+        outbox_id, receivers = _enqueue_sms(payload, user)
+        return {
+            "result_code": 1,
+            "queued": True,
+            "queue_id": outbox_id,
+            "success_cnt": len(receivers),
+            "error_cnt": 0,
+            "msg_type": str(payload.get("msg_type") or "SMS"),
+            "message": "queued",
         }
-        for field in ("msg_type", "title", "rdate", "rtime", "testmode_yn"):
-            if payload.get(field):
-                data[field] = payload[field]
-
-        result = await _post("/send/", data)
-
-        # 발송 성공 시 로컬 DB에 저장 (result_code는 문자열로 올 수 있음)
-        if int(result.get("result_code", 0) or 0) > 0:
-            mid = str(result.get("msg_id", ""))
-            receivers = [_normalize_receiver(r) for r in str(payload.get("receiver", "")).split(",") if r.strip()]
-            receivers = [r for r in receivers if r]
-            if mid:
-                _save_to_db(
-                    {
-                        "mid": mid,
-                        "type": payload.get("msg_type", "SMS"),
-                        "msg": payload.get("msg", ""),
-                        "sender": data["sender"],
-                        "sms_count": len(receivers),
-                        "fail_count": 0,
-                        "reserve_state": "전송중" if not payload.get("rdate") else "예약대기중",
-                        "reg_date": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
-                    },
-                    receivers,
-                )
-
-        return result
 
     @router.post("/internal/request-notify")
-    async def sms_internal_request_notify(
-        payload: dict = Body(...),
-        x_internal_token: str | None = Header(None),
-    ):
+    async def sms_internal_request_notify(payload: dict = Body(...), x_internal_token: str | None = Header(None)):
         expected_token = (os.environ.get("REQUEST_SMS_WEBHOOK_TOKEN") or "").strip()
         if expected_token and (x_internal_token or "").strip() != expected_token:
             raise HTTPException(status_code=403, detail="invalid internal token")
@@ -163,35 +338,16 @@ def build_sms_router(*, get_current_user, get_db):
         if len(text) > 60:
             text = f"{text[:57]}..."
 
-        result = await _post(
-            "/send/",
+        queue_id, _ = _enqueue_sms(
             {
-                "key": _creds()[0],
-                "user_id": _creds()[1],
-                "sender": os.environ.get("ALIGO_SENDER", "").strip(),
                 "receiver": receiver,
                 "msg": f"[요청알림]\n보낸사람: {requester_display}\n담당자: {assignee_display}\n내용: {text}",
                 "msg_type": "LMS",
                 "title": "새 요청 알림",
             },
+            "internal-request-notify",
         )
-        if int(result.get("result_code", 0) or 0) > 0:
-            mid = str(result.get("msg_id", ""))
-            if mid:
-                _save_to_db(
-                    {
-                        "mid": mid,
-                        "type": "LMS",
-                        "msg": f"[요청알림]\n보낸사람: {requester_display}\n담당자: {assignee_display}\n내용: {text}",
-                        "sender": os.environ.get("ALIGO_SENDER", "").strip(),
-                        "sms_count": 1,
-                        "fail_count": 0,
-                        "reserve_state": "전송중",
-                        "reg_date": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
-                    },
-                    [receiver],
-                )
-        return {"ok": True, "result": result}
+        return {"ok": True, "queued": True, "queue_id": queue_id}
 
     @router.post("/remain")
     async def sms_remain(user: str = Depends(get_current_user)):
@@ -200,7 +356,6 @@ def build_sms_router(*, get_current_user, get_db):
 
     @router.post("/list")
     async def sms_list(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
-        """로컬 DB에서 전송내역 조회."""
         receiver_query = _normalize_receiver(payload.get("receiver_query", ""))
         page = int(payload.get("page") or 1)
         page_size = int(payload.get("page_size") or 30)
@@ -213,7 +368,7 @@ def build_sms_router(*, get_current_user, get_db):
 
         if start_date:
             from datetime import datetime as _dt, timedelta
-            # start_date를 YYYY-MM-DD 형식으로 정규화 (YYYYMMDD도 허용)
+
             raw = start_date.replace("-", "")
             try:
                 dt = _dt.strptime(raw[:8], "%Y%m%d")
@@ -233,11 +388,8 @@ def build_sms_router(*, get_current_user, get_db):
 
         conn = get_db()
         try:
-            total_row = conn.execute(
-                f"SELECT COUNT(*) as cnt FROM sms_history {where}", params
-            ).fetchone()
+            total_row = conn.execute(f"SELECT COUNT(*) as cnt FROM sms_history {where}", params).fetchone()
             total_count = int(total_row["cnt"]) if total_row else 0
-
             rows = conn.execute(
                 f"SELECT * FROM sms_history {where} ORDER BY reg_date DESC LIMIT ? OFFSET ?",
                 params + [page_size, offset],
@@ -248,33 +400,28 @@ def build_sms_router(*, get_current_user, get_db):
         items = []
         for row in rows:
             receivers = json.loads(row["receivers"] or "[]")
-            items.append({
-                "mid": row["mid"],
-                "type": row["type"],
-                "msg": row["msg"],
-                "sms_count": row["sms_count"],
-                "fail_count": row["fail_count"],
-                "reserve_state": row["reserve_state"],
-                "reg_date": row["reg_date"],
-                "receiver_preview": _make_receiver_preview(receivers, row["sms_count"] or len(receivers)),
-            })
+            items.append(
+                {
+                    "mid": row["mid"],
+                    "type": row["type"],
+                    "msg": row["msg"],
+                    "sms_count": row["sms_count"],
+                    "fail_count": row["fail_count"],
+                    "reserve_state": row["reserve_state"],
+                    "reg_date": row["reg_date"],
+                    "receiver_preview": _make_receiver_preview(receivers, row["sms_count"] or len(receivers)),
+                }
+            )
 
         has_next = (offset + page_size) < total_count
-        return {
-            "result_code": 1,
-            "list": items,
-            "next_yn": "Y" if has_next else "N",
-            "total_count": total_count,
-        }
+        return {"result_code": 1, "list": items, "next_yn": "Y" if has_next else "N", "total_count": total_count}
 
     @router.post("/detail")
     async def sms_detail(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        """로컬 DB의 receivers 우선, 없으면 Aligo에서 가져온다."""
         mid = payload.get("mid")
         page = int(payload.get("page") or 1)
         page_size = int(payload.get("page_size") or 50)
 
-        # 로컬 DB에서 수신번호 확인
         conn = get_db()
         try:
             row = conn.execute("SELECT receivers FROM sms_history WHERE mid = ?", (mid,)).fetchone()
@@ -284,7 +431,7 @@ def build_sms_router(*, get_current_user, get_db):
         if row and row["receivers"]:
             receivers = json.loads(row["receivers"])
             offset = (page - 1) * page_size
-            page_receivers = receivers[offset:offset + page_size]
+            page_receivers = receivers[offset : offset + page_size]
             items = [{"receiver": r, "sms_state": "조회완료", "send_date": ""} for r in page_receivers]
             return {
                 "result_code": 1,
@@ -293,7 +440,6 @@ def build_sms_router(*, get_current_user, get_db):
                 "total_count": len(receivers),
             }
 
-        # 로컬에 없으면 Aligo 직접 조회
         key, user_id = _creds()
         data: dict = {"key": key, "user_id": user_id, "mid": mid}
         for field in ("page", "page_size"):
@@ -305,7 +451,6 @@ def build_sms_router(*, get_current_user, get_db):
     async def sms_cancel(payload: dict = Body(...), user: str = Depends(get_current_user)):
         key, user_id = _creds()
         result = await _post("/cancel/", {"key": key, "user_id": user_id, "mid": payload.get("mid")})
-        # 취소 성공 시 로컬 DB 상태 업데이트
         if int(result.get("result_code", 0) or 0) > 0:
             mid = payload.get("mid")
             conn = get_db()
@@ -318,11 +463,7 @@ def build_sms_router(*, get_current_user, get_db):
 
     @router.post("/migrate")
     async def sms_migrate(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
-        """Aligo 전체 내역을 로컬 DB로 마이그레이션한다."""
         key, user_id = _creds()
-
-        # 기간: start_date ~ start_date+limit_day 씩 반복
-        # payload: { months_back: 6 } 또는 { start_date: "20240101", end_date: "20241231" }
         from datetime import datetime as _dt, timedelta
 
         months_back = int(payload.get("months_back") or 3)
@@ -331,20 +472,40 @@ def build_sms_router(*, get_current_user, get_db):
 
         saved = 0
         skipped = 0
-        sem = asyncio.Semaphore(5)  # 동시 5개 제한
+        sem = asyncio.Semaphore(5)
+
+        async def _fetch_all_receivers(mid: str) -> list[str]:
+            all_receivers: list[str] = []
+            page = 1
+            while True:
+                detail = await _post(
+                    "/sms_list/",
+                    {"key": key, "user_id": user_id, "mid": mid, "page": page, "page_size": 500},
+                )
+                for item in detail.get("list", []) or []:
+                    r = _normalize_receiver(item.get("receiver", ""))
+                    if r and r not in all_receivers:
+                        all_receivers.append(r)
+                if detail.get("next_yn") != "Y":
+                    break
+                page += 1
+            return all_receivers
 
         async def _fetch_period(period_start: _dt):
             nonlocal saved, skipped
             page = 1
             while True:
-                result = await _post("/list/", {
-                    "key": key,
-                    "user_id": user_id,
-                    "start_date": period_start.strftime("%Y%m%d"),
-                    "limit_day": 30,
-                    "page": page,
-                    "page_size": 500,
-                })
+                result = await _post(
+                    "/list/",
+                    {
+                        "key": key,
+                        "user_id": user_id,
+                        "start_date": period_start.strftime("%Y%m%d"),
+                        "limit_day": 30,
+                        "page": page,
+                        "page_size": 500,
+                    },
+                )
                 items = result.get("list", []) or []
                 if not items:
                     break
@@ -357,7 +518,7 @@ def build_sms_router(*, get_current_user, get_db):
                     try:
                         async with sem:
                             receivers = await _fetch_all_receivers(mid)
-                        _save_to_db(item, receivers)
+                        _save_history(item, receivers)
                         saved += 1
                     except Exception:
                         skipped += 1
@@ -368,7 +529,6 @@ def build_sms_router(*, get_current_user, get_db):
                     break
                 page += 1
 
-        # 30일씩 나눠서 순서대로 처리
         cursor = start_dt
         while cursor < end_dt:
             await _fetch_period(cursor)

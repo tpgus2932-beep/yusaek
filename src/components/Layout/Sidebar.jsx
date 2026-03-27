@@ -17,6 +17,7 @@ import {
     MessageSquare,
     PackageCheck,
     CalendarDays,
+    Handshake,
 } from 'lucide-react';
 import styles from './Sidebar.module.css';
 import ServerStatsModal from '../Admin/ServerStatsModal';
@@ -105,6 +106,15 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                 >
                     <MessageSquare size={20} />
                     문자 발송
+                </div>
+                )}
+                {!isHidden('collaboration-menu') && (
+                <div
+                    className={`${styles.navItem} ${activeTab === 'collaboration-menu' ? styles.active : ''}`}
+                    onClick={() => setActiveTab('collaboration-menu')}
+                >
+                    <Handshake size={20} />
+                    협업메뉴
                 </div>
                 )}
                 {!isHidden('hapbae-management') && (

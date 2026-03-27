@@ -40,6 +40,7 @@ from api.returns_routes import build_returns_router
 from api.order_routes import build_order_router
 from api.noye_kimsungil_routes import build_noye_kimsungil_router
 from api.sms_routes import build_sms_router
+from api.collaboration_tools_routes import build_collaboration_tools_router
 from services.easyadmin_product import _content_disposition, _process_easyadmin_product_upload
 from services.returns_utils import (
     ReturnState,
@@ -1158,6 +1159,13 @@ app.include_router(
         get_current_user=_get_current_user,
     )
 )
+app.include_router(
+    build_collaboration_tools_router(
+        get_current_user=_get_current_user,
+        get_setting=_get_setting,
+        set_setting=_set_setting,
+    )
+)
 
 def _init_sms_history():
     conn = _get_shared_db()
@@ -1190,6 +1198,7 @@ app.include_router(
     build_sms_router(
         get_current_user=_get_current_user,
         get_db=_get_shared_db,
+        run_local_dispatcher=not _IS_RENDER,
     )
 )
 
