@@ -1,11 +1,11 @@
 /* ── 컴포넌트 전용 CSS 변수 ── */
 :root {
-  --cs-green: var(--cs-green);
-  --cs-green-dark: var(--cs-green-dark);
-  --cs-green-text: var(--cs-green-text);
-  --cs-green-bg: var(--cs-green-bg);
-  --cs-green-border: var(--cs-green-border);
-  --cs-green-border-soft: var(--cs-green-border-soft);
+  --cs-green: #2d6d56;
+  --cs-green-dark: #1a3d30;
+  --cs-green-text: #1a4a38;
+  --cs-green-bg: rgba(45, 109, 86, 0.08);
+  --cs-green-border: rgba(45, 109, 86, 0.3);
+  --cs-green-border-soft: rgba(45, 109, 86, 0.35);
 }
 
 .page {
