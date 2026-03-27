@@ -81,6 +81,7 @@ const Overview = ({ currentUser }) => {
     const activityWidthStorageKey = `dashboard:activity-width:${dashboardUserKey}`;
     const requestAlertsStorageKey = `dashboard:request-alerts:${dashboardUserKey}`;
     const requestSmsSentStorageKey = `dashboard:request-sms-sent:${dashboardUserKey}`;
+    const requestSmsWatchSinceStorageKey = `dashboard:request-sms-watch-since:${dashboardUserKey}`;
 
     const authHeaders = getAuthHeaders();
     const currentUserPhone = useMemo(() => {
@@ -120,6 +121,15 @@ const Overview = ({ currentUser }) => {
             return false;
         }
     }, [requestSmsSentStorageKey]);
+
+    const getRequestSmsWatchSince = useCallback(() => {
+        try {
+            const raw = localStorage.getItem(requestSmsWatchSinceStorageKey);
+            return raw ? String(raw) : '';
+        } catch {
+            return '';
+        }
+    }, [requestSmsWatchSinceStorageKey]);
 
     const sendLocalRequestSms = useCallback(async (item) => {
         if (!canSendLocalRequestSms || !currentUserPhone || !item?.id || hasRequestSmsBeenSent(item.id)) return;
@@ -177,8 +187,10 @@ const Overview = ({ currentUser }) => {
             const newItems = openRequests.filter((item) => !previousOpenRequestIdsRef.current.has(item.id));
 
             if (requestSmsWatchPrimedRef.current && canSendLocalRequestSms) {
+                const watchSince = getRequestSmsWatchSince();
                 newItems.forEach((item) => {
-                    if (!previousSmsWatchIdsRef.current.has(item.id)) {
+                    const createdAt = String(item?.created_at || '');
+                    if (!previousSmsWatchIdsRef.current.has(item.id) && (!watchSince || createdAt > watchSince)) {
                         sendLocalRequestSms(item).catch(() => {});
                     }
                 });
@@ -246,7 +258,14 @@ const Overview = ({ currentUser }) => {
     useEffect(() => {
         previousSmsWatchIdsRef.current = new Set();
         requestSmsWatchPrimedRef.current = false;
-    }, [dashboardUserKey]);
+        try {
+            if (!localStorage.getItem(requestSmsWatchSinceStorageKey)) {
+                localStorage.setItem(requestSmsWatchSinceStorageKey, new Date().toISOString());
+            }
+        } catch {
+            // ignore local cache failures
+        }
+    }, [dashboardUserKey, requestSmsWatchSinceStorageKey]);
 
     useEffect(() => {
         if (!requestAlertsEnabled) return undefined;
