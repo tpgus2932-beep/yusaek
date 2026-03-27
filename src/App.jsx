@@ -21,6 +21,12 @@ import CollabPortalPage from './components/Collab/CollabPortalPage';
 import { COLLAB_API_BASE } from './lib/api';
 
 
+const KNOWN_TABS = [
+  'dashboard', 'barcode', 'returns', 'barcode-product-upload', 'shared-files',
+  'noye-kimsungil', 'client-schedule', 'sms', 'hapbae-management',
+  'order', 'cost-base-manager', 'admin', 'settings',
+];
+
 const App = () => {
   const pathname = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
   const isMobileKimsungilRequestRoute = pathname === '/request-kimsungil';
@@ -46,7 +52,7 @@ const App = () => {
 
   const getFallbackTab = (adminFlag = isAdmin, hidden = hiddenTabs, userRole = role) => {
     if (userRole === 'viewer') return 'dashboard';
-    const candidates = ['dashboard', 'barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'client-schedule', 'sms', 'hapbae-management'];
+    const candidates = [...KNOWN_TABS.filter((t) => !['order', 'cost-base-manager', 'admin'].includes(t))];
     if (adminFlag) candidates.push('order', 'cost-base-manager', 'admin');
     candidates.push('settings');
     return candidates.find((tab) => isTabAllowed(tab, adminFlag, hidden, userRole)) || 'settings';
@@ -227,35 +233,23 @@ const App = () => {
           }}
         />
 
-        {visibleActiveTab === 'dashboard' && !hiddenTabs.includes('dashboard') && <Overview currentUser={username} />}
-        {visibleActiveTab === 'barcode' && !hiddenTabs.includes('barcode') && <BarcodeTabs />}
-        {visibleActiveTab === 'returns' && !hiddenTabs.includes('returns') && <ReturnsPage />}
-        {visibleActiveTab === 'barcode-product-upload' && !hiddenTabs.includes('barcode-product-upload') && <ProductUploadPage />}
-        {visibleActiveTab === 'shared-files' && !hiddenTabs.includes('shared-files') && <SharedFilesPage />}
-        {visibleActiveTab === 'noye-kimsungil' && !hiddenTabs.includes('noye-kimsungil') && <NoyeKimPage />}
-        {visibleActiveTab === 'client-schedule' && !hiddenTabs.includes('client-schedule') && <ClientSchedulePage />}
-        {visibleActiveTab === 'sms' && !hiddenTabs.includes('sms') && <SMSPage />}
-        {visibleActiveTab === 'hapbae-management' && !hiddenTabs.includes('hapbae-management') && <HapbaeManagementTabs />}
-        {visibleActiveTab === 'order' && isAdmin && !hiddenTabs.includes('order') && <OrderPage />}
-        {visibleActiveTab === 'cost-base-manager' && isAdmin && !hiddenTabs.includes('cost-base-manager') && <CostBaseManagerPage />}
-        {visibleActiveTab === 'admin' && isAdmin && !hiddenTabs.includes('admin') && <AdminUsers currentUser={username} />}
+        {visibleActiveTab === 'dashboard' && !effectiveHiddenTabs.includes('dashboard') && <Overview currentUser={username} />}
+        {visibleActiveTab === 'barcode' && !effectiveHiddenTabs.includes('barcode') && <BarcodeTabs />}
+        {visibleActiveTab === 'returns' && !effectiveHiddenTabs.includes('returns') && <ReturnsPage />}
+        {visibleActiveTab === 'barcode-product-upload' && !effectiveHiddenTabs.includes('barcode-product-upload') && <ProductUploadPage />}
+        {visibleActiveTab === 'shared-files' && !effectiveHiddenTabs.includes('shared-files') && <SharedFilesPage />}
+        {visibleActiveTab === 'noye-kimsungil' && !effectiveHiddenTabs.includes('noye-kimsungil') && <NoyeKimPage />}
+        {visibleActiveTab === 'client-schedule' && !effectiveHiddenTabs.includes('client-schedule') && <ClientSchedulePage />}
+        {visibleActiveTab === 'sms' && !effectiveHiddenTabs.includes('sms') && <SMSPage />}
+        {visibleActiveTab === 'hapbae-management' && !effectiveHiddenTabs.includes('hapbae-management') && <HapbaeManagementTabs />}
+        {visibleActiveTab === 'order' && isAdmin && !effectiveHiddenTabs.includes('order') && <OrderPage />}
+        {visibleActiveTab === 'cost-base-manager' && isAdmin && !effectiveHiddenTabs.includes('cost-base-manager') && <CostBaseManagerPage />}
+        {visibleActiveTab === 'admin' && isAdmin && !effectiveHiddenTabs.includes('admin') && <AdminUsers currentUser={username} />}
         {visibleActiveTab === 'settings' && (
           <SettingsPage hiddenTabs={hiddenTabs} setHiddenTabs={setHiddenTabs} isAdmin={isAdmin} />
         )}
 
-        {visibleActiveTab !== 'dashboard' &&
-          visibleActiveTab !== 'barcode' &&
-          visibleActiveTab !== 'returns' &&
-          visibleActiveTab !== 'barcode-product-upload' &&
-          visibleActiveTab !== 'shared-files' &&
-          visibleActiveTab !== 'noye-kimsungil' &&
-          visibleActiveTab !== 'client-schedule' &&
-          visibleActiveTab !== 'sms' &&
-          visibleActiveTab !== 'hapbae-management' &&
-          visibleActiveTab !== 'order' &&
-          visibleActiveTab !== 'cost-base-manager' &&
-          visibleActiveTab !== 'admin' &&
-          visibleActiveTab !== 'settings' && (
+        {!KNOWN_TABS.includes(visibleActiveTab) && (
           <div className={styles.placeholderSection}>
             <h2>{visibleActiveTab.charAt(0).toUpperCase() + visibleActiveTab.slice(1)} Section</h2>
             <p>Coming soon...</p>

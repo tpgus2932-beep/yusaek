@@ -1,3 +1,13 @@
+/* ── 컴포넌트 전용 CSS 변수 ── */
+:root {
+  --cs-green: var(--cs-green);
+  --cs-green-dark: var(--cs-green-dark);
+  --cs-green-text: var(--cs-green-text);
+  --cs-green-bg: var(--cs-green-bg);
+  --cs-green-border: var(--cs-green-border);
+  --cs-green-border-soft: var(--cs-green-border-soft);
+}
+
 .page {
   padding: 24px;
   display: flex;
@@ -123,8 +133,8 @@
 
 .fileSelected {
   border-style: solid;
-  border-color: #2d6d56;
-  color: #1a4a38;
+  border-color: var(--cs-green);
+  color: var(--cs-green-text);
 }
 
 .btnRow {
@@ -167,7 +177,7 @@
 
 .settingGroup input:focus {
   outline: none;
-  border-color: #2d6d56;
+  border-color: var(--cs-green);
 }
 
 .receiverBox {
@@ -190,20 +200,20 @@
 }
 
 .receiverBox:focus-within {
-  border-color: #2d6d56;
+  border-color: var(--cs-green);
 }
 
 .tag {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  background: rgba(45, 109, 86, 0.08);
-  border: 1px solid rgba(45, 109, 86, 0.3);
+  background: var(--cs-green-bg);
+  border: 1px solid var(--cs-green-border);
   border-radius: 999px;
   padding: 0.2rem 0.55rem 0.2rem 0.7rem;
   font-size: 0.82rem;
   font-weight: 600;
-  color: #1a4a38;
+  color: var(--cs-green-text);
   white-space: nowrap;
 }
 
@@ -255,7 +265,7 @@
   height: 18px;
   padding: 0 5px;
   border-radius: 999px;
-  background: #1a3d30;
+  background: var(--cs-green-dark);
   color: #f0f9f4;
   font-size: 0.7rem;
   font-weight: 700;
@@ -282,19 +292,19 @@
 .moreTagsBtn {
   flex-shrink: 0;
   padding: 0.15rem 0.6rem;
-  border: 1px solid rgba(45, 109, 86, 0.35);
+  border: 1px solid var(--cs-green-border-soft);
   border-radius: 999px;
   background: transparent;
   font: inherit;
   font-size: 0.78rem;
   font-weight: 600;
-  color: #2d6d56;
+  color: var(--cs-green);
   cursor: pointer;
   white-space: nowrap;
 }
 
 .moreTagsBtn:hover {
-  background: rgba(45, 109, 86, 0.08);
+  background: var(--cs-green-bg);
 }
 
 /* ── Buttons ── */
@@ -315,7 +325,7 @@
 }
 
 .primaryBtn {
-  background: #1a3d30;
+  background: var(--cs-green-dark);
   color: #f0f9f4;
 }
 
@@ -349,9 +359,9 @@
   gap: 6px;
   padding: 8px 14px;
   border-radius: 8px;
-  border: 1px solid #2d6d56;
+  border: 1px solid var(--cs-green);
   background: transparent;
-  color: #1a4a38;
+  color: var(--cs-green-text);
   font: inherit;
   font-size: 0.875rem;
   font-weight: 600;
@@ -359,7 +369,7 @@
   transition: background 0.15s;
 }
 
-.dbSaveBtn:hover { background: rgba(45, 109, 86, 0.08); }
+.dbSaveBtn:hover { background: var(--cs-green-bg); }
 .dbSaveBtn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .dbClearBtn {
@@ -475,7 +485,7 @@
   display: block;
   font-size: 0.82rem;
   font-weight: 700;
-  color: #1a3d30;
+  color: var(--cs-green-dark);
   margin-bottom: 6px;
 }
 
@@ -541,7 +551,7 @@
 
 .cellInput:focus {
   outline: none;
-  border-color: #2d6d56;
+  border-color: var(--cs-green);
 }
 
 .colGuide {
