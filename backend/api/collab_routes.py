@@ -1,11 +1,13 @@
 import mimetypes
 import re
 import shutil
+import time
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, File, Header, HTTPException, Form, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Header, HTTPException, Form, Request, UploadFile
 from fastapi.responses import FileResponse
 
 
@@ -37,6 +39,18 @@ def build_collab_router(
     # In-memory completion state for "today todos".
     # This is intentionally reset when the server restarts.
     my_todo_completed: dict[str, set[int]] = {}
+    # 공개 엔드포인트 레이트 리밋 (IP당 분당 최대 5회)
+    _public_rate_store: dict[str, list[float]] = defaultdict(list)
+    _PUBLIC_RATE_MAX = 5
+    _PUBLIC_RATE_WINDOW = 60.0
+
+    def _check_public_rate_limit(client_ip: str) -> None:
+        now = time.time()
+        recent = [t for t in _public_rate_store[client_ip] if now - t < _PUBLIC_RATE_WINDOW]
+        if len(recent) >= _PUBLIC_RATE_MAX:
+            raise HTTPException(status_code=429, detail="요청이 너무 많습니다. 잠시 후 다시 시도해주세요.")
+        recent.append(now)
+        _public_rate_store[client_ip] = recent
     # my_todos는 개인 데이터 → 로컬 DB 우선
     _local_db = get_local_db if get_local_db is not None else get_db
 
@@ -165,9 +179,11 @@ def build_collab_router(
 
     @router.post("/requests/public/kimsungil")
     def create_public_request_for_kimsungil(
+        request: Request,
         text: str = Form(...),
         files: list[UploadFile] | None = File(None),
     ):
+        _check_public_rate_limit(request.client.host if request.client else "unknown")
         text = (text or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="text required")

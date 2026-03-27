@@ -1,7 +1,26 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Plus, Calendar, Bell, ChevronDown, ChevronUp, Pin, PinOff, GripVertical } from 'lucide-react';
 import styles from './Dashboard.module.css';
 import { COLLAB_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
+
+function AuthImage({ src, headers, className, alt, onClick }) {
+    const [blobUrl, setBlobUrl] = useState('');
+    useEffect(() => {
+        let objectUrl = '';
+        fetch(src, { headers })
+            .then((r) => (r.ok ? r.blob() : null))
+            .then((blob) => {
+                if (blob) {
+                    objectUrl = URL.createObjectURL(blob);
+                    setBlobUrl(objectUrl);
+                }
+            })
+            .catch(() => {});
+        return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
+    }, [src, headers]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!blobUrl) return null;
+    return <img src={blobUrl} className={className} alt={alt} onClick={onClick} />;
+}
 
 const Overview = ({ currentUser }) => {
     const [users, setUsers] = useState([]);
@@ -531,10 +550,42 @@ const Overview = ({ currentUser }) => {
         });
     };
 
-    const getAttachmentUrl = (file) => {
-        const token = localStorage.getItem('token');
-        const suffix = token ? `?token=${encodeURIComponent(token)}` : '';
-        return `${API}${file.url}${suffix}`;
+    const getAttachmentUrl = (file) => `${API}${file.url}`;
+
+    const closePreview = () => {
+        setPreviewImage((prev) => {
+            if (prev?.isBlob) URL.revokeObjectURL(prev.url);
+            return null;
+        });
+    };
+
+    const downloadAttachment = async (file) => {
+        try {
+            const res = await fetch(getAttachmentUrl(file), { headers: authHeaders });
+            if (!res.ok) throw new Error('다운로드 실패');
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = file.filename;
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch {
+            // 실패 시 무시
+        }
+    };
+
+    const openImagePreview = async (file) => {
+        try {
+            const res = await fetch(getAttachmentUrl(file), { headers: authHeaders });
+            if (!res.ok) return;
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            setPreviewScale(1);
+            setPreviewImage({ url, name: file.filename, isBlob: true });
+        } catch {
+            // 실패 시 무시
+        }
     };
 
     const renderAttachments = (item) => {
@@ -544,31 +595,24 @@ const Overview = ({ currentUser }) => {
                 {item.attachments.map((file) => (
                     <div key={file.id} className={styles.attachmentItem}>
                         {file.is_image ? (
-                            <img
+                            <AuthImage
                                 className={styles.attachmentThumb}
                                 src={getAttachmentUrl(file)}
+                                headers={authHeaders}
                                 alt={file.filename}
-                                onClick={() => {
-                                    setPreviewScale(1);
-                                    setPreviewImage({
-                                        url: getAttachmentUrl(file),
-                                        name: file.filename,
-                                    });
-                                }}
+                                onClick={() => openImagePreview(file)}
                             />
                         ) : (
                             <div className={styles.attachmentIcon}>FILE</div>
                         )}
                         <div className={styles.attachmentMeta}>
-                            <a
+                            <button
+                                type="button"
                                 className={styles.attachmentLink}
-                                href={getAttachmentUrl(file)}
-                                download
-                                target="_blank"
-                                rel="noreferrer"
+                                onClick={() => downloadAttachment(file)}
                             >
                                 {file.filename}
-                            </a>
+                            </button>
                             <div className={styles.attachmentSize}>{formatFileSize(file.size)}</div>
                         </div>
                     </div>
@@ -1620,7 +1664,7 @@ const Overview = ({ currentUser }) => {
             {previewImage && (
                 <div
                     className={styles.previewOverlay}
-                    onClick={() => setPreviewImage(null)}
+                    onClick={() => closePreview()}
                 >
                     <div
                         className={styles.previewModal}
@@ -1657,7 +1701,7 @@ const Overview = ({ currentUser }) => {
                                 <button
                                     type="button"
                                     className={styles.secondaryBtn}
-                                    onClick={() => setPreviewImage(null)}
+                                    onClick={() => closePreview()}
                                 >
                                     닫기
                                 </button>

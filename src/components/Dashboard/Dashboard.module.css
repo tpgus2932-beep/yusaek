@@ -1149,11 +1149,18 @@
 }
 
 .attachmentLink {
+    display: inline;
+    padding: 0;
+    border: 0;
+    background: transparent;
     color: var(--text-primary);
     text-decoration: none;
+    font: inherit;
     font-size: 0.85rem;
     font-weight: 600;
     overflow-wrap: anywhere;
+    cursor: pointer;
+    text-align: left;
 }
 
 .attachmentLink:hover {

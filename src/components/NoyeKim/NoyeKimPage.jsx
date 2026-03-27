@@ -186,46 +186,6 @@ function convertSlipTextToRows(text) {
   return rows;
 }
 
-function convertCurrentReceiptExcelRowsLegacy(rawData) {
-  const rows = [];
-  const dataRows = Array.isArray(rawData) ? rawData.slice(1) : [];
-  const date = formatLocalDate();
-
-  for (const row of dataRows) {
-    const supplierProductName = String(row?.[0] ?? "").trim();
-    const optionCell = String(row?.[1] ?? "").trim();
-    const originalQty = String(row?.[2] ?? "").trim();
-    const requestQty = parseNumber(row?.[3]);
-    const pickupText = String(row?.[4] ?? "").trim();
-
-    if (!supplierProductName && !optionCell && !originalQty && !requestQty && !pickupText) {
-      continue;
-    }
-
-    const { supplierPrefix, supplierSuffix } = extractProductName(supplierProductName);
-    const optionMatch = optionCell.match(/\[([^\]]+)\]/);
-    const optionText = optionMatch ? optionMatch[1] : optionCell.replace(/^\[|\]$/g, "");
-    const { color, size } = extractOptionParts(optionText);
-    const isPickup = pickupText.includes("미송픽업");
-
-    rows.push({
-      A: supplierPrefix,
-      B: supplierSuffix,
-      C: isPickup ? "미송픽업" : "",
-      D: color,
-      E: size,
-      F: originalQty,
-      G: date,
-      H: isPickup ? "미송픽업" : pendingQty > 0 ? "미송" : "",
-    });
-  }
-
-  if (rows.length > 0) {
-    rows.pop();
-  }
-
-  return rows;
-}
 
 function convertCurrentReceiptExcelRows(rawData) {
   const rows = [];
