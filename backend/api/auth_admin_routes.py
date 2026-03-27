@@ -144,14 +144,24 @@ def build_auth_admin_router(
         conn = get_db()
         rows = conn.execute(
             """
-            SELECT username, display_name
+            SELECT username, display_name, phone_number
             FROM users
             WHERE approval_status = 'approved'
             ORDER BY username ASC
             """
         ).fetchall()
         conn.close()
-        return {"ok": True, "users": [{"username": r["username"], "display_name": r["display_name"]} for r in rows]}
+        return {
+            "ok": True,
+            "users": [
+                {
+                    "username": r["username"],
+                    "display_name": r["display_name"],
+                    "phone_number": r["phone_number"] if r["phone_number"] else "",
+                }
+                for r in rows
+            ],
+        }
 
     @router.get("/admin/users")
     def admin_list_users(admin: str = Depends(require_admin)):

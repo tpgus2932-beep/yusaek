@@ -291,16 +291,6 @@ def build_collab_router(
             item["attachments"] = attachments
             item["can_complete"] = item.get("status") == "open" and assignee == requester_username
             item["can_ack"] = False
-            fallback_receiver = _normalize_receiver(
-                get_setting("request_sms_receiver") or os.environ.get("REQUEST_SMS_RECEIVER", "01095806927")
-            )
-            _send_request_sms_best_effort(
-                receiver=_get_user_phone_number(assignee),
-                fallback_receiver=fallback_receiver,
-                requester_display=requester_display,
-                assignee_display=assignee_display,
-                text=text,
-            )
             return item
         except HTTPException:
             conn.rollback()

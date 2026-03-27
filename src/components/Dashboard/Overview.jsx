@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Plus, Calendar, Bell, ChevronDown, ChevronUp, Pin, PinOff, GripVertical } from 'lucide-react';
 import styles from './Dashboard.module.css';
-import { COLLAB_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
+import { COLLAB_API_BASE as API, LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
 function AuthImage({ src, token, className, alt, onClick }) {
     const [blobUrl, setBlobUrl] = useState('');
@@ -78,8 +78,69 @@ const Overview = ({ currentUser }) => {
     const pinnedRequestsStorageKey = `dashboard:pinned-requests:${dashboardUserKey}`;
     const activityWidthStorageKey = `dashboard:activity-width:${dashboardUserKey}`;
     const requestAlertsStorageKey = `dashboard:request-alerts:${dashboardUserKey}`;
+    const requestSmsSentStorageKey = `dashboard:request-sms-sent:${dashboardUserKey}`;
 
     const authHeaders = getAuthHeaders();
+    const currentUserPhone = useMemo(() => {
+        const me = users.find((user) => user.username === dashboardUserKey);
+        return String(me?.phone_number || '').replace(/[^0-9]/g, '');
+    }, [users, dashboardUserKey]);
+    const canSendLocalRequestSms = useMemo(() => {
+        if (typeof window === 'undefined') return false;
+        const host = (window.location.hostname || '').trim();
+        return (
+            host === 'localhost' ||
+            host === '127.0.0.1' ||
+            /^192\.168\./.test(host) ||
+            /^10\./.test(host) ||
+            /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
+        );
+    }, []);
+
+    const markRequestSmsSent = useCallback((requestId) => {
+        try {
+            const raw = localStorage.getItem(requestSmsSentStorageKey);
+            const parsed = raw ? JSON.parse(raw) : [];
+            const next = Array.isArray(parsed) ? parsed.filter((id) => Number.isFinite(id)) : [];
+            if (!next.includes(requestId)) next.push(requestId);
+            localStorage.setItem(requestSmsSentStorageKey, JSON.stringify(next.slice(-300)));
+        } catch {
+            // ignore local cache failures
+        }
+    }, [requestSmsSentStorageKey]);
+
+    const hasRequestSmsBeenSent = useCallback((requestId) => {
+        try {
+            const raw = localStorage.getItem(requestSmsSentStorageKey);
+            const parsed = raw ? JSON.parse(raw) : [];
+            return Array.isArray(parsed) && parsed.includes(requestId);
+        } catch {
+            return false;
+        }
+    }, [requestSmsSentStorageKey]);
+
+    const sendLocalRequestSms = useCallback(async (item) => {
+        if (!canSendLocalRequestSms || !currentUserPhone || !item?.id || hasRequestSmsBeenSent(item.id)) return;
+        const body = (item.text || '').trim();
+        if (!body) return;
+        const preview = body.length > 80 ? `${body.slice(0, 80)}...` : body;
+        const res = await fetch(`${LOCAL_API_BASE}/sms/send`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders },
+            body: JSON.stringify({
+                receiver: currentUserPhone,
+                msg: `[요청알림]\n보낸사람: ${item.requester_display || item.requester_username || '익명'}\n담당자: ${item.assignee_display || item.assignee_username || dashboardUserKey}\n내용: ${preview}`,
+                msg_type: 'LMS',
+                title: '새 요청 알림',
+            }),
+        });
+        if (handleUnauthorized(res)) return;
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || Number(data?.result_code || 0) <= 0) {
+            throw new Error(data?.detail || data?.message || 'Failed to send request SMS');
+        }
+        markRequestSmsSent(item.id);
+    }, [authHeaders, canSendLocalRequestSms, currentUserPhone, dashboardUserKey, hasRequestSmsBeenSent, markRequestSmsSent]);
 
     const fetchUsers = async () => {
         try {
@@ -122,6 +183,9 @@ const Overview = ({ currentUser }) => {
                         });
                     });
                 }
+                newItems.forEach((item) => {
+                    sendLocalRequestSms(item).catch(() => {});
+                });
             }
 
             previousOpenRequestIdsRef.current = openRequestIds;
