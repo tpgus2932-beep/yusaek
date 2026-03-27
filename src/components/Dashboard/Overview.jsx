@@ -73,6 +73,8 @@ const Overview = ({ currentUser }) => {
     const resizeStateRef = useRef(null);
     const previousOpenRequestIdsRef = useRef(new Set());
     const requestAlertsPrimedRef = useRef(false);
+    const previousSmsWatchIdsRef = useRef(new Set());
+    const requestSmsWatchPrimedRef = useRef(false);
 
     const dashboardUserKey = currentUser || localStorage.getItem('username') || 'guest';
     const pinnedRequestsStorageKey = `dashboard:pinned-requests:${dashboardUserKey}`;
@@ -172,8 +174,17 @@ const Overview = ({ currentUser }) => {
             const openRequests = requests.filter((item) => item.status !== 'completed');
             const openRequestIds = new Set(openRequests.map((item) => item.id));
 
+            const newItems = openRequests.filter((item) => !previousOpenRequestIdsRef.current.has(item.id));
+
+            if (requestSmsWatchPrimedRef.current && canSendLocalRequestSms) {
+                newItems.forEach((item) => {
+                    if (!previousSmsWatchIdsRef.current.has(item.id)) {
+                        sendLocalRequestSms(item).catch(() => {});
+                    }
+                });
+            }
+
             if (requestAlertsPrimedRef.current && requestAlertsEnabled && typeof window !== 'undefined' && 'Notification' in window) {
-                const newItems = openRequests.filter((item) => !previousOpenRequestIdsRef.current.has(item.id));
                 if (Notification.permission === 'granted') {
                     newItems.forEach((item) => {
                         const body = (item.text || '').trim() || '새 요청이 도착했습니다.';
@@ -183,13 +194,12 @@ const Overview = ({ currentUser }) => {
                         });
                     });
                 }
-                newItems.forEach((item) => {
-                    sendLocalRequestSms(item).catch(() => {});
-                });
             }
 
             previousOpenRequestIdsRef.current = openRequestIds;
             requestAlertsPrimedRef.current = true;
+            previousSmsWatchIdsRef.current = openRequestIds;
+            requestSmsWatchPrimedRef.current = true;
             setActivity(requests);
         } catch (err) {
             setError(err.message || 'Failed to load activity');
@@ -234,6 +244,11 @@ const Overview = ({ currentUser }) => {
     }, [requestAlertsStorageKey]);
 
     useEffect(() => {
+        previousSmsWatchIdsRef.current = new Set();
+        requestSmsWatchPrimedRef.current = false;
+    }, [dashboardUserKey]);
+
+    useEffect(() => {
         if (!requestAlertsEnabled) return undefined;
         const timer = window.setInterval(() => {
             fetchActivity();
@@ -241,6 +256,15 @@ const Overview = ({ currentUser }) => {
         return () => window.clearInterval(timer);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [requestAlertsEnabled, currentUser]);
+
+    useEffect(() => {
+        if (!canSendLocalRequestSms) return undefined;
+        const timer = window.setInterval(() => {
+            fetchActivity();
+        }, 15000);
+        return () => window.clearInterval(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [canSendLocalRequestSms, currentUser]);
 
     useEffect(() => {
         const storedPins = localStorage.getItem(pinnedRequestsStorageKey);
