@@ -217,7 +217,7 @@
 .requestHeaderActions {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.4rem;
     flex-wrap: wrap;
     justify-content: flex-end;
 }
@@ -226,24 +226,30 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background-color: var(--accent-black);
-    color: var(--accent-white);
-    font-size: 0.7rem;
+    background-color: #e53e3e;
+    color: #fff;
+    font-size: 0.68rem;
     font-weight: 700;
-    min-width: 20px;
-    height: 20px;
-    padding: 0 0.4rem;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 0.35rem;
     border-radius: 999px;
-    margin-left: 0.5rem;
+    margin-left: 0.45rem;
+    animation: pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
 }
 
 .clearBtn {
     background: none;
     border: none;
-    font-size: 0.8rem;
+    font-size: 0.78rem;
     color: var(--text-muted);
     cursor: pointer;
-    padding: 0.2rem 0.4rem;
+    padding: 0.2rem 0.45rem;
     border-radius: var(--radius-sm);
 }
 
@@ -255,57 +261,75 @@
 .alertToggleBtn {
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
+    gap: 0.3rem;
     border: 1px solid var(--border-color);
     background-color: var(--bg-primary);
-    color: var(--text-secondary);
+    color: var(--text-muted);
     border-radius: 999px;
-    padding: 0.35rem 0.7rem;
-    font-size: 0.78rem;
+    padding: 0.3rem 0.65rem;
+    font-size: 0.75rem;
     font-weight: 600;
     cursor: pointer;
+    transition: all 0.15s;
 }
 
 .alertToggleBtnActive {
-    border-color: rgba(15, 23, 42, 0.2);
-    background-color: rgba(15, 23, 42, 0.08);
-    color: var(--text-primary);
+    border-color: #dd6b20;
+    background-color: #fff5eb;
+    color: #c05621;
+}
+
+[data-theme='dark'] .alertToggleBtnActive {
+    background-color: rgba(221, 107, 32, 0.15);
+    color: #f6ad55;
+    border-color: rgba(221, 107, 32, 0.4);
 }
 
 .requestList {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    max-height: 420px;
+    gap: 0.6rem;
+    max-height: 520px;
     overflow-y: auto;
-    padding-right: 0.25rem;
+    padding-right: 0.15rem;
     overscroll-behavior: contain;
 }
 
 .requestItem {
-    border-radius: var(--radius-sm);
+    border-radius: 10px;
     border: 1px solid var(--border-color);
-    border-left-width: 3px;
+    border-left: 3px solid var(--border-color);
     background-color: var(--bg-secondary);
     display: flex;
     align-items: flex-start;
     gap: 0.75rem;
-    padding: 0.85rem 0.9rem;
-    transition: box-shadow 0.15s ease;
+    padding: 0.8rem 0.85rem;
+    transition: box-shadow 0.15s ease, transform 0.1s ease;
+}
+
+.requestItem:hover {
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    transform: translateY(-1px);
 }
 
 .requestItemPending {
-    border-left-color: var(--accent-black);
+    border-left-color: #3182ce;
+    background-color: var(--bg-secondary);
 }
 
 .requestItemDone {
-    border-left-color: var(--border-color);
-    opacity: 0.6;
+    border-left-color: #38a169;
+    opacity: 0.55;
 }
 
 .requestItemPinned {
-    border-color: rgba(15, 23, 42, 0.18);
-    box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
+    border-color: #d69e2e;
+    border-left-color: #d69e2e;
+    background-color: #fffff0;
+}
+
+[data-theme='dark'] .requestItemPinned {
+    background-color: rgba(214, 158, 46, 0.08);
 }
 
 .requestItemInner {
@@ -313,73 +337,92 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
+    gap: 0.35rem;
 }
 
 .requestItemTop {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.45rem;
     flex-wrap: wrap;
 }
 
 .requesterTag {
-    font-size: 0.75rem;
-    font-weight: 600;
-    background-color: var(--bg-primary);
-    border: 1px solid var(--border-color);
-    padding: 0.15rem 0.55rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    background-color: #ebf4ff;
+    border: 1px solid #bee3f8;
+    color: #2b6cb0;
+    padding: 0.12rem 0.5rem;
     border-radius: 999px;
-    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+[data-theme='dark'] .requesterTag {
+    background-color: rgba(43, 108, 176, 0.15);
+    border-color: rgba(43, 108, 176, 0.3);
+    color: #90cdf4;
 }
 
 .requestTime {
-    font-size: 0.75rem;
+    font-size: 0.72rem;
     color: var(--text-muted);
+    margin-left: auto;
+    white-space: nowrap;
 }
 
 .requestText {
-    font-size: 0.9375rem;
+    font-size: 0.9rem;
     font-weight: 500;
     color: var(--text-primary);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     word-break: break-word;
-    line-height: 1.45;
+    line-height: 1.5;
 }
 
 .requestItemAction {
     flex-shrink: 0;
     display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-    justify-content: flex-end;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.4rem;
+    padding-top: 0.1rem;
 }
 
 .pinnedBadge {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    background-color: rgba(15, 23, 42, 0.08);
-    color: var(--text-secondary);
-    border: 1px solid rgba(15, 23, 42, 0.12);
-    font-size: 0.7rem;
+    background-color: #fefcbf;
+    color: #744210;
+    border: 1px solid #f6e05e;
+    font-size: 0.66rem;
     font-weight: 700;
-    padding: 0.15rem 0.45rem;
+    padding: 0.1rem 0.4rem;
     border-radius: 999px;
 }
 
+[data-theme='dark'] .pinnedBadge {
+    background-color: rgba(214, 158, 46, 0.2);
+    color: #f6e05e;
+    border-color: rgba(214, 158, 46, 0.35);
+}
+
 .completeBtn {
-    background-color: var(--accent-black);
-    color: var(--accent-white);
+    background-color: #38a169;
+    color: #fff;
     border: none;
-    padding: 0.35rem 0.9rem;
+    padding: 0.3rem 0.75rem;
     border-radius: 999px;
-    font-size: 0.8rem;
-    font-weight: 600;
+    font-size: 0.75rem;
+    font-weight: 700;
     cursor: pointer;
     white-space: nowrap;
+    transition: background-color 0.15s;
+}
+
+.completeBtn:hover:not(:disabled) {
+    background-color: #276749;
 }
 
 .completeBtn:disabled {
@@ -387,34 +430,54 @@
     cursor: not-allowed;
 }
 
-.pinBtn {
-    background-color: transparent;
-    color: var(--text-primary);
-    border: 1px solid var(--border-color);
-    padding: 0.35rem 0.7rem;
+.completedStatusBadge {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #38a169;
+    padding: 0.25rem 0.6rem;
+    border: 1px solid #9ae6b4;
     border-radius: 999px;
-    font-size: 0.75rem;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    cursor: pointer;
+    background-color: #f0fff4;
     white-space: nowrap;
 }
 
+[data-theme='dark'] .completedStatusBadge {
+    background-color: rgba(56, 161, 105, 0.1);
+    border-color: rgba(56, 161, 105, 0.3);
+}
+
+.pinBtn {
+    background-color: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    padding: 0.25rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+}
+
 .pinBtn:hover {
-    border-color: var(--text-muted);
+    border-color: #d69e2e;
+    color: #d69e2e;
 }
 
 .emptyState {
-    padding: 2rem 0;
+    padding: 2.5rem 0;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 0.5rem;
 }
 
 .emptyStateText {
     color: var(--text-muted);
-    font-size: 0.875rem;
+    font-size: 0.85rem;
 }
 
 .activityList {
@@ -1254,15 +1317,6 @@
     border-radius: 999px;
 }
 
-.completedStatusBadge {
-    background-color: rgba(34, 197, 94, 0.12);
-    color: #15803d;
-    border: 1px solid rgba(34, 197, 94, 0.3);
-    font-size: 0.7rem;
-    font-weight: 600;
-    padding: 0.2rem 0.55rem;
-    border-radius: 999px;
-}
 
 
 @media (max-width: 1024px) {
