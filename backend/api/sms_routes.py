@@ -14,9 +14,10 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException
 
 KST = ZoneInfo("Asia/Seoul")
 ALIGO_BASE = "https://apis.aligo.in"
+SMS_TEMPLATES_KEY = "sms:shared_templates"
 
 
-def build_sms_router(*, get_current_user, get_db, run_local_dispatcher: bool = False):
+def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_local_dispatcher: bool = False):
     router = APIRouter(prefix="/sms")
     dispatcher_stop = threading.Event()
     dispatcher_thread: threading.Thread | None = None
@@ -31,6 +32,51 @@ def build_sms_router(*, get_current_user, get_db, run_local_dispatcher: bool = F
 
     def _receiver_list(value: str) -> list[str]:
         return [part for part in _normalize_receivers_csv(value).split(",") if part]
+
+    def _load_templates() -> list[dict]:
+        raw = get_setting(SMS_TEMPLATES_KEY) or "[]"
+        try:
+            items = json.loads(raw)
+        except Exception:
+            items = []
+        if not isinstance(items, list):
+            return []
+        normalized = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            normalized.append(
+                {
+                    "id": str(item.get("id") or uuid.uuid4().hex),
+                    "name": name,
+                    "msg": str(item.get("msg") or ""),
+                    "title": str(item.get("title") or ""),
+                    "msgType": str(item.get("msgType") or ""),
+                }
+            )
+        return normalized
+
+    def _save_templates(items: list[dict]):
+        normalized = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            normalized.append(
+                {
+                    "id": str(item.get("id") or uuid.uuid4().hex),
+                    "name": name,
+                    "msg": str(item.get("msg") or ""),
+                    "title": str(item.get("title") or ""),
+                    "msgType": str(item.get("msgType") or ""),
+                }
+            )
+        set_setting(SMS_TEMPLATES_KEY, json.dumps(normalized, ensure_ascii=False))
 
     def _creds():
         key = os.environ.get("ALIGO_API_KEY", "").strip()
@@ -321,6 +367,18 @@ def build_sms_router(*, get_current_user, get_db, run_local_dispatcher: bool = F
             "msg_type": str(payload.get("msg_type") or "SMS"),
             "message": "queued",
         }
+
+    @router.get("/templates")
+    async def sms_templates(user: str = Depends(get_current_user)):
+        return {"ok": True, "templates": _load_templates()}
+
+    @router.put("/templates")
+    async def sms_save_templates(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        templates = payload.get("templates")
+        if not isinstance(templates, list):
+            raise HTTPException(status_code=400, detail="templates must be a list")
+        _save_templates(templates)
+        return {"ok": True, "templates": _load_templates(), "updated_by": user}
 
     @router.post("/internal/request-notify")
     async def sms_internal_request_notify(payload: dict = Body(...), x_internal_token: str | None = Header(None)):

@@ -54,14 +54,7 @@ const MsgTypeBadge = ({ bytes }) => {
 };
 
 export default function SMSPage() {
-  const [templates, setTemplates] = useState(() => {
-    try {
-      const raw = localStorage.getItem('sms-message-templates');
-      return raw ? JSON.parse(raw) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [templates, setTemplates] = useState([]);
   const [templateName, setTemplateName] = useState('');
   const [hiddenHistoryMids, setHiddenHistoryMids] = useState(() => {
     try {
@@ -123,13 +116,10 @@ export default function SMSPage() {
   const [monthsBack, setMonthsBack] = useState('3');
   const [draggingTemplateId, setDraggingTemplateId] = useState(null);
   const [dragOverTemplateId, setDragOverTemplateId] = useState(null);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
 
   const receiverInputRef = useRef(null);
   const bytes = getByteLength(msg);
-
-  useEffect(() => {
-    localStorage.setItem('sms-message-templates', JSON.stringify(templates));
-  }, [templates]);
 
   // ─── 수신번호 태그 입력 ───
   const addReceiver = (raw) => {
@@ -154,14 +144,53 @@ export default function SMSPage() {
 
   const removeReceiver = (num) => setReceivers((prev) => prev.filter((r) => r !== num));
 
-  const handleSaveTemplate = () => {
+  const fetchTemplates = useCallback(async () => {
+    setTemplatesLoading(true);
+    try {
+      const res = await fetch(`${API}/sms/templates`, {
+        headers: getAuthHeaders(),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data?.detail || '템플릿을 불러오지 못했습니다.');
+      setTemplates(Array.isArray(data.templates) ? data.templates : []);
+    } catch (err) {
+      setSendResult({ ok: false, msg: err.message || '템플릿을 불러오지 못했습니다.' });
+    } finally {
+      setTemplatesLoading(false);
+    }
+  }, []);
+
+  const saveTemplates = useCallback(async (nextTemplates, successMessage = '') => {
+    const res = await fetch(`${API}/sms/templates`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify({ templates: nextTemplates }),
+    });
+    if (handleUnauthorized(res)) return false;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      throw new Error(data?.detail || '템플릿 저장에 실패했습니다.');
+    }
+    setTemplates(Array.isArray(data.templates) ? data.templates : []);
+    if (successMessage) {
+      setSendResult({ ok: true, msg: successMessage });
+    }
+    return true;
+  }, []);
+
+  useEffect(() => {
+    fetchTemplates();
+  }, [fetchTemplates]);
+
+  const handleSaveTemplate = async () => {
     const name = templateName.trim();
     if (!name) {
-      setSendResult({ ok: false, msg: '템플릿 이름을 입력해 주세요.' });
+      setSendResult({ ok: false, msg: '??? ??? ??? ???.' });
       return;
     }
     if (!msg.trim()) {
-      setSendResult({ ok: false, msg: '저장할 메시지 내용을 입력해 주세요.' });
+      setSendResult({ ok: false, msg: '??? ??? ??? ??? ???.' });
       return;
     }
 
@@ -173,53 +202,68 @@ export default function SMSPage() {
       msgType,
     };
 
-    setTemplates((prev) => {
-      const existingIndex = prev.findIndex((item) => item.name === name);
-      if (existingIndex >= 0) {
-        const next = [...prev];
-        next[existingIndex] = { ...prev[existingIndex], ...nextItem, id: prev[existingIndex].id };
-        return next;
-      }
-      return [nextItem, ...prev];
-    });
-    setTemplateName('');
-    setSendResult({ ok: true, msg: `템플릿 "${name}" 저장 완료` });
+    const existingIndex = templates.findIndex((item) => item.name === name);
+    const nextTemplates = [...templates];
+    if (existingIndex >= 0) {
+      nextTemplates[existingIndex] = { ...templates[existingIndex], ...nextItem, id: templates[existingIndex].id };
+    } else {
+      nextTemplates.unshift(nextItem);
+    }
+
+    try {
+      const saved = await saveTemplates(nextTemplates, `??? "${name}" ?? ??`);
+      if (!saved) return;
+      setTemplateName('');
+    } catch (err) {
+      setSendResult({ ok: false, msg: err.message || '??? ??? ??????.' });
+    }
   };
 
   const applyTemplate = (template) => {
     setMsg(template.msg || '');
     setTitle(template.title || '');
     setMsgType(template.msgType || '');
-    setSendResult({ ok: true, msg: `템플릿 "${template.name}" 적용 완료` });
+    setSendResult({ ok: true, msg: `??? "${template.name}" ?? ??` });
   };
 
-  const deleteTemplate = (templateId) => {
-    setTemplates((prev) => prev.filter((item) => item.id !== templateId));
+  const deleteTemplate = async (templateId) => {
+    try {
+      await saveTemplates(
+        templates.filter((item) => item.id !== templateId),
+        '???? ??????.',
+      );
+    } catch (err) {
+      setSendResult({ ok: false, msg: err.message || '??? ??? ??????.' });
+    }
   };
 
-  const moveTemplateToIndex = (templateId, targetTemplateId) => {
-    setTemplates((prev) => {
-      const index = prev.findIndex((item) => item.id === templateId);
-      const targetIndex = prev.findIndex((item) => item.id === targetTemplateId);
-      if (index < 0 || targetIndex < 0 || index === targetIndex) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(index, 1);
-      next.splice(targetIndex, 0, moved);
-      return next;
-    });
+  const moveTemplateToIndex = async (templateId, targetTemplateId) => {
+    const index = templates.findIndex((item) => item.id === templateId);
+    const targetIndex = templates.findIndex((item) => item.id === targetTemplateId);
+    if (index < 0 || targetIndex < 0 || index === targetIndex) return;
+    const next = [...templates];
+    const [moved] = next.splice(index, 1);
+    next.splice(targetIndex, 0, moved);
+    try {
+      await saveTemplates(next);
+    } catch (err) {
+      setSendResult({ ok: false, msg: err.message || '??? ?? ??? ??????.' });
+    }
   };
 
-  const moveTemplate = (templateId, direction) => {
-    setTemplates((prev) => {
-      const index = prev.findIndex((item) => item.id === templateId);
-      if (index < 0) return prev;
-      const targetIndex = direction === 'up' ? index - 1 : index + 1;
-      if (targetIndex < 0 || targetIndex >= prev.length) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(index, 1);
-      next.splice(targetIndex, 0, moved);
-      return next;
-    });
+  const moveTemplate = async (templateId, direction) => {
+    const index = templates.findIndex((item) => item.id === templateId);
+    if (index < 0) return;
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= templates.length) return;
+    const next = [...templates];
+    const [moved] = next.splice(index, 1);
+    next.splice(targetIndex, 0, moved);
+    try {
+      await saveTemplates(next);
+    } catch (err) {
+      setSendResult({ ok: false, msg: err.message || '??? ?? ??? ??????.' });
+    }
   };
 
   // ─── 문자 보내기 ───
@@ -506,13 +550,15 @@ export default function SMSPage() {
                     onChange={(e) => setTemplateName(e.target.value)}
                     placeholder="템플릿 이름"
                   />
-                  <button className={styles.secondaryBtn} type="button" onClick={handleSaveTemplate}>
+                  <button className={styles.secondaryBtn} type="button" onClick={handleSaveTemplate} disabled={templatesLoading}>
                     저장
                   </button>
                 </div>
               </div>
 
-              {templates.length > 0 ? (
+              {templatesLoading ? (
+                <div className={styles.emptyTemplate}>템플릿 불러오는 중...</div>
+              ) : templates.length > 0 ? (
                 <div className={styles.templateList}>
                   {templates.map((template, index) => (
                     <div

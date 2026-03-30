@@ -71,6 +71,8 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
     const [editingRequestText, setEditingRequestText] = useState('');
     const isAdmin = useMemo(() => localStorage.getItem('isAdmin') === 'true', []);
     const resizeStateRef = useRef(null);
+    const activityListRef = useRef(null);
+    const pendingActivityScrollTopRef = useRef(null);
     const previousOpenRequestIdsRef = useRef(new Set());
     const requestAlertsPrimedRef = useRef(false);
     const previousSmsWatchIdsRef = useRef(new Set());
@@ -544,6 +546,9 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
 
     const handleComplete = async (id) => {
         try {
+            if (activityListRef.current) {
+                pendingActivityScrollTopRef.current = activityListRef.current.scrollTop;
+            }
             const res = await fetch(`${API}/requests/${id}/complete`, {
                 method: 'POST',
                 headers: authHeaders,
@@ -956,6 +961,16 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
         });
     }, [activity, pinnedRequestIds]);
 
+    useEffect(() => {
+        const savedScrollTop = pendingActivityScrollTopRef.current;
+        const listEl = activityListRef.current;
+        if (savedScrollTop == null || !listEl) return;
+
+        const maxScrollTop = Math.max(0, listEl.scrollHeight - listEl.clientHeight);
+        listEl.scrollTop = Math.min(savedScrollTop, maxScrollTop);
+        pendingActivityScrollTopRef.current = null;
+    }, [orderedActivity]);
+
     const visibleTodos = useMemo(() => {
         if (todoTab === 'completed') return orderedTodos.filter((item) => item.status === 'completed');
         return orderedTodos.filter((item) => item.status !== 'completed');
@@ -1337,7 +1352,7 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
                             </button>
                         </div>
                     </div>
-                    <div className={styles.requestList}>
+                    <div ref={activityListRef} className={styles.requestList}>
                         {loadingActivity && <div className={styles.mutedText}>불러오는 중...</div>}
                         {!loadingActivity && activity.length === 0 && (
                             <div className={styles.emptyState}>

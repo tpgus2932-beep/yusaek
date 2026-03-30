@@ -27,6 +27,26 @@ const toExcelTextCell = (value) => {
   return `="${text.replace(/"/g, '""')}"`;
 };
 
+const fallbackCopyText = (text) => {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.top = '0';
+  textarea.style.left = '0';
+  textarea.style.width = '1px';
+  textarea.style.height = '1px';
+  textarea.style.padding = '0';
+  textarea.style.border = '0';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  const copied = document.execCommand('copy');
+  textarea.remove();
+  if (!copied) throw new Error('클립보드 복사에 실패했습니다.');
+};
+
 export default function CollaborationMenuPage() {
   const [activeTab, setActiveTab] = useState('purchase-deduction');
   const [pastedText, setPastedText] = useState('');
@@ -222,7 +242,16 @@ export default function CollaborationMenuPage() {
             .join('\t'),
         ),
       ];
-      await navigator.clipboard.writeText(lines.join('\n'));
+      const copyText = lines.join('\n');
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(copyText);
+        } else {
+          fallbackCopyText(copyText);
+        }
+      } catch (_) {
+        fallbackCopyText(copyText);
+      }
       setFeedback('ok', '결과를 클립보드에 복사했습니다.');
     } catch (error) {
       setFeedback('error', error.message || '결과 복사에 실패했습니다.');
