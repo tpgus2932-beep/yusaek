@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import styles from './CollaborationMenuPage.module.css';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
+import {
+  ArrowDownToLine, CheckCircle, ChevronDown, ChevronUp, Clipboard,
+  Database, Download, Eye, FileSpreadsheet, RefreshCw, Save, Upload, XCircle,
+} from 'lucide-react';
 
 const TOOL_TABS = [{ key: 'purchase-deduction', label: '날짜별이체파일 양식' }];
 
@@ -323,33 +327,37 @@ export default function CollaborationMenuPage() {
   const renderPurchaseDeduction = () => (
     <div className={styles.stack}>
       <section className={styles.hero}>
-        <div>
+        <div className={styles.heroText}>
           <h2 className={styles.title}>협업메뉴</h2>
           <p className={styles.subtitle}>입력 데이터는 엑셀 복붙으로 받고, 거래처 계좌 파일은 로컬 고정 경로에서 읽습니다.</p>
         </div>
+        <div className={styles.heroIcon}><FileSpreadsheet size={26} /></div>
       </section>
 
       <section className={styles.card}>
         <div className={styles.cardHeader}>
           <div>
-            <h3 className={styles.cardTitle}>매입차감 가공</h3>
+            <div className={styles.cardTitleRow}>
+              <div className={`${styles.cardIcon} ${styles.cardIconBlue}`}><ArrowDownToLine size={16} /></div>
+              <h3 className={styles.cardTitle}>매입차감 가공</h3>
+            </div>
             <p className={styles.cardHint}>입력 데이터 A열 공급처, C열 금액을 집계해서 거래처 계좌 데이터에 매핑합니다.</p>
           </div>
           <div className={styles.headerActions}>
             <button type="button" className={styles.primaryBtn} onClick={handlePreview} disabled={processing}>
-              {processing ? '가공 중...' : '미리보기'}
+              <Eye size={14} />{processing ? '가공 중...' : '미리보기'}
             </button>
             <button type="button" className={styles.secondaryBtn} onClick={handleLoadSharedPaste} disabled={sharedPasteLoading}>
-              {sharedPasteLoading ? '불러오는 중...' : '공용 불러오기'}
+              <Download size={14} />{sharedPasteLoading ? '불러오는 중...' : '공용 불러오기'}
             </button>
             <button type="button" className={styles.secondaryBtn} onClick={handleSaveSharedPaste} disabled={sharedPasteSaving}>
-              {sharedPasteSaving ? '저장 중...' : '공용 저장'}
+              <Upload size={14} />{sharedPasteSaving ? '저장 중...' : '공용 저장'}
             </button>
             <button type="button" className={styles.secondaryBtn} onClick={handleCopyResult} disabled={copying || !result?.matched?.length}>
-              {copying ? '복사 중...' : '결과 복사'}
+              <Clipboard size={14} />{copying ? '복사 중...' : '결과 복사'}
             </button>
             <button type="button" className={styles.secondaryBtn} onClick={handleDownload} disabled={downloading}>
-              {downloading ? '다운로드 중...' : '결과 다운로드'}
+              <ArrowDownToLine size={14} />{downloading ? '다운로드 중...' : '결과 다운로드'}
             </button>
           </div>
         </div>
@@ -384,17 +392,22 @@ export default function CollaborationMenuPage() {
         {sharedPasteMeta && <div className={styles.sharedMeta}>{sharedPasteMeta}</div>}
 
         <div className={styles.ruleBox}>
-          <div>1. 입력 데이터 A열 공급처 unique 추출</div>
-          <div>2. C열 금액 숫자만 합산</div>
-          <div>3. 거래처 파일 A열 매칭</div>
-          <div>4. 미등록도 결과 시트에 포함</div>
+          {['입력 데이터 A열 공급처 unique 추출', 'C열 금액 숫자만 합산', '거래처 파일 A열 매칭', '미등록도 결과 시트에 포함'].map((text, i) => (
+            <div key={i} className={styles.ruleItem}>
+              <span className={styles.ruleNum}>{i + 1}</span>
+              {text}
+            </div>
+          ))}
         </div>
       </section>
 
       <section className={styles.card}>
         <div className={styles.cardHeader}>
           <div>
-            <h3 className={styles.cardTitle}>거래처계좌데이터 관리</h3>
+            <div className={styles.cardTitleRow}>
+              <div className={`${styles.cardIcon} ${styles.cardIconGreen}`}><Database size={16} /></div>
+              <h3 className={styles.cardTitle}>거래처계좌데이터 관리</h3>
+            </div>
             <p className={styles.cardHint}>표에서 직접 수정하고 저장할 수 있습니다. 추가는 아래 복붙 영역으로 넣습니다.</p>
           </div>
           <div className={styles.headerActions}>
@@ -403,13 +416,13 @@ export default function CollaborationMenuPage() {
               className={styles.secondaryBtn}
               onClick={() => setAccountManagerOpen((prev) => !prev)}
             >
-              {accountManagerOpen ? '접기' : '펼치기'}
+              {accountManagerOpen ? <><ChevronUp size={14} /> 접기</> : <><ChevronDown size={14} /> 펼치기</>}
             </button>
             <button type="button" className={styles.secondaryBtn} onClick={fetchAccountRows} disabled={accountLoading}>
-              {accountLoading ? '불러오는 중...' : '새로고침'}
+              <RefreshCw size={14} />{accountLoading ? '불러오는 중...' : '새로고침'}
             </button>
             <button type="button" className={styles.primaryBtn} onClick={handleSaveAccountRows} disabled={accountSaving}>
-              {accountSaving ? '저장 중...' : '수정 저장'}
+              <Save size={14} />{accountSaving ? '저장 중...' : '수정 저장'}
             </button>
           </div>
         </div>
@@ -486,14 +499,17 @@ export default function CollaborationMenuPage() {
         </div>
 
         <div className={styles.ruleBox}>
-          <div>추가 매핑: D → A</div>
-          <div>추가 매핑: A → B</div>
-          <div>추가 매핑: B → C</div>
-          <div>추가 매핑: E → D, F → E, H → F</div>
+          {['D → A', 'A → B', 'B → C', 'E → D · F → E · H → F'].map((text, i) => (
+            <div key={i} className={styles.ruleItem}>
+              <span className={styles.ruleNum}>{i + 1}</span>
+              추가 매핑: {text}
+            </div>
+          ))}
         </div>
 
         {message && (
           <div className={`${styles.messageBox} ${messageType === 'error' ? styles.messageError : styles.messageOk}`}>
+            {messageType === 'error' ? <XCircle size={15} /> : <CheckCircle size={15} />}
             {message}
           </div>
         )}
@@ -514,8 +530,11 @@ export default function CollaborationMenuPage() {
         <div className={styles.previewGrid}>
           <section className={styles.card}>
             <div className={styles.cardHeader}>
-              <h3 className={styles.cardTitle}>결과 미리보기</h3>
-              <span className={styles.badge}>{result.matched.length}건</span>
+              <div className={styles.cardTitleRow}>
+                <div className={`${styles.cardIcon} ${styles.cardIconBlue}`}><Eye size={16} /></div>
+                <h3 className={styles.cardTitle}>결과 미리보기</h3>
+              </div>
+              <span className={styles.badgeSuccess}>{result.matched.length}건</span>
             </div>
             <div className={styles.tableWrap}>
               <table className={styles.table}>
@@ -553,7 +572,10 @@ export default function CollaborationMenuPage() {
 
           <section className={styles.card}>
             <div className={styles.cardHeader}>
-              <h3 className={styles.cardTitle}>미등록 공급처</h3>
+              <div className={styles.cardTitleRow}>
+                <div className={`${styles.cardIcon} ${styles.cardIconAmber}`}><XCircle size={16} /></div>
+                <h3 className={styles.cardTitle}>미등록 공급처</h3>
+              </div>
               <span className={styles.badgeDanger}>{result.unmatched.length}건</span>
             </div>
             <div className={styles.tableWrap}>
