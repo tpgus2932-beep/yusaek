@@ -112,10 +112,10 @@ def build_collaboration_tools_router(*, get_current_user, get_setting, set_setti
             if not account_row:
                 result_rows.append(
                     {
-                        "A": supplier,
+                        "A": "",
                         "B": "",
-                        "C": "",
-                        "D": total_amount,
+                        "C": total_amount,
+                        "D": supplier,
                         "E": "",
                         "F": "",
                         "G": "",
@@ -128,10 +128,10 @@ def build_collaboration_tools_router(*, get_current_user, get_setting, set_setti
 
             result_rows.append(
                 {
-                    "A": _normalize_text(account_row[0] if len(account_row) > 0 else ""),
+                    "A": _normalize_text(account_row[1] if len(account_row) > 1 else ""),  # 기존 C → A
                     "B": _normalize_text(account_row[2] if len(account_row) > 2 else ""),
-                    "C": _normalize_text(account_row[1] if len(account_row) > 1 else ""),
-                    "D": total_amount,
+                    "C": total_amount,                                                       # 기존 D → C
+                    "D": _normalize_text(account_row[0] if len(account_row) > 0 else ""),  # 기존 A → D
                     "E": _normalize_text(account_row[3] if len(account_row) > 3 else ""),
                     "F": _normalize_text(account_row[4] if len(account_row) > 4 else ""),
                     "G": "",
@@ -293,11 +293,11 @@ def build_collaboration_tools_router(*, get_current_user, get_setting, set_setti
             matched_df.to_excel(writer, index=False, sheet_name="결과")
             unmatched_df.to_excel(writer, index=False, sheet_name="미등록")
             result_ws = writer.book["결과"]
-            for cell in result_ws["B"]:
+            for cell in result_ws["A"]:
                 cell.number_format = "@"
                 if cell.row > 1 and cell.value is not None:
                     cell.value = str(cell.value)
-            for cell in result_ws["C"]:
+            for cell in result_ws["B"]:
                 cell.number_format = "@"
                 if cell.row > 1 and cell.value is not None:
                     cell.value = str(cell.value)
