@@ -241,7 +241,7 @@ export default function CollaborationMenuPage() {
       const lines = [
         ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].join('\t'),
         ...result.matched.map((row) =>
-          [row.A, toExcelTextCell(row.B), toExcelTextCell(row.C), row.D, row.E, row.F, row.G, row.H]
+          [toExcelTextCell(row.A), toExcelTextCell(row.B), row.C, row.D, row.E, row.F, row.G, row.H]
             .map((value) => (value ?? '').toString())
             .join('\t'),
         ),
@@ -556,8 +556,8 @@ export default function CollaborationMenuPage() {
                     <tr key={`${row.A}-${index}`}>
                       <td>{row.A}</td>
                       <td>{row.B}</td>
-                      <td>{row.C}</td>
-                      <td>{formatAmount(row.D)}</td>
+                      <td>{formatAmount(row.C)}</td>
+                      <td>{row.D}</td>
                       <td>{row.E}</td>
                       <td>{row.F}</td>
                       <td>{row.G}</td>
