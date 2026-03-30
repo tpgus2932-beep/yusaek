@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import styles from './AdminUsers.module.css';
 import { COLLAB_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
+import {
+  AlertCircle, CheckCircle, Clock, Menu, MessageSquare, Phone,
+  RefreshCw, Save, Shield, Trash2, Users, XCircle,
+} from 'lucide-react';
 
 const COLLABORATION_MENU_TAB = { key: 'collaboration-menu', label: '협업메뉴' };
 const CLIENT_SCHEDULE_MENU_TAB = { key: 'client-schedule', label: '거래처 일정' };
@@ -281,58 +285,50 @@ const AdminUsers = ({ currentUser }) => {
   return (
     <section className={styles.admin}>
       <div className={styles.headerRow}>
-        <h1 className={styles.title}>사용자 관리</h1>
+        <div className={styles.headerText}>
+          <h1 className={styles.title}>사용자 관리</h1>
+          <p className={styles.titleSub}>계정 승인, 권한, 메뉴 표시를 관리합니다</p>
+        </div>
         <button className={styles.secondaryBtn} onClick={fetchUsers} disabled={loading}>
-          새로고침
+          <RefreshCw size={14} />새로고침
         </button>
       </div>
 
       {(error || message) && (
-        <div className={error ? styles.errorText : styles.successText}>
+        <div className={`${styles.feedbackBanner} ${error ? styles.feedbackError : styles.feedbackSuccess}`}>
+          {error ? <XCircle size={15} /> : <CheckCircle size={15} />}
           {error || message}
         </div>
       )}
 
       <div className={styles.summaryGrid}>
-        <button
-          type="button"
-          className={`${styles.summaryCard} ${filter === 'pending' ? styles.summaryCardActive : ''}`}
-          onClick={() => setFilter('pending')}
-        >
-          <span className={styles.summaryLabel}>승인 대기</span>
-          <strong className={styles.summaryValue}>{pendingCount}</strong>
-        </button>
-        <button
-          type="button"
-          className={`${styles.summaryCard} ${filter === 'approved' ? styles.summaryCardActive : ''}`}
-          onClick={() => setFilter('approved')}
-        >
-          <span className={styles.summaryLabel}>승인 완료</span>
-          <strong className={styles.summaryValue}>{approvedCount}</strong>
-        </button>
-        <button
-          type="button"
-          className={`${styles.summaryCard} ${filter === 'rejected' ? styles.summaryCardActive : ''}`}
-          onClick={() => setFilter('rejected')}
-        >
-          <span className={styles.summaryLabel}>거절됨</span>
-          <strong className={styles.summaryValue}>{rejectedCount}</strong>
-        </button>
-        <button
-          type="button"
-          className={`${styles.summaryCard} ${filter === 'all' ? styles.summaryCardActive : ''}`}
-          onClick={() => setFilter('all')}
-        >
-          <span className={styles.summaryLabel}>전체 계정</span>
-          <strong className={styles.summaryValue}>{users.length}</strong>
-        </button>
+        {[
+          { key: 'pending',  label: '승인 대기', value: pendingCount,  icon: <Clock size={14} />,       iconCls: styles.summaryIconPending,  cardCls: styles.summaryCardPending },
+          { key: 'approved', label: '승인 완료', value: approvedCount, icon: <CheckCircle size={14} />, iconCls: styles.summaryIconApproved, cardCls: styles.summaryCardApproved },
+          { key: 'rejected', label: '거절됨',    value: rejectedCount, icon: <XCircle size={14} />,    iconCls: styles.summaryIconRejected, cardCls: styles.summaryCardRejected },
+          { key: 'all',      label: '전체 계정', value: users.length,  icon: <Users size={14} />,       iconCls: styles.summaryIconAll,      cardCls: styles.summaryCardAll },
+        ].map(({ key, label, value, icon, iconCls, cardCls }) => (
+          <button
+            key={key}
+            type="button"
+            className={`${styles.summaryCard} ${cardCls} ${filter === key ? styles.summaryCardActive : ''}`}
+            onClick={() => setFilter(key)}
+          >
+            <div className={`${styles.summaryIcon} ${iconCls}`}>{icon}</div>
+            <span className={styles.summaryLabel}>{label}</span>
+            <strong className={styles.summaryValue}>{value}</strong>
+          </button>
+        ))}
       </div>
 
       <div className={styles.card}>
         <div className={styles.settingsHeader}>
           <div>
-            <h2 className={styles.sectionTitle}>요청 SMS 알림</h2>
-            <p className={styles.mutedText}>수신자 전화번호 우선 발송, 없으면 기본 번호로 대체</p>
+            <div className={styles.sectionTitleRow}>
+              <div className={styles.sectionIcon}><MessageSquare size={15} /></div>
+              <h2 className={styles.sectionTitle}>요청 SMS 알림</h2>
+            </div>
+            <p className={styles.sectionHint}>수신자 전화번호 우선 발송, 없으면 기본 번호로 대체</p>
           </div>
           <button
             className={styles.secondaryBtn}
@@ -340,21 +336,27 @@ const AdminUsers = ({ currentUser }) => {
             onClick={fetchRequestSmsSettings}
             disabled={smsSettingsLoading || smsSettingsSaving}
           >
-            새로고침
+            <RefreshCw size={13} />새로고침
           </button>
         </div>
         {smsSettingsLoading ? (
           <div className={styles.mutedText}>설정을 불러오는 중...</div>
         ) : (
           <div className={styles.smsSettingsGrid}>
-            <label className={styles.fieldBlock}>
+            <div className={styles.toggleBlock}>
               <span className={styles.fieldLabel}>발송 사용</span>
-              <input
-                type="checkbox"
-                checked={requestSmsEnabled}
-                onChange={(e) => setRequestSmsEnabled(e.target.checked)}
-              />
-            </label>
+              <div className={styles.toggleRow}>
+                <label className={styles.toggleSwitch}>
+                  <input
+                    type="checkbox"
+                    checked={requestSmsEnabled}
+                    onChange={(e) => setRequestSmsEnabled(e.target.checked)}
+                  />
+                  <span className={styles.toggleSlider} />
+                </label>
+                <span className={styles.toggleLabel}>{requestSmsEnabled ? '켜짐' : '꺼짐'}</span>
+              </div>
+            </div>
             <label className={styles.fieldBlock}>
               <span className={styles.fieldLabel}>기본 수신 번호</span>
               <input
@@ -391,7 +393,7 @@ const AdminUsers = ({ currentUser }) => {
             onClick={saveRequestSmsSettings}
             disabled={smsSettingsLoading || smsSettingsSaving}
           >
-            {smsSettingsSaving ? '저장 중...' : '저장'}
+            <Save size={13} />{smsSettingsSaving ? '저장 중...' : '저장'}
           </button>
           <span className={styles.mutedText}>
             사용자별 전화번호는 아래 표에서 저장하고, 기본 수신 번호는 대체용으로만 사용됩니다.
@@ -400,200 +402,162 @@ const AdminUsers = ({ currentUser }) => {
       </div>
 
       <div className={styles.card}>
+        <div className={styles.sectionTitleRow}>
+          <div className={styles.sectionIcon}><Users size={15} /></div>
+          <h2 className={styles.sectionTitle}>계정 목록</h2>
+        </div>
         {loading && <div className={styles.mutedText}>불러오는 중...</div>}
         {!loading && users.length === 0 && <div className={styles.mutedText}>등록된 계정이 없습니다.</div>}
         {!loading && users.length > 0 && (
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th>이름</th>
-                <th>아이디</th>
-                <th>전화번호</th>
-                <th>권한</th>
-                <th>승인</th>
-                <th>가입일</th>
-                <th className={styles.actionsCol}>관리</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleUsers.map((user) => {
-                const isSelf = user.username === currentUser;
-                const isWorking = workingUser === user.username;
-                const canDemote = user.role === 'admin' && adminCount > 1;
-                const approvalStatus = user.approval_status || 'approved';
-                return (
-                  <React.Fragment key={user.username}>
-                  <tr>
-                    <td>{user.display_name || user.username}</td>
-                    <td>{user.username}</td>
-                    <td>
-                      <div className={styles.phoneEditor}>
-                        <input
-                          className={styles.phoneInput}
-                          value={phoneDrafts[user.username] || ''}
-                          onChange={(e) => handlePhoneDraftChange(user.username, e.target.value)}
-                          placeholder="01012345678"
-                        />
-                        <button
-                          className={styles.secondaryBtn}
-                          type="button"
-                          disabled={isWorking}
-                          onClick={() => savePhoneNumber(user.username)}
-                        >
-                          저장
-                        </button>
-                      </div>
-                    </td>
-                    <td>
-                      <span
-                        className={`${styles.roleBadge} ${
-                          user.role === 'admin' ? styles.roleAdmin
-                          : user.role === 'viewer' ? styles.roleViewer
-                          : styles.roleUser
-                        }`}
-                      >
-                        {user.role === 'admin' ? '관리자' : user.role === 'viewer' ? '배포용' : '유저'}
-                      </span>
-                    </td>
-                    <td>
-                      <span
-                        className={`${styles.roleBadge} ${
-                          approvalStatus === 'approved'
-                            ? styles.statusApproved
-                            : approvalStatus === 'pending'
-                              ? styles.statusPending
-                              : styles.statusRejected
-                        }`}
-                      >
-                        {approvalStatus === 'approved' ? '승인' : approvalStatus === 'pending' ? '대기' : '거절'}
-                      </span>
-                    </td>
-                    <td>{user.created_at || '-'}</td>
-                    <td className={styles.actionsCol}>
-                      {approvalStatus !== 'approved' && (
-                        <button
-                          className={styles.primaryBtn}
-                          type="button"
-                          disabled={isWorking}
-                          onClick={() => handleApprovalChange(user.username, 'approved')}
-                        >
-                          승인
-                        </button>
-                      )}
-                      {approvalStatus !== 'rejected' && (
-                        <button
-                          className={styles.secondaryBtn}
-                          type="button"
-                          disabled={isWorking}
-                          onClick={() => handleApprovalChange(user.username, 'rejected')}
-                        >
-                          거절
-                        </button>
-                      )}
-                      {user.role === 'admin' ? (
-                        <button
-                          className={styles.secondaryBtn}
-                          type="button"
-                          disabled={isSelf || isWorking || !canDemote}
-                          onClick={() => handleRoleChange(user.username, 'user')}
-                        >
-                          관리자 해제
-                        </button>
-                      ) : user.role === 'viewer' ? (
-                        <>
-                          <button
-                            className={styles.primaryBtn}
-                            type="button"
-                            disabled={isSelf || isWorking}
-                            onClick={() => handleRoleChange(user.username, 'user')}
-                          >
-                            일반 유저로
-                          </button>
-                          <button
-                            className={styles.primaryBtn}
-                            type="button"
-                            disabled={isSelf || isWorking}
-                            onClick={() => handleRoleChange(user.username, 'admin')}
-                          >
-                            관리자로
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button
-                            className={styles.primaryBtn}
-                            type="button"
-                            disabled={isSelf || isWorking}
-                            onClick={() => handleRoleChange(user.username, 'admin')}
-                          >
-                            관리자로
-                          </button>
+          <div className={styles.tableWrap}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>이름</th>
+                  <th>전화번호</th>
+                  <th>권한</th>
+                  <th>승인</th>
+                  <th>가입일</th>
+                  <th className={styles.actionsCol}>관리</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleUsers.map((user) => {
+                  const isSelf = user.username === currentUser;
+                  const isWorking = workingUser === user.username;
+                  const canDemote = user.role === 'admin' && adminCount > 1;
+                  const approvalStatus = user.approval_status || 'approved';
+                  const initials = (user.display_name || user.username).slice(0, 2).toUpperCase();
+                  return (
+                    <React.Fragment key={user.username}>
+                    <tr>
+                      <td>
+                        <div className={styles.userCell}>
+                          <div className={styles.avatar}>{initials}</div>
+                          <div>
+                            <div className={styles.userDisplayName}>{user.display_name || user.username}</div>
+                            <div className={styles.userUsername}>{user.username}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <div className={styles.phoneEditor}>
+                          <input
+                            className={styles.phoneInput}
+                            value={phoneDrafts[user.username] || ''}
+                            onChange={(e) => handlePhoneDraftChange(user.username, e.target.value)}
+                            placeholder="01012345678"
+                          />
                           <button
                             className={styles.secondaryBtn}
                             type="button"
-                            disabled={isSelf || isWorking}
-                            onClick={() => handleRoleChange(user.username, 'viewer')}
+                            disabled={isWorking}
+                            onClick={() => savePhoneNumber(user.username)}
                           >
-                            배포용으로
+                            <Phone size={12} />저장
                           </button>
-                        </>
-                      )}
-                      <button
-                        className={styles.secondaryBtn}
-                        type="button"
-                        disabled={isWorking}
-                        onClick={() => openMenuPanel(user.username)}
-                      >
-                        메뉴
-                      </button>
-                      <button
-                        className={styles.dangerBtn}
-                        type="button"
-                        disabled={isSelf || isWorking}
-                        onClick={() => handleDelete(user.username)}
-                      >
-                        삭제
-                      </button>
-                    </td>
-                  </tr>
-                  {menuPanel?.username === user.username && (
-                    <tr>
-                      <td colSpan={7} className={styles.menuPanelCell}>
-                        <div className={styles.menuPanel}>
-                          <span className={styles.menuPanelTitle}>메뉴 표시 설정 — {user.display_name || user.username}</span>
-                          <div className={styles.menuPanelGrid}>
-                            {[...ALL_MENU_TABS, CLIENT_SCHEDULE_MENU_TAB].map((tab) => {
-                              const isShown = !menuPanel.hiddenTabs.includes(tab.key);
-                              return (
-                                <button
-                                  key={tab.key}
-                                  type="button"
-                                  className={`${styles.menuToggleBtn} ${isShown ? styles.menuToggleOn : styles.menuToggleOff}`}
-                                  onClick={() => toggleMenuTab(tab.key)}
-                                >
-                                  {tab.label}
-                                  <span className={styles.menuToggleDot} />
-                                </button>
-                              );
-                            })}
-                          </div>
-                          <button
-                            className={styles.primaryBtn}
-                            type="button"
-                            disabled={menuSaving}
-                            onClick={saveMenuPanel}
-                          >
-                            {menuSaving ? '저장 중...' : '저장'}
+                        </div>
+                      </td>
+                      <td>
+                        <span className={`${styles.roleBadge} ${
+                          user.role === 'admin' ? styles.roleAdmin
+                          : user.role === 'viewer' ? styles.roleViewer
+                          : styles.roleUser
+                        }`}>
+                          {user.role === 'admin' ? <><Shield size={10} />관리자</> : user.role === 'viewer' ? '배포용' : '유저'}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`${styles.roleBadge} ${
+                          approvalStatus === 'approved' ? styles.statusApproved
+                          : approvalStatus === 'pending' ? styles.statusPending
+                          : styles.statusRejected
+                        }`}>
+                          {approvalStatus === 'approved' ? <><CheckCircle size={10} />승인</> : approvalStatus === 'pending' ? <><Clock size={10} />대기</> : <><XCircle size={10} />거절</>}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{user.created_at || '-'}</td>
+                      <td className={styles.actionsCol}>
+                        <div className={styles.actionsGroup}>
+                          {approvalStatus !== 'approved' && (
+                            <button className={styles.primaryBtn} type="button" disabled={isWorking}
+                              onClick={() => handleApprovalChange(user.username, 'approved')}>
+                              <CheckCircle size={12} />승인
+                            </button>
+                          )}
+                          {approvalStatus !== 'rejected' && (
+                            <button className={styles.secondaryBtn} type="button" disabled={isWorking}
+                              onClick={() => handleApprovalChange(user.username, 'rejected')}>
+                              <XCircle size={12} />거절
+                            </button>
+                          )}
+                          {user.role === 'admin' ? (
+                            <button className={styles.secondaryBtn} type="button" disabled={isSelf || isWorking || !canDemote}
+                              onClick={() => handleRoleChange(user.username, 'user')}>
+                              관리자 해제
+                            </button>
+                          ) : user.role === 'viewer' ? (
+                            <>
+                              <button className={styles.secondaryBtn} type="button" disabled={isSelf || isWorking}
+                                onClick={() => handleRoleChange(user.username, 'user')}>일반유저로</button>
+                              <button className={styles.primaryBtn} type="button" disabled={isSelf || isWorking}
+                                onClick={() => handleRoleChange(user.username, 'admin')}><Shield size={12} />관리자로</button>
+                            </>
+                          ) : (
+                            <>
+                              <button className={styles.primaryBtn} type="button" disabled={isSelf || isWorking}
+                                onClick={() => handleRoleChange(user.username, 'admin')}><Shield size={12} />관리자로</button>
+                              <button className={styles.secondaryBtn} type="button" disabled={isSelf || isWorking}
+                                onClick={() => handleRoleChange(user.username, 'viewer')}>배포용으로</button>
+                            </>
+                          )}
+                          <button className={styles.secondaryBtn} type="button" disabled={isWorking}
+                            onClick={() => openMenuPanel(user.username)}>
+                            <Menu size={12} />메뉴
+                          </button>
+                          <button className={styles.dangerBtn} type="button" disabled={isSelf || isWorking}
+                            onClick={() => handleDelete(user.username)}>
+                            <Trash2 size={12} />삭제
                           </button>
                         </div>
                       </td>
                     </tr>
-                  )}
-                  </React.Fragment>
-                );
-              })}
-            </tbody>
-          </table>
+                    {menuPanel?.username === user.username && (
+                      <tr>
+                        <td colSpan={6} className={styles.menuPanelCell}>
+                          <div className={styles.menuPanel}>
+                            <div className={styles.menuPanelHeader}>
+                              <div>
+                                <div className={styles.menuPanelTitle}>메뉴 표시 설정 — {user.display_name || user.username}</div>
+                                <div className={styles.menuPanelSub}>켜진 항목만 사이드바에 표시됩니다</div>
+                              </div>
+                              <button className={styles.primaryBtn} type="button" disabled={menuSaving} onClick={saveMenuPanel}>
+                                <Save size={13} />{menuSaving ? '저장 중...' : '저장'}
+                              </button>
+                            </div>
+                            <div className={styles.menuPanelGrid}>
+                              {[...ALL_MENU_TABS, CLIENT_SCHEDULE_MENU_TAB].map((tab) => {
+                                const isShown = !menuPanel.hiddenTabs.includes(tab.key);
+                                return (
+                                  <button key={tab.key} type="button"
+                                    className={`${styles.menuToggleBtn} ${isShown ? styles.menuToggleOn : styles.menuToggleOff}`}
+                                    onClick={() => toggleMenuTab(tab.key)}>
+                                    <span className={styles.menuToggleDot} />
+                                    {tab.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
         {!loading && users.length > 0 && visibleUsers.length === 0 && (
           <div className={styles.mutedText}>해당 조건의 계정이 없습니다.</div>
