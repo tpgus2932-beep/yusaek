@@ -264,14 +264,14 @@ def build_collaboration_tools_router(*, get_current_user, get_setting, set_setti
         matched_df = pd.DataFrame(
             [
                 {
-                    "A": row["A"],
-                    "B": row["B"],
+                    "A": str(row["A"]),
+                    "B": str(row["B"]),
                     "C": row["C"],
-                    "D": row["D"],
-                    "E": row["E"],
-                    "F": row["F"],
-                    "G": row["G"],
-                    "H": row["H"],
+                    "D": str(row["D"]),
+                    "E": str(row["E"]),
+                    "F": str(row["F"]),
+                    "G": str(row["G"]),
+                    "H": str(row["H"]),
                     "상태": row["status"],
                 }
                 for row in result["matched"]
