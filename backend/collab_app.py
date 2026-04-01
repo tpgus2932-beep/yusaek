@@ -128,6 +128,7 @@ app.include_router(
         get_db=_get_db,
         get_setting=_get_setting,
         set_setting=_set_setting,
+        run_local_dispatcher=True,
     )
 )
 

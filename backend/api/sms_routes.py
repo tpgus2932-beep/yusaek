@@ -33,6 +33,18 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
     def _receiver_list(value: str) -> list[str]:
         return [part for part in _normalize_receivers_csv(value).split(",") if part]
 
+    def _message_bytes(value: str) -> int:
+        total = 0
+        for ch in str(value or ""):
+            total += 2 if ord(ch) > 127 else 1
+        return total
+
+    def _resolve_msg_type(payload: dict) -> str:
+        requested = str(payload.get("msg_type") or "").strip().upper()
+        if requested in {"SMS", "LMS", "MMS"}:
+            return requested
+        return "LMS" if _message_bytes(str(payload.get("msg") or "")) > 90 else "SMS"
+
     def _load_templates() -> list[dict]:
         raw = get_setting(SMS_TEMPLATES_KEY) or "[]"
         try:
@@ -201,6 +213,7 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
         msg = str(payload.get("msg") or "").strip()
         if not msg:
             raise HTTPException(status_code=400, detail="msg required")
+        msg_type = _resolve_msg_type(payload)
 
         outbox_id = uuid.uuid4().hex
         conn = get_db()
@@ -217,7 +230,7 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
                     outbox_id,
                     receivers_csv,
                     msg,
-                    str(payload.get("msg_type") or "SMS"),
+                    msg_type,
                     str(payload.get("title") or ""),
                     str(payload.get("rdate") or ""),
                     str(payload.get("rtime") or ""),
@@ -364,7 +377,7 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
             "queue_id": outbox_id,
             "success_cnt": len(receivers),
             "error_cnt": 0,
-            "msg_type": str(payload.get("msg_type") or "SMS"),
+            "msg_type": _resolve_msg_type(payload),
             "message": "queued",
         }
 

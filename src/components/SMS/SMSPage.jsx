@@ -276,7 +276,7 @@ export default function SMSPage() {
       const body = {
         receiver: receivers.join(','),
         msg,
-        ...(msgType && { msg_type: msgType }),
+        msg_type: effectiveMsgType,
         ...(title && { title }),
         ...(rdate && { rdate: rdate.replace(/-/g, '') }),
         ...(rtime && { rtime: rtime.replace(':', '') }),

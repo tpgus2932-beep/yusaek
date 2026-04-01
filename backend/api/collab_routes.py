@@ -336,6 +336,13 @@ def build_collab_router(
             text=text,
             files=files,
         )
+        _send_request_sms_best_effort(
+            receiver=_get_user_phone_number(assignee),
+            fallback_receiver=str(get_setting("request_sms_receiver") or ""),
+            requester_display=requester_display,
+            assignee_display=assignee_display,
+            text=text,
+        )
 
         return {"ok": True, "request": item}
 
@@ -379,6 +386,13 @@ def build_collab_router(
             assignee_display=assignee_display,
             text=text,
             files=files,
+        )
+        _send_request_sms_best_effort(
+            receiver=_get_user_phone_number(assignee),
+            fallback_receiver=str(get_setting("request_sms_receiver") or ""),
+            requester_display="익명",
+            assignee_display=assignee_display,
+            text=text,
         )
 
         return {"ok": True, "request": item}

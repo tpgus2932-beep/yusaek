@@ -1200,7 +1200,7 @@ app.include_router(
         get_db=_get_shared_db,
         get_setting=_get_setting,
         set_setting=_set_setting,
-        run_local_dispatcher=not _IS_RENDER,
+        run_local_dispatcher=True,
     )
 )
 
