@@ -3,7 +3,7 @@ import pageStyles from './BarcodePage.module.css';
 import { COLLAB_API_BASE as API, getAuthHeaders } from '../../lib/api';
 
 const SharedFilesPage = () => {
-    const [file, setFile] = useState(null);
+    const [files, setFiles] = useState([]);
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
     const [list, setList] = useState([]);
@@ -48,36 +48,48 @@ const SharedFilesPage = () => {
     };
 
     const handleUpload = async () => {
-        if (!file) {
+        if (!files.length) {
             setMessage('파일을 선택해 주세요.');
             return;
         }
         setLoading(true);
         setMessage('');
+        let successCount = 0;
+        const errors = [];
         try {
-            const formData = new FormData();
-            formData.append('file', file);
-            const res = await fetch(`${API}/shared-files`, {
-                method: 'POST',
-                headers: getAuthHeaders(),
-                body: formData,
-            });
-            if (!res.ok) {
-                let msg = '업로드 실패';
+            for (const f of files) {
                 try {
-                    const data = await res.json();
-                    msg = data?.detail || msg;
-                } catch {
-                    const text = await res.text();
-                    if (text) msg = text;
+                    const formData = new FormData();
+                    formData.append('file', f);
+                    const res = await fetch(`${API}/shared-files`, {
+                        method: 'POST',
+                        headers: getAuthHeaders(),
+                        body: formData,
+                    });
+                    if (!res.ok) {
+                        let msg = '업로드 실패';
+                        try {
+                            const data = await res.json();
+                            msg = data?.detail || msg;
+                        } catch {
+                            const text = await res.text();
+                            if (text) msg = text;
+                        }
+                        errors.push(`${f.name}: ${msg}`);
+                    } else {
+                        successCount++;
+                    }
+                } catch (err) {
+                    errors.push(`${f.name}: ${err.message || '업로드 실패'}`);
                 }
-                throw new Error(msg);
             }
-            setMessage('업로드 완료');
-            setFile(null);
+            if (errors.length) {
+                setMessage(`${successCount}개 완료, 실패: ${errors.join(' / ')}`);
+            } else {
+                setMessage(`${successCount}개 업로드 완료`);
+            }
+            setFiles([]);
             await fetchList();
-        } catch (err) {
-            setMessage(err.message || '업로드 실패');
         } finally {
             setLoading(false);
         }
@@ -86,15 +98,19 @@ const SharedFilesPage = () => {
     const handleDrop = (e) => {
         e.preventDefault();
         setIsDragging(false);
-        const dropped = e.dataTransfer?.files?.[0];
-        if (!dropped) return;
-        const name = (dropped.name || '').toLowerCase();
-        if (!(name.endsWith('.xls') || name.endsWith('.xlsx') || name.endsWith('.csv'))) {
+        const dropped = Array.from(e.dataTransfer?.files || []);
+        if (!dropped.length) return;
+        const valid = dropped.filter((f) => {
+            const name = (f.name || '').toLowerCase();
+            return name.endsWith('.xls') || name.endsWith('.xlsx') || name.endsWith('.csv');
+        });
+        const invalid = dropped.length - valid.length;
+        if (!valid.length) {
             setMessage('xls/xlsx/csv만 업로드 가능합니다.');
             return;
         }
-        setFile(dropped);
-        setMessage(`파일 선택됨: ${dropped.name}`);
+        setFiles(valid);
+        setMessage(`${valid.length}개 선택됨${invalid ? ` (${invalid}개 형식 오류 제외)` : ''}`);
     };
 
     const handleDelete = async (id) => {
@@ -144,9 +160,10 @@ const SharedFilesPage = () => {
                                 <input
                                     type="file"
                                     accept=".xls,.xlsx,.csv"
-                                    onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                                    multiple
+                                    onChange={(e) => setFiles(Array.from(e.target.files || []))}
                                 />
-                                파일 선택
+                                {files.length > 0 ? `${files.length}개 선택됨` : '파일 선택 (다중 가능)'}
                             </label>
                             <button
                                 className={pageStyles.primaryBtn}
@@ -156,7 +173,12 @@ const SharedFilesPage = () => {
                                 {loading ? '업로드 중...' : '업로드'}
                             </button>
                         </div>
-                        <div className={pageStyles.dropHint}>여기에 드래그&드롭</div>
+                        {files.length > 0 && (
+                            <div className={pageStyles.dropHint}>
+                                {files.map((f) => f.name).join(', ')}
+                            </div>
+                        )}
+                        <div className={pageStyles.dropHint}>여기에 드래그&드롭 (다중 가능)</div>
                     </div>
                     {message && (
                         <div className={pageStyles.statusMsg}>
