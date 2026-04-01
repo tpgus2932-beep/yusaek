@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from "react";
-import styles from "../Barcode/BarcodePage.module.css";
+import styles from "./NoyeKimPage.module.css";
 import { getDownloadFilename } from "../../lib/download";
+import {
+  ArrowDownToLine, Calendar, Clipboard, FileSpreadsheet,
+  RefreshCw, Shuffle, Table2, X, Zap,
+} from "lucide-react";
 
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
@@ -822,79 +826,70 @@ export default function NoyeKimPage() {
   return (
     <div className={styles.page}>
       <div className={styles.pageHeader}>
-        <div>
+        <div className={styles.headerText}>
           <h2 className={styles.title}>노예김승일</h2>
-          <p className={styles.subtitle}>케이디지가공2 / 날짜별장끼정리 / 신상 업로드 날짜별 시트2 / 오늘출발</p>
+          <p className={styles.subtitle}>케이디지가공2 · 날짜별장끼정리 · 신상 업로드 · 오늘출발 · 입고전표 엑셀전환</p>
         </div>
       </div>
 
       <div className={styles.tabRow}>
-        <button className={`${styles.tabBtn} ${activeTab === "kdg" ? styles.tabActive : ""}`} onClick={() => setActiveTab("kdg")}>
-          케이디지가공2
-        </button>
-        <button
-          className={`${styles.tabBtn} ${activeTab === "date-chunk" ? styles.tabActive : ""}`}
-          onClick={() => setActiveTab("date-chunk")}
-        >
-          날짜별장끼정리
-        </button>
-        <button
-          className={`${styles.tabBtn} ${activeTab === "janggi" ? styles.tabActive : ""}`}
-          onClick={() => setActiveTab("janggi")}
-        >
-          신상 업로드 날짜별 시트2
-        </button>
-        <button
-          className={`${styles.tabBtn} ${activeTab === "today" ? styles.tabActive : ""}`}
-          onClick={() => setActiveTab("today")}
-        >
-          오늘출발
-        </button>
-        <button
-          className={`${styles.tabBtn} ${activeTab === "receipt-excel" ? styles.tabActive : ""}`}
-          onClick={() => setActiveTab("receipt-excel")}
-        >
-          {"\uc785\uace0\uc804\ud45c \uc5d1\uc140\uc804\ud658"}
-        </button>
+        {[
+          { key: "kdg",           label: "케이디지가공2",           icon: <Shuffle size={13} /> },
+          { key: "date-chunk",    label: "날짜별장끼정리",          icon: <Calendar size={13} /> },
+          { key: "janggi",        label: "신상 업로드 날짜별 시트2", icon: <Table2 size={13} /> },
+          { key: "today",         label: "오늘출발",                icon: <Zap size={13} /> },
+          { key: "receipt-excel", label: "입고전표 엑셀전환",        icon: <FileSpreadsheet size={13} /> },
+        ].map(({ key, label, icon }) => (
+          <button
+            key={key}
+            className={`${styles.tabBtn} ${activeTab === key ? styles.tabActive : ""}`}
+            onClick={() => setActiveTab(key)}
+          >
+            {icon}{label}
+          </button>
+        ))}
       </div>
 
       {activeTab === "kdg" && (
         <>
           <section className={styles.card}>
             <div className={styles.cardHeader}>
-              <h3 className={styles.cardTitle}>케이디지가공2</h3>
+              <div className={styles.cardTitleRow}>
+                <div className={`${styles.cardIcon} ${styles.cardIconBlue}`}><Shuffle size={15} /></div>
+                <h3 className={styles.cardTitle}>케이디지가공2</h3>
+              </div>
             </div>
             <textarea
               className={styles.scanInput}
-              style={{ minHeight: 220, width: "100%" }}
+              style={{ minHeight: 220 }}
               value={kdgText}
               onChange={(e) => setKdgText(e.target.value)}
               placeholder="원본 텍스트를 그대로 붙여넣으세요"
             />
             <div className={styles.uploadRow}>
               <button className={styles.primaryBtn} onClick={runKdgConvert} disabled={loading}>
-                변환
+                <Shuffle size={14} />변환
               </button>
               <button className={styles.secondaryBtn} onClick={runKdgMatch} disabled={loading}>
-                이지어드민 변환(원베 매칭)
+                <Zap size={13} />이지어드민 변환(원베 매칭)
               </button>
               <button className={styles.secondaryBtn} onClick={downloadKdgXls} disabled={loading}>
-                XLS 저장(A=원베,B=옵션)
+                <ArrowDownToLine size={13} />XLS 저장(A=원베,B=옵션)
               </button>
               <button className={styles.secondaryBtn} onClick={copyKdgDate} disabled={loading}>
-                날짜별 복사
+                <Clipboard size={13} />날짜별 복사
               </button>
             </div>
             <div className={styles.uploadRow}>
               <label className={styles.fileInput}>
                 <input type="file" accept=".xls,.xlsx,.xlsm" onChange={(e) => setBaseFile(e.target.files?.[0] ?? null)} />
-                케이디지 원가베이스 선택
+                <FileSpreadsheet size={14} />케이디지 원가베이스 선택
               </label>
               <button className={styles.secondaryBtn} onClick={uploadBase} disabled={loading}>
-                원가베이스 업로드
+                <ArrowDownToLine size={13} style={{ rotate: "180deg" }} />원가베이스 업로드
               </button>
               <button className={styles.secondaryBtn} onClick={downloadBase} disabled={loading}>
-                원가베이스 다운로드
+                <ArrowDownToLine size={13} />원가베이스 다운로드
               </button>
               <button
                 className={styles.secondaryBtn}
@@ -921,7 +916,10 @@ export default function NoyeKimPage() {
 
           <section className={styles.card}>
             <div className={styles.cardHeader}>
-              <h3 className={styles.cardTitle}>결과</h3>
+              <div className={styles.cardTitleRow}>
+                <div className={`${styles.cardIcon} ${styles.cardIconSlate}`}><Table2 size={15} /></div>
+                <h3 className={styles.cardTitle}>결과</h3>
+              </div>
               <span className={styles.pill}>{kdgRows.length}건</span>
             </div>
             <div className={`${styles.tableWrap} ${styles.registeredTableWrap}`}>
@@ -954,15 +952,18 @@ export default function NoyeKimPage() {
       {activeTab === "date-chunk" && (
         <section className={styles.card}>
           <div className={styles.cardHeader}>
-            <h3 className={styles.cardTitle}>날짜별장끼정리</h3>
+            <div className={styles.cardTitleRow}>
+              <div className={`${styles.cardIcon} ${styles.cardIconAmber}`}><Calendar size={15} /></div>
+              <h3 className={styles.cardTitle}>날짜별장끼정리</h3>
+            </div>
           </div>
           <div className={styles.uploadRow}>
             <label className={styles.fileInput}>
               <input type="file" accept=".xlsx,.xls,.xlsm" onChange={(e) => setChunkFile(e.target.files?.[0] ?? null)} />
-              가공할 엑셀 선택
+              <FileSpreadsheet size={14} />{chunkFile ? chunkFile.name : "가공할 엑셀 선택"}
             </label>
             <button className={styles.primaryBtn} onClick={copyDateChunk} disabled={loading}>
-              가공 후 복사
+              <Clipboard size={14} />가공 후 복사
             </button>
           </div>
           <div className={styles.statusMsg}>
@@ -975,7 +976,10 @@ export default function NoyeKimPage() {
         <>
           <section className={styles.card}>
             <div className={styles.cardHeader}>
-              <h3 className={styles.cardTitle}>오늘출발</h3>
+              <div className={styles.cardTitleRow}>
+                <div className={`${styles.cardIcon} ${styles.cardIconGreen}`}><Zap size={15} /></div>
+                <h3 className={styles.cardTitle}>오늘출발</h3>
+              </div>
             </div>
             <div className={styles.uploadRow}>
               <label className={styles.fileInput}>
@@ -987,16 +991,16 @@ export default function NoyeKimPage() {
                     setTodayRows([]);
                   }}
                 />
-                {todayFile ? todayFile.name : "XLS 파일 선택"}
+                <FileSpreadsheet size={14} />{todayFile ? todayFile.name : "XLS 파일 선택"}
               </label>
               <button className={styles.primaryBtn} onClick={processTodayFile} disabled={loading}>
-                가공
+                <Zap size={14} />가공
               </button>
               <button className={styles.secondaryBtn} onClick={downloadTodayFile} disabled={loading || !todayRows.length}>
-                다운로드
+                <ArrowDownToLine size={13} />다운로드
               </button>
               <button className={styles.secondaryBtn} onClick={copyTodayFile} disabled={loading || !todayRows.length}>
-                엑셀 복사
+                <Clipboard size={13} />엑셀 복사
               </button>
             </div>
             <div className={styles.statusMsg}>
@@ -1007,7 +1011,10 @@ export default function NoyeKimPage() {
           {todayRows.length > 0 && (
             <section className={styles.card}>
               <div className={styles.cardHeader}>
-                <h3 className={styles.cardTitle}>가공 결과</h3>
+                <div className={styles.cardTitleRow}>
+                  <div className={`${styles.cardIcon} ${styles.cardIconSlate}`}><Table2 size={15} /></div>
+                  <h3 className={styles.cardTitle}>가공 결과</h3>
+                </div>
                 <span className={styles.pill}>{todayRows.length}행</span>
               </div>
               <div className={`${styles.tableWrap} ${styles.registeredTableWrap}`}>
@@ -1037,7 +1044,10 @@ export default function NoyeKimPage() {
         <>
           <section className={styles.card}>
             <div className={styles.cardHeader}>
-              <h3 className={styles.cardTitle}>신상 업로드 날짜별 시트2</h3>
+              <div className={styles.cardTitleRow}>
+                <div className={`${styles.cardIcon} ${styles.cardIconPurple}`}><Table2 size={15} /></div>
+                <h3 className={styles.cardTitle}>신상 업로드 날짜별 시트2</h3>
+              </div>
             </div>
             <div className={styles.uploadRow}>
               <label className={styles.fileInput}>
@@ -1049,16 +1059,16 @@ export default function NoyeKimPage() {
                     setJanggiRows([]);
                   }}
                 />
-                {janggiFile ? janggiFile.name : "XLS 파일 선택"}
+                <FileSpreadsheet size={14} />{janggiFile ? janggiFile.name : "XLS 파일 선택"}
               </label>
               <button className={styles.primaryBtn} onClick={processJanggi} disabled={loading}>
-                가공
+                <Zap size={14} />가공
               </button>
               <button className={styles.secondaryBtn} onClick={downloadJanggi} disabled={loading || !janggiRows.length}>
-                다운로드
+                <ArrowDownToLine size={13} />다운로드
               </button>
               <button className={styles.secondaryBtn} onClick={copyJanggi} disabled={loading || !janggiRows.length}>
-                엑셀 복사
+                <Clipboard size={13} />엑셀 복사
               </button>
             </div>
             <div className={styles.statusMsg}>
@@ -1069,7 +1079,10 @@ export default function NoyeKimPage() {
           {janggiRows.length > 0 && (
             <section className={styles.card}>
               <div className={styles.cardHeader}>
-                <h3 className={styles.cardTitle}>가공 결과</h3>
+                <div className={styles.cardTitleRow}>
+                  <div className={`${styles.cardIcon} ${styles.cardIconSlate}`}><Table2 size={15} /></div>
+                  <h3 className={styles.cardTitle}>가공 결과</h3>
+                </div>
                 <span className={styles.pill}>{janggiRows.length}행</span>
               </div>
               <div className={`${styles.tableWrap} ${styles.registeredTableWrap}`}>
@@ -1109,11 +1122,14 @@ export default function NoyeKimPage() {
         <>
           <section className={styles.card}>
             <div className={styles.cardHeader}>
-              <h3 className={styles.cardTitle}>{"\uc785\uace0\uc804\ud45c \uc5d1\uc140\uc804\ud658"}</h3>
-              <span className={styles.pill}>{excelSlipRows.length}{"\uac74"}</span>
+              <div className={styles.cardTitleRow}>
+                <div className={`${styles.cardIcon} ${styles.cardIconBlue}`}><FileSpreadsheet size={15} /></div>
+                <h3 className={styles.cardTitle}>입고전표 엑셀전환</h3>
+              </div>
+              <span className={styles.pill}>{excelSlipRows.length}건</span>
             </div>
             <div className={styles.statusMsg}>
-              {"원본 엑셀 1행은 헤더로 건너뛰고, A열 공급처 상품명은 첫 띄어쓰기 기준으로 A/B, B열 옵션은 D/E, F열은 원본 C열로 옮깁니다. 원본 D열이 0 초과면 H열에 미송, 원본 E열에 미송픽업이 있으면 C/H열에 미송픽업을 넣습니다."}
+              원본 엑셀 1행은 헤더로 건너뛰고, A열 공급처 상품명은 첫 띄어쓰기 기준으로 A/B, B열 옵션은 D/E, F열은 원본 C열로 옮깁니다. 원본 D열이 0 초과면 H열에 미송, 원본 E열에 미송픽업이 있으면 C/H열에 미송픽업을 넣습니다.
             </div>
             <div className={styles.uploadRow}>
               <label className={styles.fileInput}>
@@ -1127,10 +1143,10 @@ export default function NoyeKimPage() {
                     setMessage("");
                   }}
                 />
-                {excelSlipFile ? excelSlipFile.name : "입고전표 엑셀 선택"}
+                <FileSpreadsheet size={14} />{excelSlipFile ? excelSlipFile.name : "입고전표 엑셀 선택"}
               </label>
               <button className={styles.primaryBtn} onClick={runExcelSlipConvert} disabled={loading}>
-                {"\uc5d1\uc140 \ubcc0\ud658"}
+                <Zap size={14} />엑셀 변환
               </button>
               <button
                 className={styles.secondaryBtn}
@@ -1142,25 +1158,28 @@ export default function NoyeKimPage() {
                 }}
                 disabled={loading}
               >
-                {"\ucd08\uae30\ud654"}
+                <X size={13} />초기화
               </button>
             </div>
           </section>
 
           <section className={styles.card}>
             <div className={styles.cardHeader}>
-              <h3 className={styles.cardTitle}>TSV</h3>
+              <div className={styles.cardTitleRow}>
+                <div className={`${styles.cardIcon} ${styles.cardIconSlate}`}><Clipboard size={15} /></div>
+                <h3 className={styles.cardTitle}>TSV</h3>
+              </div>
             </div>
             <textarea
               className={styles.scanInput}
               style={{ minHeight: 220, width: "100%", fontSize: "0.95rem" }}
               value={excelSlipOutput}
               onChange={(e) => setExcelSlipOutput(e.target.value)}
-              placeholder={"\ubcc0\ud658 \uacb0\uacfc\uac00 \uc5ec\uae30\uc5d0 \ud45c\uc2dc\ub429\ub2c8\ub2e4."}
+              placeholder="변환 결과가 여기에 표시됩니다."
             />
             <div className={styles.uploadRow}>
               <button className={styles.secondaryBtn} onClick={copyExcelSlipResult} disabled={loading || !excelSlipOutput}>
-                {"\uacb0\uacfc \ubcf5\uc0ac"}
+                <Clipboard size={13} />결과 복사
               </button>
             </div>
           </section>
@@ -1168,7 +1187,10 @@ export default function NoyeKimPage() {
           {excelSlipRows.length > 0 && (
             <section className={styles.card}>
               <div className={styles.cardHeader}>
-                <h3 className={styles.cardTitle}>{"\ubbf8\ub9ac\ubcf4\uae30"}</h3>
+                <div className={styles.cardTitleRow}>
+                  <div className={`${styles.cardIcon} ${styles.cardIconSlate}`}><Table2 size={15} /></div>
+                  <h3 className={styles.cardTitle}>미리보기</h3>
+                </div>
               </div>
               <div className={`${styles.tableWrap} ${styles.registeredTableWrap}`}>
                 <table className={styles.table}>
@@ -1206,7 +1228,7 @@ export default function NoyeKimPage() {
       )}
 
       {message && (
-        <div className={styles.statusMsg}>
+        <div className={`${styles.statusMsg} ${message.includes("실패") || message.includes("없습니다") || message.includes("선택하세요") ? styles.statusMsgError : styles.statusMsgSuccess}`}>
           <strong>{message}</strong>
         </div>
       )}
@@ -1230,13 +1252,13 @@ export default function NoyeKimPage() {
                   검색
                 </button>
                 <button className={styles.secondaryBtn} onClick={() => fetchBasePreview(baseOffset, baseQuery).catch(() => {})}>
-                  새로고침
+                  <RefreshCw size={13} />새로고침
                 </button>
                 <button className={styles.primaryBtn} onClick={commitBaseEdits} disabled={loading}>
                   변경 적용
                 </button>
                 <button className={styles.secondaryBtn} onClick={() => setShowBaseEditor(false)}>
-                  닫기
+                  <X size={13} />닫기
                 </button>
               </div>
             </div>

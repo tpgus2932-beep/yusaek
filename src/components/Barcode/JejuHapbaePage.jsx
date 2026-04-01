@@ -114,11 +114,7 @@ export default function JejuHapbaePage({ headerExtra = null }) {
       }
 
       const blob = await res.blob();
-      const disposition = res.headers.get("content-disposition") || "";
-      const match = disposition.match(/filename\*?=(?:UTF-8''|"?)([^";]+)/i);
-      const filename = match?.[1]
-        ? decodeURIComponent(match[1].replace(/"/g, ""))
-        : `${file.name.replace(/\.[^.]+$/, "")}_가공본.xls`;
+      const filename = "제주 합배 마이너스.xlsx";
 
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
