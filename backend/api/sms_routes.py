@@ -607,4 +607,4 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
 
         return {"ok": True, "saved": saved, "skipped": skipped}
 
-    return router
+    return router, _enqueue_sms
