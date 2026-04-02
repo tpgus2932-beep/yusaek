@@ -40,6 +40,7 @@ def build_collab_router(
     allowed_shared_exts,
     max_request_file_size_bytes=None,
     max_shared_file_size_bytes=None,
+    enqueue_sms=None,  # SMS 큐에 직접 넣는 함수 (sms_routes._enqueue_sms)
 ):
     router = APIRouter()
     # In-memory completion state for "today todos".
@@ -180,28 +181,35 @@ def build_collab_router(
             return
         def _runner() -> None:
             try:
+                target_receiver = receiver or fallback_receiver
+                if not target_receiver:
+                    return
+                msg = _build_request_sms_message(
+                    requester_display=requester_display,
+                    assignee_display=assignee_display,
+                    text=text,
+                )
+                if enqueue_sms:
+                    # sms_outbox 큐에 직접 등록 → 로컬 디스패처가 Aligo로 발송
+                    enqueue_sms(
+                        {
+                            "receiver": target_receiver,
+                            "msg": msg,
+                            "msg_type": "LMS",
+                            "title": "새 요청 알림",
+                        },
+                        "request-notify",
+                    )
+                    return
                 import asyncio
-
-                async def _dispatch() -> None:
-                    if (os.environ.get("REQUEST_SMS_WEBHOOK_URL") or "").strip():
-                        await _post_request_sms_webhook_async(
-                            receiver=receiver,
-                            fallback_receiver=fallback_receiver,
-                            requester_display=requester_display,
-                            assignee_display=assignee_display,
-                            text=text,
-                        )
-                        return
-                    target_receiver = receiver or fallback_receiver
-                    if target_receiver:
-                        await _send_request_sms_direct_async(
-                            receiver=target_receiver,
-                            requester_display=requester_display,
-                            assignee_display=assignee_display,
-                            text=text,
-                        )
-
-                asyncio.run(_dispatch())
+                asyncio.run(
+                    _send_request_sms_direct_async(
+                        receiver=target_receiver,
+                        requester_display=requester_display,
+                        assignee_display=assignee_display,
+                        text=text,
+                    )
+                )
             except Exception:
                 # Keep request creation successful even if SMS delivery fails.
                 return

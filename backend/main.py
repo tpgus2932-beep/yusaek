@@ -1063,6 +1063,16 @@ app.include_router(
         set_shared_barcode_data=_set_shared_barcode_data,
     )
 )
+
+_sms_router, _enqueue_sms_fn = build_sms_router(
+    get_current_user=_get_current_user,
+    get_db=_get_shared_db,
+    get_setting=_get_setting,
+    set_setting=_set_setting,
+    run_local_dispatcher=not _IS_RENDER,  # Render에서는 끔 — 로컬 서버가 Turso 읽어서 발송
+)
+app.include_router(_sms_router)
+
 app.include_router(
     build_collab_router(
         get_current_user=_get_current_user,
@@ -1084,6 +1094,7 @@ app.include_router(
         shared_upload_base=SHARED_UPLOAD_BASE,
         allowed_request_exts=ALLOWED_REQUEST_EXTS,
         allowed_shared_exts=ALLOWED_SHARED_EXTS,
+        enqueue_sms=_enqueue_sms_fn,
     )
 )
 app.include_router(
@@ -1193,16 +1204,6 @@ def _init_sms_history():
 
 
 _init_sms_history()
-
-app.include_router(
-    build_sms_router(
-        get_current_user=_get_current_user,
-        get_db=_get_shared_db,
-        get_setting=_get_setting,
-        set_setting=_set_setting,
-        run_local_dispatcher=True,
-    )
-)
 
 
 @app.get("/ping")

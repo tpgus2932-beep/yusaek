@@ -97,6 +97,15 @@ app.include_router(
     )
 )
 
+_sms_router, _enqueue_sms_fn = build_sms_router(
+    get_current_user=_get_current_user,
+    get_db=_get_db,
+    get_setting=_get_setting,
+    set_setting=_set_setting,
+    run_local_dispatcher=not os.environ.get("RENDER", ""),  # Render에서는 끔
+)
+app.include_router(_sms_router)
+
 app.include_router(
     build_collab_router(
         get_current_user=_get_current_user,
@@ -119,16 +128,7 @@ app.include_router(
         allowed_shared_exts=ALLOWED_SHARED_EXTS,
         max_request_file_size_bytes=COLLAB_REQUEST_MAX_BYTES,
         max_shared_file_size_bytes=COLLAB_SHARED_FILE_MAX_BYTES,
-    )
-)
-
-app.include_router(
-    build_sms_router(
-        get_current_user=_get_current_user,
-        get_db=_get_db,
-        get_setting=_get_setting,
-        set_setting=_set_setting,
-        run_local_dispatcher=True,
+        enqueue_sms=_enqueue_sms_fn,
     )
 )
 
