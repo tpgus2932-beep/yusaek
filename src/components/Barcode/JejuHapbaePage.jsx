@@ -114,7 +114,7 @@ export default function JejuHapbaePage({ headerExtra = null }) {
       }
 
       const blob = await res.blob();
-      const filename = "제주 합배 마이너스.xlsx";
+      const filename = "제주 합배 마이너스.xls";
 
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
