@@ -46,32 +46,27 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
         return "LMS" if _message_bytes(str(payload.get("msg") or "")) > 90 else "SMS"
 
     def _load_templates() -> list[dict]:
-        raw = get_setting(SMS_TEMPLATES_KEY) or "[]"
+        _ensure_templates_table()
+        conn = get_db()
         try:
-            items = json.loads(raw)
-        except Exception:
-            items = []
-        if not isinstance(items, list):
-            return []
-        normalized = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name") or "").strip()
-            if not name:
-                continue
-            normalized.append(
-                {
-                    "id": str(item.get("id") or uuid.uuid4().hex),
-                    "name": name,
-                    "msg": str(item.get("msg") or ""),
-                    "title": str(item.get("title") or ""),
-                    "msgType": str(item.get("msgType") or ""),
-                }
-            )
-        return normalized
+            rows = conn.execute(
+                "SELECT id, name, msg, title, msg_type, sort_order FROM sms_templates ORDER BY sort_order ASC, rowid ASC"
+            ).fetchall()
+        finally:
+            conn.close()
+        return [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "msg": row["msg"] or "",
+                "title": row["title"] or "",
+                "msgType": row["msg_type"] or "",
+            }
+            for row in rows
+        ]
 
     def _save_templates(items: list[dict]):
+        _ensure_templates_table()
         normalized = []
         for item in items:
             if not isinstance(item, dict):
@@ -85,10 +80,29 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
                     "name": name,
                     "msg": str(item.get("msg") or ""),
                     "title": str(item.get("title") or ""),
-                    "msgType": str(item.get("msgType") or ""),
+                    "msg_type": str(item.get("msgType") or ""),
                 }
             )
-        set_setting(SMS_TEMPLATES_KEY, json.dumps(normalized, ensure_ascii=False))
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM sms_templates")
+            for idx, item in enumerate(normalized):
+                conn.execute(
+                    """
+                    INSERT INTO sms_templates (id, name, msg, title, msg_type, sort_order)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        name = excluded.name,
+                        msg = excluded.msg,
+                        title = excluded.title,
+                        msg_type = excluded.msg_type,
+                        sort_order = excluded.sort_order
+                    """,
+                    (item["id"], item["name"], item["msg"], item["title"], item["msg_type"], idx),
+                )
+            conn.commit()
+        finally:
+            conn.close()
 
     def _creds():
         key = os.environ.get("ALIGO_API_KEY", "").strip()
@@ -148,6 +162,37 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sms_outbox_status_created ON sms_outbox(status, created_at)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sms_templates (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    msg TEXT NOT NULL DEFAULT '',
+                    title TEXT NOT NULL DEFAULT '',
+                    msg_type TEXT NOT NULL DEFAULT '',
+                    sort_order INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _ensure_templates_table():
+        conn = get_db()
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sms_templates (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    msg TEXT NOT NULL DEFAULT '',
+                    title TEXT NOT NULL DEFAULT '',
+                    msg_type TEXT NOT NULL DEFAULT '',
+                    sort_order INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
             conn.commit()
         finally:
             conn.close()
@@ -352,10 +397,33 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
                 pass
             dispatcher_stop.wait(3.0)
 
+    def _migrate_templates_from_settings():
+        """app_settings에 저장된 기존 템플릿을 sms_templates 테이블로 1회 이전."""
+        try:
+            raw = get_setting(SMS_TEMPLATES_KEY)
+            if not raw:
+                return
+            items = json.loads(raw)
+            if not isinstance(items, list) or not items:
+                return
+            # 이미 sms_templates에 데이터가 있으면 스킵
+            conn = get_db()
+            try:
+                count = conn.execute("SELECT COUNT(*) FROM sms_templates").fetchone()[0]
+            finally:
+                conn.close()
+            if count > 0:
+                return
+            _save_templates(items)
+            set_setting(SMS_TEMPLATES_KEY, None)  # 마이그레이션 완료 후 제거
+        except Exception:
+            pass
+
     @router.on_event("startup")
     def _startup():
         nonlocal dispatcher_thread
         _ensure_tables()
+        _migrate_templates_from_settings()
         if not run_local_dispatcher:
             return
         if dispatcher_thread and dispatcher_thread.is_alive():
