@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { Plus, Calendar, Bell, ChevronDown, ChevronUp, Pin, PinOff, GripVertical } from 'lucide-react';
+import { Plus, Calendar, Bell, ChevronDown, ChevronUp, Pin, PinOff, GripVertical, MessageSquare } from 'lucide-react';
 import styles from './Dashboard.module.css';
 import { COLLAB_API_BASE as API, LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
@@ -69,6 +69,8 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
     const [requestAlertsEnabled, setRequestAlertsEnabled] = useState(false);
     const [editingRequestId, setEditingRequestId] = useState(null);
     const [editingRequestText, setEditingRequestText] = useState('');
+    const [commentDrafts, setCommentDrafts] = useState({});
+    const [savingCommentId, setSavingCommentId] = useState(null);
     const isAdmin = useMemo(() => localStorage.getItem('isAdmin') === 'true', []);
     const resizeStateRef = useRef(null);
     const activityListRef = useRef(null);
@@ -280,7 +282,17 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
             requestAlertsPrimedRef.current = true;
             previousSmsWatchIdsRef.current = openRequestIds;
             requestSmsWatchPrimedRef.current = true;
+            if (activityListRef.current) {
+                pendingActivityScrollTopRef.current = activityListRef.current.scrollTop;
+            }
             setActivity(requests);
+            setCommentDrafts((prev) => {
+                const next = { ...prev };
+                requests.forEach((r) => {
+                    if (!(r.id in next)) next[r.id] = r.comment || '';
+                });
+                return next;
+            });
         } catch (err) {
             setError(err.message || 'Failed to load activity');
         } finally {
@@ -541,6 +553,23 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
             setError(err.message || 'Failed to send request');
         } finally {
             setSubmitting(false);
+        }
+    };
+
+    const handleSaveComment = async (id) => {
+        const comment = (commentDrafts[id] ?? '').trimEnd();
+        setSavingCommentId(id);
+        try {
+            await fetch(`${API}/requests/${id}/comment`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', ...authHeaders },
+                body: JSON.stringify({ comment }),
+            });
+            setActivity((prev) =>
+                prev.map((item) => (item.id === id ? { ...item, comment } : item))
+            );
+        } finally {
+            setSavingCommentId(null);
         }
     };
 
@@ -1378,6 +1407,22 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
                                             </div>
                                             <div className={styles.requestText}>{item.text}</div>
                                             {renderAttachments(item)}
+                                            <div className={styles.requestCommentRow}>
+                                                <MessageSquare size={12} className={styles.requestCommentIcon} />
+                                                <textarea
+                                                    className={styles.requestCommentInput}
+                                                    placeholder="메모..."
+                                                    value={commentDrafts[item.id] ?? item.comment ?? ''}
+                                                    onChange={(e) =>
+                                                        setCommentDrafts((prev) => ({ ...prev, [item.id]: e.target.value }))
+                                                    }
+                                                    onBlur={() => handleSaveComment(item.id)}
+                                                    rows={1}
+                                                />
+                                                {savingCommentId === item.id && (
+                                                    <span className={styles.requestCommentSaving}>저장중</span>
+                                                )}
+                                            </div>
                                         </div>
                                         <div className={styles.requestItemAction}>
                                             <button

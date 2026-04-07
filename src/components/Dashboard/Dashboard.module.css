@@ -381,6 +381,61 @@
     line-height: 1.5;
 }
 
+.requestCommentRow {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.35rem;
+    margin-top: 0.45rem;
+}
+
+.requestCommentIcon {
+    color: var(--text-muted, #9ca3af);
+    margin-top: 0.35rem;
+    flex-shrink: 0;
+}
+
+.requestCommentInput {
+    flex: 1;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    background: var(--bg-subtle, rgba(0,0,0,0.03));
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 0.25rem 0.4rem;
+    resize: none;
+    line-height: 1.5;
+    min-height: 1.8rem;
+    overflow: hidden;
+    transition: border-color 0.15s, background 0.15s;
+    font-family: inherit;
+}
+
+.requestCommentInput:focus {
+    outline: none;
+    border-color: var(--primary, #3b82f6);
+    background: var(--bg-card, #fff);
+}
+
+.requestCommentInput::placeholder {
+    color: var(--text-muted, #9ca3af);
+}
+
+.requestCommentSaving {
+    font-size: 0.7rem;
+    color: var(--text-muted, #9ca3af);
+    margin-top: 0.35rem;
+    flex-shrink: 0;
+}
+
+[data-theme='dark'] .requestCommentInput {
+    background: rgba(255,255,255,0.05);
+    color: var(--text-secondary);
+}
+
+[data-theme='dark'] .requestCommentInput:focus {
+    background: rgba(255,255,255,0.08);
+}
+
 .requestItemAction {
     flex-shrink: 0;
     display: flex;

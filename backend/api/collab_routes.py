@@ -883,6 +883,20 @@ def build_collab_router(
         conn.close()
         return {"ok": True}
 
+    @router.patch("/requests/{request_id}/comment")
+    def update_request_comment(request_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
+        comment = str(payload.get("comment") or "").strip()
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT id FROM requests WHERE id = ?", (request_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="request not found")
+            conn.execute("UPDATE requests SET comment = ? WHERE id = ?", (comment, request_id))
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "comment": comment}
+
     @router.get("/client-schedule/db")
     def get_client_schedule_db(user: str = Depends(get_current_user)):
         conn = get_db()
