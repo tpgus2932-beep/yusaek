@@ -69,8 +69,9 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
     const [requestAlertsEnabled, setRequestAlertsEnabled] = useState(false);
     const [editingRequestId, setEditingRequestId] = useState(null);
     const [editingRequestText, setEditingRequestText] = useState('');
-    const [commentDrafts, setCommentDrafts] = useState({});
-    const [savingCommentId, setSavingCommentId] = useState(null);
+    const [expandedCommentIds, setExpandedCommentIds] = useState(new Set());
+    // { [requestId]: { items: Comment[]|null, loading, input, submitting } }
+    const [commentsCache, setCommentsCache] = useState({});
     const isAdmin = useMemo(() => localStorage.getItem('isAdmin') === 'true', []);
     const resizeStateRef = useRef(null);
     const activityListRef = useRef(null);
@@ -286,13 +287,6 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
                 pendingActivityScrollTopRef.current = activityListRef.current.scrollTop;
             }
             setActivity(requests);
-            setCommentDrafts((prev) => {
-                const next = { ...prev };
-                requests.forEach((r) => {
-                    if (!(r.id in next)) next[r.id] = r.comment || '';
-                });
-                return next;
-            });
         } catch (err) {
             setError(err.message || 'Failed to load activity');
         } finally {
@@ -556,20 +550,57 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
         }
     };
 
-    const handleSaveComment = async (id) => {
-        const comment = (commentDrafts[id] ?? '').trimEnd();
-        setSavingCommentId(id);
+    const getCommentState = (id) =>
+        commentsCache[id] ?? { items: null, loading: false, input: '', submitting: false };
+
+    const handleToggleComments = async (id) => {
+        const isOpen = expandedCommentIds.has(id);
+        setExpandedCommentIds((prev) => {
+            const next = new Set(prev);
+            if (isOpen) next.delete(id); else next.add(id);
+            return next;
+        });
+        if (!isOpen && !commentsCache[id]?.items) {
+            setCommentsCache((prev) => ({ ...prev, [id]: { ...getCommentState(id), loading: true } }));
+            try {
+                const res = await fetch(`${API}/requests/${id}/comments`, { headers: authHeaders });
+                const data = await res.json().catch(() => ({}));
+                setCommentsCache((prev) => ({
+                    ...prev,
+                    [id]: { ...prev[id], items: data.comments || [], loading: false },
+                }));
+            } catch {
+                setCommentsCache((prev) => ({ ...prev, [id]: { ...prev[id], loading: false, items: [] } }));
+            }
+        }
+    };
+
+    const handleAddComment = async (id) => {
+        const text = (commentsCache[id]?.input || '').trim();
+        if (!text) return;
+        setCommentsCache((prev) => ({ ...prev, [id]: { ...prev[id], submitting: true } }));
         try {
-            await fetch(`${API}/requests/${id}/comment`, {
-                method: 'PATCH',
+            const res = await fetch(`${API}/requests/${id}/comments`, {
+                method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...authHeaders },
-                body: JSON.stringify({ comment }),
+                body: JSON.stringify({ text }),
             });
-            setActivity((prev) =>
-                prev.map((item) => (item.id === id ? { ...item, comment } : item))
-            );
-        } finally {
-            setSavingCommentId(null);
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.comment) {
+                setCommentsCache((prev) => ({
+                    ...prev,
+                    [id]: {
+                        ...prev[id],
+                        items: [...(prev[id]?.items || []), data.comment],
+                        input: '',
+                        submitting: false,
+                    },
+                }));
+            } else {
+                setCommentsCache((prev) => ({ ...prev, [id]: { ...prev[id], submitting: false } }));
+            }
+        } catch {
+            setCommentsCache((prev) => ({ ...prev, [id]: { ...prev[id], submitting: false } }));
         }
     };
 
@@ -1407,22 +1438,75 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
                                             </div>
                                             <div className={styles.requestText}>{item.text}</div>
                                             {renderAttachments(item)}
-                                            <div className={styles.requestCommentRow}>
-                                                <MessageSquare size={12} className={styles.requestCommentIcon} />
-                                                <textarea
-                                                    className={styles.requestCommentInput}
-                                                    placeholder="메모..."
-                                                    value={commentDrafts[item.id] ?? item.comment ?? ''}
-                                                    onChange={(e) =>
-                                                        setCommentDrafts((prev) => ({ ...prev, [item.id]: e.target.value }))
-                                                    }
-                                                    onBlur={() => handleSaveComment(item.id)}
-                                                    rows={1}
-                                                />
-                                                {savingCommentId === item.id && (
-                                                    <span className={styles.requestCommentSaving}>저장중</span>
+                                            {/* 댓글 토글 */}
+                                            <button
+                                                type="button"
+                                                className={styles.commentToggleBtn}
+                                                onClick={() => handleToggleComments(item.id)}
+                                            >
+                                                <MessageSquare size={11} />
+                                                댓글
+                                                {commentsCache[item.id]?.items?.length > 0 && (
+                                                    <span className={styles.commentCount}>
+                                                        {commentsCache[item.id].items.length}
+                                                    </span>
                                                 )}
-                                            </div>
+                                                {expandedCommentIds.has(item.id)
+                                                    ? <ChevronUp size={11} />
+                                                    : <ChevronDown size={11} />}
+                                            </button>
+                                            {/* 댓글 스레드 */}
+                                            {expandedCommentIds.has(item.id) && (
+                                                <div className={styles.commentSection}>
+                                                    {commentsCache[item.id]?.loading && (
+                                                        <div className={styles.commentLoading}>불러오는 중...</div>
+                                                    )}
+                                                    {(commentsCache[item.id]?.items || []).map((c) => (
+                                                        <div key={c.id} className={styles.commentItem}>
+                                                            <div className={styles.commentMeta}>
+                                                                <span className={styles.commentAuthor}>
+                                                                    {c.author_display || c.author_username}
+                                                                </span>
+                                                                <span className={styles.commentTime}>
+                                                                    {formatDateTime(c.created_at)}
+                                                                </span>
+                                                            </div>
+                                                            <div className={styles.commentText}>{c.text}</div>
+                                                        </div>
+                                                    ))}
+                                                    {!commentsCache[item.id]?.loading &&
+                                                        (commentsCache[item.id]?.items || []).length === 0 && (
+                                                        <div className={styles.commentEmpty}>댓글이 없습니다.</div>
+                                                    )}
+                                                    <div className={styles.commentInputRow}>
+                                                        <input
+                                                            className={styles.commentInput}
+                                                            placeholder="댓글 입력..."
+                                                            value={commentsCache[item.id]?.input || ''}
+                                                            onChange={(e) =>
+                                                                setCommentsCache((prev) => ({
+                                                                    ...prev,
+                                                                    [item.id]: { ...getCommentState(item.id), ...prev[item.id], input: e.target.value },
+                                                                }))
+                                                            }
+                                                            onKeyDown={(e) => {
+                                                                if (e.key === 'Enter' && !e.shiftKey) {
+                                                                    e.preventDefault();
+                                                                    handleAddComment(item.id);
+                                                                }
+                                                            }}
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            className={styles.commentSubmitBtn}
+                                                            onClick={() => handleAddComment(item.id)}
+                                                            disabled={commentsCache[item.id]?.submitting}
+                                                        >
+                                                            등록
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            )}
                                         </div>
                                         <div className={styles.requestItemAction}>
                                             <button

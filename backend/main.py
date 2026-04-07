@@ -570,6 +570,30 @@ _ensure_request_column(
 )
 
 
+def _init_request_comments():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS request_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER NOT NULL,
+            author_username TEXT NOT NULL,
+            author_display TEXT NOT NULL DEFAULT '',
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_request_comments_rid ON request_comments(request_id, created_at)"
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_request_comments()
+
+
 def _init_company_credentials():
     conn = _get_db()
     conn.execute(
@@ -886,7 +910,6 @@ def _row_to_request(row) -> dict:
         "created_at": row["created_at"],
         "completed_at": row["completed_at"],
         "acknowledged_at": row["acknowledged_at"],
-        "comment": row["comment"] if row["comment"] else "",
     }
 
 

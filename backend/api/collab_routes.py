@@ -883,19 +883,48 @@ def build_collab_router(
         conn.close()
         return {"ok": True}
 
-    @router.patch("/requests/{request_id}/comment")
-    def update_request_comment(request_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
-        comment = str(payload.get("comment") or "").strip()
+    @router.get("/requests/{request_id}/comments")
+    def get_request_comments(request_id: int, user: str = Depends(get_current_user)):
         conn = get_db()
         try:
-            row = conn.execute("SELECT id FROM requests WHERE id = ?", (request_id,)).fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="request not found")
-            conn.execute("UPDATE requests SET comment = ? WHERE id = ?", (comment, request_id))
-            conn.commit()
+            rows = conn.execute(
+                """SELECT id, author_username, author_display, text, created_at
+                   FROM request_comments WHERE request_id = ? ORDER BY created_at ASC""",
+                (request_id,),
+            ).fetchall()
         finally:
             conn.close()
-        return {"ok": True, "comment": comment}
+        return {"ok": True, "comments": [dict(r) for r in rows]}
+
+    @router.post("/requests/{request_id}/comments")
+    def add_request_comment(request_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
+        text = (payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text required")
+        conn = get_db()
+        try:
+            if not conn.execute("SELECT id FROM requests WHERE id = ?", (request_id,)).fetchone():
+                raise HTTPException(status_code=404, detail="request not found")
+            author_display = get_user_display(user)
+            created_at = datetime.now(timezone.utc).isoformat()
+            cursor = conn.execute(
+                "INSERT INTO request_comments (request_id, author_username, author_display, text, created_at) VALUES (?,?,?,?,?)",
+                (request_id, user, author_display, text, created_at),
+            )
+            conn.commit()
+            new_id = cursor.lastrowid
+        finally:
+            conn.close()
+        return {
+            "ok": True,
+            "comment": {
+                "id": new_id,
+                "author_username": user,
+                "author_display": author_display,
+                "text": text,
+                "created_at": created_at,
+            },
+        }
 
     @router.get("/client-schedule/db")
     def get_client_schedule_db(user: str = Depends(get_current_user)):
