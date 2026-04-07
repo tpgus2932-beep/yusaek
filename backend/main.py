@@ -564,6 +564,10 @@ _ensure_request_column(
     "acknowledged_at",
     "ALTER TABLE requests ADD COLUMN acknowledged_at TEXT",
 )
+_ensure_request_column(
+    "comment",
+    "ALTER TABLE requests ADD COLUMN comment TEXT NOT NULL DEFAULT ''",
+)
 
 
 def _init_company_credentials():
@@ -882,6 +886,7 @@ def _row_to_request(row) -> dict:
         "created_at": row["created_at"],
         "completed_at": row["completed_at"],
         "acknowledged_at": row["acknowledged_at"],
+        "comment": row["comment"] if row["comment"] else "",
     }
 
 
