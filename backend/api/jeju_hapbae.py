@@ -159,6 +159,7 @@ def _jeju_build_xls(
     selected_headers = [headers[idx - 1] for idx in include_cols]
     for idx, header in enumerate(selected_headers):
         sheet.write(0, idx, header)
+    sheet.write(0, len(selected_headers), "메모")
 
     for row_idx, (product_name, qty, product_code) in enumerate(merged_rows, start=1):
         selected_values: list[object] = []
@@ -171,6 +172,7 @@ def _jeju_build_xls(
                 selected_values.append(qty)
         for col_idx, cell_value in enumerate(selected_values):
             sheet.write(row_idx, col_idx, cell_value)
+        sheet.write(row_idx, len(selected_values), "제주도합배")
 
     buf = io.BytesIO()
     book.save(buf)
