@@ -326,6 +326,84 @@
 
 .msgTypeSMS { color: #2980b9; }
 .msgTypeLMS { color: #8e44ad; }
+.msgTypeMMS { color: #e67e22; }
+
+/* ── Image attachment ── */
+.imageAttachRow {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 0.15rem;
+}
+
+.imageAttachBtn {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: var(--bg-secondary);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+
+.imageAttachBtn:hover {
+  border-color: #e67e22;
+  color: #e67e22;
+}
+
+.imagePreviewBox {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.imagePreviewImg {
+  display: block;
+  max-height: 80px;
+  max-width: 140px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  object-fit: cover;
+}
+
+.imageRemoveBtn {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #e74c3c;
+  color: white;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.15s;
+}
+
+.imageRemoveBtn:hover {
+  background: #c0392b;
+}
+
+.mmsFixedBadge {
+  padding: 0.55rem 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #e67e22;
+  border: 1px solid #f0c080;
+  border-radius: var(--radius-md);
+  background: #fff8f0;
+}
 
 .optionGrid {
   display: grid;

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   MessageSquare, Send, Wallet, History, RefreshCw,
   X, ChevronLeft, ChevronRight, CheckCircle, XCircle,
-  Clock, AlertCircle, Trash2, Download,
+  Clock, AlertCircle, Trash2, Download, Image as ImageIcon,
 } from 'lucide-react';
 import styles from './SMSPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
@@ -44,10 +44,11 @@ const BadgeColor = ({ status }) => {
   );
 };
 
-const MsgTypeBadge = ({ bytes }) => {
-  const type = bytes <= SMS_MAX ? 'SMS' : 'LMS';
+const MsgTypeBadge = ({ bytes, hasImage }) => {
+  const type = hasImage ? 'MMS' : bytes <= SMS_MAX ? 'SMS' : 'LMS';
+  const cls = type === 'SMS' ? styles.msgTypeSMS : type === 'LMS' ? styles.msgTypeLMS : styles.msgTypeMMS;
   return (
-    <span className={`${styles.msgTypeBadge} ${type === 'SMS' ? styles.msgTypeSMS : styles.msgTypeLMS}`}>
+    <span className={`${styles.msgTypeBadge} ${cls}`}>
       {type}
     </span>
   );
@@ -118,7 +119,11 @@ export default function SMSPage() {
   const [dragOverTemplateId, setDragOverTemplateId] = useState(null);
   const [templatesLoading, setTemplatesLoading] = useState(false);
 
+  const [imageFile, setImageFile] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+
   const receiverInputRef = useRef(null);
+  const imageInputRef = useRef(null);
   const bytes = getByteLength(msg);
 
   // ─── 수신번호 태그 입력 ───
@@ -143,6 +148,34 @@ export default function SMSPage() {
   };
 
   const removeReceiver = (num) => setReceivers((prev) => prev.filter((r) => r !== num));
+
+  const setImageFromFile = (file) => {
+    if (!file.type.startsWith('image/')) {
+      setSendResult({ ok: false, msg: '이미지 파일만 첨부할 수 있습니다.' });
+      return;
+    }
+    if (file.size > 300 * 1024) {
+      setSendResult({ ok: false, msg: '이미지 크기는 300KB 이하로 첨부하세요.' });
+      return;
+    }
+    setImageFile(file);
+    const reader = new FileReader();
+    reader.onload = (e) => setImagePreview(e.target.result);
+    reader.readAsDataURL(file);
+  };
+
+  const handlePaste = (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) setImageFromFile(file);
+        return;
+      }
+    }
+  };
 
   const fetchTemplates = useCallback(async () => {
     setTemplatesLoading(true);
@@ -269,24 +302,41 @@ export default function SMSPage() {
   // ─── 문자 보내기 ───
   const handleSend = async () => {
     if (!receivers.length) { setSendResult({ ok: false, msg: '수신번호를 입력하세요.' }); return; }
-    if (!msg.trim()) { setSendResult({ ok: false, msg: '메시지 내용을 입력하세요.' }); return; }
+    if (!msg.trim() && !imageFile) { setSendResult({ ok: false, msg: '메시지 내용을 입력하세요.' }); return; }
     setSending(true);
     setSendResult(null);
     try {
-      const body = {
-        receiver: receivers.join(','),
-        msg,
-        msg_type: effectiveMsgType,
-        ...(title && { title }),
-        ...(rdate && { rdate: rdate.replace(/-/g, '') }),
-        ...(rtime && { rtime: rtime.replace(':', '') }),
-        ...(testMode && { testmode_yn: 'Y' }),
-      };
-      const res = await fetch(`${API}/sms/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify(body),
-      });
+      let res;
+      if (imageFile) {
+        const fd = new FormData();
+        fd.append('receiver', receivers.join(','));
+        fd.append('msg', msg);
+        fd.append('title', title);
+        if (rdate) fd.append('rdate', rdate.replace(/-/g, ''));
+        if (rtime) fd.append('rtime', rtime.replace(':', ''));
+        if (testMode) fd.append('testmode_yn', 'Y');
+        fd.append('image', imageFile, imageFile.name);
+        res = await fetch(`${API}/sms/send-mms`, {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: fd,
+        });
+      } else {
+        const body = {
+          receiver: receivers.join(','),
+          msg,
+          msg_type: effectiveMsgType,
+          ...(title && { title }),
+          ...(rdate && { rdate: rdate.replace(/-/g, '') }),
+          ...(rtime && { rtime: rtime.replace(':', '') }),
+          ...(testMode && { testmode_yn: 'Y' }),
+        };
+        res = await fetch(`${API}/sms/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify(body),
+        });
+      }
       if (handleUnauthorized(res)) return;
       const data = await res.json();
       if (data.result_code > 0) {
@@ -316,6 +366,8 @@ export default function SMSPage() {
         setReceivers([]);
         setMsg('');
         setTitle('');
+        setImageFile(null);
+        setImagePreview(null);
         setRdate('');
         setRtime('');
       } else {
@@ -500,7 +552,7 @@ export default function SMSPage() {
 
   const isReserved = detailItem?.reserve_state === '예약대기중';
   const byteClass = bytes > LMS_MAX ? styles.byteCountOver : bytes > SMS_MAX ? styles.byteCountWarn : styles.byteCount;
-  const effectiveMsgType = msgType || (bytes > SMS_MAX ? 'LMS' : 'SMS');
+  const effectiveMsgType = imageFile ? 'MMS' : msgType || (bytes > SMS_MAX ? 'LMS' : 'SMS');
 
   return (
     <div className={styles.page}>
@@ -675,14 +727,56 @@ export default function SMSPage() {
                 style={{ minHeight: 160 }}
                 value={msg}
                 onChange={(e) => setMsg(e.target.value)}
-                placeholder="메시지 내용을 입력하세요"
+                onPaste={handlePaste}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const file = e.dataTransfer.files?.[0];
+                  if (file) setImageFromFile(file);
+                }}
+                placeholder="메시지 내용을 입력하세요 (사진은 Ctrl+V로 붙여넣기 가능)"
                 maxLength={2000}
               />
+              {/* 이미지 첨부 */}
+              <div className={styles.imageAttachRow}>
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/*"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) setImageFromFile(file);
+                    e.target.value = '';
+                  }}
+                />
+                {imagePreview ? (
+                  <div className={styles.imagePreviewBox}>
+                    <img src={imagePreview} alt="첨부 이미지" className={styles.imagePreviewImg} />
+                    <button
+                      type="button"
+                      className={styles.imageRemoveBtn}
+                      onClick={() => { setImageFile(null); setImagePreview(null); }}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className={styles.imageAttachBtn}
+                    onClick={() => imageInputRef.current?.click()}
+                  >
+                    <ImageIcon size={13} /> 사진 첨부
+                  </button>
+                )}
+                <span className={styles.hint}>Ctrl+V 붙여넣기 또는 파일 선택 · JPG/PNG/GIF · 최대 300KB · MMS로 전송됨</span>
+              </div>
               <div className={styles.byteBar}>
                 <span className={byteClass}>{bytes} byte</span>
-                <MsgTypeBadge bytes={bytes} />
+                <MsgTypeBadge bytes={bytes} hasImage={!!imageFile} />
               </div>
-              {bytes > SMS_MAX && (
+              {!imageFile && bytes > SMS_MAX && (
                 <span className={styles.hint}>90 byte 초과 → LMS(장문)으로 자동 전환됩니다</span>
               )}
             </div>
@@ -691,11 +785,15 @@ export default function SMSPage() {
             <div className={styles.optionGrid}>
               <div className={styles.fieldGroup}>
                 <div className={styles.label}>문자 유형</div>
-                <select className={styles.select} value={msgType} onChange={(e) => setMsgType(e.target.value)}>
-                  <option value="">자동 (90byte 기준)</option>
-                  <option value="SMS">SMS (단문)</option>
-                  <option value="LMS">LMS (장문)</option>
-                </select>
+                {imageFile ? (
+                  <div className={styles.mmsFixedBadge}>MMS (사진 포함 — 자동)</div>
+                ) : (
+                  <select className={styles.select} value={msgType} onChange={(e) => setMsgType(e.target.value)}>
+                    <option value="">자동 (90byte 기준)</option>
+                    <option value="SMS">SMS (단문)</option>
+                    <option value="LMS">LMS (장문)</option>
+                  </select>
+                )}
               </div>
 
               {(msgType === 'LMS' || (msgType === '' && bytes > SMS_MAX)) && (

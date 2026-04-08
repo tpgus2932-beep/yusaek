@@ -501,6 +501,23 @@
     cursor: not-allowed;
 }
 
+.commentDeleteBtn {
+    margin-left: auto;
+    padding: 0.1rem 0.4rem;
+    font-size: 0.68rem;
+    background: transparent;
+    color: #ef4444;
+    border: 1px solid #ef4444;
+    border-radius: 4px;
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.15s;
+}
+
+.commentDeleteBtn:hover {
+    opacity: 1;
+}
+
 [data-theme='dark'] .commentItem {
     background: rgba(255,255,255,0.05);
 }
