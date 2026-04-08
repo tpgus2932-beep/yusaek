@@ -442,22 +442,17 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
         except Exception:
             pass
 
-    @router.on_event("startup")
-    def _startup():
-        nonlocal dispatcher_thread
+    # ─── 초기화: router build 시점에 eager하게 실행 ───
+    # (@router.on_event("startup")는 Starlette 1.0.0에서 제거됨 → eager init으로 대체)
+    try:
         _ensure_tables()
         _migrate_templates_from_settings()
-        if not run_local_dispatcher:
-            return
-        if dispatcher_thread and dispatcher_thread.is_alive():
-            return
-        dispatcher_stop.clear()
+    except Exception:
+        pass
+
+    if run_local_dispatcher:
         dispatcher_thread = threading.Thread(target=_dispatcher_loop, daemon=True, name="sms-outbox-dispatcher")
         dispatcher_thread.start()
-
-    @router.on_event("shutdown")
-    def _shutdown():
-        dispatcher_stop.set()
 
     @router.post("/send")
     async def sms_send(payload: dict = Body(...), user: str = Depends(get_current_user)):
