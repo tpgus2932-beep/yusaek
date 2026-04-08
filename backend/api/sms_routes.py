@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import threading
 import time
 import uuid
 from datetime import datetime
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 import httpx
-from fastapi import APIRouter, Body, Depends, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, UploadFile
 
 KST = ZoneInfo("Asia/Seoul")
 ALIGO_BASE = "https://apis.aligo.in"
@@ -162,6 +164,12 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sms_outbox_status_created ON sms_outbox(status, created_at)")
+            # migration: add image columns if not present
+            for _col in ["image_data TEXT", "image_name TEXT"]:
+                try:
+                    conn.execute(f"ALTER TABLE sms_outbox ADD COLUMN {_col}")
+                except Exception:
+                    pass
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sms_templates (
@@ -197,10 +205,13 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
         finally:
             conn.close()
 
-    async def _post(path: str, data: dict) -> dict:
+    async def _post(path: str, data: dict, files: dict | None = None) -> dict:
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                res = await client.post(f"{ALIGO_BASE}{path}", data=data)
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                if files:
+                    res = await client.post(f"{ALIGO_BASE}{path}", data=data, files=files)
+                else:
+                    res = await client.post(f"{ALIGO_BASE}{path}", data=data)
                 res.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text.strip() or f"Aligo API returned HTTP {exc.response.status_code}"
@@ -261,15 +272,17 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
         msg_type = _resolve_msg_type(payload)
 
         outbox_id = uuid.uuid4().hex
+        image_data = str(payload.get("image_data") or "") or None
+        image_name = str(payload.get("image_name") or "") or None
         conn = get_db()
         try:
             conn.execute(
                 """
                 INSERT INTO sms_outbox (
                     id, receiver, msg, msg_type, title, rdate, rtime, testmode_yn,
-                    sender, created_by, created_at, status
+                    sender, created_by, created_at, status, image_data, image_name
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
                 """,
                 (
                     outbox_id,
@@ -283,6 +296,8 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
                     str(payload.get("sender") or _sender()),
                     created_by,
                     datetime.now(KST).isoformat(),
+                    image_data,
+                    image_name,
                 ),
             )
             conn.commit()
@@ -296,7 +311,8 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
         try:
             rows = conn.execute(
                 """
-                SELECT id, receiver, msg, msg_type, title, rdate, rtime, testmode_yn, sender
+                SELECT id, receiver, msg, msg_type, title, rdate, rtime, testmode_yn, sender,
+                       image_data, image_name
                 FROM sms_outbox
                 WHERE status = 'pending'
                 ORDER BY created_at ASC
@@ -342,7 +358,14 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
                 if row["testmode_yn"]:
                     data["testmode_yn"] = row["testmode_yn"]
 
-                result = await _post("/send/", data)
+                if row["image_data"]:
+                    img_bytes = base64.b64decode(row["image_data"])
+                    img_name = row["image_name"] or "image.jpg"
+                    ext = (img_name.rsplit(".", 1)[-1] if "." in img_name else "jpg").lower()
+                    mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif"}.get(ext, "image/jpeg")
+                    result = await _post("/send/", data, files={"image": (img_name, img_bytes, mime)})
+                else:
+                    result = await _post("/send/", data)
                 if int(result.get("result_code", 0) or 0) <= 0:
                     raise HTTPException(status_code=502, detail=result.get("message") or "Failed to send SMS")
 
@@ -487,6 +510,50 @@ def build_sms_router(*, get_current_user, get_db, get_setting, set_setting, run_
             "internal-request-notify",
         )
         return {"ok": True, "queued": True, "queue_id": queue_id}
+
+    @router.post("/send-mms")
+    async def sms_send_mms(
+        receiver: str = Form(...),
+        msg: str = Form(""),
+        title: str = Form(""),
+        rdate: str = Form(""),
+        rtime: str = Form(""),
+        testmode_yn: str = Form(""),
+        image: Optional[UploadFile] = File(default=None),
+        user: str = Depends(get_current_user),
+    ):
+        image_data_b64 = None
+        image_name = None
+        if image and image.filename:
+            content = await image.read()
+            if len(content) > 300 * 1024:
+                raise HTTPException(status_code=400, detail="이미지 크기는 300KB 이하로 첨부하세요.")
+            image_data_b64 = base64.b64encode(content).decode()
+            image_name = image.filename
+
+        payload: dict = {
+            "receiver": receiver,
+            "msg": msg,
+            "msg_type": "MMS",
+            "title": title,
+            "rdate": rdate,
+            "rtime": rtime,
+            "testmode_yn": testmode_yn,
+        }
+        if image_data_b64:
+            payload["image_data"] = image_data_b64
+            payload["image_name"] = image_name
+
+        outbox_id, receivers = _enqueue_sms(payload, user)
+        return {
+            "result_code": 1,
+            "queued": True,
+            "queue_id": outbox_id,
+            "success_cnt": len(receivers),
+            "error_cnt": 0,
+            "msg_type": "MMS",
+            "message": "queued",
+        }
 
     @router.post("/remain")
     async def sms_remain(user: str = Depends(get_current_user)):
