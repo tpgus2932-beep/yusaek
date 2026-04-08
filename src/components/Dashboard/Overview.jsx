@@ -607,6 +607,25 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
         }
     };
 
+    const handleDeleteComment = async (requestId, commentId) => {
+        try {
+            const res = await fetch(`${API}/requests/${requestId}/comments/${commentId}`, {
+                method: 'DELETE',
+                headers: authHeaders,
+            });
+            if (!res.ok) return;
+            setCommentsCache((prev) => ({
+                ...prev,
+                [requestId]: {
+                    ...prev[requestId],
+                    items: (prev[requestId]?.items || []).filter((c) => c.id !== commentId),
+                },
+            }));
+        } catch {
+            // ignore
+        }
+    };
+
     const handleComplete = async (id) => {
         try {
             if (activityListRef.current) {
@@ -1473,6 +1492,15 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
                                                                 <span className={styles.commentTime}>
                                                                     {formatDateTime(c.created_at)}
                                                                 </span>
+                                                                {c.author_username === currentUser && (
+                                                                    <button
+                                                                        type="button"
+                                                                        className={styles.commentDeleteBtn}
+                                                                        onClick={() => handleDeleteComment(item.id, c.id)}
+                                                                    >
+                                                                        삭제
+                                                                    </button>
+                                                                )}
                                                             </div>
                                                             <div className={styles.commentText}>{c.text}</div>
                                                         </div>

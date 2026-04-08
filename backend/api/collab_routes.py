@@ -926,6 +926,24 @@ def build_collab_router(
             },
         }
 
+    @router.delete("/requests/{request_id}/comments/{comment_id}")
+    def delete_request_comment(request_id: int, comment_id: int, user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT author_username FROM request_comments WHERE id = ? AND request_id = ?",
+                (comment_id, request_id),
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="comment not found")
+            if row["author_username"] != user:
+                raise HTTPException(status_code=403, detail="본인 댓글만 삭제할 수 있습니다.")
+            conn.execute("DELETE FROM request_comments WHERE id = ?", (comment_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True}
+
     @router.get("/client-schedule/db")
     def get_client_schedule_db(user: str = Depends(get_current_user)):
         conn = get_db()
