@@ -76,6 +76,7 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
     const resizeStateRef = useRef(null);
     const activityListRef = useRef(null);
     const pendingActivityScrollTopRef = useRef(null);
+    const hasLoadedActivityRef = useRef(false);
     const previousOpenRequestIdsRef = useRef(new Set());
     const requestAlertsPrimedRef = useRef(false);
     const previousSmsWatchIdsRef = useRef(new Set());
@@ -218,8 +219,9 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
     };
 
     const fetchActivity = async () => {
+        const isInitial = !hasLoadedActivityRef.current;
         try {
-            setLoadingActivity(true);
+            if (isInitial) setLoadingActivity(true);
             const res = await fetch(`${API}/requests/assigned`, {
                 headers: authHeaders,
             });
@@ -283,6 +285,7 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
             requestAlertsPrimedRef.current = true;
             previousSmsWatchIdsRef.current = openRequestIds;
             requestSmsWatchPrimedRef.current = true;
+            hasLoadedActivityRef.current = true;
             if (activityListRef.current) {
                 pendingActivityScrollTopRef.current = activityListRef.current.scrollTop;
             }
@@ -290,7 +293,7 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
         } catch (err) {
             setError(err.message || 'Failed to load activity');
         } finally {
-            setLoadingActivity(false);
+            if (isInitial) setLoadingActivity(false);
         }
     };
 
