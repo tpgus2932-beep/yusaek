@@ -733,6 +733,9 @@ def _init_my_todos():
             owner_display TEXT NOT NULL DEFAULT '',
             text TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'open',
+            sort_order REAL NOT NULL DEFAULT 0,
+            group_id TEXT NOT NULL DEFAULT '',
+            group_title TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             completed_at TEXT,
             completed_comment TEXT
@@ -744,6 +747,29 @@ def _init_my_todos():
 
 
 _init_my_todos()
+
+
+def _ensure_my_todo_column(column: str, ddl: str):
+    conn = _get_db()
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(my_todos)").fetchall()]
+    if column not in cols:
+        conn.execute(ddl)
+        conn.commit()
+    conn.close()
+
+
+_ensure_my_todo_column(
+    "sort_order",
+    "ALTER TABLE my_todos ADD COLUMN sort_order REAL NOT NULL DEFAULT 0",
+)
+_ensure_my_todo_column(
+    "group_id",
+    "ALTER TABLE my_todos ADD COLUMN group_id TEXT NOT NULL DEFAULT ''",
+)
+_ensure_my_todo_column(
+    "group_title",
+    "ALTER TABLE my_todos ADD COLUMN group_title TEXT NOT NULL DEFAULT ''",
+)
 
 
 def _init_order_registered_codes():
@@ -1156,6 +1182,7 @@ app.include_router(
         AMOOD_COL2_OUTPUT=AMOOD_COL2_OUTPUT,
         get_shared_incoming_counts=_get_shared_incoming_counts,
         set_shared_incoming_counts=_set_shared_incoming_counts,
+        get_shared_defect_counts=_get_shared_defect_counts,
     )
 )
 app.include_router(

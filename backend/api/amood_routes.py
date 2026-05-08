@@ -42,8 +42,19 @@ def build_amood_router(
     AMOOD_COL2_OUTPUT,
     get_shared_incoming_counts,
     set_shared_incoming_counts,
+    get_shared_defect_counts,
 ):
     router = APIRouter()
+
+    def _amood_defect_count(code: str) -> int:
+        normalized = amood_norm_barcode(code)
+        return int((get_shared_defect_counts() or {}).get(normalized, 0))
+
+    def _amood_item_has_defect(item: dict) -> bool:
+        return _amood_defect_count(item.get("barcode", "")) > 0
+
+    def _amood_invoice_has_defect(state) -> bool:
+        return any(_amood_item_has_defect(it) for it in state.pending_items)
 
     def _sync_shared_incoming(state):
         state.incoming_counts = dict(get_shared_incoming_counts() or {})
@@ -62,6 +73,7 @@ def build_amood_router(
                     "option": it.get("option", "") or "",
                     "remain": it.get("remaining", 0),
                     "incoming": incoming_n,
+                    "defect": _amood_defect_count(code),
                 }
             )
         return items
@@ -78,6 +90,7 @@ def build_amood_router(
                     "option": it.get("option", "") or "",
                     "remain": it.get("remaining", 0),
                     "incoming": incoming_n,
+                    "defect": _amood_defect_count(code),
                 }
         return None
 
@@ -263,6 +276,7 @@ def build_amood_router(
             "current_invoice": state.current_invoice,
             "items": _amood_items_view(state),
             "current_next": _amood_first_remaining(state),
+            "invoice_has_defect": _amood_invoice_has_defect(state),
         }
 
     @router.post("/amood/reset")
@@ -347,6 +361,7 @@ def build_amood_router(
             "invoice_done": all_done,
             "items": _amood_items_view(state),
             "current_next": _amood_first_remaining(state),
+            "invoice_has_defect": _amood_invoice_has_defect(state),
         }
 
     @router.post("/amood/scan/item")
@@ -381,6 +396,7 @@ def build_amood_router(
             }
 
         matched["remaining"] = int(matched.get("remaining", 0)) - 1
+        item_has_defect = _amood_item_has_defect(matched)
         try:
             amood_ws_cell(state.ws2, AMOOD_COL2_QTY, matched["row"]).value = matched["remaining"]
         except Exception as e:
@@ -400,6 +416,8 @@ def build_amood_router(
             "invoice_done": all_done,
             "items": _amood_items_view(state),
             "current_next": _amood_first_remaining(state),
+            "item_has_defect": item_has_defect,
+            "invoice_has_defect": _amood_invoice_has_defect(state),
         }
 
     @router.post("/amood/export-shipping")
@@ -460,6 +478,7 @@ def build_amood_router(
         if not rows:
             raise HTTPException(status_code=400, detail="추출할 데이터가 없습니다.")
 
+        rows.sort(key=lambda row: str(row.get("Description", "")), reverse=True)
         df = pd.DataFrame(rows, columns=["Title", "Description", "Code"])
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:

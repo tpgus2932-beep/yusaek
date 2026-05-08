@@ -227,9 +227,7 @@ function buildItemText(row) {
 function buildGuideMessage(dValue) {
   const dateValue = coerceDate(dValue);
   if (dateValue) {
-    const next = new Date(dateValue);
-    next.setDate(dateValue.getDate() + 1);
-    return `\uc548\ub155\ud558\uc138\uc694. \uc8fc\ubb38\ud574\uc8fc\uc2e0 \uc0c1\ud488 \ubc30\uc1a1 \uc77c\uc815\uc740 ${next.getFullYear()}\ub144 ${next.getMonth() + 1}\uc6d4 ${next.getDate()}\uc77c ${WEEKDAY_LABELS[(next.getDay() + 6) % 7]} \ubc1c\uc1a1 \uc608\uc815\uc785\ub2c8\ub2e4.`;
+    return `\uc548\ub155\ud558\uc138\uc694. \uc8fc\ubb38\ud574\uc8fc\uc2e0 \uc0c1\ud488 \ubc30\uc1a1 \uc77c\uc815\uc740 ${dateValue.getFullYear()}\ub144 ${dateValue.getMonth() + 1}\uc6d4 ${dateValue.getDate()}\uc77c ${WEEKDAY_LABELS[(dateValue.getDay() + 6) % 7]} \ubc1c\uc1a1 \uc608\uc815\uc785\ub2c8\ub2e4.`;
   }
 
   const text = toDisplayText(dValue).replace(/\s+/g, '');
@@ -309,12 +307,41 @@ function rowsToSheet2AoA(rows) {
   return rows.map((row) => [row.A, row.B, row.C, row.D, row.E, row.F, row.G, row.H, row.I]);
 }
 
-function expandDateShorthand(value) {
+function expandDateShorthand(value, referenceDate = new Date()) {
   const text = (value || '').trim();
-  // "0325" → "2026-03-25", "325" → "2026-03-25"
-  if (/^\d{3,4}$/.test(text)) {
-    const year = new Date().getFullYear();
-    const padded = text.padStart(4, '0');
+  const baseDate = coerceDate(referenceDate) || new Date();
+  const compact = text.replace(/\s+/g, '').replace(/요일/g, '');
+
+  if (compact === '오늘') {
+    return formatInputDate(baseDate);
+  }
+  if (compact === '내일') {
+    const next = new Date(baseDate);
+    next.setDate(baseDate.getDate() + 1);
+    return formatInputDate(next);
+  }
+  if (compact === '모레') {
+    const next = new Date(baseDate);
+    next.setDate(baseDate.getDate() + 2);
+    return formatInputDate(next);
+  }
+
+  const weekdayMatch = compact.match(/^(이번주|다음주|다다음주)(월|화|수|목|금|토|일)$/);
+  if (weekdayMatch) {
+    const [, weekLabel, weekdayLabel] = weekdayMatch;
+    const weekdayIndexMap = { 월: 0, 화: 1, 수: 2, 목: 3, 금: 4, 토: 5, 일: 6 };
+    const currentWeekMonday = new Date(baseDate);
+    currentWeekMonday.setDate(baseDate.getDate() - ((baseDate.getDay() + 6) % 7));
+
+    const weekOffsetMap = { 이번주: 0, 다음주: 7, 다다음주: 14 };
+    const result = new Date(currentWeekMonday);
+    result.setDate(currentWeekMonday.getDate() + weekOffsetMap[weekLabel] + weekdayIndexMap[weekdayLabel]);
+    return formatInputDate(result);
+  }
+
+  if (/^\d{3,4}$/.test(compact)) {
+    const year = baseDate.getFullYear();
+    const padded = compact.padStart(4, '0');
     const month = padded.slice(0, 2);
     const day = padded.slice(2, 4);
     const d = new Date(year, Number(month) - 1, Number(day));
@@ -540,7 +567,7 @@ export default function ClientSchedulePage() {
   };
 
   const handleDBlur = (id, value) => {
-    const expanded = expandDateShorthand(value);
+    const expanded = expandDateShorthand(value, baseDateText);
     if (expanded !== value) {
       setSheet2Rows((prev) => prev.map((row) => (row.id === id ? { ...row, D: expanded } : row)));
     }

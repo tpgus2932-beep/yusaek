@@ -6,7 +6,10 @@ import {
   Database, Download, Eye, FileSpreadsheet, RefreshCw, Save, Upload, XCircle,
 } from 'lucide-react';
 
-const TOOL_TABS = [{ key: 'purchase-deduction', label: '날짜별이체파일 양식' }];
+const TOOL_TABS = [
+  { key: 'purchase-deduction', label: '날짜별이체파일 양식' },
+  { key: 'vendor-tsv', label: 'TSV Process' },
+];
 
 const DEFAULT_ACCOUNT_PATH = String.raw`C:\Users\ksh29\OneDrive\Desktop\원베\거래처계좌데이터.xlsx`;
 const ACCOUNT_COLUMNS = ['A', 'B', 'C', 'D', 'E', 'F'];
@@ -29,6 +32,77 @@ const toExcelTextCell = (value) => {
   const text = (value ?? '').toString();
   if (!text) return '';
   return `="${text.replace(/"/g, '""')}"`;
+};
+
+const TSV_CHUNK_SIZE = 9;
+
+const parseLooseNumber = (value) => {
+  const normalized = String(value ?? '')
+    .replace(/,/g, '')
+    .replace(/[^\d.-]/g, '')
+    .trim();
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const parseVendorRows = (text) => {
+  const normalized = String(text || '').replace(/\r/g, '').trim();
+  if (!normalized) return [];
+
+  const lines = normalized
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (!lines.length) return [];
+
+  if (lines.some((line) => line.includes('\t'))) {
+    return lines
+      .map((line) => line.split('\t').map((cell) => cell.trim()))
+      .filter((row) => row.some((cell) => cell));
+  }
+
+  const rows = [];
+  for (let i = 0; i < lines.length; i += TSV_CHUNK_SIZE) {
+    rows.push(lines.slice(i, i + TSV_CHUNK_SIZE));
+  }
+  return rows;
+};
+
+const buildVendorSummaryRows = (text) => {
+  const rows = parseVendorRows(text);
+  if (!rows.length) {
+    throw new Error('붙여넣은 데이터가 없습니다.');
+  }
+
+  const invalidRowIndex = rows.findIndex((row) => row.length < 8);
+  if (invalidRowIndex >= 0) {
+    throw new Error(`${invalidRowIndex + 1}번째 줄 묶음의 컬럼 수가 부족합니다.`);
+  }
+
+  const grouped = new Map();
+
+  rows.forEach((row) => {
+    const vendor = String(row[3] || '').trim();
+    if (!vendor) return;
+
+    const current = grouped.get(vendor) || {
+      A: vendor,
+      B: 0,
+      C: String(row[7] || '').trim(),
+      D: String(row[1] || '').trim(),
+      E: String(row[5] || '').trim(),
+    };
+
+    current.B += parseLooseNumber(row[2]);
+    if (!current.C && row[7]) current.C = String(row[7]).trim();
+    if (!current.D && row[1]) current.D = String(row[1]).trim();
+    if (!current.E && row[5]) current.E = String(row[5]).trim();
+
+    grouped.set(vendor, current);
+  });
+
+  return Array.from(grouped.values());
 };
 
 const fallbackCopyText = (text) => {
@@ -73,6 +147,11 @@ export default function CollaborationMenuPage() {
   const [accountSearch, setAccountSearch] = useState('');
   const [appendText, setAppendText] = useState('');
   const [appendSkipHeader, setAppendSkipHeader] = useState(false);
+  const [vendorText, setVendorText] = useState('');
+  const [vendorRows, setVendorRows] = useState([]);
+  const [vendorCopying, setVendorCopying] = useState(false);
+  const [vendorMessage, setVendorMessage] = useState('');
+  const [vendorMessageType, setVendorMessageType] = useState('');
 
   const summaryItems = useMemo(() => {
     if (!result?.summary) return [];
@@ -102,9 +181,34 @@ export default function CollaborationMenuPage() {
     );
   }, [accountRows, accountSearch]);
 
+  const vendorSummary = useMemo(() => {
+    const totalAmount = vendorRows.reduce((sum, row) => sum + Number(row.B || 0), 0);
+    return {
+      rowCount: vendorRows.length,
+      totalAmount,
+    };
+  }, [vendorRows]);
+
+  const vendorCopyText = useMemo(() => {
+    if (!vendorRows.length) return '';
+    const lines = vendorRows.map((row) => [
+        toExcelTextCell(row.A),
+        String(row.B),
+        toExcelTextCell(row.C),
+        toExcelTextCell(row.D),
+        toExcelTextCell(row.E),
+      ].join('\t'));
+    return lines.join('\n');
+  }, [vendorRows]);
+
   const setFeedback = (type, nextMessage) => {
     setMessageType(type);
     setMessage(nextMessage);
+  };
+
+  const setVendorFeedback = (type, nextMessage) => {
+    setVendorMessageType(type);
+    setVendorMessage(nextMessage);
   };
 
   const fetchAccountRows = async () => {
@@ -321,6 +425,41 @@ export default function CollaborationMenuPage() {
       setFeedback('error', error.message || '거래처 계좌 데이터 추가에 실패했습니다.');
     } finally {
       setAccountSaving(false);
+    }
+  };
+
+  const handleVendorProcess = () => {
+    try {
+      const nextRows = buildVendorSummaryRows(vendorText);
+      setVendorRows(nextRows);
+      setVendorFeedback('ok', `${nextRows.length}건의 고유 D값으로 가공했습니다.`);
+    } catch (error) {
+      setVendorRows([]);
+      setVendorFeedback('error', error.message || 'TSV 가공에 실패했습니다.');
+    }
+  };
+
+  const handleVendorCopy = async () => {
+    if (!vendorCopyText) {
+      setVendorFeedback('error', '먼저 가공을 실행해주세요.');
+      return;
+    }
+    try {
+      setVendorCopying(true);
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(vendorCopyText);
+        } else {
+          fallbackCopyText(vendorCopyText);
+        }
+      } catch (_) {
+        fallbackCopyText(vendorCopyText);
+      }
+      setVendorFeedback('ok', '가공 결과를 클립보드에 복사했습니다.');
+    } catch (error) {
+      setVendorFeedback('error', error.message || '가공 결과 복사에 실패했습니다.');
+    } finally {
+      setVendorCopying(false);
     }
   };
 
@@ -610,6 +749,141 @@ export default function CollaborationMenuPage() {
     </div>
   );
 
+  const renderVendorTsv = () => (
+    <div className={styles.stack}>
+      <section className={styles.hero}>
+        <div className={styles.heroText}>
+          <h2 className={styles.title}>TSV 가공</h2>
+          <p className={styles.subtitle}>D열을 기준으로 C열을 합산하고, H/B/F 열을 지정 순서로 재배치해서 바로 복사할 수 있게 만듭니다.</p>
+        </div>
+        <div className={styles.heroIcon}><Clipboard size={26} /></div>
+      </section>
+
+      <section className={styles.card}>
+        <div className={styles.cardHeader}>
+          <div>
+            <div className={styles.cardTitleRow}>
+              <div className={`${styles.cardIcon} ${styles.cardIconBlue}`}><FileSpreadsheet size={16} /></div>
+              <h3 className={styles.cardTitle}>붙여넣기 데이터 가공</h3>
+            </div>
+            <p className={styles.cardHint}>TSV 붙여넣기와 9줄 반복 붙여넣기를 모두 지원합니다. 같은 D열 값은 한 줄로 합쳐집니다.</p>
+          </div>
+          <div className={styles.headerActions}>
+            <button type="button" className={styles.primaryBtn} onClick={handleVendorProcess}>
+              <Eye size={14} />가공
+            </button>
+            <button
+              type="button"
+              className={styles.secondaryBtn}
+              onClick={handleVendorCopy}
+              disabled={vendorCopying || !vendorRows.length}
+            >
+              <Clipboard size={14} />{vendorCopying ? '복사 중...' : '결과 복사'}
+            </button>
+          </div>
+        </div>
+
+        <label className={styles.field}>
+          <span className={styles.inputLabel}>TSV / 9줄 묶음 원본</span>
+          <textarea
+            className={styles.textarea}
+            value={vendorText}
+            onChange={(e) => setVendorText(e.target.value)}
+            placeholder={'020\t1005504775443\t71000\t히피스\t우리\t이도영(히피스)\tㅇ\tX\t12월 01일\n...\n\n탭 없이 셀값이 한 줄씩 내려오는 9줄 반복도 가능합니다.'}
+            rows={12}
+          />
+        </label>
+
+        <div className={styles.ruleBox}>
+          {[
+            '같은 D열 데이터는 하나로 합칩니다.',
+            '출력 A열은 고유한 D열 값입니다.',
+            '출력 B열은 D별 C열 합계입니다.',
+            '출력 C/D/E열은 H/B/F열 순서로 채웁니다.',
+          ].map((text, i) => (
+            <div key={i} className={styles.ruleItem}>
+              <span className={styles.ruleNum}>{i + 1}</span>
+              {text}
+            </div>
+          ))}
+        </div>
+
+        {vendorMessage && (
+          <div className={`${styles.messageBox} ${vendorMessageType === 'error' ? styles.messageError : styles.messageOk}`}>
+            {vendorMessageType === 'error' ? <XCircle size={15} /> : <CheckCircle size={15} />}
+            {vendorMessage}
+          </div>
+        )}
+      </section>
+
+      {vendorRows.length > 0 && (
+        <>
+          <section className={styles.summaryGrid}>
+            <article className={styles.summaryCard}>
+              <span className={styles.summaryLabel}>UNIQUE D</span>
+              <strong className={styles.summaryValue}>{vendorSummary.rowCount}건</strong>
+            </article>
+            <article className={styles.summaryCard}>
+              <span className={styles.summaryLabel}>SUM C</span>
+              <strong className={styles.summaryValue}>{formatAmount(vendorSummary.totalAmount)}원</strong>
+            </article>
+          </section>
+
+          <section className={styles.card}>
+            <div className={styles.cardHeader}>
+              <div>
+                <div className={styles.cardTitleRow}>
+                  <div className={`${styles.cardIcon} ${styles.cardIconGreen}`}><Eye size={16} /></div>
+                  <h3 className={styles.cardTitle}>가공 결과</h3>
+                </div>
+                <p className={styles.cardHint}>A=unique D, B=sum C, C=H, D=B, E=F</p>
+              </div>
+              <span className={styles.badgeSuccess}>{vendorRows.length}건</span>
+            </div>
+
+            <div className={styles.tableWrap}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th>A</th>
+                    <th>B</th>
+                    <th>C</th>
+                    <th>D</th>
+                    <th>E</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {vendorRows.map((row, index) => (
+                    <tr key={`${row.A}-${index}`}>
+                      <td>{row.A}</td>
+                      <td>{formatAmount(row.B)}</td>
+                      <td>{row.C}</td>
+                      <td>{row.D}</td>
+                      <td>{row.E}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className={styles.card}>
+            <div className={styles.cardHeader}>
+              <div>
+                <div className={styles.cardTitleRow}>
+                  <div className={`${styles.cardIcon} ${styles.cardIconAmber}`}><Clipboard size={16} /></div>
+                  <h3 className={styles.cardTitle}>복사용 텍스트</h3>
+                </div>
+                <p className={styles.cardHint}>엑셀에 바로 붙여넣을 수 있는 TSV 결과입니다.</p>
+              </div>
+            </div>
+            <textarea className={styles.textarea} value={vendorCopyText} readOnly rows={8} />
+          </section>
+        </>
+      )}
+    </div>
+  );
+
   return (
     <div className={styles.page}>
       <div className={styles.tabs}>
@@ -626,6 +900,7 @@ export default function CollaborationMenuPage() {
       </div>
 
       {activeTab === 'purchase-deduction' && renderPurchaseDeduction()}
+      {activeTab === 'vendor-tsv' && renderVendorTsv()}
     </div>
   );
 }

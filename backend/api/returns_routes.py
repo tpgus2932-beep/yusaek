@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import shutil
 import tempfile
 import uuid
@@ -71,6 +72,26 @@ def build_returns_router(
         buf = io.BytesIO()
         book.save(buf)
         return buf.getvalue()
+
+    def _clean_exchange_reason(value) -> str:
+        if value is None or pd.isna(value):
+            return ""
+        text = str(value).strip()
+        if text.lower() in ("nan", "none"):
+            return ""
+        parts = [part.strip() for part in re.split(r"[\r\n]+", text) if part.strip()]
+        return normalize_spaces(" ".join(parts))
+
+    def _exchange_type(reason: str) -> str:
+        text = normalize_spaces(reason or "")
+        if "판매자" in text:
+            return "교환판매자"
+        if "구매자" in text or "고객" in text:
+            return "교환고객"
+        return "교환고객"
+
+    def _exchange_sound_type(exchange_type: str) -> str:
+        return "교환불량" if exchange_type == "교환판매자" else "교환정상"
 
     @router.get("/returns/state")
     def returns_state(user: str = Depends(get_current_user)):
@@ -216,6 +237,48 @@ def build_returns_router(
         state.df2 = df
         state.df2_index = idx
         return {"ok": True, "index_count": len(idx), "status": return_status(state)}
+
+    @router.post("/returns/exchange")
+    def returns_upload_exchange(
+        file: UploadFile = File(...),
+        user: str = Depends(get_current_user),
+    ):
+        ext = Path(file.filename or "").suffix.lower()
+        if ext not in return_allowed_exts:
+            raise HTTPException(status_code=400, detail="xls/xlsx/xlsm만 업로드 가능")
+
+        tmp_path = Path(tempfile.gettempdir()) / f"returns_exchange_{uuid.uuid4().hex}{ext}"
+        with tmp_path.open("wb") as out:
+            shutil.copyfileobj(file.file, out)
+
+        try:
+            df = read_return_excel(tmp_path)
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        if df.shape[1] < 20:
+            raise HTTPException(status_code=400, detail="교환 엑셀에 필요한 열(F,G,I,J,T)이 없습니다. (열 개수가 부족)")
+
+        df["F_name"] = df.iloc[:, 5].apply(clean_product_name)
+        df["G_opt"] = df.iloc[:, 6].apply(lowercase_size_words).apply(option_slash_to_space)
+        df["QTY"] = df.iloc[:, 8].apply(clean_qty)
+        df["EXCHANGE_REASON"] = df.iloc[:, 9].apply(_clean_exchange_reason)
+        df["ITEM_TEXT"] = df.apply(lambda r: normalize_spaces(f"{r.get('F_name','')} {r.get('G_opt','')}"), axis=1)
+        df["T_clean"] = df.iloc[:, 19].apply(clean_invoice)
+
+        idx: dict[str, list[int]] = {}
+        for i, v in enumerate(df["T_clean"].tolist()):
+            if not v:
+                continue
+            idx.setdefault(v, []).append(i)
+
+        state = get_return_state(user)
+        state.exchange_df = df
+        state.exchange_index = idx
+        return {"ok": True, "exchange_index_count": len(idx), "status": return_status(state)}
 
     @router.post("/returns/cost-base/reload")
     def returns_cost_base_reload(user: str = Depends(get_current_user)):
@@ -434,6 +497,44 @@ def build_returns_router(
                 "queues": return_queue_payload(state),
             }
 
+        exchange_row_indexes = []
+        if getattr(state, "exchange_index", None):
+            exchange_row_indexes = state.exchange_index.get(barcode, [])
+
+        if exchange_row_indexes:
+            state.last_added_ids = []
+            last_types = set()
+            for row_i in exchange_row_indexes:
+                row = state.exchange_df.iloc[row_i]
+                exchange_reason = row.get("EXCHANGE_REASON", "")
+                exchange_type = _exchange_type(exchange_reason)
+                sound_type = _exchange_sound_type(exchange_type)
+                item = {
+                    "id": state.next_id,
+                    "scan": barcode,
+                    "match": barcode,
+                    "item_text": row.get("ITEM_TEXT", ""),
+                    "qty": row.get("QTY", ""),
+                    "type": exchange_type,
+                    "reason": exchange_reason,
+                    "sound_type": sound_type,
+                }
+                state.next_id += 1
+                state.last_added_ids.append(item["id"])
+                if exchange_type == "교환판매자":
+                    state.queue_exchange_seller.append(item)
+                else:
+                    state.queue_exchange_customer.append(item)
+                state.all_items.append(item)
+                last_types.add(exchange_type)
+
+            if len(last_types) == 1:
+                state.last_type = next(iter(last_types))
+            else:
+                state.last_type = "혼합(" + ",".join(sorted(last_types)) + ")"
+            state.scanned_barcodes.add(barcode)
+            return {"ok": True, "last_type": state.last_type, "sound_type": sound_type, "queues": return_queue_payload(state)}
+
         if not state.map_d_to_e:
             raise HTTPException(status_code=400, detail="먼저 1번 엑셀을 불러오세요.")
         if state.df2 is None or state.df2_index is None:
@@ -509,6 +610,9 @@ def build_returns_router(
         state.queue_seller = [it for it in state.queue_seller if it.get("id") not in remove_ids]
         state.queue_customer = [it for it in state.queue_customer if it.get("id") not in remove_ids]
         state.queue_unmatched = [it for it in state.queue_unmatched if it.get("id") not in remove_ids]
+        state.queue_exchange = [it for it in state.queue_exchange if it.get("id") not in remove_ids]
+        state.queue_exchange_seller = [it for it in state.queue_exchange_seller if it.get("id") not in remove_ids]
+        state.queue_exchange_customer = [it for it in state.queue_exchange_customer if it.get("id") not in remove_ids]
         state.all_items = [it for it in state.all_items if it.get("id") not in remove_ids]
         state.last_added_ids = []
         state.last_type = "-"
@@ -520,6 +624,9 @@ def build_returns_router(
         state.queue_seller.clear()
         state.queue_customer.clear()
         state.queue_unmatched.clear()
+        state.queue_exchange.clear()
+        state.queue_exchange_seller.clear()
+        state.queue_exchange_customer.clear()
         state.all_items.clear()
         state.last_added_ids.clear()
         state.scanned_barcodes.clear()
@@ -536,9 +643,12 @@ def build_returns_router(
             if not items:
                 raise HTTPException(status_code=400, detail="전체 대기 데이터가 없습니다.")
         else:
-            items = state.queue_customer
+            exchange_normal_items = [
+                item for item in state.queue_exchange_customer if item.get("sound_type") == "교환정상"
+            ]
+            items = list(state.queue_customer) + exchange_normal_items
             if not items:
-                raise HTTPException(status_code=400, detail="고객 대기 데이터가 없습니다.")
+                raise HTTPException(status_code=400, detail="고객 대기 또는 교환정상 데이터가 없습니다.")
 
         if not state.cost_map:
             try:
@@ -706,7 +816,14 @@ def build_returns_router(
     @router.post("/returns/download/queues")
     def returns_download_queues(payload: dict = Body(...), user: str = Depends(get_current_user)):
         state = get_return_state(user)
-        if (not state.queue_seller) and (not state.queue_customer) and (not state.queue_unmatched):
+        if (
+            (not state.queue_seller)
+            and (not state.queue_customer)
+            and (not state.queue_unmatched)
+            and (not state.queue_exchange)
+            and (not state.queue_exchange_seller)
+            and (not state.queue_exchange_customer)
+        ):
             raise HTTPException(status_code=400, detail="추출할 대기 데이터가 없습니다.")
 
         fmt = (payload.get("format") or "xlsx").lower().strip()
@@ -716,8 +833,10 @@ def build_returns_router(
         df_seller = pd.DataFrame(state.queue_seller)
         df_customer = pd.DataFrame(state.queue_customer)
         df_unmatched = pd.DataFrame(state.queue_unmatched)
+        df_exchange_seller = pd.DataFrame(state.queue_exchange_seller)
+        df_exchange_customer = pd.DataFrame(list(state.queue_exchange_customer) + list(state.queue_exchange))
 
-        for dfx in (df_seller, df_customer, df_unmatched):
+        for dfx in (df_seller, df_customer, df_unmatched, df_exchange_seller, df_exchange_customer):
             if not dfx.empty:
                 dfx.drop(columns=["id"], inplace=True, errors="ignore")
                 dfx.rename(
@@ -727,6 +846,7 @@ def build_returns_router(
                         "item_text": "가공데이터",
                         "qty": "입고수량",
                         "type": "분류",
+                        "reason": "사유",
                     },
                     inplace=True,
                 )
@@ -737,11 +857,19 @@ def build_returns_router(
                 df_seller.to_excel(writer, index=False, sheet_name="판매자")
                 df_customer.to_excel(writer, index=False, sheet_name="고객")
                 df_unmatched.to_excel(writer, index=False, sheet_name="미매칭")
+                df_exchange_seller.to_excel(writer, index=False, sheet_name="교환판매자")
+                df_exchange_customer.to_excel(writer, index=False, sheet_name="교환고객")
             filename = "반품대기_추출.xlsx"
             media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         else:
             content = _build_xls_bytes_from_sheets(
-                [("판매자", df_seller), ("고객", df_customer), ("미매칭", df_unmatched)]
+                [
+                    ("판매자", df_seller),
+                    ("고객", df_customer),
+                    ("미매칭", df_unmatched),
+                    ("교환판매자", df_exchange_seller),
+                    ("교환고객", df_exchange_customer),
+                ]
             )
             filename = "반품대기_추출.xls"
             media_type = "application/vnd.ms-excel"

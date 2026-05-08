@@ -14,6 +14,15 @@ QTY_COL = 11
 
 PATTERN_S5 = re.compile(r"S(\d{5})")
 PATTERN_YUSAS5 = re.compile(r"YUSAS(\d{5})")
+HEADER_ALIASES = {
+    "code": ["상품코드", "바코드", "barcode", "code", "sku", "품번"],
+    "name": ["상품명", "품명", "product", "name"],
+    "option": ["옵션", "option", "옵션명"],
+    "invoice": ["송장", "송장번호", "운송장", "운송장번호", "invoice", "waybill", "delivery"],
+    "time": ["주문일시", "주문시간", "시간", "datetime", "date", "created", "결제일", "등록일"],
+    "qty": ["수량", "주문수량", "qty", "quantity", "개수"],
+    "otext": ["관리코드", "원본상품명", "공급처상품명"],
+}
 
 
 def _to_int(x, default=0):
@@ -29,6 +38,38 @@ def _to_str(x):
     if x is None:
         return ""
     return str(x).strip()
+
+
+def _normalize_header_name(value) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", "", str(value).strip()).casefold()
+
+
+def _find_column_by_header(headers: list, aliases: list[str]) -> int | None:
+    normalized_headers = [_normalize_header_name(v) for v in headers]
+    normalized_aliases = [_normalize_header_name(v) for v in aliases]
+    for idx, header in enumerate(normalized_headers, start=1):
+        if not header:
+            continue
+        for alias in normalized_aliases:
+            if alias and alias in header:
+                return idx
+    return None
+
+
+def _resolve_layout(ws) -> dict:
+    headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+    return {
+        "headers": headers,
+        "code_col": _find_column_by_header(headers, HEADER_ALIASES["code"]) or 8,
+        "name_col": _find_column_by_header(headers, HEADER_ALIASES["name"]) or 9,
+        "option_col": _find_column_by_header(headers, HEADER_ALIASES["option"]) or 10,
+        "qty_col": _find_column_by_header(headers, HEADER_ALIASES["qty"]) or QTY_COL,
+        "invoice_col": _find_column_by_header(headers, HEADER_ALIASES["invoice"]) or 13,
+        "time_col": _find_column_by_header(headers, HEADER_ALIASES["time"]) or 14,
+        "otext_col": _find_column_by_header(headers, HEADER_ALIASES["otext"]) or 15,
+    }
 
 
 def normalize_to_yusas(text: str | None) -> str:
@@ -131,17 +172,18 @@ def fill_merged_in_column(ws, col_idx=13, header_row=1):
 
 def process_and_load_any(path: Path):
     wb, ws = load_excel_any(path)
-    fill_merged_in_column(ws, col_idx=13, header_row=1)
+    layout = _resolve_layout(ws)
+    fill_merged_in_column(ws, col_idx=layout["invoice_col"], header_row=1)
 
-    # H열 코드 정규화
-    for row in ws.iter_rows(min_row=2, min_col=8, max_col=8):
+    # 상품코드 정규화
+    for row in ws.iter_rows(min_row=2, min_col=layout["code_col"], max_col=layout["code_col"]):
         cell = row[0]
         cell.value = normalize_to_yusas(cell.value)
 
-    # N열 기준 정렬
+    # 시간 기준 정렬
     rows = []
     for r in range(2, ws.max_row + 1):
-        nval = ws.cell(r, 14).value  # N
+        nval = ws.cell(r, layout["time_col"]).value
         row_values = [ws.cell(r, c).value for c in range(1, ws.max_column + 1)]
         rows.append([nval, row_values])
 
@@ -161,7 +203,7 @@ def process_and_load_any(path: Path):
 
     rows.sort(key=lambda x: parse_time(x[0]))
 
-    header = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+    header = layout["headers"]
     for r in range(1, ws.max_row + 1):
         for c in range(1, ws.max_column + 1):
             ws.cell(r, c).value = None
@@ -211,13 +253,13 @@ def process_and_load_any(path: Path):
         cur_run_members[code] = []
 
     for r in range(2, ws.max_row + 1):
-        code = _to_str(ws.cell(r, 8).value)     # H
-        name = _to_str(ws.cell(r, 9).value)     # I
-        option = _to_str(ws.cell(r, 10).value)  # J
-        inv = _to_str(ws.cell(r, 13).value)     # M
-        t = _parse_dt(ws.cell(r, 14).value)           # N
-        qty = _to_int(ws.cell(r, QTY_COL).value, default=1)
-        o_val = ws.cell(r, 15).value                  # O
+        code = _to_str(ws.cell(r, layout["code_col"]).value)
+        name = _to_str(ws.cell(r, layout["name_col"]).value)
+        option = _to_str(ws.cell(r, layout["option_col"]).value)
+        inv = _to_str(ws.cell(r, layout["invoice_col"]).value)
+        t = _parse_dt(ws.cell(r, layout["time_col"]).value)
+        qty = _to_int(ws.cell(r, layout["qty_col"]).value, default=1)
+        o_val = ws.cell(r, layout["otext_col"]).value if layout["otext_col"] <= ws.max_column else None
 
         if not (inv and code) or qty <= 0:
             prev_code_row = code

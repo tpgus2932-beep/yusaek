@@ -60,6 +60,9 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
     const [loadingTodayTodos, setLoadingTodayTodos] = useState(false);
     const [submittingTodayTodo, setSubmittingTodayTodo] = useState(false);
     const [selectedTodayTodoIds, setSelectedTodayTodoIds] = useState([]);
+    const [collapsedTodayGroups, setCollapsedTodayGroups] = useState({});
+    const [draggingTodaySectionKey, setDraggingTodaySectionKey] = useState('');
+    const [dragOverTodaySectionKey, setDragOverTodaySectionKey] = useState('');
     const [sharedTodoOpen, setSharedTodoOpen] = useState(false);
     const [sentRequestsOpen, setSentRequestsOpen] = useState(false);
     const [activityPanelWidth, setActivityPanelWidth] = useState(420);
@@ -88,6 +91,7 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
     const requestAlertsStorageKey = `dashboard:request-alerts:${dashboardUserKey}`;
     const requestSmsSentStorageKey = `dashboard:request-sms-sent:${dashboardUserKey}`;
     const requestSmsWatchSinceStorageKey = `dashboard:request-sms-watch-since:${dashboardUserKey}`;
+    const todayTodoGroupStorageKey = `dashboard:today-todo-groups:${dashboardUserKey}`;
 
     const authHeaders = getAuthHeaders();
     const currentUserPhone = useMemo(() => {
@@ -95,6 +99,24 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
         if (fromAuth) return fromAuth;
         return String(localStorage.getItem('phoneNumber') || '').replace(/[^0-9]/g, '');
     }, [authPhoneNumber]);
+
+    useEffect(() => {
+        try {
+            const raw = localStorage.getItem(todayTodoGroupStorageKey);
+            const parsed = raw ? JSON.parse(raw) : {};
+            setCollapsedTodayGroups(parsed && typeof parsed === 'object' ? parsed : {});
+        } catch {
+            setCollapsedTodayGroups({});
+        }
+    }, [todayTodoGroupStorageKey]);
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(todayTodoGroupStorageKey, JSON.stringify(collapsedTodayGroups));
+        } catch {
+            // ignore local cache failures
+        }
+    }, [collapsedTodayGroups, todayTodoGroupStorageKey]);
     const canSendLocalRequestSms = useMemo(() => {
         if (typeof window === 'undefined') return false;
         const host = (window.location.hostname || '').trim();
@@ -1152,14 +1174,155 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
         setSelectedTodayTodoIds((prev) => prev.filter((id) => validIds.has(id)));
     }, [todayTodos]);
 
+    const persistTodayTodoOrder = useCallback(async (orderedIds) => {
+        const res = await fetch(`${API}/my-todos/order`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', ...authHeaders },
+            body: JSON.stringify({ ordered_ids: orderedIds }),
+        });
+        if (handleUnauthorized(res)) return false;
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.detail || 'Failed to reorder my todos');
+        return true;
+    }, [authHeaders]);
+
     const orderedTodayTodos = useMemo(() => {
         return [...todayTodos].sort((a, b) => {
             const aDone = a.status === 'completed';
             const bDone = b.status === 'completed';
             if (aDone !== bDone) return aDone ? 1 : -1;
+            const orderDiff = Number(a.sort_order || 0) - Number(b.sort_order || 0);
+            if (orderDiff !== 0) return orderDiff;
             return String(a.created_at || '').localeCompare(String(b.created_at || ''));
         });
     }, [todayTodos]);
+
+    const todayTodoSections = useMemo(() => {
+        const sections = [];
+        const grouped = new Map();
+        orderedTodayTodos.forEach((item) => {
+            const groupId = String(item.group_id || '');
+            if (!groupId) {
+                sections.push({ type: 'item', key: `item:${item.id}`, item, ids: [item.id] });
+                return;
+            }
+            if (!grouped.has(groupId)) {
+                const section = {
+                    type: 'group',
+                    key: `group:${groupId}`,
+                    groupId,
+                    title: item.group_title || '선택 묶음',
+                    items: [],
+                    ids: [],
+                };
+                grouped.set(groupId, section);
+                sections.push(section);
+            }
+            grouped.get(groupId).items.push(item);
+            grouped.get(groupId).ids.push(item.id);
+        });
+        return sections;
+    }, [orderedTodayTodos]);
+
+    const moveTodayTodoBlock = useCallback(async (movingIds, targetIds) => {
+        const movingIdSet = new Set(movingIds);
+        const nextIds = orderedTodayTodos
+            .filter((item) => !movingIdSet.has(item.id))
+            .map((item) => item.id);
+        const targetIndex = nextIds.findIndex((id) => id === targetIds[0]);
+        if (targetIndex < 0) return;
+        nextIds.splice(targetIndex, 0, ...movingIds);
+        try {
+            const ok = await persistTodayTodoOrder(nextIds);
+            if (!ok) return;
+            await fetchTodayTodos();
+        } catch (err) {
+            setError(err.message || 'Failed to reorder my todos');
+        }
+    }, [orderedTodayTodos, persistTodayTodoOrder]);
+
+    useEffect(() => {
+        const nextGroupIds = new Set(
+            todayTodoSections
+                .filter((section) => section.type === 'group')
+                .map((section) => section.groupId)
+        );
+        setCollapsedTodayGroups((prev) => {
+            const next = {};
+            let changed = false;
+            Object.entries(prev).forEach(([groupId, isCollapsed]) => {
+                if (nextGroupIds.has(groupId)) next[groupId] = isCollapsed;
+                else changed = true;
+            });
+            nextGroupIds.forEach((groupId) => {
+                if (!(groupId in next)) {
+                    next[groupId] = true;
+                    changed = true;
+                }
+            });
+            return changed ? next : prev;
+        });
+    }, [todayTodoSections]);
+
+    const toggleTodayTodoGroup = (groupId) => {
+        setCollapsedTodayGroups((prev) => ({ ...prev, [groupId]: !prev[groupId] }));
+    };
+
+    const handleTodaySectionDrop = async (targetSection) => {
+        const draggingSection = todayTodoSections.find((section) => section.key === draggingTodaySectionKey);
+        if (!draggingSection || draggingSection.key === targetSection.key) {
+            setDraggingTodaySectionKey('');
+            setDragOverTodaySectionKey('');
+            return;
+        }
+        await moveTodayTodoBlock(draggingSection.ids, targetSection.ids);
+        setDraggingTodaySectionKey('');
+        setDragOverTodaySectionKey('');
+    };
+
+    const handleGroupSelectedTodayTodos = async () => {
+        if (selectedTodayTodoIds.length < 2) return;
+        const title = window.prompt('묶음 이름을 입력하세요.', '선택 묶음');
+        if (title === null) return;
+        try {
+            const res = await fetch(`${API}/my-todos/group`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...authHeaders },
+                body: JSON.stringify({ ids: selectedTodayTodoIds, title: title.trim() }),
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || 'Failed to group my todos');
+            if (data?.group_id) {
+                setCollapsedTodayGroups((prev) => ({ ...prev, [data.group_id]: true }));
+            }
+            setSelectedTodayTodoIds([]);
+            await fetchTodayTodos();
+        } catch (err) {
+            setError(err.message || 'Failed to group my todos');
+        }
+    };
+
+    const handleUngroupTodayTodos = async (groupId) => {
+        try {
+            const res = await fetch(`${API}/my-todos/ungroup`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...authHeaders },
+                body: JSON.stringify({ group_id: groupId }),
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || 'Failed to ungroup my todos');
+            setCollapsedTodayGroups((prev) => {
+                const next = { ...prev };
+                delete next[groupId];
+                return next;
+            });
+            await fetchTodayTodos();
+        } catch (err) {
+            setError(err.message || 'Failed to ungroup my todos');
+        }
+    };
 
     useEffect(() => {
         if (loadingActivity) return;
@@ -1227,6 +1390,14 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
                                 <button
                                     type="button"
                                     className={styles.filterBtn}
+                                    onClick={handleGroupSelectedTodayTodos}
+                                    disabled={selectedTodayTodoIds.length < 2}
+                                >
+                                    선택 묶기
+                                </button>
+                                <button
+                                    type="button"
+                                    className={styles.filterBtn}
                                     onClick={handleDeleteSelectedTodayTodos}
                                     disabled={selectedTodayTodoIds.length === 0}
                                 >
@@ -1261,22 +1432,139 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
                                 </button>
                             </div>
                         )}
+                        {todayTodoSections.length > 1 && (
+                            <div className={styles.todoDragHint}>할 일 카드를 끌어서 순서를 바꿀 수 있습니다.</div>
+                        )}
                         <div
                             className={`${styles.todoList} ${
                                 !showAllTodayTodos ? styles.todoListCollapsed : ''
                             }`}
                         >
                             {loadingTodayTodos && <div className={styles.mutedText}>불러오는 중...</div>}
-                            {!loadingTodayTodos && orderedTodayTodos.length === 0 && (
+                            {!loadingTodayTodos && todayTodoSections.length === 0 && (
                                 <div className={styles.mutedText}>
                                     등록된 오늘 할 일이 없습니다.
                                 </div>
                             )}
-                            {!loadingTodayTodos && orderedTodayTodos.map((item) => {
+                            {!loadingTodayTodos && todayTodoSections.map((section) => {
+                                if (section.type === 'group') {
+                                    const isCollapsed = collapsedTodayGroups[section.groupId] !== false;
+                                    return (
+                                        <div
+                                            key={section.groupId}
+                                            className={`${styles.todoGroup} ${draggingTodaySectionKey === section.key ? styles.todoSectionDragging : ''} ${dragOverTodaySectionKey === section.key && draggingTodaySectionKey !== section.key ? styles.todoSectionDropTarget : ''}`}
+                                            draggable
+                                            onDragStart={() => setDraggingTodaySectionKey(section.key)}
+                                            onDragEnd={() => {
+                                                setDraggingTodaySectionKey('');
+                                                setDragOverTodaySectionKey('');
+                                            }}
+                                            onDragOver={(e) => {
+                                                e.preventDefault();
+                                                if (draggingTodaySectionKey && draggingTodaySectionKey !== section.key) {
+                                                    setDragOverTodaySectionKey(section.key);
+                                                }
+                                            }}
+                                            onDragLeave={() => {
+                                                if (dragOverTodaySectionKey === section.key) {
+                                                    setDragOverTodaySectionKey('');
+                                                }
+                                            }}
+                                            onDrop={() => handleTodaySectionDrop(section)}
+                                        >
+                                            <div className={styles.todoGroupHeader}>
+                                                <button
+                                                    type="button"
+                                                    className={styles.todoGroupToggle}
+                                                    onClick={() => toggleTodayTodoGroup(section.groupId)}
+                                                >
+                                                    {isCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+                                                    <span>{section.title}</span>
+                                                    <span className={styles.todoGroupCount}>{section.items.length}</span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className={styles.todoDoneBtn}
+                                                    onClick={() => handleUngroupTodayTodos(section.groupId)}
+                                                >
+                                                    묶기 해제
+                                                </button>
+                                            </div>
+                                            {!isCollapsed && (
+                                                <div className={styles.todoGroupItems}>
+                                                    {section.items.map((item) => {
+                                                        const done = item.status === 'completed';
+                                                        const checked = selectedTodayTodoIds.includes(item.id);
+                                                        return (
+                                                            <div key={item.id} className={styles.todoItem}>
+                                                                <label className={styles.todoLabel}>
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        className={styles.todoCheckInput}
+                                                                        checked={checked}
+                                                                        onChange={() => toggleTodayTodoSelection(item.id)}
+                                                                    />
+                                                                    <span className={`${styles.todoCheckBox} ${checked ? styles.todoCheckBoxChecked : ''}`} aria-hidden="true">
+                                                                        {checked ? '✓' : ''}
+                                                                    </span>
+                                                                    <span className={`${styles.todoText} ${done ? styles.todoTextDone : ''}`}>
+                                                                        {item.text}
+                                                                    </span>
+                                                                </label>
+                                                                <div className={styles.todoActions}>
+                                                                    {done ? (
+                                                                        <button
+                                                                            type="button"
+                                                                            className={styles.secondaryBtn}
+                                                                            onClick={() => handleUncompleteTodayTodo(item.id)}
+                                                                        >
+                                                                            완료 해제
+                                                                        </button>
+                                                                    ) : (
+                                                                        <button
+                                                                            type="button"
+                                                                            className={styles.todoDoneBtn}
+                                                                            onClick={() => handleCompleteTodayTodo(item.id)}
+                                                                        >
+                                                                            완료
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                }
+
+                                const item = section.item;
                                 const done = item.status === 'completed';
                                 const checked = selectedTodayTodoIds.includes(item.id);
                                 return (
-                                    <div key={item.id} className={styles.todoItem}>
+                                    <div
+                                        key={item.id}
+                                        className={`${styles.todoItem} ${styles.todoItemDraggable} ${draggingTodaySectionKey === section.key ? styles.todoSectionDragging : ''} ${dragOverTodaySectionKey === section.key && draggingTodaySectionKey !== section.key ? styles.todoSectionDropTarget : ''}`}
+                                        draggable
+                                        onDragStart={() => setDraggingTodaySectionKey(section.key)}
+                                        onDragEnd={() => {
+                                            setDraggingTodaySectionKey('');
+                                            setDragOverTodaySectionKey('');
+                                        }}
+                                        onDragOver={(e) => {
+                                            e.preventDefault();
+                                            if (draggingTodaySectionKey && draggingTodaySectionKey !== section.key) {
+                                                setDragOverTodaySectionKey(section.key);
+                                            }
+                                        }}
+                                        onDragLeave={() => {
+                                            if (dragOverTodaySectionKey === section.key) {
+                                                setDragOverTodaySectionKey('');
+                                            }
+                                        }}
+                                        onDrop={() => handleTodaySectionDrop(section)}
+                                    >
                                         <label className={styles.todoLabel}>
                                             <input
                                                 type="checkbox"
@@ -1314,7 +1602,7 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
                                 );
                             })}
                         </div>
-                        {orderedTodayTodos.length > 0 && (
+                        {todayTodoSections.length > 0 && (
                             <div className={styles.todoToggleRow}>
                                 <button
                                     type="button"

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import * as XLSX from "xlsx";
 import styles from "./BarcodePage.module.css";
 import { getDownloadFilename } from "../../lib/download";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
@@ -162,10 +163,14 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
   const [items, setItems] = useState([]);
   const [currentNext, setCurrentNext] = useState(null);
   const [invoiceDone, setInvoiceDone] = useState(false);
+  const [invoiceHasDefect, setInvoiceHasDefect] = useState(false);
   const [log, setLog] = useState([]);
   const scanRef = useRef(null);
   const soundsRef = useRef(null);
   const [fileInputKey, setFileInputKey] = useState(0);
+  const [easyadminBPreviewOpen, setEasyadminBPreviewOpen] = useState(false);
+  const [easyadminBPreviewText, setEasyadminBPreviewText] = useState("");
+  const [easyadminBCopyMessage, setEasyadminBCopyMessage] = useState("");
 
   const refreshStatus = async () => {
     try {
@@ -193,6 +198,7 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
         invoiceDone: new Audio("/sounds/zz.wav"),
         itemDone: new Audio("/sounds/xx.wav"),
         bad: new Audio("/sounds/dd.wav"),
+        invoiceDefect: new Audio("/sounds/bb.wav"),
       };
     }
   }, []);
@@ -216,6 +222,7 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
       setCurrentInvoice(data.current_invoice ?? null);
       setItems(data.items ?? []);
       setCurrentNext(data.current_next ?? null);
+      setInvoiceHasDefect(!!data.invoice_has_defect);
       setInvoiceDone(false);
     } catch {
       // ignore
@@ -225,6 +232,65 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
   useEffect(() => {
     refreshScanStatus();
   }, []);
+
+  const extractEasyadminColumnBText = async (file) => {
+    if (!file) return "";
+
+    const lowerName = (file.name || "").toLowerCase();
+    const workbook = lowerName.endsWith(".htm") || lowerName.endsWith(".html")
+      ? XLSX.read(await file.text(), { type: "string" })
+      : XLSX.read(await file.arrayBuffer(), { type: "array" });
+
+    const firstSheetName = workbook.SheetNames?.[0];
+    const sheet = firstSheetName ? workbook.Sheets[firstSheetName] : null;
+    if (!sheet) return "";
+
+    const rows = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      raw: false,
+      defval: "",
+    });
+    const values = [];
+
+    for (const row of rows.slice(1)) {
+      const columnB = row?.[1];
+      if (columnB == null || columnB === "") continue;
+      const parts = String(columnB)
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean);
+      values.push(...parts);
+    }
+
+    return values.join(", ");
+  };
+
+  const showEasyadminBPreview = async (file) => {
+    try {
+      const text = await extractEasyadminColumnBText(file);
+      setEasyadminBPreviewText(text);
+      setEasyadminBCopyMessage("");
+      setEasyadminBPreviewOpen(true);
+    } catch {
+      setEasyadminBPreviewText("");
+      setEasyadminBCopyMessage("");
+      setEasyadminBPreviewOpen(false);
+    }
+  };
+
+  const copyEasyadminBPreview = async () => {
+    if (!easyadminBPreviewText) {
+      setEasyadminBCopyMessage("복사할 값이 없습니다.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(easyadminBPreviewText);
+      setEasyadminBCopyMessage("복사 완료");
+    } catch {
+      setEasyadminBCopyMessage("복사 실패");
+    }
+  };
 
   const uploadExcel1 = async () => {
     if (!file1) {
@@ -270,6 +336,7 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "이지어드민 엑셀 업로드 실패");
       setMessage("이지어드민 엑셀 업로드 완료");
+      await showEasyadminBPreview(file2);
       await refreshStatus();
     } catch (err) {
       setMessage(err.message || "이지어드민 엑셀 업로드 실패");
@@ -376,12 +443,17 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
           setCurrentInvoice(null);
           setItems([]);
           setCurrentNext(null);
+          setInvoiceHasDefect(false);
           setInvoiceDone(false);
         } else {
           setCurrentInvoice(data.invoice);
           setItems(data.items ?? []);
           setCurrentNext(data.current_next ?? null);
+          setInvoiceHasDefect(!!data.invoice_has_defect);
           setInvoiceDone(!!data.invoice_done);
+          if (data.invoice_has_defect) {
+            playSound("invoiceDefect");
+          }
           pushLog(`송장 SET: ${data.invoice}`);
         }
       } else {
@@ -390,18 +462,22 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
           setCurrentInvoice(null);
           setItems([]);
           setCurrentNext(null);
+          setInvoiceHasDefect(false);
           setInvoiceDone(false);
         } else if (data.result === "TRUE") {
           setItems(data.items ?? []);
           setCurrentNext(data.current_next ?? null);
+          setInvoiceHasDefect(!!data.invoice_has_defect);
           if (data.invoice_done) {
             setInvoiceDone(true);
-            playSound("invoiceDone");
+            playSound(data.item_has_defect ? "invoiceDefect" : "invoiceDone");
             pushLog(`송장 완료: ${currentInvoice || ""}`.trim());
+          } else if (data.item_has_defect) {
+            playSound("invoiceDefect");
           } else if (data.remain === 0) {
             playSound("itemDone");
           }
-          pushLog(`TRUE ${data.code} (잔여 ${data.remain})`);
+          pushLog(`${data.item_has_defect ? "[불량] " : ""}TRUE ${data.code} (잔여 ${data.remain})`);
         } else {
           playSound("bad");
           pushLog(`FALSE ${data.code} (잔여 ${data.remain})`);
@@ -467,12 +543,16 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
       setCurrentInvoice(null);
       setItems([]);
       setCurrentNext(null);
+      setInvoiceHasDefect(false);
       setInvoiceDone(false);
       setLog([]);
       setIncomingFile(null);
       setIncomingMsg("");
       setIncomingCodes(null);
       setIncomingTotal(null);
+      setEasyadminBPreviewOpen(false);
+      setEasyadminBPreviewText("");
+      setEasyadminBCopyMessage("");
       setFileInputKey((v) => v + 1);
       setMessage("업로드 초기화 완료");
     } catch (err) {
@@ -484,6 +564,40 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
 
   return (
     <div className={styles.page}>
+      {easyadminBPreviewOpen && (
+        <div className={styles.modalOverlay} onClick={() => setEasyadminBPreviewOpen(false)}>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <div>
+                <h3 className={styles.modalTitle}>이지어드민 B열 목록</h3>
+                <p className={styles.subtitle} style={{ marginTop: "0.25rem" }}>
+                  업로드한 파일의 B열을 쉼표 기준으로 나눈 값입니다.
+                </p>
+              </div>
+              <div className={styles.modalActions}>
+                <button type="button" className={styles.secondaryBtn} onClick={copyEasyadminBPreview}>
+                  복사
+                </button>
+                <button type="button" className={styles.secondaryBtn} onClick={() => setEasyadminBPreviewOpen(false)}>
+                  닫기
+                </button>
+              </div>
+            </div>
+            {easyadminBCopyMessage && (
+              <div className={styles.statusMsg}>
+                <strong>{easyadminBCopyMessage}</strong>
+              </div>
+            )}
+            <textarea
+              readOnly
+              value={easyadminBPreviewText}
+              placeholder="표시할 B열 값이 없습니다."
+              className={styles.scanInput}
+              style={{ minHeight: "360px", resize: "vertical", lineHeight: 1.5 }}
+            />
+          </div>
+        </div>
+      )}
       <div className={styles.pageHeader}>
         <div>
           <h2 className={styles.title}>아무드</h2>
@@ -658,6 +772,9 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
                 {invoiceDone ? "✓ 완료됨" : `송장 ${currentInvoice}`}
               </span>
             )}
+            {currentInvoice && invoiceHasDefect && (
+              <span className={styles.inlineTagDanger}>불량 포함</span>
+            )}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
             {/* 현재 상품 */}
@@ -688,6 +805,11 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
                         {item.incoming > 0 && (
                           <span className={styles.inlineTagIncoming} style={{ fontSize: "1.05rem", padding: "0.36rem 0.8rem" }}>
                             입고 {item.incoming}
+                          </span>
+                        )}
+                        {item.defect > 0 && (
+                          <span className={styles.inlineTagDanger} style={{ fontSize: "1.05rem", padding: "0.36rem 0.8rem" }}>
+                            불량 {item.defect}
                           </span>
                         )}
                         {item.remain >= 2 && (
@@ -723,6 +845,9 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
                   </span>
                   {currentNext.incoming > 0 && (
                     <span className={styles.inlineTagIncoming}>입고 {currentNext.incoming}</span>
+                  )}
+                  {currentNext.defect > 0 && (
+                    <span className={styles.inlineTagDanger}>불량 {currentNext.defect}</span>
                   )}
                   {currentNext.remain >= 2 && (
                     <span className={styles.inlineMeta}>잔여 {currentNext.remain}</span>

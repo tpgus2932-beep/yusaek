@@ -56,6 +56,14 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [defectMode, setDefectMode] = useState(false);
   const [showDefectList, setShowDefectList] = useState(false);
   const [defectList, setDefectList] = useState([]);
+  const [defectBaseHeaders, setDefectBaseHeaders] = useState(["상품코드", "상품명", "공급처상품명", "D열", "옵션", "F열", "G열"]);
+  const [defectBaseRows, setDefectBaseRows] = useState([]);
+  const [defectBasePath, setDefectBasePath] = useState("");
+  const [defectBaseQuery, setDefectBaseQuery] = useState("");
+  const [defectBaseLoading, setDefectBaseLoading] = useState(false);
+  const [defectBaseSaving, setDefectBaseSaving] = useState(false);
+  const [defectBaseMessage, setDefectBaseMessage] = useState("");
+  const [showDefectBaseEditor, setShowDefectBaseEditor] = useState(false);
   const soundsRef = useRef(null);
 
   const pushLog = (msg) => setLog((prev) => [msg, ...prev]);
@@ -226,6 +234,11 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const renderItemLabel = (item) =>
     [item.name, item.option].filter(Boolean).join(" ").trim() || "(상품명 없음)";
 
+  const renderDefectLabel = (item) =>
+    [item.base_name || item.name, item.base_option || item.option].filter(Boolean).join(" ").trim()
+    || item.code
+    || "(상품명 없음)";
+
   const fetchDefectList = async () => {
     try {
       const res = await fetch(`${API}/barcode/defect/list`, { headers: getAuthHeaders() });
@@ -287,6 +300,166 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       pushLog(`불량 목록 내보내기 실패: ${err.message || ""}`.trim());
     }
   };
+
+  const fetchDefectBase = useCallback(async () => {
+    try {
+      setDefectBaseLoading(true);
+      setDefectBaseMessage("");
+      const res = await fetch(`${API}/barcode/defect/base`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "불량베이스 불러오기 실패");
+      setDefectBaseHeaders(data.headers ?? ["상품코드", "상품명", "공급처상품명", "D열", "옵션", "F열"]);
+      setDefectBaseRows(data.rows ?? []);
+      setDefectBasePath(data.path ?? "");
+      setDefectBaseMessage(`불량베이스 ${data.rows?.length ?? 0}건 로드 완료`);
+    } catch (err) {
+      setDefectBaseMessage(err.message || "불량베이스 불러오기 실패");
+    } finally {
+      setDefectBaseLoading(false);
+    }
+  }, []);
+
+  const updateDefectBaseCell = (rowIndex, colIndex, value) => {
+    setDefectBaseRows((prev) =>
+      prev.map((row, idx) => {
+        if (idx !== rowIndex) return row;
+        const nextValues = Array.isArray(row.values) ? [...row.values] : ["", "", "", "", "", "", ""];
+        while (nextValues.length < 7) nextValues.push("");
+        nextValues[colIndex] = value;
+        return { ...row, values: nextValues };
+      })
+    );
+  };
+
+  const addDefectBaseRow = () => {
+    setDefectBaseRows((prev) => [...prev, { row_index: null, values: ["", "", "", "", "", "", ""] }]);
+    setDefectBaseMessage("새 행을 추가했습니다.");
+  };
+
+  const removeDefectBaseRow = (rowIndex) => {
+    setDefectBaseRows((prev) => prev.filter((_, idx) => idx !== rowIndex));
+  };
+
+  const saveDefectBase = async () => {
+    try {
+      setDefectBaseSaving(true);
+      setDefectBaseMessage("");
+      const res = await fetch(`${API}/barcode/defect/base`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({
+          rows: defectBaseRows.map((row) => ({
+            values: Array.isArray(row.values) ? row.values.slice(0, 7) : ["", "", "", "", "", "", ""],
+          })),
+        }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "불량베이스 저장 실패");
+      setDefectBaseHeaders(data.headers ?? defectBaseHeaders);
+      setDefectBaseRows(data.rows ?? []);
+      setDefectBasePath(data.path ?? defectBasePath);
+      setDefectBaseMessage(`불량베이스 저장 완료 (${data.rows?.length ?? 0}건)`);
+    } catch (err) {
+      setDefectBaseMessage(err.message || "불량베이스 저장 실패");
+    } finally {
+      setDefectBaseSaving(false);
+    }
+  };
+
+  const handleDefectXlsDownload = async () => {
+    if (defectList.length === 0) {
+      alert("다운로드할 불량 목록이 없습니다.");
+      return;
+    }
+    try {
+      const res = await fetch(`${API}/barcode/defect/export-xls`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      if (!res.ok) {
+        let message = "xls 다운로드 실패";
+        try { const data = await res.json(); message = data?.detail || message; }
+        catch { const text = await res.text(); if (text) message = text; }
+        throw new Error(message);
+      }
+      const blob = await res.blob();
+      const fallback = `defects_work_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}.xls`;
+      const filename = getDownloadFilename(res, fallback);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      pushLog(`불량 xls 다운로드 완료: ${filename}`);
+    } catch (err) {
+      alert(err.message || "xls 다운로드 실패");
+      pushLog(`불량 xls 다운로드 실패: ${err.message || ""}`.trim());
+    }
+  };
+
+  const handleDefectPrint = async () => {
+    if (defectList.length === 0) {
+      alert("보낼 불량 목록이 없습니다.");
+      return;
+    }
+    try {
+      const rows = defectList
+        .map((item) => ({
+          vendor: String(item.base_vendor || "").trim(),
+          name: String(item.base_product || "").trim(),
+          color: String(item.base_color || "").trim(),
+          qty: Number(item.count || 0),
+          addr: String(item.base_addr || "").trim(),
+        }))
+        .filter((row) => row.vendor || row.addr || row.name);
+
+      if (!rows.length) {
+        throw new Error("불량출력으로 보낼 유효한 데이터가 없습니다.");
+      }
+
+      const res = await fetch(`${API}/noye-kimsungil/bulyang/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ rows }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "불량출력 전송 실패");
+
+      localStorage.setItem("activeTab", "noye-kimsungil");
+      localStorage.setItem(
+        "noye-kimsungil-bulyang-handoff",
+        JSON.stringify({
+          session_id: data.session_id,
+          groups: data.groups || [],
+          total: data.total || 0,
+          created_at: Date.now(),
+        })
+      );
+      window.location.reload();
+    } catch (err) {
+      alert(err.message || "불량출력 전송 실패");
+      pushLog(`불량출력 전송 실패: ${err.message || ""}`.trim());
+    }
+  };
+
+  const openDefectBaseEditor = async () => {
+    setShowDefectBaseEditor(true);
+    if (!defectBaseRows.length) {
+      await fetchDefectBase();
+    }
+  };
+
+  const defectBaseRowsToShow = defectBaseRows
+    .filter((row) => {
+      const query = defectBaseQuery.trim().toLowerCase();
+      if (!query) return true;
+      return (row.values ?? []).some((value) => String(value || "").toLowerCase().includes(query));
+    })
+    .slice(0, 300);
 
   const playSound = (key) => {
     const audio = soundsRef.current?.[key];
@@ -383,6 +556,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 {defectList.length > 0 && (
                   <span className={styles.inlineTagDanger} style={{ marginLeft: "0.35rem" }}>{defectList.length}</span>
                 )}
+              </button>
+              <button className={styles.secondaryBtn} onClick={openDefectBaseEditor}>
+                불량베이스 편집
               </button>
             </div>
           </div>
@@ -489,6 +665,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
             </div>
           </div>
         </section>
+
       </div>
 
       {/* 불량 리스트 모달 */}
@@ -498,7 +675,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
             <div className={styles.modalHeader}>
               <h4 className={styles.modalTitle}>불량 리스트</h4>
               <div className={styles.modalActions}>
+                <button className={styles.secondaryBtn} onClick={handleDefectXlsDownload}>xls 다운로드</button>
                 <button className={styles.secondaryBtn} onClick={handleDefectExport}>내보내기</button>
+                <button className={styles.secondaryBtn} onClick={handleDefectPrint}>불량출력</button>
                 <button className={styles.secondaryBtn} onClick={() => setShowDefectList(false)}>닫기</button>
               </div>
             </div>
@@ -508,7 +687,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               <div className={styles.defectList}>
                 {defectList.map((item, idx) => (
                   <div key={`${item.code}-defect-${idx}`} className={styles.defectLine}>
-                    <span className={styles.defectText}>{renderItemLabel(item)}</span>
+                    <span className={styles.defectText}>{renderDefectLabel(item)}</span>
                     <span className={styles.inlineTagDanger}>불량 {item.count}</span>
                     <div className={styles.defectActions}>
                       <button className={styles.ghostBtn} onClick={() => handleDefectDec(item.code)}>-1</button>
@@ -518,6 +697,103 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {showDefectBaseEditor && (
+        <div className={styles.modalOverlay} onClick={() => setShowDefectBaseEditor(false)}>
+          <div className={styles.modal} style={{ width: "min(1100px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <div>
+                <h4 className={styles.modalTitle}>불량베이스 편집</h4>
+                <p className={styles.subtitle} style={{ marginTop: "0.25rem" }}>
+                  필요할 때만 불러와서 수정합니다.
+                </p>
+              </div>
+              <div className={styles.modalActions}>
+                <button className={styles.secondaryBtn} onClick={fetchDefectBase} disabled={defectBaseLoading}>
+                  {defectBaseLoading ? "불러오는 중..." : "새로고침"}
+                </button>
+                <button className={styles.secondaryBtn} onClick={addDefectBaseRow}>
+                  행 추가
+                </button>
+                <button className={styles.primaryBtn} onClick={saveDefectBase} disabled={defectBaseSaving}>
+                  {defectBaseSaving ? "저장 중..." : "저장"}
+                </button>
+                <button className={styles.secondaryBtn} onClick={() => setShowDefectBaseEditor(false)}>
+                  닫기
+                </button>
+              </div>
+            </div>
+
+            {defectBasePath && (
+              <div className={styles.statusMsg}>
+                <strong>{defectBasePath}</strong>
+              </div>
+            )}
+
+            <div className={styles.uploadRow}>
+              <input
+                value={defectBaseQuery}
+                onChange={(e) => setDefectBaseQuery(e.target.value)}
+                placeholder="상품코드, 상품명, 옵션 검색"
+                className={styles.searchInput}
+              />
+              <span className={styles.pill}>전체 {defectBaseRows.length}건</span>
+              <span className={styles.pill}>표시 {defectBaseRowsToShow.length}건</span>
+            </div>
+
+            {defectBaseMessage && (
+              <div className={styles.statusMsg}>
+                <strong>{defectBaseMessage}</strong>
+              </div>
+            )}
+
+            <div className={`${styles.tableWrap} ${styles.registeredTableWrap}`}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    {defectBaseHeaders.map((header, idx) => (
+                      <th key={`defect-base-header-${idx}`}>{header || `${idx + 1}열`}</th>
+                    ))}
+                    <th>관리</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {defectBaseRowsToShow.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className={styles.empty}>표시할 불량베이스 데이터가 없습니다.</td>
+                    </tr>
+                  ) : (
+                    defectBaseRowsToShow.map((row) => {
+                      const actualIndex = defectBaseRows.indexOf(row);
+                      const values = Array.isArray(row.values) ? row.values : ["", "", "", "", "", "", ""];
+                      return (
+                        <tr key={`defect-base-row-${row.row_index ?? "new"}-${actualIndex}`}>
+                          <td>{row.row_index ?? "신규"}</td>
+                          {Array.from({ length: 7 }).map((_, colIndex) => (
+                            <td key={`defect-base-cell-${actualIndex}-${colIndex}`}>
+                              <input
+                                value={values[colIndex] ?? ""}
+                                onChange={(e) => updateDefectBaseCell(actualIndex, colIndex, e.target.value)}
+                                className={styles.cellInput}
+                              />
+                            </td>
+                          ))}
+                          <td>
+                            <button className={styles.ghostBtn} onClick={() => removeDefectBaseRow(actualIndex)}>
+                              삭제
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}

@@ -23,11 +23,23 @@ const DEFAULT_COLUMNS = [
     '원가베이스매칭',
 ];
 
+const EMPTY_QUEUES = {
+    seller: [],
+    customer: [],
+    unmatched: [],
+    exchange_seller: [],
+    exchange_customer: [],
+    exchange: [],
+    all: [],
+};
+
+const normalizeQueues = (queues) => ({ ...EMPTY_QUEUES, ...(queues || {}) });
+
 const ReturnsPage = () => {
     const [message, setMessage] = useState('');
     const [status, setStatus] = useState(null);
     const [savedAt, setSavedAt] = useState('');
-    const [queues, setQueues] = useState({ seller: [], customer: [], unmatched: [], all: [] });
+    const [queues, setQueues] = useState(EMPTY_QUEUES);
     const [onebeRows, setOnebeRows] = useState([]);
     const [activeTab, setActiveTab] = useState('all');
     const [loading, setLoading] = useState(false);
@@ -70,6 +82,8 @@ const ReturnsPage = () => {
             { key: 'all', label: '전체 대기', count: queues.all.length },
             { key: 'seller', label: '판매처 대기', count: queues.seller.length },
             { key: 'customer', label: '고객 대기', count: queues.customer.length },
+            { key: 'exchange_seller', label: '교환판매자', count: queues.exchange_seller.length },
+            { key: 'exchange_customer', label: '교환고객', count: queues.exchange_customer.length },
             { key: 'unmatched', label: '미매칭', count: queues.unmatched.length },
             { key: 'onebe', label: '원베 행', count: onebeRows.length },
         ],
@@ -86,13 +100,38 @@ const ReturnsPage = () => {
         audio.play().catch(() => {});
     }, []);
 
+    const tabForType = (type) => {
+        const norm = String(type || '');
+        if (norm.includes('교환판매자')) return 'exchange_seller';
+        if (norm.includes('교환고객')) return 'exchange_customer';
+        if (norm.includes('판매자') || norm.toLowerCase().includes('seller')) return 'seller';
+        if (norm.includes('고객') || norm.toLowerCase().includes('customer')) return 'customer';
+        if (norm.includes('미매칭') || norm.toLowerCase().includes('unmatched')) return 'unmatched';
+        return '';
+    };
+
+    const playTypeSound = useCallback((type, soundType = '') => {
+        const norm = String(type || '');
+        if (soundType === '교환불량') {
+            playSound('exchangeDefect');
+            return;
+        }
+        if (soundType === '교환정상') {
+            playSound('exchangeNormal');
+            return;
+        }
+        if (norm.includes('판매자') || norm.toLowerCase().includes('seller')) playSound('seller');
+        if (norm.includes('고객') || norm.toLowerCase().includes('customer')) playSound('customer');
+        if (norm.includes('미매칭') || norm.toLowerCase().includes('unmatched')) playSound('unmatched');
+    }, [playSound]);
+
     const refreshState = useCallback(async () => {
         try {
             const res = await fetch(`${API}/returns/state`, { headers: getAuthHeaders() });
             if (!res.ok) return;
             const data = await res.json();
             setStatus(data.status || null);
-            setQueues(data.queues || { seller: [], customer: [], unmatched: [], all: [] });
+            setQueues(normalizeQueues(data.queues));
             setOnebeRows(data.onebe?.rows || []);
             setSavedAt(data.saved_at || '');
             const nextType = data.last_type || '-';
@@ -100,17 +139,14 @@ const ReturnsPage = () => {
             const prevType = lastTypeRef.current;
             lastTypeRef.current = nextType;
             if (hasLoadedRef.current && nextType !== prevType) {
-                const norm = String(nextType);
-                if (norm.includes('판매자') || norm.toLowerCase().includes('seller')) playSound('seller');
-                if (norm.includes('고객') || norm.toLowerCase().includes('customer')) playSound('customer');
-                if (norm.includes('미매칭') || norm.toLowerCase().includes('unmatched')) playSound('unmatched');
+                playTypeSound(nextType);
             }
         } catch {
             // ignore
         } finally {
             hasLoadedRef.current = true;
         }
-    }, [playSound]);
+    }, [playTypeSound]);
 
     useEffect(() => {
         refreshState();
@@ -124,6 +160,8 @@ const ReturnsPage = () => {
                 seller: pool('/sounds/bb.wav'),
                 customer: pool('/sounds/zz.wav'),
                 unmatched: pool('/sounds/dd.wav'),
+                exchangeDefect: pool('/sounds/ww.wav'),
+                exchangeNormal: pool('/sounds/tt.wav'),
             };
         }
     }, []);
@@ -195,6 +233,11 @@ const ReturnsPage = () => {
     const handleExcel2Change = async (file) => {
         if (!file) return;
         await handleUpload(file, '/returns/excel2', '에이블리 엑셀');
+    };
+
+    const handleExchangeExcelChange = async (file) => {
+        if (!file) return;
+        await handleUpload(file, '/returns/exchange', '교환 엑셀');
     };
 
     const handleCostReload = async () => {
@@ -317,17 +360,15 @@ const ReturnsPage = () => {
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data?.detail || '스캔 실패');
-            setQueues(data.queues || queues);
+            setQueues(normalizeQueues(data.queues || queues));
             const nextType = data.last_type || '-';
             setLastType(nextType);
-            const prevType = lastTypeRef.current;
             lastTypeRef.current = nextType;
-            const shouldPlay = nextType !== '-' && nextType !== '';
+            const nextTab = tabForType(nextType);
+            if (nextTab) setActiveTab(nextTab);
+            const shouldPlay = nextType !== '-' && nextType !== '' && nextType !== '중복';
             if (shouldPlay) {
-                const norm = String(nextType);
-                if (norm.includes('판매자') || norm.toLowerCase().includes('seller')) playSound('seller');
-                if (norm.includes('고객') || norm.toLowerCase().includes('customer')) playSound('customer');
-                if (norm.includes('미매칭') || norm.toLowerCase().includes('unmatched')) playSound('unmatched');
+                playTypeSound(nextType, String(data.sound_type || ''));
             }
         } catch (err) {
             setMessage(err.message || '스캔 실패');
@@ -345,7 +386,7 @@ const ReturnsPage = () => {
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data?.detail || '삭제 실패');
-            setQueues(data.queues || queues);
+            setQueues(normalizeQueues(data.queues || queues));
             setLastType(data.last_type || '-');
         } catch (err) {
             setMessage(err.message || '삭제 실패');
@@ -376,7 +417,7 @@ const ReturnsPage = () => {
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data?.detail || '불러오기 실패');
             setStatus(data.status || null);
-            setQueues(data.queues || { seller: [], customer: [], unmatched: [], all: [] });
+            setQueues(normalizeQueues(data.queues));
             setOnebeRows(data.onebe?.rows || []);
             setSavedAt(data.saved_at || '');
             setLastType(data.last_type || '-');
@@ -527,6 +568,7 @@ const ReturnsPage = () => {
         if (!items || items.length === 0) {
             return <div className={pageStyles.empty}>데이터가 없습니다.</div>;
         }
+        const hasReason = items.some((item) => item.reason);
         return (
             <div className={pageStyles.tableWrap}>
                 <table className={pageStyles.table}>
@@ -537,6 +579,7 @@ const ReturnsPage = () => {
                             <th>가공데이터</th>
                             <th>입고수량</th>
                             <th>분류</th>
+                            {hasReason && <th>사유</th>}
                         </tr>
                     </thead>
                     <tbody>
@@ -547,6 +590,7 @@ const ReturnsPage = () => {
                                 <td>{item.item_text}</td>
                                 <td>{item.qty}</td>
                                 <td>{item.type}</td>
+                                {hasReason && <td>{item.reason || ''}</td>}
                             </tr>
                         ))}
                     </tbody>
@@ -597,6 +641,14 @@ const ReturnsPage = () => {
                                 onChange={(e) => handleExcel2Change(e.target.files?.[0] ?? null)}
                             />
                             에이블리 엑셀 선택
+                        </label>
+                        <label className={pageStyles.fileInput}>
+                            <input
+                                type="file"
+                                accept=".xls,.xlsx,.xlsm"
+                                onChange={(e) => handleExchangeExcelChange(e.target.files?.[0] ?? null)}
+                            />
+                            교환 엑셀 선택
                         </label>
                     </div>
                     <div className={`${pageStyles.uploadRow} ${styles.compactActions}`}>
@@ -682,6 +734,8 @@ const ReturnsPage = () => {
                                 ['all', '전체 대기'],
                                 ['seller', '판매자 대기'],
                                 ['customer', '고객 대기'],
+                                ['exchange_seller', '교환판매자'],
+                                ['exchange_customer', '교환고객'],
                                 ['unmatched', '미매칭 대기'],
                                 ['onebe', '원베양식(고객대기)'],
                             ].map(([key, label]) => (
@@ -703,6 +757,8 @@ const ReturnsPage = () => {
                             {activeTab === 'all' && renderTable(queues.all)}
                             {activeTab === 'seller' && renderTable(queues.seller)}
                             {activeTab === 'customer' && renderTable(queues.customer)}
+                            {activeTab === 'exchange_seller' && renderTable(queues.exchange_seller)}
+                            {activeTab === 'exchange_customer' && renderTable(queues.exchange_customer)}
                             {activeTab === 'unmatched' && renderTable(queues.unmatched)}
                         </>
                     )}

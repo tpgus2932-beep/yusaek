@@ -7,6 +7,7 @@ import time
 import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
+import math
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -60,6 +61,34 @@ def build_collab_router(
         _public_rate_store[client_ip] = recent
     # my_todos는 개인 데이터 → 로컬 DB 우선
     _local_db = get_local_db if get_local_db is not None else get_db
+
+    def _list_my_todo_rows(conn, user: str):
+        return conn.execute(
+            """
+            SELECT *
+            FROM my_todos
+            WHERE owner_username = ?
+            ORDER BY sort_order ASC,
+                     created_at ASC,
+                     id ASC
+            """,
+            (user,),
+        ).fetchall()
+
+    def _normalize_my_todo_order(conn, user: str):
+        rows = _list_my_todo_rows(conn, user)
+        changed = False
+        for index, row in enumerate(rows, start=1):
+            current = row["sort_order"]
+            if current is None or not math.isclose(float(current), float(index), abs_tol=1e-9):
+                conn.execute(
+                    "UPDATE my_todos SET sort_order = ? WHERE id = ? AND owner_username = ?",
+                    (float(index), row["id"], user),
+                )
+                changed = True
+        if changed:
+            conn.commit()
+        return _list_my_todo_rows(conn, user)
 
     def _normalize_receiver(value: str) -> str:
         return "".join(ch for ch in str(value or "") if ch.isdigit())
@@ -573,17 +602,7 @@ def build_collab_router(
     @router.get("/my-todos")
     def list_my_todos(user: str = Depends(get_current_user)):
         conn = _local_db()
-        rows = conn.execute(
-            """
-            SELECT *
-            FROM my_todos
-            WHERE owner_username = ?
-            ORDER BY created_at ASC,
-                     id ASC
-            """,
-            (user,),
-        ).fetchall()
-        conn.close()
+        rows = _normalize_my_todo_order(conn, user)
         completed_ids = my_todo_completed.get(user, set())
         items = []
         for row in rows:
@@ -595,11 +614,15 @@ def build_collab_router(
                     "status": "completed" if is_completed else "open",
                     "owner_username": row["owner_username"],
                     "owner_display": row["owner_display"] or "",
+                    "sort_order": row["sort_order"],
+                    "group_id": row["group_id"] or "",
+                    "group_title": row["group_title"] or "",
                     "created_at": row["created_at"],
                     "completed_at": None,
                     "completed_comment": "",
                 }
             )
+        conn.close()
         return {"ok": True, "todos": items}
 
     @router.post("/my-todos")
@@ -610,15 +633,114 @@ def build_collab_router(
         now = datetime.now(timezone.utc).isoformat()
         owner_display = get_user_display(user)
         conn = _local_db()
+        last_sort_order = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), 0) AS max_sort FROM my_todos WHERE owner_username = ?",
+            (user,),
+        ).fetchone()
         conn.execute(
             """
             INSERT INTO my_todos (
-                owner_username, owner_display, text, status, created_at
-            ) VALUES (?, ?, ?, 'open', ?)
+                owner_username, owner_display, text, status, sort_order, group_id, group_title, created_at
+            ) VALUES (?, ?, ?, 'open', ?, '', '', ?)
             """,
-            (user, owner_display, text, now),
+            (user, owner_display, text, float(last_sort_order["max_sort"] or 0) + 1.0, now),
         )
         conn.commit()
+        conn.close()
+        return {"ok": True}
+
+    @router.patch("/my-todos/order")
+    def reorder_my_todos(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        ordered_ids = payload.get("ordered_ids")
+        if not isinstance(ordered_ids, list) or not ordered_ids:
+            raise HTTPException(status_code=400, detail="ordered_ids required")
+        try:
+            normalized_ids = [int(v) for v in ordered_ids]
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="invalid ordered_ids")
+        conn = _local_db()
+        rows = _list_my_todo_rows(conn, user)
+        existing_ids = [int(row["id"]) for row in rows]
+        if sorted(existing_ids) != sorted(normalized_ids):
+            conn.close()
+            raise HTTPException(status_code=400, detail="ordered_ids must include all todos")
+        for index, todo_id in enumerate(normalized_ids, start=1):
+            conn.execute(
+                "UPDATE my_todos SET sort_order = ? WHERE id = ? AND owner_username = ?",
+                (float(index), todo_id, user),
+            )
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+
+    @router.post("/my-todos/group")
+    def group_my_todos(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        raw_ids = payload.get("ids")
+        title = str(payload.get("title") or "").strip()
+        if not isinstance(raw_ids, list) or len(raw_ids) < 2:
+            raise HTTPException(status_code=400, detail="at least two ids required")
+        try:
+            selected_ids = [int(v) for v in raw_ids]
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="invalid ids")
+        selected_id_set = set(selected_ids)
+        conn = _local_db()
+        rows = _list_my_todo_rows(conn, user)
+        existing_ids = [int(row["id"]) for row in rows]
+        if not selected_id_set.issubset(set(existing_ids)):
+            conn.close()
+            raise HTTPException(status_code=404, detail="todo not found")
+
+        selected_rows = [row for row in rows if int(row["id"]) in selected_id_set]
+        remaining_rows = [row for row in rows if int(row["id"]) not in selected_id_set]
+        insert_at = min(existing_ids.index(todo_id) for todo_id in selected_ids)
+        group_id = uuid.uuid4().hex
+        group_title = title or "선택 묶음"
+        merged_rows = remaining_rows[:insert_at] + selected_rows + remaining_rows[insert_at:]
+
+        for index, row in enumerate(merged_rows, start=1):
+            todo_id = int(row["id"])
+            if todo_id in selected_id_set:
+                conn.execute(
+                    """
+                    UPDATE my_todos
+                    SET sort_order = ?, group_id = ?, group_title = ?
+                    WHERE id = ? AND owner_username = ?
+                    """,
+                    (float(index), group_id, group_title, todo_id, user),
+                )
+            else:
+                conn.execute(
+                    "UPDATE my_todos SET sort_order = ? WHERE id = ? AND owner_username = ?",
+                    (float(index), todo_id, user),
+                )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "group_id": group_id, "group_title": group_title}
+
+    @router.post("/my-todos/ungroup")
+    def ungroup_my_todos(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        group_id = str(payload.get("group_id") or "").strip()
+        if not group_id:
+            raise HTTPException(status_code=400, detail="group_id required")
+        conn = _local_db()
+        row = conn.execute(
+            "SELECT 1 FROM my_todos WHERE owner_username = ? AND group_id = ? LIMIT 1",
+            (user, group_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="group not found")
+        conn.execute(
+            """
+            UPDATE my_todos
+            SET group_id = '', group_title = ''
+            WHERE owner_username = ? AND group_id = ?
+            """,
+            (user, group_id),
+        )
+        conn.commit()
+        _normalize_my_todo_order(conn, user)
         conn.close()
         return {"ok": True}
 

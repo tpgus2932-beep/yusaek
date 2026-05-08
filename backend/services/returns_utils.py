@@ -46,6 +46,7 @@ def _clean_invoice(value: str) -> str:
     s = str(value).strip()
     if s.lower() in ("nan", "none"):
         return ""
+    s = re.sub(r"\.0$", "", s)
     return re.sub(r"\D+", "", s)
 
 
@@ -117,11 +118,16 @@ class ReturnState:
     def __init__(self, cost_base_path: Path):
         self.df1: pd.DataFrame | None = None
         self.df2: pd.DataFrame | None = None
+        self.exchange_df: pd.DataFrame | None = None
         self.map_d_to_e: dict[str, str] = {}
         self.df2_index: dict[str, list[int]] = {}
+        self.exchange_index: dict[str, list[int]] = {}
         self.queue_seller: list[dict] = []
         self.queue_customer: list[dict] = []
         self.queue_unmatched: list[dict] = []
+        self.queue_exchange: list[dict] = []
+        self.queue_exchange_seller: list[dict] = []
+        self.queue_exchange_customer: list[dict] = []
         self.all_items: list[dict] = []
         self.last_added_ids: list[int] = []
         self.scanned_barcodes: set[str] = set()
@@ -148,11 +154,16 @@ def _return_state_to_payload(state: ReturnState) -> dict:
     return {
         "df1": _return_df_to_json(state.df1),
         "df2": _return_df_to_json(state.df2),
+        "exchange_df": _return_df_to_json(state.exchange_df),
         "map_d_to_e": state.map_d_to_e,
         "df2_index": state.df2_index,
+        "exchange_index": state.exchange_index,
         "queue_seller": state.queue_seller,
         "queue_customer": state.queue_customer,
         "queue_unmatched": state.queue_unmatched,
+        "queue_exchange": state.queue_exchange,
+        "queue_exchange_seller": state.queue_exchange_seller,
+        "queue_exchange_customer": state.queue_exchange_customer,
         "all_items": state.all_items,
         "last_added_ids": state.last_added_ids,
         "scanned_barcodes": sorted(state.scanned_barcodes),
@@ -167,11 +178,16 @@ def _load_return_state_from_payload(state: ReturnState, payload: dict | None):
     payload = payload or {}
     state.df1 = _return_df_from_json(payload.get("df1"))
     state.df2 = _return_df_from_json(payload.get("df2"))
+    state.exchange_df = _return_df_from_json(payload.get("exchange_df"))
     state.map_d_to_e = dict(payload.get("map_d_to_e") or {})
     state.df2_index = {str(k): list(v) for k, v in dict(payload.get("df2_index") or {}).items()}
+    state.exchange_index = {str(k): list(v) for k, v in dict(payload.get("exchange_index") or {}).items()}
     state.queue_seller = list(payload.get("queue_seller") or [])
     state.queue_customer = list(payload.get("queue_customer") or [])
     state.queue_unmatched = list(payload.get("queue_unmatched") or [])
+    state.queue_exchange = list(payload.get("queue_exchange") or [])
+    state.queue_exchange_seller = list(payload.get("queue_exchange_seller") or [])
+    state.queue_exchange_customer = list(payload.get("queue_exchange_customer") or [])
     state.all_items = list(payload.get("all_items") or [])
     state.last_added_ids = [int(v) for v in list(payload.get("last_added_ids") or [])]
     state.scanned_barcodes = set(str(v) for v in list(payload.get("scanned_barcodes") or []))
@@ -197,9 +213,11 @@ def _return_status(state: ReturnState) -> dict:
     return {
         "excel1_loaded": state.df1 is not None,
         "excel2_loaded": state.df2 is not None,
+        "exchange_loaded": state.exchange_df is not None,
         "cost_loaded": bool(state.cost_map),
         "map_count": len(state.map_d_to_e),
         "index_count": len(state.df2_index),
+        "exchange_index_count": len(state.exchange_index),
         "cost_count": len(state.cost_map),
         "cost_base_path": str(path),
         "cost_base_exists": exists,
@@ -223,9 +241,17 @@ def _return_rows(df: pd.DataFrame) -> list[dict]:
 
 
 def _return_queue_payload(state: ReturnState) -> dict:
+    exchange_seller = list(state.queue_exchange_seller)
+    exchange_customer = list(state.queue_exchange_customer)
+    legacy_exchange = list(state.queue_exchange)
+    if legacy_exchange:
+        exchange_customer.extend(legacy_exchange)
     return {
         "seller": state.queue_seller,
         "customer": state.queue_customer,
         "unmatched": state.queue_unmatched,
+        "exchange_seller": exchange_seller,
+        "exchange_customer": exchange_customer,
+        "exchange": exchange_seller + exchange_customer,
         "all": state.all_items,
     }

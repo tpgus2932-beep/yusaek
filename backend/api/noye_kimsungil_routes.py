@@ -1,19 +1,278 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 import io
 import os
 import re
 import shutil
 import tempfile
+import textwrap
 import urllib.parse
 import uuid
+import zipfile
 
 import pandas as pd
-from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 import xlwt
+
+try:
+    from PIL import Image as _PILImage, ImageDraw as _PILDraw, ImageFont as _PILFont
+    _PIL_OK = True
+except ImportError:
+    _PIL_OK = False
+
+# ── 불량출력 세션 저장소 (메모리) ──────────────────────────────────────────
+_bulyang_sessions: dict[str, dict] = {}
+
+
+def _bul_mm_to_px(mm: float, dpi: int) -> int:
+    return max(1, int(round(mm / 25.4 * dpi)))
+
+
+def _bul_nz(x, default: str = "") -> str:
+    if x is None:
+        return default
+    try:
+        if pd.isna(x):
+            return default
+    except Exception:
+        pass
+    return str(x).strip()
+
+
+def _bul_to_int(x, default: int = 1) -> int:
+    try:
+        if x in ("", None):
+            return default
+        return int(float(x))
+    except Exception:
+        return default
+
+
+def _bul_find_font() -> str | None:
+    for p in [
+        r"C:\Windows\Fonts\malgunbd.ttf",
+        r"C:\Windows\Fonts\malgun.ttf",
+        r"C:\Windows\Fonts\gulim.ttc",
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    ]:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+_BUL_FONT_PATH = _bul_find_font()
+
+
+def _bul_load_font(size_px: int):
+    if not _PIL_OK:
+        return None
+    try:
+        if _BUL_FONT_PATH:
+            return _PILFont.truetype(_BUL_FONT_PATH, size=size_px)
+    except Exception:
+        pass
+    return _PILFont.load_default()
+
+
+def _bul_build_groups(df: pd.DataFrame) -> tuple[list, dict]:
+    raw: dict = {}
+    for _, r in df.iterrows():
+        vendor = _bul_nz(r.iloc[0])
+        name   = _bul_nz(r.iloc[1])
+        color  = _bul_nz(r.iloc[2])
+        qty    = _bul_to_int(r.iloc[3], 1)
+        addr   = _bul_nz(r.iloc[4])
+        if not vendor and not addr:
+            continue
+        raw.setdefault((vendor, addr), []).append({"name": name, "color": color, "qty": qty})
+
+    merged: dict = {}
+    for key, items in raw.items():
+        combo: dict = {}
+        for it in items:
+            k = (_bul_nz(it["name"]), _bul_nz(it["color"]))
+            combo[k] = combo.get(k, 0) + _bul_to_int(it["qty"], 1)
+        out = [{"name": k[0], "color": k[1], "qty": v} for k, v in combo.items()]
+        out.sort(key=lambda x: (x["name"], x["color"]))
+        merged[key] = out
+
+    keys = list(merged.keys())
+    return keys, merged
+
+
+def _bul_render(
+    title_text: str,
+    vendor_name: str,
+    vendor_addr: str,
+    items: list[dict],
+    *,
+    footer_text: str = "",
+    dpi: int = 150,
+    # 페이지
+    page_w_mm: float = 126.0,
+    page_h_mm: float = 103.0,
+    # 여백/타이틀
+    top_mm: float = 4.5,
+    side_mm: float = 15.0,
+    title_size_mm: float = 14.0,
+    title_gap_mm: float = 2.5,
+    title_line_thick_mm: float = 0.5,
+    # 주소/거래처명
+    addr_v_size_mm: float = 7.0,
+    vname_v_size_mm: float = 7.0,
+    addr_wrap_chars: int = 28,
+    info_gap_below_line_mm: float = 6.0,
+    info_extra_gap_mm: float = 0.0,
+    # 표/행/폰트
+    show_table_header: bool = False,
+    header_size_mm: float = 8.2,
+    row_size_mm: float = 4.0,
+    row_h_mm: float = 6.2,
+    row_padding_mm: float = 6.8,
+    row_line_factor: float = 0.0,
+    two_row_extra_gap_mm: float = 0.0,
+    col_gap_mm: float = 3.0,
+    # 열 비율
+    name_ratio: float = 0.62,
+    color_ratio: float = 0.23,
+    qty_ratio: float = 0.15,
+    # 표 시작 오프셋
+    table_top_offset_mm: float = 19.76,
+    # 하단 각주
+    bottom_mm: float = 10.0,
+    footer_size_mm: float = 6.0,
+    footer_show_date: bool = True,
+    footer_date_format: str = "%Y-%m-%d",
+) -> tuple[bytes, dict]:
+    if not _PIL_OK:
+        raise RuntimeError("Pillow가 설치되지 않았습니다.")
+
+    W = _bul_mm_to_px(page_w_mm, dpi)
+    H = _bul_mm_to_px(page_h_mm, dpi)
+    left = right = _bul_mm_to_px(side_mm, dpi)
+    top = _bul_mm_to_px(top_mm, dpi)
+
+    title_font  = _bul_load_font(_bul_mm_to_px(title_size_mm, dpi))
+    header_font = _bul_load_font(_bul_mm_to_px(header_size_mm, dpi))
+    row_font    = _bul_load_font(_bul_mm_to_px(row_size_mm, dpi))
+    addr_font   = _bul_load_font(_bul_mm_to_px(addr_v_size_mm, dpi))
+    vname_font  = _bul_load_font(_bul_mm_to_px(vname_v_size_mm, dpi))
+    footer_font = _bul_load_font(_bul_mm_to_px(footer_size_mm, dpi))
+
+    img  = _PILImage.new("RGB", (W, H), "white")
+    draw = _PILDraw.Draw(img)
+
+    # 제목
+    tb = draw.textbbox((0, 0), title_text, font=title_font)
+    tw, th = tb[2] - tb[0], tb[3] - tb[1]
+    draw.text(((W - tw) // 2, top), title_text, fill="black", font=title_font)
+
+    # 제목 밑 선
+    line_y = top + th + _bul_mm_to_px(title_gap_mm, dpi)
+    draw.line((left, line_y, W - right, line_y), fill="black",
+              width=max(1, _bul_mm_to_px(title_line_thick_mm, dpi)))
+
+    # 주소 / 거래처명
+    y = line_y + _bul_mm_to_px(info_gap_below_line_mm + info_extra_gap_mm, dpi)
+    wc = max(10, int(addr_wrap_chars * (W / 476)))
+    draw.text((left, y), textwrap.fill(_bul_nz(vendor_addr), width=wc),
+              fill="black", font=addr_font)
+    vb = draw.textbbox((0, 0), vendor_name, font=vname_font)
+    draw.text((W - right - (vb[2] - vb[0]), y), vendor_name, fill="black", font=vname_font)
+
+    # 열 배치
+    table_start_y = y + _bul_mm_to_px(table_top_offset_mm, dpi)
+    cur_y = table_start_y
+    usable_w = W - left - right
+    total_r = max(1e-6, name_ratio + color_ratio + qty_ratio)
+    nr, cr = name_ratio / total_r, color_ratio / total_r
+    gap_px = _bul_mm_to_px(col_gap_mm, dpi)
+    name_w  = int(usable_w * nr)
+    color_w = int(usable_w * cr)
+    qty_w   = usable_w - name_w - color_w - 2 * gap_px
+    x_name  = left
+    x_color = x_name + name_w + gap_px
+    x_qty   = x_color + color_w + gap_px
+
+    # 행 스텝
+    rf_a, rf_d = row_font.getmetrics()
+    row_font_h = rf_a + rf_d
+    row_step = max(
+        _bul_mm_to_px(row_h_mm, dpi),
+        int(row_font_h * row_line_factor) + _bul_mm_to_px(row_padding_mm, dpi),
+    )
+    hf_a, hf_d = header_font.getmetrics()
+    header_font_h = hf_a + hf_d
+    header_step = max(
+        _bul_mm_to_px(row_h_mm, dpi),
+        int(header_font_h * row_line_factor) + _bul_mm_to_px(row_padding_mm, dpi),
+    )
+
+    # 헤더
+    if show_table_header:
+        draw.text((x_name,  cur_y), "거래처 상품명", font=header_font, fill="black")
+        draw.text((x_color, cur_y), "색상",         font=header_font, fill="black")
+        draw.text((x_qty,   cur_y), "수량",         font=header_font, fill="black")
+        cur_y += header_step
+
+    # 행들
+    for idx, it in enumerate(items):
+        name  = _bul_nz(it.get("name"))
+        color = _bul_nz(it.get("color"))
+        qty   = str(it.get("qty", 0))
+
+        nr2 = name
+        while True:
+            nb = draw.textbbox((0, 0), nr2, font=row_font)
+            if nb[2] - nb[0] <= name_w or len(nr2) <= 1:
+                break
+            nr2 = nr2[:-2] + "…"
+
+        draw.text((x_name,  cur_y), nr2,   fill="black", font=row_font)
+        draw.text((x_color, cur_y), color, fill="black", font=row_font)
+        qb = draw.textbbox((0, 0), qty, font=row_font)
+        draw.text((x_qty + max(0, qty_w - (qb[2] - qb[0])), cur_y), qty,
+                  fill="black", font=row_font)
+        cur_y += row_step
+        if len(items) == 2 and idx == 0 and two_row_extra_gap_mm > 0:
+            cur_y += _bul_mm_to_px(two_row_extra_gap_mm, dpi)
+
+    # 하단 각주
+    fa, fd = footer_font.getmetrics()
+    y_foot = H - _bul_mm_to_px(bottom_mm, dpi) - (fa + fd)
+    if footer_show_date:
+        draw.text((left, y_foot), datetime.now().strftime(footer_date_format or "%Y-%m-%d"),
+                  fill="black", font=footer_font)
+    if footer_text:
+        max_fw = W - left - right
+        ft = footer_text
+        while ft and draw.textbbox((0, 0), ft, font=footer_font)[2] > max_fw:
+            if len(ft) <= 1:
+                break
+            ft = ft[:-2] + "…"
+        ftw = draw.textbbox((0, 0), ft, font=footer_font)[2]
+        draw.text((W - right - ftw, y_foot), ft, fill="black", font=footer_font)
+
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    guides = {
+        "x_color": x_color,
+        "x_qty": x_qty,
+        "table_y": table_start_y,
+        "img_w": W,
+        "img_h": H,
+    }
+    return buf.getvalue(), guides
+
+
+def _bul_sanitize(name: str) -> str:
+    out = "".join(c if c.isalnum() or c in " ._-" else "_" for c in (name or "거래처"))
+    return out.strip()[:80] or "거래처"
 
 
 def build_noye_kimsungil_router(*, get_current_user):
@@ -464,6 +723,200 @@ def build_noye_kimsungil_router(*, get_current_user):
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers=headers,
         )
+
+    # ── 불량출력 엔드포인트 ────────────────────────────────────────────────
+
+    @router.post("/bulyang/upload")
+    async def bulyang_upload(file: UploadFile = File(...), user: str = Depends(get_current_user)):
+        ext = Path(file.filename or "").suffix.lower()
+        if ext not in {".xlsx", ".xls", ".xlsm"}:
+            raise HTTPException(status_code=400, detail="xlsx/xls/xlsm만 업로드 가능합니다.")
+        raw = await file.read()
+        if not raw:
+            raise HTTPException(status_code=400, detail="업로드 파일이 비어 있습니다.")
+        tmp = Path(tempfile.gettempdir()) / f"bulyang_{uuid.uuid4().hex}{ext}"
+        tmp.write_bytes(raw)
+        try:
+            df = _read_excel_any(tmp)
+            if df.shape[1] < 5:
+                raise ValueError("A~E열(5열)이 필요합니다.")
+            df = df.iloc[:, :5]
+            keys, groups = _bul_build_groups(df)
+            session_id = uuid.uuid4().hex
+            _bulyang_sessions[session_id] = {"keys": keys, "groups": groups}
+            # 세션 최대 30개 유지
+            if len(_bulyang_sessions) > 30:
+                oldest = next(iter(_bulyang_sessions))
+                del _bulyang_sessions[oldest]
+            group_list = [
+                {"index": i, "vendor": k[0], "addr": k[1], "item_count": len(groups[k])}
+                for i, k in enumerate(keys)
+            ]
+            return {"ok": True, "session_id": session_id, "total": len(keys), "groups": group_list}
+        except Exception as e:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @router.post("/bulyang/import")
+    def bulyang_import(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        rows = payload.get("rows")
+        if not isinstance(rows, list) or not rows:
+            raise HTTPException(status_code=400, detail="전송할 불량 데이터가 없습니다.")
+
+        normalized_rows = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            vendor = _bul_nz(row.get("vendor"))
+            name = _bul_nz(row.get("name"))
+            color = _bul_nz(row.get("color"))
+            qty = _bul_to_int(row.get("qty"), 1)
+            addr = _bul_nz(row.get("addr"))
+            if not vendor and not addr and not name:
+                continue
+            normalized_rows.append([vendor, name, color, qty, addr])
+
+        if not normalized_rows:
+            raise HTTPException(status_code=400, detail="유효한 불량 데이터가 없습니다.")
+
+        try:
+            df = pd.DataFrame(normalized_rows, columns=["A", "B", "C", "D", "E"])
+            keys, groups = _bul_build_groups(df)
+            session_id = uuid.uuid4().hex
+            _bulyang_sessions[session_id] = {"keys": keys, "groups": groups}
+            if len(_bulyang_sessions) > 30:
+                oldest = next(iter(_bulyang_sessions))
+                del _bulyang_sessions[oldest]
+            group_list = [
+                {"index": i, "vendor": k[0], "addr": k[1], "item_count": len(groups[k])}
+                for i, k in enumerate(keys)
+            ]
+            return {"ok": True, "session_id": session_id, "total": len(keys), "groups": group_list}
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @router.get("/bulyang/session/{session_id}")
+    def bulyang_session(session_id: str, user: str = Depends(get_current_user)):
+        sess = _bulyang_sessions.get(session_id)
+        if not sess:
+            raise HTTPException(status_code=404, detail="세션이 없습니다. 다시 전송해 주세요.")
+        keys = sess["keys"]
+        groups = sess["groups"]
+        group_list = [
+            {"index": i, "vendor": k[0], "addr": k[1], "item_count": len(groups[k])}
+            for i, k in enumerate(keys)
+        ]
+        return {"ok": True, "session_id": session_id, "total": len(keys), "groups": group_list}
+
+    def _bul_layout_kwargs(p: dict) -> dict:
+        def f(key, default):
+            v = p.get(key, default)
+            return v if v is not None else default
+        return dict(
+            page_w_mm=float(f("page_w_mm", 126.0)),
+            page_h_mm=float(f("page_h_mm", 103.0)),
+            top_mm=float(f("top_mm", 4.5)),
+            side_mm=float(f("side_mm", 15.0)),
+            title_size_mm=float(f("title_size_mm", 14.0)),
+            title_gap_mm=float(f("title_gap_mm", 2.5)),
+            title_line_thick_mm=float(f("title_line_thick_mm", 0.5)),
+            addr_v_size_mm=float(f("addr_v_size_mm", 7.0)),
+            vname_v_size_mm=float(f("vname_v_size_mm", 7.0)),
+            addr_wrap_chars=int(f("addr_wrap_chars", 28)),
+            info_gap_below_line_mm=float(f("info_gap_below_line_mm", 6.0)),
+            info_extra_gap_mm=float(f("info_extra_gap_mm", 0.0)),
+            show_table_header=bool(f("show_table_header", False)),
+            header_size_mm=float(f("header_size_mm", 8.2)),
+            row_size_mm=float(f("row_size_mm", 4.0)),
+            row_h_mm=float(f("row_h_mm", 6.2)),
+            row_padding_mm=float(f("row_padding_mm", 6.8)),
+            row_line_factor=float(f("row_line_factor", 0.0)),
+            two_row_extra_gap_mm=float(f("two_row_extra_gap_mm", 0.0)),
+            col_gap_mm=float(f("col_gap_mm", 3.0)),
+            name_ratio=float(f("name_ratio", 0.62)),
+            color_ratio=float(f("color_ratio", 0.23)),
+            qty_ratio=float(f("qty_ratio", 0.15)),
+            table_top_offset_mm=float(f("table_top_offset_mm", 19.76)),
+            bottom_mm=float(f("bottom_mm", 10.0)),
+            footer_size_mm=float(f("footer_size_mm", 6.0)),
+            footer_show_date=bool(f("footer_show_date", True)),
+            footer_date_format=str(f("footer_date_format", "%Y-%m-%d")),
+        )
+
+    @router.post("/bulyang/image/{session_id}/{index}")
+    def bulyang_image(
+        session_id: str,
+        index: int,
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        sess = _bulyang_sessions.get(session_id)
+        if not sess:
+            raise HTTPException(status_code=404, detail="세션 없음. 파일을 다시 업로드하세요.")
+        keys = sess["keys"]
+        groups = sess["groups"]
+        if index < 0 or index >= len(keys):
+            raise HTTPException(status_code=400, detail="인덱스 범위 초과")
+        vendor, addr = keys[index]
+        items = groups[keys[index]]
+        dpi = max(72, min(int(payload.get("dpi", 150)), 300))
+        try:
+            png, guides = _bul_render(
+                title_text=str(payload.get("title") or "벨류스"),
+                vendor_name=vendor,
+                vendor_addr=addr,
+                items=items,
+                footer_text=str(payload.get("footer_text") or ""),
+                dpi=dpi,
+                **_bul_layout_kwargs(payload),
+            )
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        import base64
+        return {
+            "ok": True,
+            "image_b64": base64.b64encode(png).decode(),
+            "guides": guides,
+        }
+
+    @router.post("/bulyang/export/{session_id}")
+    def bulyang_export(
+        session_id: str,
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        sess = _bulyang_sessions.get(session_id)
+        if not sess:
+            raise HTTPException(status_code=404, detail="세션 없음. 파일을 다시 업로드하세요.")
+        keys = sess["keys"]
+        groups = sess["groups"]
+        layout_kw = _bul_layout_kwargs(payload)
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for i, key in enumerate(keys):
+                vendor, addr = key
+                items = groups[key]
+                try:
+                    png, _ = _bul_render(
+                        title_text=str(payload.get("title") or "벨류스"),
+                        vendor_name=vendor,
+                        vendor_addr=addr,
+                        items=items,
+                        footer_text=str(payload.get("footer_text") or ""),
+                        dpi=300,
+                        **layout_kw,
+                    )
+                    zf.writestr(f"{i + 1:03d}_{_bul_sanitize(vendor)}.png", png)
+                except Exception:
+                    continue
+        zip_buf.seek(0)
+        headers = {"Content-Disposition": _content_disposition("거래처라벨.zip")}
+        return Response(content=zip_buf.getvalue(), media_type="application/zip", headers=headers)
+
+    # ── 날짜청크 엔드포인트 ───────────────────────────────────────────────
 
     @router.post("/date-chunk/copy")
     async def date_chunk_copy(file: UploadFile = File(...), user: str = Depends(get_current_user)):
