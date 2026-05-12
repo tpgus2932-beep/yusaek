@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile
+from typing import List
 from fastapi.responses import FileResponse
 
 
@@ -196,6 +197,45 @@ def build_returns_router(
         state.map_d_to_e = mapping
         return {"ok": True, "map_count": len(mapping), "status": return_status(state)}
 
+    @router.post("/returns/excel_lotte")
+    def returns_upload_excel_lotte(
+        file: UploadFile = File(...),
+        user: str = Depends(get_current_user),
+    ):
+        ext = Path(file.filename or "").suffix.lower()
+        if ext not in return_allowed_exts:
+            raise HTTPException(status_code=400, detail="xls/xlsx/xlsm만 업로드 가능")
+
+        tmp_path = Path(tempfile.gettempdir()) / f"returns_excel_lotte_{uuid.uuid4().hex}{ext}"
+        with tmp_path.open("wb") as out:
+            shutil.copyfileobj(file.file, out)
+
+        try:
+            df = read_return_excel(tmp_path)
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        if df.shape[1] < 8:
+            raise HTTPException(status_code=400, detail="롯데택배 엑셀에 G/H열이 없습니다. (열 개수가 부족)")
+
+        df["G_clean"] = df.iloc[:, 6].apply(clean_invoice)
+        df["H_clean"] = df.iloc[:, 7].apply(clean_invoice)
+
+        mapping: dict[str, str] = {}
+        for _, row in df.iterrows():
+            g = row.get("G_clean", "")
+            h = row.get("H_clean", "")
+            if g and g not in mapping:
+                mapping[g] = h
+
+        state = get_return_state(user)
+        state.df_lotte = df
+        state.map_lotte = mapping
+        return {"ok": True, "map_count": len(mapping), "status": return_status(state)}
+
     @router.post("/returns/excel2")
     def returns_upload_excel2(
         file: UploadFile = File(...),
@@ -240,27 +280,33 @@ def build_returns_router(
 
     @router.post("/returns/exchange")
     def returns_upload_exchange(
-        file: UploadFile = File(...),
+        files: List[UploadFile] = File(...),
         user: str = Depends(get_current_user),
     ):
-        ext = Path(file.filename or "").suffix.lower()
-        if ext not in return_allowed_exts:
-            raise HTTPException(status_code=400, detail="xls/xlsx/xlsm만 업로드 가능")
+        dfs = []
+        for file in files:
+            ext = Path(file.filename or "").suffix.lower()
+            if ext not in return_allowed_exts:
+                raise HTTPException(status_code=400, detail="xls/xlsx/xlsm만 업로드 가능")
 
-        tmp_path = Path(tempfile.gettempdir()) / f"returns_exchange_{uuid.uuid4().hex}{ext}"
-        with tmp_path.open("wb") as out:
-            shutil.copyfileobj(file.file, out)
+            tmp_path = Path(tempfile.gettempdir()) / f"returns_exchange_{uuid.uuid4().hex}{ext}"
+            with tmp_path.open("wb") as out:
+                shutil.copyfileobj(file.file, out)
 
-        try:
-            df = read_return_excel(tmp_path)
-        finally:
             try:
-                tmp_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+                df = read_return_excel(tmp_path)
+            finally:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
-        if df.shape[1] < 20:
-            raise HTTPException(status_code=400, detail="교환 엑셀에 필요한 열(F,G,I,J,T)이 없습니다. (열 개수가 부족)")
+            if df.shape[1] < 20:
+                raise HTTPException(status_code=400, detail=f"{file.filename}: 교환 엑셀에 필요한 열(F,G,I,J,T)이 없습니다. (열 개수가 부족)")
+
+            dfs.append(df)
+
+        df = pd.concat(dfs, ignore_index=True) if len(dfs) > 1 else dfs[0]
 
         df["F_name"] = df.iloc[:, 5].apply(clean_product_name)
         df["G_opt"] = df.iloc[:, 6].apply(lowercase_size_words).apply(option_slash_to_space)
@@ -535,14 +581,14 @@ def build_returns_router(
             state.scanned_barcodes.add(barcode)
             return {"ok": True, "last_type": state.last_type, "sound_type": sound_type, "queues": return_queue_payload(state)}
 
-        if not state.map_d_to_e:
-            raise HTTPException(status_code=400, detail="먼저 1번 엑셀을 불러오세요.")
+        if not state.map_d_to_e and not state.map_lotte:
+            raise HTTPException(status_code=400, detail="먼저 CJ 또는 롯데택배 엑셀을 불러오세요.")
         if state.df2 is None or state.df2_index is None:
             raise HTTPException(status_code=400, detail="먼저 2번 엑셀을 불러오세요.")
 
-        e_val = state.map_d_to_e.get(barcode, "")
+        e_val = state.map_d_to_e.get(barcode, "") or state.map_lotte.get(barcode, "")
         if not e_val:
-            msg = f"[미매칭] 스캔:{barcode} → 1번(D)에서 찾지 못함"
+            msg = f"[미매칭] 스캔:{barcode} → CJ(D)/롯데(G)에서 찾지 못함"
             state.queue_unmatched.append(
                 {"id": state.next_id, "scan": barcode, "match": "", "item_text": msg, "qty": "", "type": "미매칭"}
             )

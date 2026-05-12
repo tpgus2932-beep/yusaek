@@ -230,14 +230,38 @@ const ReturnsPage = () => {
         await handleUpload(file, '/returns/excel1', 'CJ 엑셀');
     };
 
+    const handleLotteExcelChange = async (file) => {
+        if (!file) return;
+        await handleUpload(file, '/returns/excel_lotte', '롯데택배 엑셀');
+    };
+
     const handleExcel2Change = async (file) => {
         if (!file) return;
         await handleUpload(file, '/returns/excel2', '에이블리 엑셀');
     };
 
-    const handleExchangeExcelChange = async (file) => {
-        if (!file) return;
-        await handleUpload(file, '/returns/exchange', '교환 엑셀');
+    const handleExchangeExcelChange = async (files) => {
+        if (!files || files.length === 0) return;
+        setLoading(true);
+        setMessage('');
+        try {
+            const formData = new FormData();
+            Array.from(files).forEach((f) => formData.append('files', f));
+            const res = await fetch(`${API}/returns/exchange`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: formData,
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '업로드 실패');
+            setStatus(data.status || status);
+            await refreshState();
+            setMessage(`교환 엑셀 업로드 완료 (${files.length}개)`);
+        } catch (err) {
+            setMessage(err.message || '업로드 실패');
+        } finally {
+            setLoading(false);
+        }
     };
 
     const handleCostReload = async () => {
@@ -638,6 +662,14 @@ const ReturnsPage = () => {
                             <input
                                 type="file"
                                 accept=".xls,.xlsx,.xlsm"
+                                onChange={(e) => handleLotteExcelChange(e.target.files?.[0] ?? null)}
+                            />
+                            롯데택배 엑셀 선택
+                        </label>
+                        <label className={pageStyles.fileInput}>
+                            <input
+                                type="file"
+                                accept=".xls,.xlsx,.xlsm"
                                 onChange={(e) => handleExcel2Change(e.target.files?.[0] ?? null)}
                             />
                             에이블리 엑셀 선택
@@ -646,7 +678,8 @@ const ReturnsPage = () => {
                             <input
                                 type="file"
                                 accept=".xls,.xlsx,.xlsm"
-                                onChange={(e) => handleExchangeExcelChange(e.target.files?.[0] ?? null)}
+                                multiple
+                                onChange={(e) => handleExchangeExcelChange(e.target.files)}
                             />
                             교환 엑셀 선택
                         </label>

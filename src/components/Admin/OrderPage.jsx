@@ -33,6 +33,7 @@ export default function OrderPage() {
 
   const [lizardFile, setLizardFile] = useState(null);
   const [lizardMessage, setLizardMessage] = useState("");
+  const lizardFileInputRef = useRef(null);
 
   const [excelFile, setExcelFile] = useState(null);
   const [checkResults, setCheckResults] = useState([]);
@@ -1044,6 +1045,7 @@ export default function OrderPage() {
           <div className={styles.uploadRow}>
             <label className={styles.fileInput}>
               <input
+                ref={lizardFileInputRef}
                 type="file"
                 accept=".xls,.xlsx,.xlsm"
                 onChange={(e) => {
@@ -1051,8 +1053,20 @@ export default function OrderPage() {
                   setLizardMessage("");
                 }}
               />
-              원본 파일 선택
+              {lizardFile ? lizardFile.name : "원본 파일 선택"}
             </label>
+            {lizardFile && (
+              <button
+                className={styles.secondaryBtn}
+                onClick={() => {
+                  setLizardFile(null);
+                  setLizardMessage("");
+                  if (lizardFileInputRef.current) lizardFileInputRef.current.value = "";
+                }}
+              >
+                원본파일 초기화
+              </button>
+            )}
             <button className={styles.primaryBtn} onClick={handleLizardStandardOrder}>
               리자드스탠다드 발주
             </button>

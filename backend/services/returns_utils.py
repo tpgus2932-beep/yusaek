@@ -117,9 +117,11 @@ def _lowercase_size_words(text: str) -> str:
 class ReturnState:
     def __init__(self, cost_base_path: Path):
         self.df1: pd.DataFrame | None = None
+        self.df_lotte: pd.DataFrame | None = None
         self.df2: pd.DataFrame | None = None
         self.exchange_df: pd.DataFrame | None = None
         self.map_d_to_e: dict[str, str] = {}
+        self.map_lotte: dict[str, str] = {}
         self.df2_index: dict[str, list[int]] = {}
         self.exchange_index: dict[str, list[int]] = {}
         self.queue_seller: list[dict] = []
@@ -153,9 +155,11 @@ def _return_df_from_json(raw: str | None) -> pd.DataFrame | None:
 def _return_state_to_payload(state: ReturnState) -> dict:
     return {
         "df1": _return_df_to_json(state.df1),
+        "df_lotte": _return_df_to_json(state.df_lotte),
         "df2": _return_df_to_json(state.df2),
         "exchange_df": _return_df_to_json(state.exchange_df),
         "map_d_to_e": state.map_d_to_e,
+        "map_lotte": state.map_lotte,
         "df2_index": state.df2_index,
         "exchange_index": state.exchange_index,
         "queue_seller": state.queue_seller,
@@ -177,9 +181,11 @@ def _return_state_to_payload(state: ReturnState) -> dict:
 def _load_return_state_from_payload(state: ReturnState, payload: dict | None):
     payload = payload or {}
     state.df1 = _return_df_from_json(payload.get("df1"))
+    state.df_lotte = _return_df_from_json(payload.get("df_lotte"))
     state.df2 = _return_df_from_json(payload.get("df2"))
     state.exchange_df = _return_df_from_json(payload.get("exchange_df"))
     state.map_d_to_e = dict(payload.get("map_d_to_e") or {})
+    state.map_lotte = dict(payload.get("map_lotte") or {})
     state.df2_index = {str(k): list(v) for k, v in dict(payload.get("df2_index") or {}).items()}
     state.exchange_index = {str(k): list(v) for k, v in dict(payload.get("exchange_index") or {}).items()}
     state.queue_seller = list(payload.get("queue_seller") or [])
@@ -212,10 +218,12 @@ def _return_status(state: ReturnState) -> dict:
             mtime = None
     return {
         "excel1_loaded": state.df1 is not None,
+        "lotte_loaded": state.df_lotte is not None,
         "excel2_loaded": state.df2 is not None,
         "exchange_loaded": state.exchange_df is not None,
         "cost_loaded": bool(state.cost_map),
         "map_count": len(state.map_d_to_e),
+        "map_lotte_count": len(state.map_lotte),
         "index_count": len(state.df2_index),
         "exchange_index_count": len(state.exchange_index),
         "cost_count": len(state.cost_map),
