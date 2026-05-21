@@ -41,13 +41,35 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
 
     _init()
 
-    # 기본 PIN 설정 (최초 1회)
-    if not get_setting(ATTENDANCE_ADMIN_PIN_KEY):
-        set_setting(ATTENDANCE_ADMIN_PIN_KEY, hash_pin("1234"))
+    # 시작 시 기본 PIN 저장 시도 — 실패해도 앱 구동은 계속
+    try:
+        if not get_setting(ATTENDANCE_ADMIN_PIN_KEY):
+            set_setting(ATTENDANCE_ADMIN_PIN_KEY, hash_pin("1234"))
+    except Exception:
+        pass  # 아래 _check_pin 에서 지연 초기화로 처리
 
     def _check_pin(pin: str):
-        pin_hash = get_setting(ATTENDANCE_ADMIN_PIN_KEY)
-        if not pin_hash or not verify_pin(pin, pin_hash):
+        """
+        PIN 검증.
+        DB에 값이 없으면 기본 PIN "1234" 로 지연 초기화한다.
+        (배포 환경 첫 기동 시 startup 초기화가 실패했을 때 대비)
+        """
+        try:
+            pin_hash = get_setting(ATTENDANCE_ADMIN_PIN_KEY)
+        except Exception:
+            pin_hash = None
+
+        if not pin_hash:
+            # DB에 PIN이 없으면 이번 요청을 계기로 "1234" 로 초기화
+            if pin.strip() == "1234":
+                try:
+                    set_setting(ATTENDANCE_ADMIN_PIN_KEY, hash_pin("1234"))
+                except Exception:
+                    pass
+                return          # 기본 PIN 허용
+            raise HTTPException(status_code=403, detail="PIN이 올바르지 않습니다.")
+
+        if not verify_pin(pin, pin_hash):
             raise HTTPException(status_code=403, detail="PIN이 올바르지 않습니다.")
 
     def _now_kst():
