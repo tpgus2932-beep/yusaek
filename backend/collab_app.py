@@ -22,6 +22,7 @@ os.environ.setdefault(
 from api.auth_admin_routes import build_auth_admin_router
 from api.collab_routes import build_collab_router
 from api.sms_routes import build_sms_router
+from api.attendance_routes import build_attendance_router
 from main import (
     ALLOWED_REQUEST_EXTS,
     ALLOWED_SHARED_EXTS,
@@ -129,6 +130,17 @@ app.include_router(
         max_request_file_size_bytes=COLLAB_REQUEST_MAX_BYTES,
         max_shared_file_size_bytes=COLLAB_SHARED_FILE_MAX_BYTES,
         enqueue_sms=_enqueue_sms_fn,
+    )
+)
+
+
+app.include_router(
+    build_attendance_router(
+        get_db=_get_db,
+        get_setting=_get_setting,
+        set_setting=_set_setting,
+        hash_pin=_hash_pin,
+        verify_pin=_verify_pin,
     )
 )
 
