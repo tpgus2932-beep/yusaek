@@ -221,8 +221,8 @@ export default function AttendanceAdminPage() {
     return `${hours}시간 ${mins}분`;
   };
 
-  /** 소수 시간 포맷 (예: 1.5) */
-  const fmtDecimalHours = (h) => +(Math.round(h * 100) / 100);
+  /** 소수 시간 포맷 — 30분(0.5) 단위 반올림 (예: 3h10m→3.0, 3h20m→3.5) */
+  const fmtDecimalHours = (h) => Math.round(h * 2) / 2;
 
   /** ISO UTC → { date: 'YYYY-MM-DD', time: 'HH:MM' } in KST */
   const toKSTDatetime = (iso) => {
