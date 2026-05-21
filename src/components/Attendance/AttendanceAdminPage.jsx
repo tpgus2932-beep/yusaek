@@ -146,9 +146,10 @@ export default function AttendanceAdminPage() {
       if (h !== null) hoursMap[g.name] = (hoursMap[g.name] || 0) + h;
     });
 
+    const B = 'border:1px solid #CCCCCC;';
     const cell = (val, style = '') =>
-      style ? `<td style="${style}">${val}</td>` : `<td>${val ?? ''}</td>`;
-    const empty9 = '<td></td>'.repeat(9);
+      `<td style="${B}${style}">${val ?? ''}</td>`;
+    const empty9 = `<td style="${B}"></td>`.repeat(9);
 
     // Row 1: A~I 빈칸 + J열~ 고정 이름
     const row1 = `<tr>${empty9}${FIXED_NAMES.map((n) => cell(n)).join('')}</tr>`;
@@ -167,7 +168,7 @@ export default function AttendanceAdminPage() {
       `<tr>${cell(g.name)}${cell(g.date)}${cell(g.출근 ? fmtTime(g.출근.timestamp) : '')}${cell(g.퇴근 ? fmtTime(g.퇴근.timestamp) : '')}${cell(calcDuration(g.출근, g.퇴근) ?? '')}</tr>`
     ).join('');
 
-    const html = `<html><head><meta charset="UTF-8"></head><body><table>${row1}${row2}${row3}${dataRows}</table></body></html>`;
+    const html = `<html><head><meta charset="UTF-8"></head><body><table style="border-collapse:collapse">${row1}${row2}${row3}${dataRows}</table></body></html>`;
     const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
