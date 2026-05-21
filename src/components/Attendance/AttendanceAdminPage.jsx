@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import styles from './AttendanceAdminPage.module.css';
 import { COLLAB_API_BASE } from '../../lib/api';
 
@@ -179,6 +179,17 @@ export default function AttendanceAdminPage() {
 
   const fmtTime = (iso) =>
     new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+
+  const calcDuration = (inRec, outRec) => {
+    if (!inRec || !outRec) return null;
+    const diff = new Date(outRec.timestamp) - new Date(inRec.timestamp);
+    if (diff <= 0) return null;
+    const h = Math.floor(diff / 3_600_000);
+    const m = Math.floor((diff % 3_600_000) / 60_000);
+    if (h === 0) return `${m}분`;
+    if (m === 0) return `${h}시간`;
+    return `${h}시간 ${m}분`;
+  };
 
   /** ISO UTC → { date: 'YYYY-MM-DD', time: 'HH:MM' } in KST */
   const toKSTDatetime = (iso) => {
@@ -361,38 +372,50 @@ export default function AttendanceAdminPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {groupedRecords.map((g) => (
-                        <tr key={`${g.date}__${g.name}`}>
-                          <td className={styles.nameCell}>{g.name}</td>
-                          <td className={styles.dateCell}>{g.date}</td>
-                          <td>
-                            {g.출근 ? (
-                              <span className={styles.timeGroup}>
-                                <span className={`${styles.badge} ${styles.badgeIn}`}>
-                                  {fmtTime(g.출근.timestamp)}
-                                </span>
-                                <button className={styles.editSmBtn} onClick={() => openEdit(g.출근)} title="수정">✎</button>
-                                <button className={styles.delSmBtn} onClick={() => deleteRecord(g.출근.id)} title="삭제">✕</button>
-                              </span>
-                            ) : (
-                              <span className={styles.noRecord}>-</span>
+                      {groupedRecords.map((g) => {
+                        const dur = calcDuration(g.출근, g.퇴근);
+                        return (
+                          <Fragment key={`${g.date}__${g.name}`}>
+                            <tr>
+                              <td className={styles.nameCell}>{g.name}</td>
+                              <td className={styles.dateCell}>{g.date}</td>
+                              <td>
+                                {g.출근 ? (
+                                  <span className={styles.timeGroup}>
+                                    <span className={`${styles.badge} ${styles.badgeIn}`}>
+                                      {fmtTime(g.출근.timestamp)}
+                                    </span>
+                                    <button className={styles.editSmBtn} onClick={() => openEdit(g.출근)} title="수정">✎</button>
+                                    <button className={styles.delSmBtn} onClick={() => deleteRecord(g.출근.id)} title="삭제">✕</button>
+                                  </span>
+                                ) : (
+                                  <span className={styles.noRecord}>-</span>
+                                )}
+                              </td>
+                              <td>
+                                {g.퇴근 ? (
+                                  <span className={styles.timeGroup}>
+                                    <span className={`${styles.badge} ${styles.badgeOut}`}>
+                                      {fmtTime(g.퇴근.timestamp)}
+                                    </span>
+                                    <button className={styles.editSmBtn} onClick={() => openEdit(g.퇴근)} title="수정">✎</button>
+                                    <button className={styles.delSmBtn} onClick={() => deleteRecord(g.퇴근.id)} title="삭제">✕</button>
+                                  </span>
+                                ) : (
+                                  <span className={styles.noRecord}>-</span>
+                                )}
+                              </td>
+                            </tr>
+                            {dur && (
+                              <tr className={styles.durationRow}>
+                                <td colSpan={4} className={styles.durationCell}>
+                                  ⏱ 근무 {dur}
+                                </td>
+                              </tr>
                             )}
-                          </td>
-                          <td>
-                            {g.퇴근 ? (
-                              <span className={styles.timeGroup}>
-                                <span className={`${styles.badge} ${styles.badgeOut}`}>
-                                  {fmtTime(g.퇴근.timestamp)}
-                                </span>
-                                <button className={styles.editSmBtn} onClick={() => openEdit(g.퇴근)} title="수정">✎</button>
-                                <button className={styles.delSmBtn} onClick={() => deleteRecord(g.퇴근.id)} title="삭제">✕</button>
-                              </span>
-                            ) : (
-                              <span className={styles.noRecord}>-</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
+                          </Fragment>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

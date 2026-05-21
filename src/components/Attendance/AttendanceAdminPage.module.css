@@ -344,6 +344,18 @@
   transition: color 0.15s, background 0.15s;
 }
 .editSmBtn:hover { color: #2563eb; background: #dbeafe; }
+
+/* ── 근무시간 소계 행 ── */
+.durationRow td {
+  padding: 2px 10px 9px;
+  border-bottom: 1px solid #f1f5f9;
+}
+.durationCell {
+  font-size: 12px;
+  color: #94a3b8;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+}
 .delSmBtn {
   background: none;
   border: none;
