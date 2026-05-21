@@ -28,6 +28,11 @@ export default function AttendanceAdminPage() {
   const [newPin, setNewPin] = useState('');
   const [pinChangeMsg, setPinChangeMsg] = useState('');
 
+  // 시간 수정
+  const [editingRecord, setEditingRecord] = useState(null); // { id, name, type, date, time }
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState('');
+
   const verifyPin = async () => {
     if (!pin.trim()) return;
     setPinBusy(true);
@@ -158,6 +163,44 @@ export default function AttendanceAdminPage() {
 
   const fmtTime = (iso) =>
     new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+
+  /** ISO UTC → { date: 'YYYY-MM-DD', time: 'HH:MM' } in KST */
+  const toKSTDatetime = (iso) => {
+    const d = new Date(iso);
+    const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+    const date = kst.toISOString().slice(0, 10);
+    const time = kst.toISOString().slice(11, 16);
+    return { date, time };
+  };
+
+  const openEdit = (r) => {
+    const { date, time } = toKSTDatetime(r.timestamp);
+    setEditingRecord({ id: r.id, name: r.name, type: r.type, date, time });
+    setEditError('');
+  };
+
+  const updateRecord = async () => {
+    if (!editingRecord) return;
+    setEditSaving(true);
+    setEditError('');
+    try {
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/records/${editingRecord.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin, date: editingRecord.date, time: editingRecord.time }),
+      });
+      if (res.ok) {
+        setEditingRecord(null);
+        loadRecords();
+      } else {
+        const d = await res.json().catch(() => ({}));
+        setEditError(d.detail || '수정에 실패했습니다.');
+      }
+    } catch {
+      setEditError('서버에 연결할 수 없습니다.');
+    }
+    setEditSaving(false);
+  };
 
   // ── PIN 입력 화면 ─────────────────────────────────────
   if (!pinAuth) {
@@ -302,9 +345,13 @@ export default function AttendanceAdminPage() {
                               {r.type}
                             </span>
                           </td>
-                          <td className={styles.timeCell}>{fmtTime(r.timestamp)}</td>
-                          <td>
-                            <button className={styles.delSmBtn} onClick={() => deleteRecord(r.id)}>✕</button>
+                          <td className={styles.timeCell}>
+                            <span>{r.date}</span>{' '}
+                            <span>{fmtTime(r.timestamp)}</span>
+                          </td>
+                          <td className={styles.actionCell}>
+                            <button className={styles.editSmBtn} onClick={() => openEdit(r)} title="시간 수정">✎</button>
+                            <button className={styles.delSmBtn} onClick={() => deleteRecord(r.id)} title="삭제">✕</button>
                           </td>
                         </tr>
                       ))}
@@ -316,6 +363,48 @@ export default function AttendanceAdminPage() {
           </>
         )}
       </div>
+
+      {/* 시간 수정 모달 */}
+      {editingRecord && (
+        <div className={styles.modalOverlay} onClick={() => setEditingRecord(null)}>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <h3 className={styles.modalTitle}>시간 수정</h3>
+            <p className={styles.editInfo}>
+              <strong>{editingRecord.name}</strong>{' '}
+              <span className={`${styles.badge} ${editingRecord.type === '출근' ? styles.badgeIn : styles.badgeOut}`}>
+                {editingRecord.type}
+              </span>
+            </p>
+            <div className={styles.editFields}>
+              <label className={styles.editLabel}>
+                날짜
+                <input
+                  type="date"
+                  className={styles.editInput}
+                  value={editingRecord.date}
+                  onChange={(e) => setEditingRecord((prev) => ({ ...prev, date: e.target.value }))}
+                />
+              </label>
+              <label className={styles.editLabel}>
+                시간 (KST)
+                <input
+                  type="time"
+                  className={styles.editInput}
+                  value={editingRecord.time}
+                  onChange={(e) => setEditingRecord((prev) => ({ ...prev, time: e.target.value }))}
+                />
+              </label>
+            </div>
+            {editError && <div className={styles.pinError}>{editError}</div>}
+            <div className={styles.modalBtns}>
+              <button className={styles.pinSubmit} onClick={updateRecord} disabled={editSaving}>
+                {editSaving ? '저장 중...' : '저장'}
+              </button>
+              <button className={styles.backLink} onClick={() => setEditingRecord(null)}>취소</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* PIN 변경 모달 */}
       {showPinChange && (

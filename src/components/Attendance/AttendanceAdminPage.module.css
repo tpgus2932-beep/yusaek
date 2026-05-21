@@ -309,6 +309,22 @@
 .badgeIn  { background: #dcfce7; color: #16a34a; }
 .badgeOut { background: #dbeafe; color: #2563eb; }
 .timeCell { font-variant-numeric: tabular-nums; color: #475569; }
+.actionCell {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.editSmBtn {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-size: 15px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+}
+.editSmBtn:hover { color: #2563eb; background: #dbeafe; }
 .delSmBtn {
   background: none;
   border: none;
@@ -352,3 +368,40 @@
   gap: 8px;
   margin-top: 12px;
 }
+
+/* ── 시간 수정 모달 ── */
+.editInfo {
+  margin: 0 0 14px;
+  font-size: 15px;
+  color: #334155;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.editFields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+  text-align: left;
+}
+.editLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748b;
+}
+.editInput {
+  padding: 11px 14px;
+  border: 2px solid #e2e8f0;
+  border-radius: 10px;
+  font-size: 15px;
+  outline: none;
+  font-family: inherit;
+  background: #f8fafc;
+  transition: border-color 0.2s;
+}
+.editInput:focus { border-color: #2563eb; }

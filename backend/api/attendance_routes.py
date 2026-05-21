@@ -97,6 +97,11 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         old_pin: str
         new_pin: str
 
+    class RecordUpdate(BaseModel):
+        pin: str
+        date: str   # YYYY-MM-DD (KST)
+        time: str   # HH:MM (KST)
+
     # ── 직원 목록 (인증 불필요) ─────────────────────────
     @router.get("/members")
     def list_members():
@@ -196,6 +201,26 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
              "timestamp": r["timestamp"], "date": r["date"]}
             for r in rows
         ]
+
+    # ── 기록 시간 수정 (PIN 필요) ───────────────────────
+    @router.patch("/records/{record_id}")
+    def update_record(record_id: int, body: RecordUpdate):
+        _check_pin(body.pin)
+        try:
+            dt_kst = datetime.strptime(
+                f"{body.date} {body.time}", "%Y-%m-%d %H:%M"
+            ).replace(tzinfo=KST)
+            dt_utc = dt_kst.astimezone(timezone.utc)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="날짜/시간 형식이 올바르지 않습니다.")
+        conn = get_db()
+        conn.execute(
+            "UPDATE attendance_records SET timestamp = ?, date = ? WHERE id = ?",
+            (dt_utc.isoformat(), body.date, record_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True}
 
     # ── 기록 삭제 (PIN 필요) ────────────────────────────
     @router.delete("/records/{record_id}")
