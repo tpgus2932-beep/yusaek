@@ -153,10 +153,10 @@ export default function AttendanceAdminPage() {
     // Row 1: A~I 빈칸 + J열~ 고정 이름
     const row1 = `<tr>${empty9}${FIXED_NAMES.map((n) => cell(n)).join('')}</tr>`;
 
-    // Row 2: A~I 빈칸 + J열~ 합계 (파란색, 출근 없으면 0.0)
+    // Row 2: A~I 빈칸 + J열~ 합계 (파란색, 소수 1자리 고정, 출근 없으면 0.0)
     const row2 = `<tr>${empty9}${FIXED_NAMES.map((n) => {
       const val = hoursMap[n] !== undefined ? fmtDecimalHours(hoursMap[n]) : '0.0';
-      return cell(val, 'color:#0000FF');
+      return cell(val, "color:#0000FF;mso-number-format:'0.0'");
     }).join('')}</tr>`;
 
     // Row 3: 헤더
