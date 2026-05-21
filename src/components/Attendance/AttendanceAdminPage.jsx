@@ -7,6 +7,8 @@ const todayStr = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
+const FIXED_NAMES = ['효진', '은영', '가희', '영아', '은진', '미진', '정란', '주아'];
+
 export default function AttendanceAdminPage() {
   const [pinAuth, setPinAuth] = useState(false);
   const [pin, setPin] = useState('');
@@ -136,38 +138,41 @@ export default function AttendanceAdminPage() {
     loadRecords();
   };
 
-  const exportCSV = () => {
-    // ── 직원별 총 근무시간 집계 (J열~ 요약용) ──
+  const exportExcel = () => {
+    // ── 직원별 총 근무시간 집계 ──
     const hoursMap = {};
     groupedRecords.forEach((g) => {
       const h = calcHours(g.출근, g.퇴근);
       if (h !== null) hoursMap[g.name] = (hoursMap[g.name] || 0) + h;
     });
-    const summaryNames = Object.keys(hoursMap).sort();
 
-    const gap = Array(9).fill(''); // A~I 빈칸 (9개)
+    const cell = (val, style = '') =>
+      style ? `<td style="${style}">${val}</td>` : `<td>${val ?? ''}</td>`;
+    const empty9 = '<td></td>'.repeat(9);
 
-    // Row 1: J열~에 이름 나열
-    const row1 = [...gap, ...summaryNames];
-    // Row 2: J열~에 총 근무시간(소수) 나열
-    const row2 = [...gap, ...summaryNames.map((n) => fmtDecimalHours(hoursMap[n]))];
+    // Row 1: A~I 빈칸 + J열~ 고정 이름
+    const row1 = `<tr>${empty9}${FIXED_NAMES.map((n) => cell(n)).join('')}</tr>`;
+
+    // Row 2: A~I 빈칸 + J열~ 합계 (파란색, 출근 없으면 0.0)
+    const row2 = `<tr>${empty9}${FIXED_NAMES.map((n) => {
+      const val = hoursMap[n] !== undefined ? fmtDecimalHours(hoursMap[n]) : '0.0';
+      return cell(val, 'color:#0000FF');
+    }).join('')}</tr>`;
+
     // Row 3: 헤더
-    const header = ['이름', '날짜', '출근', '퇴근', '근무시간'];
-    // Row 4~: 상세 데이터 (E열 = 해당 날 근무시간 텍스트, 예: "4시간 7분")
-    const rows = groupedRecords.map((g) => [
-      g.name,
-      g.date,
-      g.출근 ? fmtTime(g.출근.timestamp) : '',
-      g.퇴근 ? fmtTime(g.퇴근.timestamp) : '',
-      calcDuration(g.출근, g.퇴근) ?? '',
-    ]);
+    const row3 = `<tr>${['이름', '날짜', '출근', '퇴근', '근무시간'].map((h) => cell(h)).join('')}</tr>`;
 
-    const csv = [row1, row2, header, ...rows].map((r) => r.join(',')).join('\n');
-    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    // Row 4~: 상세 데이터 (E열 = "4시간 7분" 텍스트)
+    const dataRows = groupedRecords.map((g) =>
+      `<tr>${cell(g.name)}${cell(g.date)}${cell(g.출근 ? fmtTime(g.출근.timestamp) : '')}${cell(g.퇴근 ? fmtTime(g.퇴근.timestamp) : '')}${cell(calcDuration(g.출근, g.퇴근) ?? '')}</tr>`
+    ).join('');
+
+    const html = `<html><head><meta charset="UTF-8"></head><body><table>${row1}${row2}${row3}${dataRows}</table></body></html>`;
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `출퇴근기록_${filterDateFrom || ''}${filterDateTo && filterDateTo !== filterDateFrom ? `~${filterDateTo}` : ''}.csv`;
+    a.download = `출퇴근기록_${filterDateFrom || ''}${filterDateTo && filterDateTo !== filterDateFrom ? `~${filterDateTo}` : ''}.xls`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -380,7 +385,7 @@ export default function AttendanceAdminPage() {
               <div className={styles.filterBtns}>
                 <button className={styles.searchBtn} onClick={loadRecords}>조회</button>
                 {groupedRecords.length > 0 && (
-                  <button className={styles.exportBtn} onClick={exportCSV}>CSV 다운로드</button>
+                  <button className={styles.exportBtn} onClick={exportExcel}>엑셀 다운로드</button>
                 )}
               </div>
             </div>
