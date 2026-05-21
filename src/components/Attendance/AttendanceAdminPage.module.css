@@ -231,6 +231,17 @@
 }
 
 /* ── 기록 조회 ── */
+.dateRangeRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.dateSep {
+  color: #94a3b8;
+  font-weight: 600;
+  flex-shrink: 0;
+}
 .filterRow {
   display: flex;
   gap: 8px;
@@ -308,7 +319,15 @@
 }
 .badgeIn  { background: #dcfce7; color: #16a34a; }
 .badgeOut { background: #dbeafe; color: #2563eb; }
-.timeCell { font-variant-numeric: tabular-nums; color: #475569; }
+.nameCell { font-weight: 600; color: #1e293b; white-space: nowrap; }
+.dateCell { color: #64748b; font-size: 13px; white-space: nowrap; }
+.timeGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.noRecord { color: #cbd5e1; font-size: 13px; }
 .actionCell {
   display: flex;
   gap: 4px;

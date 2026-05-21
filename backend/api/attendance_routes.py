@@ -179,7 +179,13 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
 
     # ── 기록 조회 (PIN 필요, 관리자용) ─────────────────
     @router.get("/records")
-    def get_records(pin: str = "", date: str = "", name: str = ""):
+    def get_records(
+        pin: str = "",
+        date: str = "",
+        name: str = "",
+        date_from: str = "",
+        date_to: str = "",
+    ):
         _check_pin(pin)
         conn = get_db()
         query = (
@@ -190,10 +196,17 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         if date:
             query += " AND date = ?"
             params.append(date)
+        else:
+            if date_from:
+                query += " AND date >= ?"
+                params.append(date_from)
+            if date_to:
+                query += " AND date <= ?"
+                params.append(date_to)
         if name:
             query += " AND member_name = ?"
             params.append(name)
-        query += " ORDER BY timestamp DESC"
+        query += " ORDER BY date DESC, member_name ASC, timestamp ASC"
         rows = conn.execute(query, params).fetchall()
         conn.close()
         return [

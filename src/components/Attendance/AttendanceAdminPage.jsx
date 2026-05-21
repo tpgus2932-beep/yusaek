@@ -1,6 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import styles from './AttendanceAdminPage.module.css';
 import { COLLAB_API_BASE } from '../../lib/api';
+
+const todayStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 export default function AttendanceAdminPage() {
   const [pinAuth, setPinAuth] = useState(false);
@@ -16,10 +21,8 @@ export default function AttendanceAdminPage() {
 
   // 기록 조회
   const [records, setRecords] = useState([]);
-  const [filterDate, setFilterDate] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  });
+  const [filterDateFrom, setFilterDateFrom] = useState(todayStr);
+  const [filterDateTo, setFilterDateTo] = useState(todayStr);
   const [filterName, setFilterName] = useState('');
   const [recLoading, setRecLoading] = useState(false);
 
@@ -29,7 +32,7 @@ export default function AttendanceAdminPage() {
   const [pinChangeMsg, setPinChangeMsg] = useState('');
 
   // 시간 수정
-  const [editingRecord, setEditingRecord] = useState(null); // { id, name, type, date, time }
+  const [editingRecord, setEditingRecord] = useState(null);
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState('');
 
@@ -70,17 +73,30 @@ export default function AttendanceAdminPage() {
     setRecLoading(true);
     try {
       const params = new URLSearchParams({ pin });
-      if (filterDate) params.append('date', filterDate);
-      if (filterName) params.append('name', filterName);
+      if (filterDateFrom) params.append('date_from', filterDateFrom);
+      if (filterDateTo)   params.append('date_to',   filterDateTo);
+      if (filterName)     params.append('name',       filterName);
       const res = await fetch(`${COLLAB_API_BASE}/attendance/records?${params}`);
       if (res.ok) setRecords(await res.json());
     } catch {}
     setRecLoading(false);
-  }, [pin, filterDate, filterName]);
+  }, [pin, filterDateFrom, filterDateTo, filterName]);
 
   useEffect(() => {
     if (pinAuth && tab === 'records') loadRecords();
   }, [pinAuth, tab, loadRecords]);
+
+  // ── 같은 날짜+이름 → 한 줄로 묶기 ─────────────────
+  const groupedRecords = useMemo(() => {
+    const map = {};
+    records.forEach((r) => {
+      const key = `${r.date}__${r.name}`;
+      if (!map[key]) map[key] = { date: r.date, name: r.name, 출근: null, 퇴근: null };
+      if (r.type === '출근' && !map[key].출근) map[key].출근 = r;
+      if (r.type === '퇴근') map[key].퇴근 = r; // 마지막 퇴근 기록 사용
+    });
+    return Object.values(map); // 이미 date DESC, name ASC, timestamp ASC 순으로 정렬됨
+  }, [records]);
 
   const addMember = async () => {
     const name = newName.trim();
@@ -121,19 +137,19 @@ export default function AttendanceAdminPage() {
   };
 
   const exportCSV = () => {
-    const header = ['이름', '구분', '날짜', '시간'];
-    const rows = records.map((r) => [
-      r.name,
-      r.type,
-      r.date,
-      new Date(r.timestamp).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
+    const header = ['이름', '날짜', '출근', '퇴근'];
+    const rows = groupedRecords.map((g) => [
+      g.name,
+      g.date,
+      g.출근 ? fmtTime(g.출근.timestamp) : '',
+      g.퇴근 ? fmtTime(g.퇴근.timestamp) : '',
     ]);
     const csv = [header, ...rows].map((r) => r.join(',')).join('\n');
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `출퇴근기록_${filterDate || '전체'}.csv`;
+    a.download = `출퇴근기록_${filterDateFrom || ''}${filterDateTo && filterDateTo !== filterDateFrom ? `~${filterDateTo}` : ''}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -166,11 +182,8 @@ export default function AttendanceAdminPage() {
 
   /** ISO UTC → { date: 'YYYY-MM-DD', time: 'HH:MM' } in KST */
   const toKSTDatetime = (iso) => {
-    const d = new Date(iso);
-    const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
-    const date = kst.toISOString().slice(0, 10);
-    const time = kst.toISOString().slice(11, 16);
-    return { date, time };
+    const kst = new Date(new Date(iso).getTime() + 9 * 60 * 60 * 1000);
+    return { date: kst.toISOString().slice(0, 10), time: kst.toISOString().slice(11, 16) };
   };
 
   const openEdit = (r) => {
@@ -294,13 +307,24 @@ export default function AttendanceAdminPage() {
         {tab === 'records' && (
           <>
             <div className={styles.card}>
-              <div className={styles.filterRow}>
+              {/* 날짜 범위 */}
+              <div className={styles.dateRangeRow}>
                 <input
                   type="date"
                   className={styles.filterInput}
-                  value={filterDate}
-                  onChange={(e) => setFilterDate(e.target.value)}
+                  value={filterDateFrom}
+                  onChange={(e) => setFilterDateFrom(e.target.value)}
                 />
+                <span className={styles.dateSep}>~</span>
+                <input
+                  type="date"
+                  className={styles.filterInput}
+                  value={filterDateTo}
+                  onChange={(e) => setFilterDateTo(e.target.value)}
+                />
+              </div>
+              {/* 직원 필터 */}
+              <div className={styles.filterRow}>
                 <select
                   className={styles.filterInput}
                   value={filterName}
@@ -314,7 +338,7 @@ export default function AttendanceAdminPage() {
               </div>
               <div className={styles.filterBtns}>
                 <button className={styles.searchBtn} onClick={loadRecords}>조회</button>
-                {records.length > 0 && (
+                {groupedRecords.length > 0 && (
                   <button className={styles.exportBtn} onClick={exportCSV}>CSV 다운로드</button>
                 )}
               </div>
@@ -323,7 +347,7 @@ export default function AttendanceAdminPage() {
             <div className={styles.card}>
               {recLoading ? (
                 <div className={styles.loadingMsg}>불러오는 중...</div>
-              ) : records.length === 0 ? (
+              ) : groupedRecords.length === 0 ? (
                 <div className={styles.emptyMsg}>해당 기간에 기록이 없습니다.</div>
               ) : (
                 <div className={styles.tableWrap}>
@@ -331,27 +355,41 @@ export default function AttendanceAdminPage() {
                     <thead>
                       <tr>
                         <th>이름</th>
-                        <th>구분</th>
-                        <th>시간</th>
-                        <th></th>
+                        <th>날짜</th>
+                        <th>출근</th>
+                        <th>퇴근</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {records.map((r) => (
-                        <tr key={r.id}>
-                          <td>{r.name}</td>
+                      {groupedRecords.map((g) => (
+                        <tr key={`${g.date}__${g.name}`}>
+                          <td className={styles.nameCell}>{g.name}</td>
+                          <td className={styles.dateCell}>{g.date}</td>
                           <td>
-                            <span className={`${styles.badge} ${r.type === '출근' ? styles.badgeIn : styles.badgeOut}`}>
-                              {r.type}
-                            </span>
+                            {g.출근 ? (
+                              <span className={styles.timeGroup}>
+                                <span className={`${styles.badge} ${styles.badgeIn}`}>
+                                  {fmtTime(g.출근.timestamp)}
+                                </span>
+                                <button className={styles.editSmBtn} onClick={() => openEdit(g.출근)} title="수정">✎</button>
+                                <button className={styles.delSmBtn} onClick={() => deleteRecord(g.출근.id)} title="삭제">✕</button>
+                              </span>
+                            ) : (
+                              <span className={styles.noRecord}>-</span>
+                            )}
                           </td>
-                          <td className={styles.timeCell}>
-                            <span>{r.date}</span>{' '}
-                            <span>{fmtTime(r.timestamp)}</span>
-                          </td>
-                          <td className={styles.actionCell}>
-                            <button className={styles.editSmBtn} onClick={() => openEdit(r)} title="시간 수정">✎</button>
-                            <button className={styles.delSmBtn} onClick={() => deleteRecord(r.id)} title="삭제">✕</button>
+                          <td>
+                            {g.퇴근 ? (
+                              <span className={styles.timeGroup}>
+                                <span className={`${styles.badge} ${styles.badgeOut}`}>
+                                  {fmtTime(g.퇴근.timestamp)}
+                                </span>
+                                <button className={styles.editSmBtn} onClick={() => openEdit(g.퇴근)} title="수정">✎</button>
+                                <button className={styles.delSmBtn} onClick={() => deleteRecord(g.퇴근.id)} title="삭제">✕</button>
+                              </span>
+                            ) : (
+                              <span className={styles.noRecord}>-</span>
+                            )}
                           </td>
                         </tr>
                       ))}
