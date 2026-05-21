@@ -137,14 +137,35 @@ export default function AttendanceAdminPage() {
   };
 
   const exportCSV = () => {
-    const header = ['이름', '날짜', '출근', '퇴근'];
-    const rows = groupedRecords.map((g) => [
-      g.name,
-      g.date,
-      g.출근 ? fmtTime(g.출근.timestamp) : '',
-      g.퇴근 ? fmtTime(g.퇴근.timestamp) : '',
-    ]);
-    const csv = [header, ...rows].map((r) => r.join(',')).join('\n');
+    // ── 직원별 총 근무시간 집계 (J열~ 요약용) ──
+    const hoursMap = {};
+    groupedRecords.forEach((g) => {
+      const h = calcHours(g.출근, g.퇴근);
+      if (h !== null) hoursMap[g.name] = (hoursMap[g.name] || 0) + h;
+    });
+    const summaryNames = Object.keys(hoursMap).sort();
+
+    const gap = Array(9).fill(''); // A~I 빈칸 (9개)
+
+    // Row 1: J열~에 이름 나열
+    const row1 = [...gap, ...summaryNames];
+    // Row 2: J열~에 총 근무시간(소수) 나열
+    const row2 = [...gap, ...summaryNames.map((n) => fmtDecimalHours(hoursMap[n]))];
+    // Row 3: 헤더
+    const header = ['이름', '날짜', '출근', '퇴근', '근무시간'];
+    // Row 4~: 상세 데이터 (E열 = 해당 날 근무시간 소수)
+    const rows = groupedRecords.map((g) => {
+      const h = calcHours(g.출근, g.퇴근);
+      return [
+        g.name,
+        g.date,
+        g.출근 ? fmtTime(g.출근.timestamp) : '',
+        g.퇴근 ? fmtTime(g.퇴근.timestamp) : '',
+        h !== null ? fmtDecimalHours(h) : '',
+      ];
+    });
+
+    const csv = [row1, row2, header, ...rows].map((r) => r.join(',')).join('\n');
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -180,16 +201,28 @@ export default function AttendanceAdminPage() {
   const fmtTime = (iso) =>
     new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 
-  const calcDuration = (inRec, outRec) => {
+  /** 출근~퇴근 차이를 시간(소수)으로 반환. 미기록이면 null */
+  const calcHours = (inRec, outRec) => {
     if (!inRec || !outRec) return null;
     const diff = new Date(outRec.timestamp) - new Date(inRec.timestamp);
     if (diff <= 0) return null;
-    const h = Math.floor(diff / 3_600_000);
-    const m = Math.floor((diff % 3_600_000) / 60_000);
-    if (h === 0) return `${m}분`;
-    if (m === 0) return `${h}시간`;
-    return `${h}시간 ${m}분`;
+    return diff / 3_600_000;
   };
+
+  /** 표시용 문자열 (예: "9시간 3분") */
+  const calcDuration = (inRec, outRec) => {
+    const h = calcHours(inRec, outRec);
+    if (h === null) return null;
+    const totalMins = Math.round(h * 60);
+    const hours = Math.floor(totalMins / 60);
+    const mins = totalMins % 60;
+    if (hours === 0) return `${mins}분`;
+    if (mins === 0) return `${hours}시간`;
+    return `${hours}시간 ${mins}분`;
+  };
+
+  /** 소수 시간 포맷 (예: 1.5) */
+  const fmtDecimalHours = (h) => +(Math.round(h * 100) / 100);
 
   /** ISO UTC → { date: 'YYYY-MM-DD', time: 'HH:MM' } in KST */
   const toKSTDatetime = (iso) => {
