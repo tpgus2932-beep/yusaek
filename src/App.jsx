@@ -19,6 +19,8 @@ import SMSPage from './components/SMS/SMSPage';
 import CollaborationMenuPage from './components/CollabTools/CollaborationMenuPage';
 import MobileRequestKimsungilPage from './components/Mobile/MobileRequestKimsungilPage';
 import CollabPortalPage from './components/Collab/CollabPortalPage';
+import AttendancePage from './components/Attendance/AttendancePage';
+import AttendanceAdminPage from './components/Attendance/AttendanceAdminPage';
 import { COLLAB_API_BASE } from './lib/api';
 
 
@@ -32,6 +34,8 @@ const App = () => {
   const pathname = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
   const isMobileKimsungilRequestRoute = pathname === '/request-kimsungil';
   const isCollabPortalRoute = pathname === '/collab';
+  const isAttendanceRoute = pathname === '/attendance';
+  const isAttendanceAdminRoute = pathname === '/attendance-admin';
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'dashboard');
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [token, setToken] = useState(localStorage.getItem('token'));
@@ -187,6 +191,10 @@ const App = () => {
     setRole('user');
     setHiddenTabs([]);
   };
+
+  // 출퇴근 페이지 — 로그인 불필요, 최우선 처리
+  if (isAttendanceRoute) return <AttendancePage />;
+  if (isAttendanceAdminRoute) return <AttendanceAdminPage />;
 
   if (!authChecked) {
     if (isMobileKimsungilRequestRoute) {

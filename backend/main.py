@@ -41,6 +41,7 @@ from api.order_routes import build_order_router
 from api.noye_kimsungil_routes import build_noye_kimsungil_router
 from api.sms_routes import build_sms_router
 from api.collaboration_tools_routes import build_collaboration_tools_router
+from api.attendance_routes import build_attendance_router
 from services.easyadmin_product import _content_disposition, _process_easyadmin_product_upload
 from services.returns_utils import (
     ReturnState,
@@ -834,6 +835,23 @@ def _init_client_schedule_db():
 _init_client_schedule_db()
 
 
+def _init_client_schedule_excluded():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS client_schedule_excluded (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_name TEXT NOT NULL UNIQUE
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_client_schedule_excluded()
+
+
 def _get_user_display(username: str) -> str:
     conn = _get_db()
     row = conn.execute("SELECT display_name FROM users WHERE username = ?", (username,)).fetchone()
@@ -1230,6 +1248,15 @@ app.include_router(
         get_current_user=_get_current_user,
         get_setting=_get_setting,
         set_setting=_set_setting,
+    )
+)
+app.include_router(
+    build_attendance_router(
+        get_db=_get_shared_db,
+        get_setting=_get_setting,
+        set_setting=_set_setting,
+        hash_pin=_hash_pin,
+        verify_pin=_verify_pin,
     )
 )
 

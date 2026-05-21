@@ -46,6 +46,15 @@ const Header = ({ onLogout, displayName, onProfileUpdate }) => {
             </div>
 
             <div className={styles.profileSection}>
+                <a
+                    href="/attendance"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={styles.attendanceLink}
+                    title="출퇴근 체크 페이지 열기"
+                >
+                    🏢 출퇴근
+                </a>
                 <button className={styles.notificationBtn}>
                     <Bell size={22} />
                     <span className={styles.badge}></span>

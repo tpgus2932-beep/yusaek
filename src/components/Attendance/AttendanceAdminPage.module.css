@@ -1,0 +1,354 @@
+/* ── PIN 화면 ── */
+.pinPage {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f1f5f9;
+  padding: 24px;
+  font-family: 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif;
+}
+.pinCard {
+  background: #fff;
+  border-radius: 22px;
+  padding: 40px 28px 32px;
+  width: 100%;
+  max-width: 340px;
+  text-align: center;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+}
+.pinIcon { font-size: 40px; margin-bottom: 8px; }
+.pinTitle {
+  font-size: 20px;
+  font-weight: 800;
+  color: #1e293b;
+  margin: 0 0 6px;
+}
+.pinSub {
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.6;
+  margin-bottom: 20px;
+}
+.pinHint { color: #94a3b8; font-size: 12px; }
+.pinInput {
+  width: 100%;
+  padding: 14px;
+  border: 2px solid #e2e8f0;
+  border-radius: 12px;
+  font-size: 18px;
+  text-align: center;
+  letter-spacing: 4px;
+  outline: none;
+  margin-bottom: 8px;
+  font-family: inherit;
+  transition: border-color 0.2s;
+}
+.pinInput:focus { border-color: #2563eb; }
+.pinError {
+  color: #dc2626;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.pinSuccess {
+  color: #16a34a;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.pinSubmit {
+  width: 100%;
+  padding: 14px;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  margin-bottom: 10px;
+  transition: opacity 0.15s;
+}
+.pinSubmit:disabled { opacity: 0.55; cursor: not-allowed; }
+.backLink {
+  background: none;
+  border: none;
+  color: #64748b;
+  font-size: 14px;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 4px;
+}
+.backLink:hover { color: #1e293b; }
+
+/* ── 관리 화면 ── */
+.page {
+  min-height: 100dvh;
+  background: #f1f5f9;
+  font-family: 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif;
+}
+.nav {
+  position: sticky;
+  top: 0;
+  height: 56px;
+  background: linear-gradient(135deg, #334155, #475569);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  z-index: 50;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+.navTitle {
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+}
+.navActions { display: flex; gap: 8px; }
+.navBtn {
+  background: rgba(255, 255, 255, 0.15);
+  border: 1.5px solid rgba(255, 255, 255, 0.35);
+  color: #fff;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.navSecBtn {
+  background: transparent;
+  border: 1.5px solid rgba(255, 255, 255, 0.25);
+  color: rgba(255, 255, 255, 0.75);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.content {
+  padding: 16px 16px 48px;
+  max-width: 540px;
+  margin: 0 auto;
+}
+
+.card {
+  background: #fff;
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.06);
+  margin-bottom: 14px;
+}
+
+/* ── 탭 ── */
+.tabBar {
+  display: flex;
+  gap: 4px;
+  background: #e2e8f0;
+  padding: 4px;
+  border-radius: 12px;
+  margin-bottom: 14px;
+}
+.tabBtn {
+  flex: 1;
+  padding: 10px 8px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 600;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.18s;
+  font-family: inherit;
+}
+.tabActive {
+  background: #fff;
+  color: #2563eb;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* ── 직원 관리 ── */
+.inputRow {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.inputField {
+  flex: 1;
+  padding: 12px 14px;
+  border: 2px solid #e2e8f0;
+  border-radius: 10px;
+  font-size: 15px;
+  outline: none;
+  font-family: inherit;
+  transition: border-color 0.2s;
+}
+.inputField:focus { border-color: #2563eb; }
+.addBtn {
+  padding: 12px 18px;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: inherit;
+}
+.errorMsg {
+  color: #dc2626;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.memberList { list-style: none; padding: 0; margin: 0; }
+.memberItem {
+  display: flex;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+.memberItem:last-child { border-bottom: none; }
+.memberName { flex: 1; font-size: 15px; font-weight: 500; color: #1e293b; }
+.delBtn {
+  padding: 5px 13px;
+  background: #fee2e2;
+  color: #dc2626;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+}
+.emptyMsg {
+  text-align: center;
+  color: #cbd5e1;
+  font-size: 14px;
+  padding: 20px 0;
+}
+
+/* ── 기록 조회 ── */
+.filterRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.filterInput {
+  flex: 1;
+  min-width: 130px;
+  padding: 10px 12px;
+  border: 2px solid #e2e8f0;
+  border-radius: 10px;
+  font-size: 14px;
+  outline: none;
+  font-family: inherit;
+  background: #f8fafc;
+  transition: border-color 0.2s;
+}
+.filterInput:focus { border-color: #2563eb; }
+.filterBtns { display: flex; gap: 8px; }
+.searchBtn {
+  padding: 10px 20px;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+}
+.exportBtn {
+  padding: 10px 16px;
+  background: #0f766e;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.loadingMsg {
+  text-align: center;
+  color: #94a3b8;
+  padding: 28px;
+  font-size: 14px;
+}
+.tableWrap { overflow-x: auto; }
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.table th {
+  background: #f8fafc;
+  padding: 10px 10px;
+  text-align: left;
+  font-weight: 700;
+  color: #64748b;
+  border-bottom: 2px solid #e2e8f0;
+  white-space: nowrap;
+}
+.table td {
+  padding: 11px 10px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #1e293b;
+}
+.table tr:last-child td { border-bottom: none; }
+.badge {
+  padding: 3px 10px;
+  border-radius: 100px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.badgeIn  { background: #dcfce7; color: #16a34a; }
+.badgeOut { background: #dbeafe; color: #2563eb; }
+.timeCell { font-variant-numeric: tabular-nums; color: #475569; }
+.delSmBtn {
+  background: none;
+  border: none;
+  color: #cbd5e1;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+}
+.delSmBtn:hover { color: #dc2626; background: #fee2e2; }
+
+/* ── PIN 변경 모달 ── */
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 24px;
+}
+.modal {
+  background: #fff;
+  border-radius: 20px;
+  padding: 32px 24px;
+  width: 100%;
+  max-width: 320px;
+  text-align: center;
+}
+.modalTitle {
+  font-size: 18px;
+  font-weight: 800;
+  color: #1e293b;
+  margin: 0 0 16px;
+}
+.modalBtns {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}

@@ -1,0 +1,204 @@
+.page {
+  min-height: 100dvh;
+  background: #f1f5f9;
+  font-family: 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif;
+}
+
+/* ── 상단 네비 ── */
+.nav {
+  position: sticky;
+  top: 0;
+  height: 56px;
+  background: linear-gradient(135deg, #1d4ed8, #2563eb);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+  z-index: 50;
+  box-shadow: 0 2px 12px rgba(37, 99, 235, 0.35);
+}
+.navTitle {
+  color: #fff;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+.navBtn {
+  background: rgba(255, 255, 255, 0.18);
+  border: 1.5px solid rgba(255, 255, 255, 0.45);
+  color: #fff;
+  padding: 7px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  font-family: inherit;
+}
+.navBtn:hover { background: rgba(255, 255, 255, 0.3); }
+
+/* ── 컨텐츠 ── */
+.content {
+  padding: 20px 16px 48px;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+/* ── 카드 ── */
+.card {
+  background: #fff;
+  border-radius: 18px;
+  padding: 22px 20px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.07);
+  margin-bottom: 14px;
+}
+
+/* ── 시계 ── */
+.clock {
+  text-align: center;
+  font-size: 46px;
+  font-weight: 800;
+  color: #2563eb;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -2px;
+  line-height: 1;
+}
+.dateLabel {
+  text-align: center;
+  color: #64748b;
+  font-size: 14px;
+  margin-top: 6px;
+}
+
+/* ── 이름 선택 ── */
+.selectLabel {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.nameSelect {
+  width: 100%;
+  padding: 14px 40px 14px 16px;
+  font-size: 16px;
+  border: 2px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+  color: #1e293b;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24'%3E%3Cpath fill='%2364748b' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.2s;
+  font-family: inherit;
+}
+.nameSelect:focus { border-color: #2563eb; }
+
+/* ── 출근/퇴근 버튼 ── */
+.actionBtns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 14px;
+}
+.btn {
+  padding: 22px 10px;
+  border: none;
+  border-radius: 14px;
+  font-size: 19px;
+  font-weight: 800;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  transition: transform 0.1s, box-shadow 0.1s;
+  font-family: inherit;
+  letter-spacing: -0.5px;
+}
+.btn:active { transform: scale(0.95); }
+.btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+.btnCheckin {
+  background: linear-gradient(145deg, #22c55e, #16a34a);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(22, 163, 74, 0.3);
+}
+.btnCheckout {
+  background: linear-gradient(145deg, #3b82f6, #2563eb);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.3);
+}
+.btnIcon { font-size: 30px; }
+
+/* ── 오늘 기록 ── */
+.logTitle {
+  font-size: 14px;
+  font-weight: 700;
+  color: #475569;
+  margin-bottom: 12px;
+}
+.logEmpty {
+  text-align: center;
+  color: #cbd5e1;
+  font-size: 14px;
+  padding: 18px 0;
+}
+.logItem {
+  display: flex;
+  align-items: center;
+  padding: 11px 0;
+  border-bottom: 1px solid #f1f5f9;
+  gap: 10px;
+}
+.logItem:last-child { border-bottom: none; }
+.logName {
+  flex: 1;
+  font-weight: 600;
+  font-size: 15px;
+  color: #1e293b;
+}
+.logBadge {
+  padding: 3px 11px;
+  border-radius: 100px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.badgeIn  { background: #dcfce7; color: #16a34a; }
+.badgeOut { background: #dbeafe; color: #2563eb; }
+.logTime {
+  font-size: 14px;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 토스트 ── */
+.toast {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%) translateY(120px);
+  background: #1e293b;
+  color: #fff;
+  padding: 13px 26px;
+  border-radius: 100px;
+  font-size: 14px;
+  font-weight: 600;
+  z-index: 999;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.toastShow   { transform: translateX(-50%) translateY(0); }
+.toastSuccess { background: #16a34a; }
+.toastError   { background: #dc2626; }
