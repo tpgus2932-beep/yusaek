@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import styles from './AttendancePage.module.css';
 import { COLLAB_API_BASE } from '../../lib/api';
 
@@ -69,6 +69,21 @@ export default function AttendancePage() {
   const fmtTime = (iso) =>
     new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 
+  // 이름별로 출근·퇴근 한 줄로 묶기
+  const groupedToday = useMemo(() => {
+    const map = {};
+    todayRecords.forEach((r) => {
+      if (!map[r.name]) map[r.name] = { name: r.name, 출근: null, 퇴근: null };
+      if (r.type === '출근' && !map[r.name].출근) map[r.name].출근 = r;
+      if (r.type === '퇴근') map[r.name].퇴근 = r; // 마지막 퇴근 사용
+    });
+    return Object.values(map).sort((a, b) => {
+      const ta = a.출근?.timestamp || a.퇴근?.timestamp || '';
+      const tb = b.출근?.timestamp || b.퇴근?.timestamp || '';
+      return ta.localeCompare(tb);
+    });
+  }, [todayRecords]);
+
   return (
     <div className={styles.page}>
       {/* ── 상단 네비게이션 ── */}
@@ -126,18 +141,27 @@ export default function AttendancePage() {
         {/* 오늘 기록 */}
         <div className={styles.card}>
           <div className={styles.logTitle}>📋 오늘의 기록</div>
-          {todayRecords.length === 0 ? (
+          {groupedToday.length === 0 ? (
             <div className={styles.logEmpty}>오늘 기록이 없습니다.</div>
           ) : (
-            todayRecords.map((r) => (
-              <div key={r.id} className={styles.logItem}>
-                <span className={styles.logName}>{r.name}</span>
-                <span className={`${styles.logBadge} ${r.type === '출근' ? styles.badgeIn : styles.badgeOut}`}>
-                  {r.type}
-                </span>
-                <span className={styles.logTime}>{fmtTime(r.timestamp)}</span>
+            <>
+              <div className={styles.logHeader}>
+                <span className={styles.logHeaderName}></span>
+                <span className={styles.logHeaderIn}>☀️ 출근</span>
+                <span className={styles.logHeaderOut}>🌙 퇴근</span>
               </div>
-            ))
+              {groupedToday.map((g) => (
+                <div key={g.name} className={styles.logItem}>
+                  <span className={styles.logName}>{g.name}</span>
+                  <span className={`${styles.logTimeCell} ${styles.logTimeCellIn}`}>
+                    {g.출근 ? fmtTime(g.출근.timestamp) : <span className={styles.logNoTime}>-</span>}
+                  </span>
+                  <span className={`${styles.logTimeCell} ${styles.logTimeCellOut}`}>
+                    {g.퇴근 ? fmtTime(g.퇴근.timestamp) : <span className={styles.logNoTime}>-</span>}
+                  </span>
+                </div>
+              ))}
+            </>
           )}
         </div>
       </div>

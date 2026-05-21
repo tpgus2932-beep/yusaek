@@ -146,7 +146,7 @@
   font-size: 14px;
   font-weight: 700;
   color: #475569;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 .logEmpty {
   text-align: center;
@@ -154,33 +154,47 @@
   font-size: 14px;
   padding: 18px 0;
 }
+.logHeader {
+  display: grid;
+  grid-template-columns: 1fr 80px 80px;
+  padding: 0 0 6px;
+  border-bottom: 2px solid #f1f5f9;
+  margin-bottom: 2px;
+}
+.logHeaderName {}
+.logHeaderIn,
+.logHeaderOut {
+  font-size: 11px;
+  font-weight: 700;
+  text-align: right;
+  color: #94a3b8;
+  letter-spacing: 0.2px;
+}
 .logItem {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 80px 80px;
   align-items: center;
-  padding: 11px 0;
+  padding: 10px 0;
   border-bottom: 1px solid #f1f5f9;
-  gap: 10px;
 }
 .logItem:last-child { border-bottom: none; }
 .logName {
-  flex: 1;
   font-weight: 600;
   font-size: 15px;
   color: #1e293b;
 }
-.logBadge {
-  padding: 3px 11px;
-  border-radius: 100px;
-  font-size: 12px;
-  font-weight: 700;
+.logTimeCell {
+  text-align: right;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
+.logTimeCellIn  { color: #16a34a; }
+.logTimeCellOut { color: #2563eb; }
+.logNoTime { color: #e2e8f0; font-weight: 400; }
 .badgeIn  { background: #dcfce7; color: #16a34a; }
 .badgeOut { background: #dbeafe; color: #2563eb; }
-.logTime {
-  font-size: 14px;
-  color: #94a3b8;
-  font-variant-numeric: tabular-nums;
-}
 
 /* ── 토스트 ── */
 .toast {
