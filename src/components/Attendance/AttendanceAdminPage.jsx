@@ -139,36 +139,51 @@ export default function AttendanceAdminPage() {
   };
 
   const exportExcel = () => {
-    // ── 직원별 총 근무시간 집계 ──
-    const hoursMap = {};
-    groupedRecords.forEach((g) => {
-      const h = calcHours(g.출근, g.퇴근);
-      if (h !== null) hoursMap[g.name] = (hoursMap[g.name] || 0) + h;
+    const BD = 'border:1px solid #CCCCCC;';
+    const cell = (val, style = '') =>
+      `<td style="${BD}${style}">${val ?? ''}</td>`;
+    const BLUE = "color:#0000FF;mso-number-format:'0.0'";
+
+    // 날짜 오름차순 정렬
+    const uniqueDates = [...new Set(groupedRecords.map((g) => g.date))].sort();
+
+    // 날짜별 인물별 근무시간 맵
+    const perDay = uniqueDates.map((date) => {
+      const map = {};
+      groupedRecords
+        .filter((g) => g.date === date)
+        .forEach((g) => {
+          const h = calcHours(g.출근, g.퇴근);
+          if (h !== null) map[g.name] = h;
+        });
+      return { date, map };
     });
 
-    const B = 'border:1px solid #CCCCCC;';
-    const cell = (val, style = '') =>
-      `<td style="${B}${style}">${val ?? ''}</td>`;
-    const empty9 = `<td style="${B}"></td>`.repeat(9);
+    const empty8 = `<td style="${BD}"></td>`.repeat(8); // B~I (A=날짜 뒤 8칸)
 
-    // Row 1: A~I 빈칸 + J열~ 고정 이름
-    const row1 = `<tr>${empty9}${FIXED_NAMES.map((n) => cell(n)).join('')}</tr>`;
+    // Row 1: "날짜" + B~I 빈칸 + J열~ 이름
+    const row1 = `<tr>${cell('날짜')}${empty8}${FIXED_NAMES.map((n) => cell(n)).join('')}</tr>`;
 
-    // Row 2: A~I 빈칸 + J열~ 합계 (파란색, 소수 1자리 고정, 출근 없으면 0.0)
-    const row2 = `<tr>${empty9}${FIXED_NAMES.map((n) => {
-      const val = hoursMap[n] !== undefined ? fmtDecimalHours(hoursMap[n]) : '0.0';
-      return cell(val, "color:#0000FF;mso-number-format:'0.0'");
-    }).join('')}</tr>`;
+    // Row 2~: 날짜 + B~I 빈칸 + J열~ 일별 근무시간 (파란색)
+    const summaryRows = perDay.map(({ date, map }) =>
+      `<tr>${cell(date)}${empty8}${FIXED_NAMES.map((n) => {
+        const val = map[n] !== undefined ? fmtDecimalHours(map[n]) : '0.0';
+        return cell(val, BLUE);
+      }).join('')}</tr>`
+    ).join('');
 
-    // Row 3: 헤더
-    const row3 = `<tr>${['이름', '날짜', '출근', '퇴근', '근무시간'].map((h) => cell(h)).join('')}</tr>`;
+    // 빈 구분 행
+    const blankRow = `<tr>${`<td style="${BD}"></td>`.repeat(9 + FIXED_NAMES.length)}</tr>`;
 
-    // Row 4~: 상세 데이터 (E열 = "4시간 7분" 텍스트)
+    // 상세 헤더
+    const detailHeader = `<tr>${['이름', '날짜', '출근', '퇴근', '근무시간'].map((h) => cell(h)).join('')}</tr>`;
+
+    // 상세 데이터 (E열 = "4시간 7분" 텍스트)
     const dataRows = groupedRecords.map((g) =>
       `<tr>${cell(g.name)}${cell(g.date)}${cell(g.출근 ? fmtTime(g.출근.timestamp) : '')}${cell(g.퇴근 ? fmtTime(g.퇴근.timestamp) : '')}${cell(calcDuration(g.출근, g.퇴근) ?? '')}</tr>`
     ).join('');
 
-    const html = `<html><head><meta charset="UTF-8"></head><body><table style="border-collapse:collapse">${row1}${row2}${row3}${dataRows}</table></body></html>`;
+    const html = `<html><head><meta charset="UTF-8"></head><body><table style="border-collapse:collapse">${row1}${summaryRows}${blankRow}${detailHeader}${dataRows}</table></body></html>`;
     const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
