@@ -153,17 +153,14 @@ export default function AttendanceAdminPage() {
     const row2 = [...gap, ...summaryNames.map((n) => fmtDecimalHours(hoursMap[n]))];
     // Row 3: 헤더
     const header = ['이름', '날짜', '출근', '퇴근', '근무시간'];
-    // Row 4~: 상세 데이터 (E열 = 해당 날 근무시간 소수)
-    const rows = groupedRecords.map((g) => {
-      const h = calcHours(g.출근, g.퇴근);
-      return [
-        g.name,
-        g.date,
-        g.출근 ? fmtTime(g.출근.timestamp) : '',
-        g.퇴근 ? fmtTime(g.퇴근.timestamp) : '',
-        h !== null ? fmtDecimalHours(h) : '',
-      ];
-    });
+    // Row 4~: 상세 데이터 (E열 = 해당 날 근무시간 텍스트, 예: "4시간 7분")
+    const rows = groupedRecords.map((g) => [
+      g.name,
+      g.date,
+      g.출근 ? fmtTime(g.출근.timestamp) : '',
+      g.퇴근 ? fmtTime(g.퇴근.timestamp) : '',
+      calcDuration(g.출근, g.퇴근) ?? '',
+    ]);
 
     const csv = [row1, row2, header, ...rows].map((r) => r.join(',')).join('\n');
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
@@ -221,8 +218,8 @@ export default function AttendanceAdminPage() {
     return `${hours}시간 ${mins}분`;
   };
 
-  /** 소수 시간 포맷 — 30분(0.5) 단위 반올림 (예: 3h10m→3.0, 3h20m→3.5) */
-  const fmtDecimalHours = (h) => Math.round(h * 2) / 2;
+  /** 총합 소수 포맷 — 30분(0.5) 단위 반올림, 항상 소수점 1자리 (예: 4→4.0, 1.5→1.5) */
+  const fmtDecimalHours = (h) => (Math.round(h * 2) / 2).toFixed(1);
 
   /** ISO UTC → { date: 'YYYY-MM-DD', time: 'HH:MM' } in KST */
   const toKSTDatetime = (iso) => {
