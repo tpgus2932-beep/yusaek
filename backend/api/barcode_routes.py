@@ -4,11 +4,13 @@ import uuid
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+import json
 import re
 
 import xlwt
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile
 from openpyxl import load_workbook
+from api.amood_hapbae import SHARED_COST_BASE_PATH
 
 
 def build_barcode_router(
@@ -26,11 +28,100 @@ def build_barcode_router(
     get_shared_defect_counts,
     set_shared_defect_counts,
     set_shared_barcode_data,
+    get_setting,
+    set_setting,
 ):
     router = APIRouter()
-    defect_base_path = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\불량베이스.xlsx")
-    defect_base_default_headers = ["code", "name", "vendor", "product", "color", "address", "note"]
+    defect_base_path = SHARED_COST_BASE_PATH
+    defect_base_default_headers = ["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]
     defect_base_cache = {"mtime": None, "headers": None, "rows": None, "lookup": None}
+    defect_base_columns = {
+        "code": 1,
+        "name": 2,
+        "color": 3,
+        "size": 4,
+        "vendor": 6,
+        "vendor_product": 7,
+        "display_name": 9,
+        "address": 10,
+    }
+    hapbae_target_shop = "에이블리(유색)"
+    hapbae_checked_rows_key = "test_hapbae_checked_rows"
+
+    def _normalize_text(value) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip()
+
+    def _normalize_shop_name(value) -> str:
+        text = str(value or "")
+        text = text.replace("（", "(").replace("）", ")")
+        text = re.sub(r"[\s\u00a0\u200b-\u200d\ufeff]+", "", text)
+        return text.strip().casefold()
+
+    def _normalize_header(value) -> str:
+        return re.sub(r"\s+", "", str(value or "")).strip().casefold()
+
+    def _find_header_col(headers: list, aliases: list[str], fallback: int) -> int:
+        normalized_aliases = [_normalize_header(alias) for alias in aliases]
+        for idx, header in enumerate(headers, start=1):
+            normalized_header = _normalize_header(header)
+            if normalized_header and any(alias and alias in normalized_header for alias in normalized_aliases):
+                return idx
+        return fallback
+
+    def _get_hapbae_checked_rows() -> dict[str, bool]:
+        raw = get_setting(hapbae_checked_rows_key) or "{}"
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = {}
+        if not isinstance(parsed, dict):
+            return {}
+        clean = {}
+        for key, value in parsed.items():
+            if isinstance(key, str) and key.strip() and value:
+                clean[key.strip()] = True
+        return clean
+
+    def _set_hapbae_checked_rows(checked_rows: dict[str, bool]):
+        clean = {
+            key.strip(): True
+            for key, value in checked_rows.items()
+            if isinstance(key, str) and key.strip() and value
+        }
+        set_setting(hapbae_checked_rows_key, json.dumps(clean, ensure_ascii=False))
+        return clean
+
+    def _extract_hapbae_pre_match_rows(path: Path) -> list[dict]:
+        wb, ws = load_excel_any(path)
+        try:
+            headers = [ws.cell(1, col).value for col in range(1, ws.max_column + 1)]
+            code_col = _find_header_col(headers, ["상품코드", "바코드", "barcode", "code", "sku", "품번"], 8)
+            name_col = _find_header_col(headers, ["상품명", "품명", "product", "name"], 9)
+            option_col = _find_header_col(headers, ["옵션", "option", "옵션명"], 10)
+            qty_col = _find_header_col(headers, ["수량", "주문수량", "qty", "quantity", "개수"], 11)
+            rows = []
+            for row_idx in range(2, ws.max_row + 1):
+                raw_code = ws.cell(row_idx, code_col).value
+                code = normalize_to_yusas(raw_code)
+                duplicate_key = _normalize_text(ws.cell(row_idx, 13).value)
+                shop = _normalize_text(ws.cell(row_idx, 4).value)
+                if not duplicate_key and not shop and not code:
+                    continue
+                rows.append({
+                    "rowNumber": row_idx,
+                    "shop": shop,
+                    "duplicateKey": duplicate_key,
+                    "code": code,
+                    "productName": _normalize_text(ws.cell(row_idx, name_col).value),
+                    "optionName": _normalize_text(ws.cell(row_idx, option_col).value),
+                    "orderQty": _normalize_text(ws.cell(row_idx, qty_col).value),
+                })
+            return rows
+        finally:
+            try:
+                wb.close()
+            except Exception:
+                pass
 
     def _csv_escape(value) -> str:
         return '"' + str(value or "").replace('"', '""') + '"'
@@ -40,6 +131,46 @@ def build_barcode_router(
         while len(cells) < 7:
             cells.append("")
         return [str(cell or "").strip() for cell in cells[:7]]
+
+    def _ws_text(ws, row_idx: int, col_idx: int) -> str:
+        return str(ws.cell(row_idx, col_idx).value or "").strip()
+
+    def _combine_color_size(color: str, size: str) -> str:
+        return " ".join(part for part in [str(color or "").strip(), str(size or "").strip()] if part).strip()
+
+    def _split_color_size(value: str) -> tuple[str, str]:
+        text = str(value or "").strip()
+        if not text:
+            return "", ""
+        parts = text.split(maxsplit=1)
+        if len(parts) == 1:
+            return parts[0], ""
+        return parts[0], parts[1]
+
+    def _defect_base_virtual_row_from_sheet(ws, row_idx: int) -> list[str]:
+        return [
+            _ws_text(ws, row_idx, defect_base_columns["code"]),
+            _ws_text(ws, row_idx, defect_base_columns["name"]),
+            _ws_text(ws, row_idx, defect_base_columns["vendor"]),
+            _ws_text(ws, row_idx, defect_base_columns["vendor_product"]),
+            _combine_color_size(
+                _ws_text(ws, row_idx, defect_base_columns["color"]),
+                _ws_text(ws, row_idx, defect_base_columns["size"]),
+            ),
+            _ws_text(ws, row_idx, defect_base_columns["address"]),
+            _ws_text(ws, row_idx, defect_base_columns["display_name"]),
+        ]
+
+    def _write_defect_base_virtual_row(ws, row_idx: int, cells: list[str]):
+        color, size = _split_color_size(cells[4] if len(cells) > 4 else "")
+        ws.cell(row_idx, defect_base_columns["code"], cells[0] if len(cells) > 0 else "")
+        ws.cell(row_idx, defect_base_columns["name"], cells[1] if len(cells) > 1 else "")
+        ws.cell(row_idx, defect_base_columns["vendor"], cells[2] if len(cells) > 2 else "")
+        ws.cell(row_idx, defect_base_columns["vendor_product"], cells[3] if len(cells) > 3 else "")
+        ws.cell(row_idx, defect_base_columns["color"], color)
+        ws.cell(row_idx, defect_base_columns["size"], size)
+        ws.cell(row_idx, defect_base_columns["address"], cells[5] if len(cells) > 5 else "")
+        ws.cell(row_idx, defect_base_columns["display_name"], cells[6] if len(cells) > 6 else "")
 
     def _invalidate_defect_base_cache():
         defect_base_cache["mtime"] = None
@@ -65,13 +196,10 @@ def build_barcode_router(
 
         wb, ws = _load_defect_base_sheet()
         try:
-            header_cells = _normalize_defect_base_row(
-                next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
-            )
-            headers = [header_cells[i] or defect_base_default_headers[i] for i in range(7)]
+            headers = defect_base_default_headers[:]
             rows = []
-            for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-                cells = _normalize_defect_base_row(row)
+            for row_idx in range(2, ws.max_row + 1):
+                cells = _defect_base_virtual_row_from_sheet(ws, row_idx)
                 if any(cells):
                     rows.append({"row_index": row_idx, "values": cells})
             defect_base_cache["mtime"] = mtime
@@ -306,6 +434,7 @@ def build_barcode_router(
         tmp_path.write_bytes(data)
 
         try:
+            hapbae_pre_match_rows = _extract_hapbae_pre_match_rows(tmp_path)
             result = process_and_load_any(tmp_path)
             if len(result) == 7:
                 processed_path, mapping, details, runs, invoice_order, invoice_seq, code_o_text = result
@@ -328,6 +457,7 @@ def build_barcode_router(
                 "invoice_order": invoice_order,
                 "invoice_seq": invoice_seq,
                 "code_o_text": code_o_text,
+                "hapbae_pre_match_rows": hapbae_pre_match_rows,
                 "_detail_lookup": None,
                 "_invoice_lookup": None,
             }
@@ -405,6 +535,131 @@ def build_barcode_router(
             "incoming_codes": len(get_shared_incoming_counts() or {}),
             "incoming_total": sum((get_shared_incoming_counts() or {}).values()),
         }
+
+    @router.get("/barcode/hapbae-pre-match")
+    def hapbae_pre_match(user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
+        if not state.get("loaded"):
+            return {
+                "ok": True,
+                "loaded": False,
+                "incoming_loaded": bool(get_shared_incoming_counts()),
+                "rows": [],
+                "stock_rows": [],
+                "stats": {"totalRows": 0, "targetRows": 0, "duplicateRows": 0, "incomingRows": 0, "stockRows": 0},
+            }
+
+        source_rows = state.get("hapbae_pre_match_rows") or []
+        incoming_counts = get_shared_incoming_counts() or {}
+        target_shop_key = _normalize_shop_name(hapbae_target_shop)
+        target_rows = [row for row in source_rows if _normalize_shop_name(row.get("shop")) == target_shop_key]
+        counts_by_key = Counter(
+            _normalize_text(row.get("duplicateKey"))
+            for row in target_rows
+            if _normalize_text(row.get("duplicateKey"))
+        )
+        duplicate_rows = [
+            row
+            for row in target_rows
+            if _normalize_text(row.get("duplicateKey")) and counts_by_key[_normalize_text(row.get("duplicateKey"))] >= 2
+        ]
+        result_rows = []
+        stock_rows = []
+        remaining_incoming_counts = dict(incoming_counts)
+        for row in duplicate_rows:
+            code = row.get("code") or ""
+            order_qty = to_int(row.get("orderQty"), default=0)
+            remaining_qty = int(remaining_incoming_counts.get(code, 0) or 0)
+            incoming_qty = min(order_qty, remaining_qty) if order_qty > 0 else 0
+            stock_qty = max(order_qty - incoming_qty, 0) if order_qty > 0 else 0
+
+            if incoming_qty > 0:
+                remaining_incoming_counts[code] = remaining_qty - incoming_qty
+                result_rows.append({
+                    "rowNumber": row.get("rowNumber"),
+                    "duplicateKey": row.get("duplicateKey", ""),
+                    "code": code,
+                    "productName": row.get("productName", ""),
+                    "optionName": row.get("optionName", ""),
+                    "orderQty": incoming_qty,
+                    "incomingQty": incoming_qty,
+                })
+
+            if incoming_counts and stock_qty > 0:
+                stock_rows.append({
+                    "rowNumber": row.get("rowNumber"),
+                    "duplicateKey": row.get("duplicateKey", ""),
+                    "code": code,
+                    "productName": row.get("productName", ""),
+                    "optionName": row.get("optionName", ""),
+                    "orderQty": stock_qty,
+                    "incomingQty": 0,
+                })
+
+        def _group_hapbae_rows(target: list[dict]) -> list[dict]:
+            grouped_rows = []
+            grouped_lookup = {}
+            for row in target:
+                key = (
+                    _normalize_text(row.get("productName")),
+                    _normalize_text(row.get("optionName")),
+                )
+                qty = to_int(row.get("orderQty"), default=0)
+                if key not in grouped_lookup:
+                    grouped_lookup[key] = {
+                        "productName": row.get("productName", ""),
+                        "optionName": row.get("optionName", ""),
+                        "orderQty": qty,
+                        "incomingQty": int(row.get("incomingQty") or 0),
+                    }
+                    grouped_rows.append(grouped_lookup[key])
+                else:
+                    grouped_lookup[key]["orderQty"] += qty
+                    grouped_lookup[key]["incomingQty"] += int(row.get("incomingQty") or 0)
+            grouped_rows.sort(
+                key=lambda row: (
+                    _normalize_text(row.get("productName")),
+                    _normalize_text(row.get("optionName")),
+                )
+            )
+            return grouped_rows
+
+        grouped_rows = _group_hapbae_rows(result_rows)
+        grouped_stock_rows = _group_hapbae_rows(stock_rows)
+
+        return {
+            "ok": True,
+            "loaded": True,
+            "incoming_loaded": bool(incoming_counts),
+            "rows": grouped_rows,
+            "stock_rows": grouped_stock_rows,
+            "stats": {
+                "totalRows": len(source_rows),
+                "targetRows": len(target_rows),
+                "duplicateRows": len(duplicate_rows),
+                "incomingRows": len(result_rows),
+                "groupedRows": len(grouped_rows),
+                "stockRows": len(stock_rows),
+                "groupedStockRows": len(grouped_stock_rows),
+            },
+        }
+
+    @router.get("/barcode/hapbae-pre-match/checked")
+    def get_hapbae_pre_match_checked(user: str = Depends(get_current_user)):
+        return {"ok": True, "checked_rows": _get_hapbae_checked_rows()}
+
+    @router.patch("/barcode/hapbae-pre-match/checked")
+    def set_hapbae_pre_match_checked(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        key = str(payload.get("key") or "").strip()
+        if not key:
+            raise HTTPException(status_code=400, detail="key required")
+        checked = bool(payload.get("checked"))
+        checked_rows = _get_hapbae_checked_rows()
+        if checked:
+            checked_rows[key] = True
+        else:
+            checked_rows.pop(key, None)
+        return {"ok": True, "checked_rows": _set_hapbae_checked_rows(checked_rows)}
 
     @router.post("/barcode/scan/invoice")
     def scan_invoice(payload: dict = Body(...), user: str = Depends(get_current_user)):
@@ -573,24 +828,17 @@ def build_barcode_router(
 
         wb, ws = _load_defect_base_sheet()
         try:
-            header_values = _normalize_defect_base_row(
-                next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
-            )
-            if ws.max_row > 1:
-                ws.delete_rows(2, ws.max_row - 1)
-
-            for idx, fallback in enumerate(defect_base_default_headers, start=1):
-                ws.cell(1, idx, header_values[idx - 1] or fallback)
-
             write_row = 2
             for row in rows:
                 values = row.get("values") if isinstance(row, dict) else row
                 cells = _normalize_defect_base_row(values)
                 if not any(cells):
                     continue
-                for col_idx, value in enumerate(cells, start=1):
-                    ws.cell(write_row, col_idx, value)
+                _write_defect_base_virtual_row(ws, write_row, cells)
                 write_row += 1
+
+            for row_idx in range(write_row, ws.max_row + 1):
+                _write_defect_base_virtual_row(ws, row_idx, ["", "", "", "", "", "", ""])
 
             wb.save(defect_base_path)
         finally:

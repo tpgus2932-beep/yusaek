@@ -10,6 +10,18 @@
     flex-direction: column;
 }
 
+@media (max-width: 768px) {
+    .appContainer {
+        flex-direction: column;
+    }
+
+    .mainContent {
+        /* 하단 탭바 2줄 높이(56 + 44)만큼 여백 확보 */
+        padding-bottom: max(100px, calc(100px + env(safe-area-inset-bottom)));
+        min-width: 0;
+    }
+}
+
 .placeholderSection {
     padding: 2rem;
     text-align: center;

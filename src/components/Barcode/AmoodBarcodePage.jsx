@@ -470,10 +470,8 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
           setInvoiceHasDefect(!!data.invoice_has_defect);
           if (data.invoice_done) {
             setInvoiceDone(true);
-            playSound(data.item_has_defect ? "invoiceDefect" : "invoiceDone");
+            playSound("invoiceDone");
             pushLog(`송장 완료: ${currentInvoice || ""}`.trim());
-          } else if (data.item_has_defect) {
-            playSound("invoiceDefect");
           } else if (data.remain === 0) {
             playSound("itemDone");
           }

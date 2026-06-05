@@ -65,3 +65,123 @@
 .footer {
     margin-top: auto;
 }
+
+/* ── Mobile: 하단 고정 탭바 (2줄) ──────────────────── */
+@media (max-width: 768px) {
+    /*
+     * 구조: sidebar가 column → 1줄(navGroup 가로스크롤) + 2줄(footer 유틸)
+     * footer에 display:flex가 없어 아이템이 세로 쌓임 → 3줄이 되던 버그 수정
+     */
+    .sidebar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        top: auto;
+        width: 100%;
+        height: auto;
+        flex-direction: column;   /* navGroup 위, footer 아래 */
+        padding: 0;
+        border-right: none;
+        border-top: 1px solid var(--border-color);
+        z-index: 200;
+        overflow: visible;
+        padding-bottom: env(safe-area-inset-bottom);
+    }
+
+    .logo {
+        display: none;
+    }
+
+    /* ── 1줄: 메인 네비게이션 (가로 스크롤) ── */
+    .navGroup {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: nowrap;
+        align-items: stretch;
+        flex-grow: 0;
+        flex-shrink: 0;
+        gap: 0;
+        height: 56px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .navGroup::-webkit-scrollbar {
+        display: none;
+    }
+
+    .navItem {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.18rem;
+        padding: 0.4rem 0.7rem;
+        min-width: 56px;
+        flex-shrink: 0;
+        border-radius: 0;
+        font-size: 0.6rem;
+        font-weight: 600;
+        height: 56px;
+        white-space: nowrap;
+        position: relative;
+        transition: color 0.15s, background-color 0.15s;
+    }
+
+    .navItem:hover {
+        background-color: var(--bg-tertiary);
+    }
+
+    /* 활성 탭: 상단 인디케이터 */
+    .navItem.active {
+        background-color: transparent;
+        color: var(--text-primary);
+        border-radius: 0;
+    }
+
+    .navItem.active::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 24px;
+        height: 2px;
+        background: var(--accent-black);
+        border-radius: 0 0 2px 2px;
+    }
+
+    /* ── 2줄: 유틸리티 (다크모드 · 로그아웃 등) ── */
+    .footer {
+        display: flex;              /* 핵심 수정: block → flex */
+        flex-direction: row;
+        align-items: stretch;
+        margin-top: 0;
+        height: 44px;
+        border-top: 1px solid var(--border-color);
+        flex-shrink: 0;
+    }
+
+    .footer .navItem {
+        flex: 1;
+        flex-direction: row;        /* footer 아이템은 아이콘+텍스트 가로 배치 */
+        justify-content: center;
+        gap: 0.4rem;
+        min-width: 0;
+        height: 44px;
+        font-size: 0.75rem;
+        padding: 0 0.75rem;
+        border-left: 1px solid var(--border-color);
+    }
+
+    .footer .navItem:first-child {
+        border-left: none;
+    }
+
+    .footer .navItem.active::before {
+        display: none;
+    }
+}

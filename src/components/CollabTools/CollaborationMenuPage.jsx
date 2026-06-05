@@ -13,6 +13,7 @@ const TOOL_TABS = [
 
 const DEFAULT_ACCOUNT_PATH = String.raw`C:\Users\ksh29\OneDrive\Desktop\원베\거래처계좌데이터.xlsx`;
 const ACCOUNT_COLUMNS = ['A', 'B', 'C', 'D', 'E', 'F'];
+const SHARED_PASTE_SLOTS = [1, 2, 3, 4, 5];
 
 const formatAmount = (value) =>
   new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 2 }).format(Number(value || 0));
@@ -139,6 +140,7 @@ export default function CollaborationMenuPage() {
   const [result, setResult] = useState(null);
   const [sharedPasteLoading, setSharedPasteLoading] = useState(false);
   const [sharedPasteSaving, setSharedPasteSaving] = useState(false);
+  const [sharedPasteSlot, setSharedPasteSlot] = useState(1);
   const [sharedPasteMeta, setSharedPasteMeta] = useState('');
   const [accountRows, setAccountRows] = useState([]);
   const [accountLoading, setAccountLoading] = useState(false);
@@ -239,7 +241,7 @@ export default function CollaborationMenuPage() {
   const handleLoadSharedPaste = async () => {
     try {
       setSharedPasteLoading(true);
-      const res = await fetch(`${LOCAL_API_BASE}/collaboration-tools/purchase-deduction/shared-paste`, {
+      const res = await fetch(`${LOCAL_API_BASE}/collaboration-tools/purchase-deduction/shared-paste?slot=${sharedPasteSlot}`, {
         headers: getAuthHeaders(),
       });
       if (handleUnauthorized(res)) return;
@@ -248,8 +250,8 @@ export default function CollaborationMenuPage() {
         throw new Error(data.detail || '공용 복붙 데이터를 불러오지 못했습니다.');
       }
       setPastedText(data.pasted_text || '');
-      setSharedPasteMeta(data.updated_by ? `최근 저장: ${data.updated_by}` : '공용 데이터 없음');
-      setFeedback('ok', '공용 복붙 데이터를 불러왔습니다.');
+      setSharedPasteMeta(data.updated_by ? `${sharedPasteSlot}번 최근 저장: ${data.updated_by}` : `${sharedPasteSlot}번 공용 데이터 없음`);
+      setFeedback('ok', `${sharedPasteSlot}번 공용 복붙 데이터를 불러왔습니다.`);
     } catch (error) {
       setFeedback('error', error.message || '공용 복붙 데이터를 불러오지 못했습니다.');
     } finally {
@@ -260,7 +262,7 @@ export default function CollaborationMenuPage() {
   const handleSaveSharedPaste = async () => {
     try {
       setSharedPasteSaving(true);
-      const res = await fetch(`${LOCAL_API_BASE}/collaboration-tools/purchase-deduction/shared-paste`, {
+      const res = await fetch(`${LOCAL_API_BASE}/collaboration-tools/purchase-deduction/shared-paste?slot=${sharedPasteSlot}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ pasted_text: pastedText }),
@@ -270,8 +272,8 @@ export default function CollaborationMenuPage() {
       if (!res.ok || data.ok === false) {
         throw new Error(data.detail || '공용 복붙 데이터 저장에 실패했습니다.');
       }
-      setSharedPasteMeta(data.updated_by ? `최근 저장: ${data.updated_by}` : '');
-      setFeedback('ok', '공용 복붙 데이터를 저장했습니다.');
+      setSharedPasteMeta(data.updated_by ? `${sharedPasteSlot}번 최근 저장: ${data.updated_by}` : '');
+      setFeedback('ok', `${sharedPasteSlot}번 공용 복붙 데이터를 저장했습니다.`);
     } catch (error) {
       setFeedback('error', error.message || '공용 복붙 데이터 저장에 실패했습니다.');
     } finally {
@@ -357,7 +359,7 @@ export default function CollaborationMenuPage() {
         } else {
           fallbackCopyText(copyText);
         }
-      } catch (_) {
+      } catch {
         fallbackCopyText(copyText);
       }
       setFeedback('ok', '결과를 클립보드에 복사했습니다.');
@@ -452,7 +454,7 @@ export default function CollaborationMenuPage() {
         } else {
           fallbackCopyText(vendorCopyText);
         }
-      } catch (_) {
+      } catch {
         fallbackCopyText(vendorCopyText);
       }
       setVendorFeedback('ok', '가공 결과를 클립보드에 복사했습니다.');
@@ -519,7 +521,24 @@ export default function CollaborationMenuPage() {
         </div>
 
         <label className={styles.field}>
-          <span className={styles.inputLabel}>입력 데이터 복붙</span>
+          <div className={styles.inputLabelRow}>
+            <span className={styles.inputLabel}>입력 데이터 복붙</span>
+            <div className={styles.slotTabs} aria-label="공용 저장 슬롯">
+              {SHARED_PASTE_SLOTS.map((slot) => (
+                <button
+                  key={slot}
+                  type="button"
+                  className={`${styles.slotTab} ${sharedPasteSlot === slot ? styles.slotTabActive : ''}`}
+                  onClick={() => {
+                    setSharedPasteSlot(slot);
+                    setSharedPasteMeta('');
+                  }}
+                >
+                  {slot}번
+                </button>
+              ))}
+            </div>
+          </div>
           <textarea
             className={styles.textarea}
             value={pastedText}

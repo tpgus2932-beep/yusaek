@@ -14,11 +14,15 @@ import urllib.parse
 import xlwt
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
+from services.cost_base_append import append_tsv_rows_to_excel
 
 router = APIRouter()
 
 AMOOD_HAPBAE_ALLOWED_EXCEL = {".xlsx", ".xlsm"}
 AMOOD_HAPBAE_ALLOWED_COST_BASE = {".xlsx", ".xls", ".xlsm"}
+COST_BASE_CODE_COL = 0
+COST_BASE_MATCH_COL = 8
+COST_BASE_REQUIRED_COLS = COST_BASE_MATCH_COL + 1
 SHARED_COST_BASE_PATH = Path(
     os.environ.get("SHARED_COST_BASE_PATH")
     or os.environ.get("AMOOD_HAPBAE_COST_BASE_PATH")
@@ -163,8 +167,8 @@ def _ah_load_base_cost_map(path: Path):
     ws = wb.active
     cost_map: dict[str, object] = {}
     for r in range(1, ws.max_row + 1):
-        key = _ah_normalize_match_key(ws.cell(row=r, column=1).value)
-        val = ws.cell(row=r, column=2).value
+        key = _ah_normalize_match_key(ws.cell(row=r, column=COST_BASE_MATCH_COL + 1).value)
+        val = ws.cell(row=r, column=COST_BASE_CODE_COL + 1).value
         if key == "":
             continue
         if key not in cost_map:
@@ -335,8 +339,8 @@ async def amood_hapbae_cost_base_upload(file: UploadFile = File(...)):
 
     try:
         df = _ah_read_cost_base_df(tmp_path)
-        if df.shape[1] < 2:
-            raise HTTPException(status_code=400, detail="원가베이스는 최소 A,B열이 필요합니다.")
+        if df.shape[1] < COST_BASE_REQUIRED_COLS:
+            raise HTTPException(status_code=400, detail="원가베이스는 최소 A~I열이 필요합니다.")
         shutil.move(str(tmp_path), str(SHARED_COST_BASE_PATH))
         _ah_load_cost_base_df()
     finally:
@@ -365,25 +369,25 @@ async def amood_hapbae_cost_base_append_upload(file: UploadFile = File(...)):
 
     try:
         src_df = _ah_read_cost_base_df(tmp_path)
-        if src_df.shape[1] < 2:
-            raise HTTPException(status_code=400, detail="업로드 엑셀은 최소 A,B열이 필요합니다.")
+        if src_df.shape[1] < COST_BASE_REQUIRED_COLS:
+            raise HTTPException(status_code=400, detail="업로드 엑셀은 최소 A~I열이 필요합니다.")
 
         dst_df = _ah_load_cost_base_df().copy()
-        if dst_df.shape[1] < 2:
-            raise HTTPException(status_code=400, detail="기존 원가베이스는 최소 A,B열이 필요합니다.")
+        if dst_df.shape[1] < COST_BASE_REQUIRED_COLS:
+            raise HTTPException(status_code=400, detail="기존 원가베이스는 최소 A~I열이 필요합니다.")
 
-        append_df = src_df.iloc[:, :2].copy()
-        append_df.columns = list(dst_df.columns[:2])
+        append_df = src_df.iloc[:, :COST_BASE_REQUIRED_COLS].copy()
+        append_df.columns = list(dst_df.columns[:COST_BASE_REQUIRED_COLS])
         append_df = append_df.fillna("")
         append_df = append_df[
-            (append_df.iloc[:, 0].astype(str).str.strip() != "") | (append_df.iloc[:, 1].astype(str).str.strip() != "")
+            (append_df.iloc[:, COST_BASE_CODE_COL].astype(str).str.strip() != "") | (append_df.iloc[:, COST_BASE_MATCH_COL].astype(str).str.strip() != "")
         ].reset_index(drop=True)
 
         if append_df.empty:
-            raise HTTPException(status_code=400, detail="추가할 데이터가 없습니다. (2행부터 A/B열 확인)")
+            raise HTTPException(status_code=400, detail="추가할 데이터가 없습니다. (A/I열 확인)")
 
-        if len(dst_df.columns) > 2:
-            for col in dst_df.columns[2:]:
+        if len(dst_df.columns) > COST_BASE_REQUIRED_COLS:
+            for col in dst_df.columns[COST_BASE_REQUIRED_COLS:]:
                 append_df[col] = ""
             append_df = append_df.reindex(columns=list(dst_df.columns))
 
@@ -401,6 +405,33 @@ async def amood_hapbae_cost_base_append_upload(file: UploadFile = File(...)):
         "total_rows": int(len(merged_df)),
         "status": _ah_cost_base_status(),
     }
+
+
+@router.post("/amood-hapbae/cost-base/append-tsv")
+def amood_hapbae_cost_base_append_tsv(payload: dict = Body(...)):
+    raw_text = str(payload.get("text") or "").strip()
+    skip_header = bool(payload.get("skip_header"))
+
+    try:
+        result = append_tsv_rows_to_excel(
+            SHARED_COST_BASE_PATH,
+            raw_text,
+            read_df=_ah_read_cost_base_df,
+            save_df=_ah_save_cost_base_df,
+            required_columns=COST_BASE_REQUIRED_COLS,
+            append_columns=2,
+            target_column_indices=[COST_BASE_CODE_COL, COST_BASE_MATCH_COL],
+            skip_header=skip_header,
+        )
+        status = _ah_cost_base_status()
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="원가베이스 파일이 없습니다.")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"원가베이스 데이터 추가 실패: {e}")
+
+    return {"ok": True, "status": status, **result}
 
 
 @router.get("/amood-hapbae/cost-base/download")
@@ -422,6 +453,9 @@ def amood_hapbae_cost_base_preview(offset: int = 0, limit: int = 50, q: str | No
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"원가베이스 로드 실패: {e}")
 
+    if df.shape[1] < COST_BASE_REQUIRED_COLS:
+        raise HTTPException(status_code=400, detail="Cost base requires columns A through I.")
+
     q_norm = str(q).strip() if q else ""
     if q_norm:
         df_view = df.fillna("").astype(str)
@@ -431,13 +465,13 @@ def amood_hapbae_cost_base_preview(offset: int = 0, limit: int = 50, q: str | No
         df_filtered = df
 
     total = len(df_filtered)
-    col_names = ["1열", "2열"]
+    col_names = ["A열 상품코드", "I열 상품명 색상 사이즈"]
     end = min(offset + limit, total)
     rows = []
     for i in range(offset, end):
         r = df_filtered.iloc[i]
         row = []
-        for v in r.iloc[:2].values.tolist():
+        for v in [r.iloc[COST_BASE_CODE_COL], r.iloc[COST_BASE_MATCH_COL]]:
             if pd.isna(v):
                 row.append("")
             else:
@@ -490,7 +524,7 @@ def amood_hapbae_cost_base_add_row(payload: dict = Body(...)):
     name = _ah_normalize(payload.get("name"))
     code = _ah_normalize(payload.get("code"))
     if not name and not code:
-        raise HTTPException(status_code=400, detail="A열 또는 B열 값을 입력하세요.")
+        raise HTTPException(status_code=400, detail="A열 상품코드 또는 I열 상품명 색상 사이즈를 입력하세요.")
 
     try:
         df = _ah_load_cost_base_df().copy()
@@ -499,14 +533,15 @@ def amood_hapbae_cost_base_add_row(payload: dict = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"원가베이스 로드 실패: {e}")
 
-    if df.shape[1] < 2:
-        raise HTTPException(status_code=400, detail="원가베이스는 최소 A,B열이 필요합니다.")
+    if df.shape[1] < COST_BASE_REQUIRED_COLS:
+        raise HTTPException(status_code=400, detail="원가베이스는 최소 A~I열이 필요합니다.")
 
     row_data: dict[str, object] = {}
-    row_data[df.columns[0]] = name
-    row_data[df.columns[1]] = code
-    for col in list(df.columns)[2:]:
-        row_data[col] = ""
+    row_data[df.columns[COST_BASE_CODE_COL]] = code
+    row_data[df.columns[COST_BASE_MATCH_COL]] = name
+    for index, col in enumerate(list(df.columns)):
+        if index not in (COST_BASE_CODE_COL, COST_BASE_MATCH_COL):
+            row_data[col] = ""
 
     df = pd.concat([df, pd.DataFrame([row_data], columns=list(df.columns))], ignore_index=True)
 

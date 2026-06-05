@@ -20,6 +20,10 @@ export default function AttendanceAdminPage() {
   const [members, setMembers] = useState([]);
   const [newName, setNewName] = useState('');
   const [addError, setAddError] = useState('');
+  const [editingMember, setEditingMember] = useState(null);
+  const [memberEditName, setMemberEditName] = useState('');
+  const [memberEditError, setMemberEditError] = useState('');
+  const [memberEditSaving, setMemberEditSaving] = useState(false);
 
   // 기록 조회
   const [records, setRecords] = useState([]);
@@ -37,6 +41,25 @@ export default function AttendanceAdminPage() {
   const [editingRecord, setEditingRecord] = useState(null);
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState('');
+
+  const makeLocalIso = (date, time) => {
+    const dt = new Date(`${date}T${time}:00+09:00`);
+    return dt.toISOString();
+  };
+
+  const eachDate = (from, to) => {
+    if (!from && !to) return [todayStr()];
+    const start = new Date(`${from || to}T00:00:00`);
+    const end = new Date(`${to || from}T00:00:00`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+      return [from || to || todayStr()];
+    }
+    const dates = [];
+    for (const d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      dates.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+    }
+    return dates;
+  };
 
   const verifyPin = async () => {
     if (!pin.trim()) return;
@@ -97,8 +120,20 @@ export default function AttendanceAdminPage() {
       if (r.type === '출근' && !map[key].출근) map[key].출근 = r;
       if (r.type === '퇴근') map[key].퇴근 = r; // 마지막 퇴근 기록 사용
     });
-    return Object.values(map); // 이미 date DESC, name ASC, timestamp ASC 순으로 정렬됨
-  }, [records]);
+    const targetMembers = filterName
+      ? members.filter((m) => m.name === filterName)
+      : members;
+    eachDate(filterDateFrom, filterDateTo).forEach((date) => {
+      targetMembers.forEach((m) => {
+        const key = `${date}__${m.name}`;
+        if (!map[key]) map[key] = { date, name: m.name, 출근: null, 퇴근: null };
+      });
+    });
+    return Object.values(map).sort((a, b) => {
+      if (a.date !== b.date) return b.date.localeCompare(a.date);
+      return a.name.localeCompare(b.name, 'ko-KR');
+    });
+  }, [records, members, filterName, filterDateFrom, filterDateTo]);
 
   const addMember = async () => {
     const name = newName.trim();
@@ -126,6 +161,41 @@ export default function AttendanceAdminPage() {
       body: JSON.stringify({ pin }),
     });
     loadMembers();
+  };
+
+  const openMemberEdit = (member) => {
+    setEditingMember(member);
+    setMemberEditName(member.name);
+    setMemberEditError('');
+  };
+
+  const updateMember = async () => {
+    if (!editingMember) return;
+    const name = memberEditName.trim();
+    if (!name) {
+      setMemberEditError('이름을 입력하세요.');
+      return;
+    }
+    setMemberEditSaving(true);
+    setMemberEditError('');
+    try {
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/members/${editingMember.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, pin }),
+      });
+      if (res.ok) {
+        setEditingMember(null);
+        await loadMembers();
+        await loadRecords();
+      } else {
+        const d = await res.json().catch(() => ({}));
+        setMemberEditError(d.detail || '이름 수정에 실패했습니다.');
+      }
+    } catch {
+      setMemberEditError('서버에 연결할 수 없습니다.');
+    }
+    setMemberEditSaving(false);
   };
 
   const deleteRecord = async (id) => {
@@ -254,16 +324,42 @@ export default function AttendanceAdminPage() {
     setEditError('');
   };
 
+  const openAddRecord = (group, type) => {
+    const now = new Date();
+    const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    setEditingRecord({
+      id: null,
+      name: group.name,
+      type,
+      date: group.date,
+      time,
+      isNew: true,
+    });
+    setEditError('');
+  };
+
   const updateRecord = async () => {
     if (!editingRecord) return;
     setEditSaving(true);
     setEditError('');
     try {
-      const res = await fetch(`${COLLAB_API_BASE}/attendance/records/${editingRecord.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin, date: editingRecord.date, time: editingRecord.time }),
-      });
+      const isNew = !editingRecord.id;
+      const res = await fetch(
+        isNew
+          ? `${COLLAB_API_BASE}/attendance/records`
+          : `${COLLAB_API_BASE}/attendance/records/${editingRecord.id}`,
+        {
+          method: isNew ? 'POST' : 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pin,
+            member_name: editingRecord.name,
+            type: editingRecord.type,
+            date: editingRecord.date,
+            time: editingRecord.time,
+          }),
+        }
+      );
       if (res.ok) {
         setEditingRecord(null);
         loadRecords();
@@ -356,6 +452,9 @@ export default function AttendanceAdminPage() {
               {members.map((m) => (
                 <li key={m.id} className={styles.memberItem}>
                   <span className={styles.memberName}>{m.name}</span>
+                  <button className={styles.editMemberBtn} onClick={() => openMemberEdit(m)}>
+                    수정
+                  </button>
                   <button className={styles.delBtn} onClick={() => deleteMember(m.id, m.name)}>
                     삭제
                   </button>
@@ -440,7 +539,9 @@ export default function AttendanceAdminPage() {
                                     <button className={styles.delSmBtn} onClick={() => deleteRecord(g.출근.id)} title="삭제">✕</button>
                                   </span>
                                 ) : (
-                                  <span className={styles.noRecord}>-</span>
+                                  <button className={styles.addSmBtn} onClick={() => openAddRecord(g, '출근')}>
+                                    추가
+                                  </button>
                                 )}
                               </td>
                               <td>
@@ -453,7 +554,9 @@ export default function AttendanceAdminPage() {
                                     <button className={styles.delSmBtn} onClick={() => deleteRecord(g.퇴근.id)} title="삭제">✕</button>
                                   </span>
                                 ) : (
-                                  <span className={styles.noRecord}>-</span>
+                                  <button className={styles.addSmBtn} onClick={() => openAddRecord(g, '퇴근')}>
+                                    추가
+                                  </button>
                                 )}
                               </td>
                             </tr>
@@ -480,7 +583,7 @@ export default function AttendanceAdminPage() {
       {editingRecord && (
         <div className={styles.modalOverlay} onClick={() => setEditingRecord(null)}>
           <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
-            <h3 className={styles.modalTitle}>시간 수정</h3>
+            <h3 className={styles.modalTitle}>{editingRecord.isNew ? '시간 추가' : '시간 수정'}</h3>
             <p className={styles.editInfo}>
               <strong>{editingRecord.name}</strong>{' '}
               <span className={`${styles.badge} ${editingRecord.type === '출근' ? styles.badgeIn : styles.badgeOut}`}>
@@ -510,9 +613,32 @@ export default function AttendanceAdminPage() {
             {editError && <div className={styles.pinError}>{editError}</div>}
             <div className={styles.modalBtns}>
               <button className={styles.pinSubmit} onClick={updateRecord} disabled={editSaving}>
-                {editSaving ? '저장 중...' : '저장'}
+                {editSaving ? '저장 중...' : (editingRecord.isNew ? '추가' : '저장')}
               </button>
               <button className={styles.backLink} onClick={() => setEditingRecord(null)}>취소</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 직원 이름 수정 모달 */}
+      {editingMember && (
+        <div className={styles.modalOverlay} onClick={() => setEditingMember(null)}>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <h3 className={styles.modalTitle}>직원 이름 수정</h3>
+            <input
+              className={styles.editInput}
+              value={memberEditName}
+              onChange={(e) => setMemberEditName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && updateMember()}
+              autoFocus
+            />
+            {memberEditError && <div className={styles.pinError}>{memberEditError}</div>}
+            <div className={styles.modalBtns}>
+              <button className={styles.pinSubmit} onClick={updateMember} disabled={memberEditSaving}>
+                {memberEditSaving ? '저장 중...' : '저장'}
+              </button>
+              <button className={styles.backLink} onClick={() => setEditingMember(null)}>취소</button>
             </div>
           </div>
         </div>

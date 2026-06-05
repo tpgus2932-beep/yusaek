@@ -20,6 +20,9 @@ def build_order_router(
     order_cost_base_path: Path,
 ):
     router = APIRouter()
+    COST_BASE_CODE_COL = 0
+    COST_BASE_MATCH_COL = 8
+    COST_BASE_REQUIRED_COLS = COST_BASE_MATCH_COL + 1
 
     def _safe_str(x):
         if pd.isna(x):
@@ -79,13 +82,13 @@ def build_order_router(
         ws = wb.active
         out: dict[str, object] = {}
         for row in ws.iter_rows(min_row=1, values_only=True):
-            a = row[0] if len(row) > 0 else None
-            b = row[1] if len(row) > 1 else None
-            if a is None:
+            code = row[COST_BASE_CODE_COL] if len(row) > COST_BASE_CODE_COL else None
+            match_name = row[COST_BASE_MATCH_COL] if len(row) > COST_BASE_MATCH_COL else None
+            if match_name is None:
                 continue
-            key = _normalize_daily_sales(a)
+            key = _normalize_daily_sales(match_name)
             if key:
-                out[key] = b
+                out[key] = code
         return out
 
     def _build_daily_sales_rows(ws, skip_header: bool = True) -> list[dict]:
@@ -204,12 +207,12 @@ def build_order_router(
         if not path.exists():
             return []
         df = _read_cost_base_df(path)
-        if df.shape[1] < 2:
+        if df.shape[1] < COST_BASE_REQUIRED_COLS:
             return []
-        a = df.iloc[:, 0].map(_safe_str).tolist()
-        b = df.iloc[:, 1].map(_safe_str).tolist()
+        codes = df.iloc[:, COST_BASE_CODE_COL].map(_safe_str).tolist()
+        names = df.iloc[:, COST_BASE_MATCH_COL].map(_safe_str).tolist()
         out = []
-        for name, code in zip(a, b):
+        for code, name in zip(codes, names):
             if not code:
                 continue
             out.append({"name": name, "code": code})

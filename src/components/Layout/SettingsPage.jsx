@@ -12,8 +12,9 @@ const menuLabels = {
   "client-schedule": "거래처 일정",
   sms: "문자 발송",
   "collaboration-menu": "협업메뉴",
+  "hapbae-management": "합배송관리",
+  test: "테스트",
   order: "발주",
-  "cost-base-manager": "원가베이스 관리",
   admin: "관리자",
 };
 
@@ -33,9 +34,11 @@ const SettingsPage = ({ hiddenTabs, setHiddenTabs, isAdmin }) => {
       "client-schedule",
       "sms",
       "collaboration-menu",
+      "hapbae-management",
+      "test",
     ];
     if (isAdmin) {
-      base.push("order", "cost-base-manager", "admin");
+      base.push("order", "admin");
     }
     return base;
   }, [isAdmin]);

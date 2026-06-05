@@ -1113,6 +1113,35 @@ def build_collab_router(
             conn.close()
         return {"ok": True}
 
+    @router.get("/client-schedule/excluded")
+    def get_excluded_clients(user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT client_name FROM client_schedule_excluded ORDER BY id"
+            ).fetchall()
+        finally:
+            conn.close()
+        return {"ok": True, "items": [r["client_name"] for r in rows]}
+
+    @router.put("/client-schedule/excluded")
+    def save_excluded_clients(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        items = payload.get("items") or []
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM client_schedule_excluded")
+            for name in items:
+                name = str(name).strip()
+                if name:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO client_schedule_excluded (client_name) VALUES (?)",
+                        (name,),
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "count": len(items)}
+
     @router.get("/company-credentials")
     def list_company_credentials(user: str = Depends(get_current_user)):
         admin_flag = is_admin(user)

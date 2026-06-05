@@ -17,10 +17,10 @@ const ALL_MENU_TABS = [
   { key: 'shared-files', label: '유색 공용 파일' },
   { key: 'noye-kimsungil', label: '노예김승일' },
   { key: 'hapbae-management', label: '합배송관리' },
+  { key: 'test', label: '테스트' },
   { key: 'sms', label: '문자 발송' },
   COLLABORATION_MENU_TAB,
   { key: 'order', label: '발주' },
-  { key: 'cost-base-manager', label: '원가베이스 관리' },
 ];
 
 const AdminUsers = ({ currentUser }) => {

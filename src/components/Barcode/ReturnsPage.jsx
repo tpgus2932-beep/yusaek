@@ -58,6 +58,8 @@ const ReturnsPage = () => {
     const [costEdits, setCostEdits] = useState({});
     const [costAddName, setCostAddName] = useState('');
     const [costAddCode, setCostAddCode] = useState('');
+    const [costBatchOpen, setCostBatchOpen] = useState(false);
+    const [costBatchText, setCostBatchText] = useState('');
     const searchTimer = useRef(null);
     const [selectedCols, setSelectedCols] = useState(() => ({
         상품코드: true,
@@ -348,7 +350,7 @@ const ReturnsPage = () => {
         const name = (costAddName || '').trim();
         const code = (costAddCode || '').trim();
         if (!name && !code) {
-            setMessage('A열 또는 B열 값을 입력하세요.');
+            setMessage('A열 또는 I열 값을 입력하세요.');
             return;
         }
         try {
@@ -370,6 +372,25 @@ const ReturnsPage = () => {
         } catch (err) {
             setMessage(err.message || '개별상품추가 실패');
         }
+    };
+
+    const handleCostBaseAppendBatch = async () => {
+        const text = costBatchText.trim();
+        if (!text) { setMessage('추가할 데이터를 붙여넣으세요.'); return; }
+        try {
+            const res = await fetch(`${API}/returns/cost-base/append-rows`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ text }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '원가베이스 추가 실패');
+            setCostBatchText('');
+            setCostBatchOpen(false);
+            setMessage(`원가베이스 ${data.appended || 0}행 추가 완료`);
+            await refreshState();
+            if (showCostEditor) await fetchCostPreview(0, '');
+        } catch (err) { setMessage(err.message || '원가베이스 추가 실패'); }
     };
 
     const handleScan = async () => {
@@ -702,20 +723,23 @@ const ReturnsPage = () => {
                     {isAdmin && (
                         <div className={`${pageStyles.uploadRow} ${styles.adminRow}`}>
                             <input
-                                className={pageStyles.searchInput}
-                                value={costAddName}
-                                onChange={(e) => setCostAddName(e.target.value)}
-                                placeholder="A열 데이터 (상품명)"
-                            />
-                            <input
                                 className={pageStyles.cellInput}
                                 style={{ maxWidth: 220 }}
                                 value={costAddCode}
                                 onChange={(e) => setCostAddCode(e.target.value)}
-                                placeholder="B열 데이터 (상품코드)"
+                                placeholder="A열 상품코드"
+                            />
+                            <input
+                                className={pageStyles.searchInput}
+                                value={costAddName}
+                                onChange={(e) => setCostAddName(e.target.value)}
+                                placeholder="I열 상품명 색상 사이즈"
                             />
                             <button className={pageStyles.primaryBtn} onClick={handleCostBaseAddSingle}>
                                 개별상품추가
+                            </button>
+                            <button className={pageStyles.primaryBtn} onClick={() => setCostBatchOpen(true)}>
+                                원가베이스 추가
                             </button>
                         </div>
                     )}
@@ -1048,6 +1072,40 @@ const ReturnsPage = () => {
                             <span className={pageStyles.metaLabel}>
                                 {costTotal ? `${costOffset + 1}-${Math.min(costOffset + costLimit, costTotal)} / ${costTotal}` : '0'}
                             </span>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {costBatchOpen && (
+                <div className={pageStyles.modalOverlay} onClick={() => setCostBatchOpen(false)}>
+                    <div className={pageStyles.modal} onClick={(e) => e.stopPropagation()}>
+                        <div className={pageStyles.modalHeader}>
+                            <h3 className={pageStyles.modalTitle}>원가베이스 추가</h3>
+                            <button className={pageStyles.secondaryBtn} onClick={() => setCostBatchOpen(false)}>
+                                닫기
+                            </button>
+                        </div>
+                        <div className={pageStyles.tableWrap}>
+                            <textarea
+                                className={pageStyles.scanInput}
+                                value={costBatchText}
+                                onChange={(e) => setCostBatchText(e.target.value)}
+                                placeholder="상품코드\t상품명 색상 사이즈 형식으로 붙여넣으세요"
+                                rows={10}
+                                style={{ width: '100%', resize: 'vertical' }}
+                            />
+                            <div className={pageStyles.metaLabel}>
+                                A열 상품코드 / I열 상품명 색상 사이즈
+                            </div>
+                        </div>
+                        <div className={pageStyles.uploadRow}>
+                            <button className={pageStyles.primaryBtn} onClick={handleCostBaseAppendBatch}>
+                                추가
+                            </button>
+                            <button className={pageStyles.secondaryBtn} onClick={() => setCostBatchOpen(false)}>
+                                취소
+                            </button>
                         </div>
                     </div>
                 </div>

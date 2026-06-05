@@ -369,14 +369,7 @@ export default function ClientSchedulePage() {
   const [baseDateText, setBaseDateText] = useState(formatInputDate());
   const [msgPrefix, setMsgPrefix] = useState(DEFAULT_PREFIX);
   const [msgSuffix, setMsgSuffix] = useState(DEFAULT_SUFFIX);
-  const [excludedClients, setExcludedClients] = useState(() => {
-    try {
-      const raw = localStorage.getItem('client-schedule-excluded-clients');
-      return raw ? JSON.parse(raw) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [excludedClients, setExcludedClients] = useState([]);
   const [excludedClientInput, setExcludedClientInput] = useState('');
   const [sheet1Rows, setSheet1Rows] = useState([HEADER_SHEET1]);
   const [sheet2Rows, setSheet2Rows] = useState([]);
@@ -406,23 +399,35 @@ export default function ClientSchedulePage() {
 
   const baseDate = useMemo(() => coerceDate(baseDateText) || new Date(), [baseDateText]);
 
-  useEffect(() => {
-    localStorage.setItem('client-schedule-excluded-clients', JSON.stringify(excludedClients));
-  }, [excludedClients]);
+  const saveExcludedClientsToDb = async (items) => {
+    try {
+      await fetch(`${API}/client-schedule/excluded`, {
+        method: 'PUT',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items }),
+      });
+    } catch {
+      // 저장 실패 시 조용히 무시 (UI 동작에는 영향 없음)
+    }
+  };
 
   const addExcludedClients = (raw) => {
-    const items = parseExcludedClients(raw);
-    if (!items.length) return;
+    const newItems = parseExcludedClients(raw);
+    if (!newItems.length) return;
     setExcludedClients((prev) => {
-      const next = new Set(prev);
-      items.forEach((item) => next.add(item));
-      return [...next];
+      const next = [...new Set([...prev, ...newItems])];
+      saveExcludedClientsToDb(next);
+      return next;
     });
     setExcludedClientInput('');
   };
 
   const removeExcludedClient = (value) => {
-    setExcludedClients((prev) => prev.filter((item) => item !== value));
+    setExcludedClients((prev) => {
+      const next = prev.filter((item) => item !== value);
+      saveExcludedClientsToDb(next);
+      return next;
+    });
   };
 
   const handleExcludedClientKeyDown = (e) => {
@@ -430,7 +435,42 @@ export default function ClientSchedulePage() {
       e.preventDefault();
       addExcludedClients(excludedClientInput);
     } else if (e.key === 'Backspace' && !excludedClientInput && excludedClients.length > 0) {
-      setExcludedClients((prev) => prev.slice(0, -1));
+      setExcludedClients((prev) => {
+        const next = prev.slice(0, -1);
+        saveExcludedClientsToDb(next);
+        return next;
+      });
+    }
+  };
+
+  const fetchExcludedClients = async () => {
+    try {
+      const res = await fetch(`${API}/client-schedule/excluded`, { headers: authHeaders });
+      if (!res.ok) return;
+      const data = await res.json();
+      let items = data.items || [];
+
+      // localStorage에 기존 데이터가 있고 DB가 비어있으면 마이그레이션
+      if (items.length === 0) {
+        try {
+          const raw = localStorage.getItem('client-schedule-excluded-clients');
+          const legacy = raw ? JSON.parse(raw) : [];
+          if (legacy.length > 0) {
+            await fetch(`${API}/client-schedule/excluded`, {
+              method: 'PUT',
+              headers: { ...authHeaders, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ items: legacy }),
+            });
+            items = legacy;
+          }
+        } catch {
+          // 마이그레이션 실패 시 무시
+        }
+      }
+      localStorage.removeItem('client-schedule-excluded-clients');
+      setExcludedClients(items);
+    } catch {
+      // 로드 실패 시 빈 배열 유지
     }
   };
 
@@ -458,7 +498,7 @@ export default function ClientSchedulePage() {
     }
   };
 
-  useEffect(() => { fetchDbRows(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchDbRows(); fetchExcludedClients(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSaveToDb = async () => {
     if (!sheet2Rows.length) { setStatus('저장할 데이터가 없습니다.'); return; }
@@ -773,7 +813,7 @@ export default function ClientSchedulePage() {
                 <button
                   type="button"
                   className={styles.clearAllBtn}
-                  onClick={() => setExcludedClients([])}
+                  onClick={() => { setExcludedClients([]); saveExcludedClientsToDb([]); }}
                   title="전체 삭제"
                 >
                   전체 삭제

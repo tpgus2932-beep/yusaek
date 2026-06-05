@@ -39,6 +39,7 @@ from api.amood_routes import build_amood_router
 from api.returns_routes import build_returns_router
 from api.order_routes import build_order_router
 from api.noye_kimsungil_routes import build_noye_kimsungil_router
+from api.misong_routes import build_misong_router
 from api.sms_routes import build_sms_router
 from api.collaboration_tools_routes import build_collaboration_tools_router
 from api.attendance_routes import build_attendance_router
@@ -118,6 +119,9 @@ AMOOD_ALLOWED_EXCEL2 = {".xlsx", ".xls", ".xlsm", ".htm", ".html"}
 RETURN_STATES: dict[str, "ReturnState"] = {}
 AMOOD_STATES: dict[str, "AmoodState"] = {}
 RETURN_COST_BASE_CACHE: dict[str, object] = {"df": None, "mtime": None, "path": None}
+COST_BASE_CODE_COL = 0
+COST_BASE_MATCH_COL = 8
+COST_BASE_REQUIRED_COLS = COST_BASE_MATCH_COL + 1
 SHARED_INCOMING_COUNTS: dict[str, int] = {}
 SHARED_DEFECT_COUNTS: dict[str, int] = {}
 SHARED_BARCODE_DATA: dict = {
@@ -128,6 +132,7 @@ SHARED_BARCODE_DATA: dict = {
     "invoice_order": None,
     "invoice_seq": None,
     "code_o_text": None,
+    "hapbae_pre_match_rows": [],
     "processed_path": None,
 }
 
@@ -190,12 +195,12 @@ def _load_return_cost_base(state: ReturnState):
     if not path.exists():
         raise FileNotFoundError(f"원가베이스 파일을 찾지 못했습니다: {path}")
     cost_df = pd.read_excel(path, dtype=str)
-    if cost_df.shape[1] < 2:
-        raise ValueError("원가베이스는 최소 A,B열이 필요합니다.")
+    if cost_df.shape[1] < COST_BASE_REQUIRED_COLS:
+        raise ValueError("원가베이스는 최소 A~I열이 필요합니다.")
     amap: dict[str, str] = {}
     for _, r in cost_df.iterrows():
-        key_raw = r.iloc[0] if len(r) > 0 else ""
-        val_raw = r.iloc[1] if len(r) > 1 else ""
+        key_raw = r.iloc[COST_BASE_MATCH_COL] if len(r) > COST_BASE_MATCH_COL else ""
+        val_raw = r.iloc[COST_BASE_CODE_COL] if len(r) > COST_BASE_CODE_COL else ""
         key = _normalize_key("" if pd.isna(key_raw) else str(key_raw))
         val = "" if pd.isna(val_raw) else str(val_raw).strip()
         if key and key not in amap:
@@ -1133,6 +1138,8 @@ app.include_router(
         get_shared_defect_counts=_get_shared_defect_counts,
         set_shared_defect_counts=_set_shared_defect_counts,
         set_shared_barcode_data=_set_shared_barcode_data,
+        get_setting=_get_setting,
+        set_setting=_set_setting,
     )
 )
 
@@ -1241,6 +1248,12 @@ app.include_router(
 app.include_router(
     build_noye_kimsungil_router(
         get_current_user=_get_current_user,
+    )
+)
+app.include_router(
+    build_misong_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
     )
 )
 app.include_router(

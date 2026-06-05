@@ -41,6 +41,10 @@ def build_returns_router(
     return_cost_base_path,
 ):
     router = APIRouter()
+    COST_BASE_CODE_COL = 0
+    COST_BASE_MATCH_COL = 8
+    COST_BASE_REQUIRED_COLS = COST_BASE_MATCH_COL + 1
+    COST_BASE_EDIT_COLS = [COST_BASE_CODE_COL, COST_BASE_MATCH_COL]
 
     def _df_value_to_xls_cell(value):
         if pd.isna(value):
@@ -50,6 +54,23 @@ def build_returns_router(
         if isinstance(value, (int, float)):
             return value
         return str(value)
+
+    def _cost_base_edit_col_name(df: pd.DataFrame, column):
+        if isinstance(column, int):
+            if column < 0 or column >= len(COST_BASE_EDIT_COLS):
+                raise ValueError("column 범위를 벗어났습니다.")
+            real_col_index = COST_BASE_EDIT_COLS[column]
+            if real_col_index >= len(df.columns):
+                raise ValueError("원가베이스는 최소 A~I열이 필요합니다.")
+            return df.columns[real_col_index]
+        if isinstance(column, str):
+            if column == "A열 상품코드":
+                return df.columns[COST_BASE_CODE_COL]
+            if column == "I열 상품명 색상 사이즈":
+                return df.columns[COST_BASE_MATCH_COL]
+            if column in df.columns:
+                return column
+        raise ValueError("유효하지 않은 column 입니다.")
 
     def _build_xls_bytes_from_sheets(sheets: list[tuple[str, pd.DataFrame]]) -> bytes:
         try:
@@ -93,6 +114,21 @@ def build_returns_router(
 
     def _exchange_sound_type(exchange_type: str) -> str:
         return "교환불량" if exchange_type == "교환판매자" else "교환정상"
+
+    def _resolve_lotte_request_memo(state, scan: str, fallback: str = "") -> str:
+        key = clean_invoice(scan)
+        if key and getattr(state, "map_lotte", None):
+            return state.map_lotte.get(key, "") or fallback
+        return fallback
+
+    def _is_exchange_item(item: dict) -> bool:
+        return bool(item.get("sound_type") or "reason" in item)
+
+    def _request_memo_for_item(state, item: dict) -> str:
+        fallback = item.get("match", "")
+        if _is_exchange_item(item):
+            return _resolve_lotte_request_memo(state, item.get("scan", ""), fallback)
+        return fallback
 
     @router.get("/returns/state")
     def returns_state(user: str = Depends(get_current_user)):
@@ -353,8 +389,8 @@ def build_returns_router(
 
         try:
             df = read_return_excel(tmp_path)
-            if df.shape[1] < 2:
-                raise HTTPException(status_code=400, detail="원가베이스는 최소 A,B열이 필요합니다.")
+            if df.shape[1] < COST_BASE_REQUIRED_COLS:
+                raise HTTPException(status_code=400, detail="원가베이스는 최소 A~I열이 필요합니다.")
             shutil.move(str(tmp_path), str(return_cost_base_path))
         finally:
             try:
@@ -391,6 +427,9 @@ def build_returns_router(
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"원가베이스 로드 실패: {e}")
 
+        if df.shape[1] < COST_BASE_REQUIRED_COLS:
+            raise HTTPException(status_code=400, detail="Cost base requires columns A through I.")
+
         q_norm = str(q).strip() if q else ""
         if q_norm:
             df_view = df.fillna("").astype(str)
@@ -400,13 +439,13 @@ def build_returns_router(
             df_filtered = df
 
         total = len(df_filtered)
-        col_names = ["1열", "2열"]
+        col_names = ["A열 상품코드", "I열 상품명 색상 사이즈"]
         end = min(offset + limit, total)
         rows = []
         for i in range(offset, end):
             r = df_filtered.iloc[i]
             row = []
-            for v in r.iloc[:2].values.tolist():
+            for v in [r.iloc[COST_BASE_CODE_COL], r.iloc[COST_BASE_MATCH_COL]]:
                 if pd.isna(v):
                     row.append("")
                 else:
@@ -435,14 +474,10 @@ def build_returns_router(
         if row_index >= len(df):
             raise HTTPException(status_code=400, detail="row_index 범위를 벗어났습니다.")
 
-        if isinstance(column, int):
-            if column < 0 or column >= len(df.columns):
-                raise HTTPException(status_code=400, detail="column 범위를 벗어났습니다.")
-            col_name = df.columns[column]
-        else:
-            if column not in df.columns:
-                raise HTTPException(status_code=400, detail="유효하지 않은 column 입니다.")
-            col_name = column
+        try:
+            col_name = _cost_base_edit_col_name(df, column)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         df.at[row_index, col_name] = "" if value is None else value
         try:
@@ -473,13 +508,9 @@ def build_returns_router(
                 continue
             if row_index >= len(df):
                 continue
-            if isinstance(column, int):
-                if column < 0 or column >= len(df.columns):
-                    continue
-                col_name = df.columns[column]
-            elif isinstance(column, str) and column in df.columns:
-                col_name = column
-            else:
+            try:
+                col_name = _cost_base_edit_col_name(df, column)
+            except ValueError:
                 continue
             df.at[row_index, col_name] = "" if value is None else value
 
@@ -495,7 +526,7 @@ def build_returns_router(
         name = str(payload.get("name") or "").strip()
         code = str(payload.get("code") or "").strip()
         if not name and not code:
-            raise HTTPException(status_code=400, detail="A열 또는 B열 값을 입력하세요.")
+            raise HTTPException(status_code=400, detail="A열 또는 I열 값을 입력하세요.")
 
         try:
             df = load_cost_base_df().copy()
@@ -504,14 +535,15 @@ def build_returns_router(
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"원가베이스 로드 실패: {e}")
 
-        if df.shape[1] < 2:
-            raise HTTPException(status_code=400, detail="원가베이스는 최소 A,B열이 필요합니다.")
+        if df.shape[1] < COST_BASE_REQUIRED_COLS:
+            raise HTTPException(status_code=400, detail="원가베이스는 최소 A~I열이 필요합니다.")
 
         row_data: dict[str, object] = {}
-        row_data[df.columns[0]] = name
-        row_data[df.columns[1]] = code
-        for col in list(df.columns)[2:]:
-            row_data[col] = ""
+        row_data[df.columns[COST_BASE_CODE_COL]] = code
+        row_data[df.columns[COST_BASE_MATCH_COL]] = name
+        for index, col in enumerate(list(df.columns)):
+            if index not in (COST_BASE_CODE_COL, COST_BASE_MATCH_COL):
+                row_data[col] = ""
 
         df = pd.concat([df, pd.DataFrame([row_data], columns=list(df.columns))], ignore_index=True)
 
@@ -524,6 +556,50 @@ def build_returns_router(
         state.cost_base_path = return_cost_base_path
         load_return_cost_base(state)
         return {"ok": True, "status": return_status(state), "row_added": {"name": name, "code": code}}
+
+    @router.post("/returns/cost-base/append-rows")
+    def returns_cost_base_append_rows(payload: dict = Body(...), admin: str = Depends(require_admin)):
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="추가할 데이터를 붙여넣으세요.")
+
+        try:
+            df = load_cost_base_df().copy()
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"원가베이스 로드 실패: {e}")
+
+        if df.shape[1] < COST_BASE_REQUIRED_COLS:
+            raise HTTPException(status_code=400, detail="원가베이스는 최소 A~I열이 필요합니다.")
+
+        new_rows = []
+        for line in text.splitlines():
+            parts = line.split('\t')
+            code = parts[0].strip() if parts else ""
+            name = parts[1].strip() if len(parts) > 1 else ""
+            if not name and not code:
+                continue
+            row_data: dict[str, object] = {df.columns[COST_BASE_CODE_COL]: code, df.columns[COST_BASE_MATCH_COL]: name}
+            for index, col in enumerate(list(df.columns)):
+                if index not in (COST_BASE_CODE_COL, COST_BASE_MATCH_COL):
+                    row_data[col] = ""
+            new_rows.append(row_data)
+
+        if not new_rows:
+            raise HTTPException(status_code=400, detail="유효한 행이 없습니다.")
+
+        df = pd.concat([df, pd.DataFrame(new_rows, columns=list(df.columns))], ignore_index=True)
+
+        try:
+            save_cost_base_df(df)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"원가베이스 저장 실패: {e}")
+
+        state = get_return_state(admin)
+        state.cost_base_path = return_cost_base_path
+        load_return_cost_base(state)
+        return {"ok": True, "appended": len(new_rows)}
 
     @router.post("/returns/scan")
     def returns_scan(payload: dict = Body(...), user: str = Depends(get_current_user)):
@@ -716,7 +792,7 @@ def build_returns_router(
                     "수량": it.get("qty", ""),
                     "가공데이터": item_text,
                     "스캔송장": it.get("scan", ""),
-                    "매칭송장": it.get("match", ""),
+                    "매칭송장": _request_memo_for_item(state, it),
                     "분류": it.get("type", "고객"),
                     "원가베이스매칭": matched_flag,
                 }
@@ -876,11 +952,21 @@ def build_returns_router(
         if fmt not in ("xlsx", "xls"):
             fmt = "xlsx"
 
+        def with_resolved_request_memo(items: list[dict]) -> list[dict]:
+            resolved = []
+            for item in items:
+                next_item = dict(item)
+                next_item["match"] = _request_memo_for_item(state, next_item)
+                resolved.append(next_item)
+            return resolved
+
         df_seller = pd.DataFrame(state.queue_seller)
         df_customer = pd.DataFrame(state.queue_customer)
         df_unmatched = pd.DataFrame(state.queue_unmatched)
-        df_exchange_seller = pd.DataFrame(state.queue_exchange_seller)
-        df_exchange_customer = pd.DataFrame(list(state.queue_exchange_customer) + list(state.queue_exchange))
+        df_exchange_seller = pd.DataFrame(with_resolved_request_memo(state.queue_exchange_seller))
+        df_exchange_customer = pd.DataFrame(
+            with_resolved_request_memo(list(state.queue_exchange_customer) + list(state.queue_exchange))
+        )
 
         for dfx in (df_seller, df_customer, df_unmatched, df_exchange_seller, df_exchange_customer):
             if not dfx.empty:

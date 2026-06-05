@@ -5,15 +5,33 @@ from pathlib import Path
 from urllib.parse import quote
 
 import pandas as pd
-from fastapi import APIRouter, Body, Depends, HTTPException, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 
 DEFAULT_ACCOUNT_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\거래처계좌데이터.xlsx")
 SHARED_PASTE_KEY = "collaboration_tools:purchase_deduction:shared_paste"
 SHARED_PASTE_UPDATED_BY_KEY = "collaboration_tools:purchase_deduction:shared_paste:updated_by"
+SHARED_PASTE_SLOT_COUNT = 5
 
 
 def build_collaboration_tools_router(*, get_current_user, get_setting, set_setting):
     router = APIRouter(prefix="/collaboration-tools")
+
+    def _normalize_shared_paste_slot(slot: int) -> int:
+        try:
+            slot_no = int(slot)
+        except Exception:
+            slot_no = 1
+        if slot_no < 1 or slot_no > SHARED_PASTE_SLOT_COUNT:
+            raise HTTPException(status_code=400, detail=f"공용 저장 슬롯은 1~{SHARED_PASTE_SLOT_COUNT}번만 사용할 수 있습니다.")
+        return slot_no
+
+    def _shared_paste_key(slot: int) -> str:
+        slot_no = _normalize_shared_paste_slot(slot)
+        return SHARED_PASTE_KEY if slot_no == 1 else f"{SHARED_PASTE_KEY}:{slot_no}"
+
+    def _shared_paste_updated_by_key(slot: int) -> str:
+        slot_no = _normalize_shared_paste_slot(slot)
+        return SHARED_PASTE_UPDATED_BY_KEY if slot_no == 1 else f"{SHARED_PASTE_UPDATED_BY_KEY}:{slot_no}"
 
     def _normalize_text(value) -> str:
         return " ".join(str(value or "").split()).strip()
@@ -230,21 +248,32 @@ def build_collaboration_tools_router(*, get_current_user, get_setting, set_setti
         return {"ok": True, **result}
 
     @router.get("/purchase-deduction/shared-paste")
-    def get_purchase_deduction_shared_paste(user: str = Depends(get_current_user)):
+    def get_purchase_deduction_shared_paste(
+        slot: int = Query(1, ge=1, le=SHARED_PASTE_SLOT_COUNT),
+        user: str = Depends(get_current_user),
+    ):
+        slot_no = _normalize_shared_paste_slot(slot)
         return {
             "ok": True,
-            "pasted_text": get_setting(SHARED_PASTE_KEY) or "",
-            "updated_by": get_setting(SHARED_PASTE_UPDATED_BY_KEY) or "",
+            "slot": slot_no,
+            "pasted_text": get_setting(_shared_paste_key(slot_no)) or "",
+            "updated_by": get_setting(_shared_paste_updated_by_key(slot_no)) or "",
             "viewer": user,
         }
 
     @router.put("/purchase-deduction/shared-paste")
-    def set_purchase_deduction_shared_paste(payload: dict = Body(...), user: str = Depends(get_current_user)):
+    def set_purchase_deduction_shared_paste(
+        payload: dict = Body(...),
+        slot: int = Query(1, ge=1, le=SHARED_PASTE_SLOT_COUNT),
+        user: str = Depends(get_current_user),
+    ):
+        slot_no = _normalize_shared_paste_slot(slot)
         pasted_text = str(payload.get("pasted_text") or "")
-        set_setting(SHARED_PASTE_KEY, pasted_text)
-        set_setting(SHARED_PASTE_UPDATED_BY_KEY, user)
+        set_setting(_shared_paste_key(slot_no), pasted_text)
+        set_setting(_shared_paste_updated_by_key(slot_no), user)
         return {
             "ok": True,
+            "slot": slot_no,
             "pasted_text": pasted_text,
             "updated_by": user,
         }

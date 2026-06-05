@@ -1,0 +1,1312 @@
+{
+  "반품자동화": [
+    {
+      "type": "auto_copy_col",
+      "value": "M"
+    },
+    {
+      "type": "key",
+      "value": "alt+tab"
+    },
+    {
+      "type": "double_click",
+      "value": [
+        497,
+        80
+      ]
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "key",
+      "value": "enter"
+    },
+    {
+      "type": "click",
+      "value": [
+        582,
+        144
+      ]
+    },
+    {
+      "type": "click",
+      "value": [
+        949,
+        458
+      ]
+    },
+    {
+      "type": "remember_url",
+      "value": null
+    },
+    {
+      "type": "wait",
+      "value": 0.5
+    },
+    {
+      "type": "click",
+      "value": [
+        296,
+        835
+      ]
+    },
+    {
+      "type": "check_url_no_change_skip",
+      "value": null
+    },
+    {
+      "type": "click",
+      "value": [
+        1542,
+        558
+      ]
+    },
+    {
+      "type": "wait",
+      "value": 1.0
+    },
+    {
+      "type": "scroll",
+      "value": -300
+    },
+    {
+      "type": "double_click",
+      "x": 1256,
+      "y": 744
+    },
+    {
+      "type": "triple_click",
+      "value": [
+        1035,
+        831
+      ]
+    },
+    {
+      "type": "wait",
+      "value": 0.2
+    },
+    {
+      "type": "copy",
+      "value": null
+    },
+    {
+      "type": "auto_paste_col",
+      "value": "AD"
+    },
+    {
+      "type": "key",
+      "value": "alt+tab*3"
+    },
+    {
+      "type": "key",
+      "value": "alt+tab*3"
+    },
+    {
+      "type": "key",
+      "value": "alt+tab"
+    }
+  ],
+  "마무리템플릿": [
+    {
+      "type": "key",
+      "value": "win"
+    },
+    {
+      "type": "key",
+      "value": "c"
+    },
+    {
+      "type": "key",
+      "value": "h"
+    },
+    {
+      "type": "key",
+      "value": "r"
+    },
+    {
+      "type": "click",
+      "x": 686,
+      "y": 488
+    },
+    {
+      "type": "open_url",
+      "value": "http://localhost:5173/"
+    },
+    {
+      "type": "click",
+      "x": 96,
+      "y": 674
+    },
+    {
+      "type": "scroll",
+      "value": -4000
+    },
+    {
+      "type": "click",
+      "x": 426,
+      "y": 253
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "scroll",
+      "value": 4000
+    },
+    {
+      "type": "click",
+      "x": 501,
+      "y": 710
+    },
+    {
+      "type": "scroll",
+      "value": -4000
+    },
+    {
+      "type": "click",
+      "x": 368,
+      "y": 869
+    }
+  ],
+  "반품재신청": [
+    {
+      "type": "key",
+      "value": "alt+tab"
+    },
+    {
+      "type": "click",
+      "x": 48,
+      "y": 456,
+      "note": "상품목록 클릭"
+    },
+    {
+      "type": "wait",
+      "value": 2.0
+    },
+    {
+      "type": "click",
+      "x": 294,
+      "y": 420,
+      "note": "에이블리 검색어 상품명으로 설정"
+    },
+    {
+      "type": "click",
+      "x": 291,
+      "y": 464,
+      "note": "에이블리 검색어 상품명으로 설정2"
+    },
+    {
+      "type": "click",
+      "x": 332,
+      "y": 420,
+      "note": "검색창선택"
+    },
+    {
+      "type": "paste",
+      "value": null,
+      "note": "상품명기입"
+    },
+    {
+      "type": "key",
+      "value": "enter",
+      "note": "검색"
+    },
+    {
+      "type": "click",
+      "x": 289,
+      "y": 725,
+      "note": "상품수정클릭"
+    },
+    {
+      "type": "key",
+      "value": "alt+tab*2",
+      "note": "지그재그 어드민으로"
+    },
+    {
+      "type": "click",
+      "x": 60,
+      "y": 564,
+      "note": "지그재그 상품등록 클릭"
+    },
+    {
+      "type": "wait",
+      "value": 3.0
+    },
+    {
+      "type": "click",
+      "x": 435,
+      "y": 652,
+      "note": "빈공간 클릭"
+    },
+    {
+      "type": "wait",
+      "value": 1.0
+    },
+    {
+      "type": "scroll",
+      "value": -500
+    },
+    {
+      "type": "click",
+      "x": 426,
+      "y": 547,
+      "note": "지그재그 상품명 선택"
+    },
+    {
+      "type": "paste",
+      "value": null,
+      "note": "상품명 붙이기"
+    },
+    {
+      "type": "click",
+      "x": 409,
+      "y": 631,
+      "note": "지그재그 공급처 상품명"
+    },
+    {
+      "type": "auto_copy_col",
+      "value": "B"
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "click",
+      "x": 565,
+      "y": 675
+    },
+    {
+      "type": "wait",
+      "value": 1.0
+    },
+    {
+      "type": "scroll",
+      "value": -500
+    },
+    {
+      "type": "click",
+      "x": 440,
+      "y": 737,
+      "note": "지그재그 카테고리 선택1"
+    },
+    {
+      "type": "click",
+      "x": 624,
+      "y": 739,
+      "note": "지그재그 카테고리 선택2"
+    },
+    {
+      "type": "click",
+      "x": 818,
+      "y": 741,
+      "note": "지그재그 카테고리 선택3"
+    },
+    {
+      "type": "click",
+      "x": 973,
+      "y": 750,
+      "note": "지그재그 카테고리 선택4"
+    },
+    {
+      "type": "wait",
+      "value": 1.0
+    },
+    {
+      "type": "click",
+      "x": 1595,
+      "y": 575,
+      "note": "빈공간누르기"
+    },
+    {
+      "type": "scroll",
+      "value": -1000
+    },
+    {
+      "type": "auto_copy_col",
+      "value": "G"
+    },
+    {
+      "type": "double_click",
+      "x": 1057,
+      "y": 520
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "double_click",
+      "x": 1040,
+      "y": 578
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "wait",
+      "value": 1.0
+    },
+    {
+      "type": "scroll",
+      "value": -1000
+    },
+    {
+      "type": "auto_copy_col",
+      "value": "M"
+    },
+    {
+      "type": "click",
+      "x": 659,
+      "y": 242
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "auto_copy_col",
+      "value": "N"
+    },
+    {
+      "type": "click",
+      "x": 636,
+      "y": 283
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "auto_copy_col",
+      "value": "G"
+    },
+    {
+      "type": "click",
+      "x": 411,
+      "y": 337
+    },
+    {
+      "type": "click",
+      "x": 1210,
+      "y": 525
+    },
+    {
+      "type": "click",
+      "x": 1128,
+      "y": 601
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "click",
+      "x": 1191,
+      "y": 643
+    },
+    {
+      "type": "click",
+      "x": 1442,
+      "y": 520
+    },
+    {
+      "type": "copy_text",
+      "value": "9999"
+    },
+    {
+      "type": "click",
+      "x": 1397,
+      "y": 601
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "click",
+      "x": 1428,
+      "y": 643
+    },
+    {
+      "type": "click",
+      "x": 1794,
+      "y": 454
+    },
+    {
+      "type": "wait",
+      "value": 1.0
+    },
+    {
+      "type": "scroll",
+      "value": -3000
+    },
+    {
+      "type": "scroll",
+      "value": -3000
+    },
+    {
+      "type": "click",
+      "x": 420,
+      "y": 335,
+      "note": "배송비템플릿"
+    },
+    {
+      "type": "click",
+      "x": 1227,
+      "y": 702,
+      "note": "템플릿적용"
+    },
+    {
+      "type": "click",
+      "x": 1170,
+      "y": 735,
+      "note": "발송소요일"
+    },
+    {
+      "type": "click",
+      "x": 1106,
+      "y": 808,
+      "note": "7일"
+    },
+    {
+      "type": "wait",
+      "value": 1.0
+    },
+    {
+      "type": "scroll",
+      "value": -500
+    },
+    {
+      "type": "click",
+      "x": 1115,
+      "y": 642,
+      "note": "이게 7일 첫번째 선택"
+    },
+    {
+      "type": "click",
+      "x": 1166,
+      "y": 438,
+      "note": "적용하기"
+    },
+    {
+      "type": "click",
+      "x": 748,
+      "y": 659,
+      "note": "발송소요일 기본값"
+    },
+    {
+      "type": "click",
+      "x": 750,
+      "y": 609,
+      "note": "7영업일 클릭"
+    },
+    {
+      "type": "wait",
+      "value": 1.0
+    },
+    {
+      "type": "scroll",
+      "value": -2000
+    },
+    {
+      "type": "key",
+      "value": "alt+tab"
+    },
+    {
+      "type": "click",
+      "x": 281,
+      "y": 785
+    },
+    {
+      "type": "right_click",
+      "x": 987,
+      "y": 627
+    },
+    {
+      "type": "click",
+      "x": 1087,
+      "y": 672
+    },
+    {
+      "type": "key",
+      "value": "alt+s"
+    },
+    {
+      "type": "click",
+      "x": 1566,
+      "y": 713
+    },
+    {
+      "type": "copy_text",
+      "value": "상세 설명"
+    },
+    {
+      "type": "key",
+      "value": "ctrl+f"
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "key",
+      "value": "enter"
+    },
+    {
+      "type": "click",
+      "x": 1524,
+      "y": 866
+    },
+    {
+      "type": "key",
+      "value": "ctrl+a"
+    },
+    {
+      "type": "copy",
+      "value": null
+    },
+    {
+      "type": "key",
+      "value": "alt+tab"
+    }
+  ],
+  "상품자동업로드": [
+    {
+      "type": "key",
+      "value": "alt+tab"
+    },
+    {
+      "type": "click",
+      "x": 53,
+      "y": 552
+    },
+    {
+      "type": "wait",
+      "value": 2.0
+    },
+    {
+      "type": "click",
+      "x": 322,
+      "y": 456
+    },
+    {
+      "type": "click",
+      "x": 320,
+      "y": 513
+    },
+    {
+      "type": "click",
+      "x": 384,
+      "y": 458
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "key",
+      "value": "enter",
+      "note": "검색"
+    },
+    {
+      "type": "click",
+      "x": 328,
+      "y": 792
+    },
+    {
+      "type": "key",
+      "value": "alt+tab",
+      "after_first": true
+    },
+    {
+      "type": "key",
+      "value": "alt+tab*2",
+      "note": "지그재그 어드민으로",
+      "first_only": true
+    },
+    {
+      "type": "click",
+      "x": 60,
+      "y": 564,
+      "note": "지그재그 상품등록 클릭"
+    },
+    {
+      "type": "wait",
+      "value": 3.0
+    },
+    {
+      "type": "click",
+      "x": 435,
+      "y": 652,
+      "note": "빈공간 클릭"
+    },
+    {
+      "type": "wait",
+      "value": 1.0
+    },
+    {
+      "type": "scroll",
+      "value": -500
+    },
+    {
+      "type": "click",
+      "x": 426,
+      "y": 547,
+      "note": "지그재그 상품명 선택"
+    },
+    {
+      "type": "paste",
+      "value": null,
+      "note": "상품명 붙이기"
+    },
+    {
+      "type": "click",
+      "x": 409,
+      "y": 631,
+      "note": "지그재그 공급처 상품명"
+    },
+    {
+      "type": "auto_copy_col",
+      "value": "B"
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "click",
+      "x": 565,
+      "y": 675
+    },
+    {
+      "type": "wait",
+      "value": 1.0
+    },
+    {
+      "type": "scroll",
+      "value": -500
+    },
+    {
+      "type": "auto_copy_category_map",
+      "value": null
+    },
+    {
+      "type": "click",
+      "x": 416,
+      "y": 659
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "click",
+      "x": 467,
+      "y": 620
+    },
+    {
+      "type": "wait",
+      "value": 1.0
+    },
+    {
+      "type": "click",
+      "x": 1595,
+      "y": 575,
+      "note": "빈공간누르기"
+    },
+    {
+      "type": "scroll",
+      "value": -1000
+    },
+    {
+      "type": "auto_copy_col",
+      "value": "G"
+    },
+    {
+      "type": "double_click",
+      "x": 1057,
+      "y": 520
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "double_click",
+      "x": 1040,
+      "y": 578
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "wait",
+      "value": 1.0
+    },
+    {
+      "type": "scroll",
+      "value": -1000
+    },
+    {
+      "type": "auto_copy_col",
+      "value": "M"
+    },
+    {
+      "type": "click",
+      "x": 659,
+      "y": 242
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "auto_copy_col",
+      "value": "N"
+    },
+    {
+      "type": "click",
+      "x": 636,
+      "y": 283
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "auto_copy_col",
+      "value": "G"
+    },
+    {
+      "type": "click",
+      "x": 415,
+      "y": 342
+    },
+    {
+      "type": "click",
+      "x": 1210,
+      "y": 525
+    },
+    {
+      "type": "click",
+      "x": 1128,
+      "y": 601
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "click",
+      "x": 1191,
+      "y": 643
+    },
+    {
+      "type": "click",
+      "x": 1442,
+      "y": 520
+    },
+    {
+      "type": "copy_text",
+      "value": "9999"
+    },
+    {
+      "type": "click",
+      "x": 1397,
+      "y": 601
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "click",
+      "x": 1428,
+      "y": 643
+    },
+    {
+      "type": "click",
+      "x": 1794,
+      "y": 454
+    },
+    {
+      "type": "scroll",
+      "value": -3000
+    },
+    {
+      "type": "scroll",
+      "value": -3000
+    },
+    {
+      "type": "wait",
+      "value": 1.0
+    },
+    {
+      "type": "click",
+      "x": 449,
+      "y": 339
+    },
+    {
+      "type": "click",
+      "x": 1228,
+      "y": 699
+    },
+    {
+      "type": "wait",
+      "value": 0.5
+    },
+    {
+      "type": "click",
+      "x": 1170,
+      "y": 735
+    },
+    {
+      "type": "click",
+      "x": 1106,
+      "y": 808
+    },
+    {
+      "type": "scroll",
+      "value": -500
+    },
+    {
+      "type": "click",
+      "x": 1089,
+      "y": 646
+    },
+    {
+      "type": "click",
+      "x": 1137,
+      "y": 436
+    },
+    {
+      "type": "wait",
+      "value": 1.0
+    },
+    {
+      "type": "click",
+      "x": 1910,
+      "y": 390
+    },
+    {
+      "type": "copy_text",
+      "value": "상품 이미지"
+    },
+    {
+      "type": "key",
+      "value": "ctrl+f"
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "key",
+      "value": "enter"
+    },
+    {
+      "type": "key",
+      "value": "alt+tab"
+    },
+    {
+      "type": "click",
+      "x": 326,
+      "y": 865
+    },
+    {
+      "type": "right_click",
+      "x": 970,
+      "y": 610
+    },
+    {
+      "type": "click",
+      "x": 1049,
+      "y": 668
+    },
+    {
+      "type": "key",
+      "value": "alt+s"
+    },
+    {
+      "type": "click",
+      "x": 1556,
+      "y": 637
+    },
+    {
+      "type": "scroll",
+      "value": 1000
+    },
+    {
+      "type": "copy_text",
+      "value": "상세 설명"
+    },
+    {
+      "type": "key",
+      "value": "ctrl+f"
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "key",
+      "value": "enter"
+    },
+    {
+      "type": "click",
+      "x": 1535,
+      "y": 825
+    },
+    {
+      "type": "click",
+      "x": 1614,
+      "y": 809
+    },
+    {
+      "type": "key",
+      "value": "ctrl+a"
+    },
+    {
+      "type": "copy",
+      "value": null
+    },
+    {
+      "type": "key",
+      "value": "alt+tab"
+    },
+    {
+      "type": "click",
+      "x": 399,
+      "y": 624
+    },
+    {
+      "type": "wait",
+      "value": 0.3
+    },
+    {
+      "type": "double_click",
+      "x": 235,
+      "y": 211
+    },
+    {
+      "type": "copy_text",
+      "value": "이미지의 가로"
+    },
+    {
+      "type": "key",
+      "value": "ctrl+f"
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "key",
+      "value": "enter"
+    },
+    {
+      "type": "click",
+      "x": 954,
+      "y": 255
+    },
+    {
+      "type": "key",
+      "value": "alt+tab"
+    },
+    {
+      "type": "copy",
+      "value": null
+    },
+    {
+      "type": "key",
+      "value": "alt+tab"
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "click",
+      "x": 1894,
+      "y": 498
+    },
+    {
+      "type": "scroll",
+      "value": -1000
+    },
+    {
+      "type": "click",
+      "x": 637,
+      "y": 611
+    },
+    {
+      "type": "click",
+      "x": 1100,
+      "y": 992
+    },
+    {
+      "type": "click",
+      "x": 1115,
+      "y": 614
+    },
+    {
+      "type": "click",
+      "x": 1126,
+      "y": 624
+    },
+    {
+      "type": "wait",
+      "value": 0.5
+    }
+  ],
+  "교환 수거송장입력전 송장매칭": [
+    {
+      "type": "auto_copy_col",
+      "value": "E",
+      "note": "교환수거중 주문번호"
+    },
+    {
+      "type": "key",
+      "value": "alt+tab",
+      "first_only": true
+    },
+    {
+      "type": "click",
+      "value": [
+        399,
+        313
+      ],
+      "after_first": true
+    },
+    {
+      "type": "double_click",
+      "value": [
+        510,
+        446
+      ]
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "key",
+      "value": "enter"
+    },
+    {
+      "type": "wait",
+      "value": 0.5
+    },
+    {
+      "type": "click",
+      "value": [
+        534,
+        823
+      ]
+    },
+    {
+      "type": "wait",
+      "value": 0.5
+    },
+    {
+      "type": "double_click",
+      "value": [
+        1131,
+        785
+      ]
+    },
+    {
+      "type": "key",
+      "value": "ctrl+c"
+    },
+    {
+      "type": "auto_paste_col",
+      "value": "AS"
+    }
+  ],
+  "회수송장매칭": [
+    {
+      "type": "auto_copy_col",
+      "value": "AS",
+      "note": "CS창 송장번호"
+    },
+    {
+      "type": "key",
+      "value": "alt+tab"
+    },
+    {
+      "type": "double_click",
+      "value": [
+        498,
+        72
+      ]
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "key",
+      "value": "enter"
+    },
+    {
+      "type": "click",
+      "value": [
+        767,
+        143
+      ]
+    },
+    {
+      "type": "click",
+      "value": [
+        949,
+        453
+      ]
+    },
+    {
+      "type": "double_click",
+      "value": [
+        311,
+        842
+      ]
+    },
+    {
+      "type": "key",
+      "value": "ctrl+c"
+    },
+    {
+      "type": "auto_paste_col",
+      "value": "T"
+    }
+  ],
+  "에이블리 회수송장 등록": [
+    {
+      "type": "auto_copy_col",
+      "value": "E",
+      "note": "에이블리 주문번호 화면비율 75"
+    },
+    {
+      "type": "key",
+      "value": "alt+tab",
+      "first_only": true
+    },
+    {
+      "type": "double_click",
+      "value": [
+        547,
+        438
+      ]
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "key",
+      "value": "enter"
+    },
+    {
+      "type": "auto_copy_col",
+      "value": "AT"
+    },
+    {
+      "type": "click",
+      "value": [
+        190,
+        769
+      ]
+    },
+    {
+      "type": "click",
+      "value": [
+        292,
+        727
+      ]
+    },
+    {
+      "type": "click",
+      "value": [
+        1032,
+        690
+      ]
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "click",
+      "value": [
+        1262,
+        765
+      ]
+    },
+    {
+      "type": "click",
+      "value": [
+        1167,
+        634
+      ]
+    }
+  ],
+  "교환회수송장등록전 송장확인": [
+    {
+      "type": "auto_copy_col",
+      "value": "AT",
+      "note": "cs 주문번호"
+    },
+    {
+      "type": "key",
+      "value": "alt+tab",
+      "first_only": true
+    },
+    {
+      "type": "double_click",
+      "value": [
+        472,
+        74
+      ]
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "key",
+      "value": "enter"
+    },
+    {
+      "type": "click",
+      "value": [
+        314,
+        138
+      ]
+    },
+    {
+      "type": "wait",
+      "value": 0.3
+    },
+    {
+      "type": "double_click",
+      "value": [
+        542,
+        920
+      ]
+    },
+    {
+      "type": "copy",
+      "value": null
+    },
+    {
+      "type": "auto_paste_col",
+      "value": "Y",
+      "clipboard_starts4": true
+    }
+  ]
+}

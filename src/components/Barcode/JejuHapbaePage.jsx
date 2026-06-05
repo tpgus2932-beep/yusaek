@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import styles from "./BarcodePage.module.css";
+import TsvAppendModal from "../Common/TsvAppendModal";
+import { appendTsvToCostBase } from "../../lib/costBase";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
 const COLUMNS = [
@@ -27,6 +29,7 @@ export default function JejuHapbaePage({ headerExtra = null }) {
   const [costOffset, setCostOffset] = useState(0);
   const [costQuery, setCostQuery] = useState("");
   const [costEdits, setCostEdits] = useState({});
+  const [showTsvAppendModal, setShowTsvAppendModal] = useState(false);
   const costLimit = 50;
 
   const fetchCostBaseStatus = useCallback(async () => {
@@ -243,6 +246,35 @@ export default function JejuHapbaePage({ headerExtra = null }) {
     }
   };
 
+  const handleCostBaseAppendTsv = async ({ text, skipHeader }) => {
+    setLoadingCostBase(true);
+    setCostMessage("");
+    try {
+      const data = await appendTsvToCostBase({
+        apiBase: API,
+        endpoint: "/amood-hapbae/cost-base/append-tsv",
+        text,
+        headers: getAuthHeaders(),
+        skipHeader,
+      });
+      setCostBase(data.status || null);
+      if (showCostEditor) {
+        const nextTotal = Number(data?.total || 0);
+        const nextOffset = costQuery.trim()
+          ? 0
+          : Math.max(0, Math.floor(Math.max(nextTotal - 1, 0) / costLimit) * costLimit);
+        await fetchCostPreview(nextOffset, costQuery.trim() ? costQuery : "");
+      }
+      setCostMessage(`원가베이스 데이터 추가 완료 (${data?.appended || 0}건)`);
+      return true;
+    } catch (err) {
+      setCostMessage(err.message || "원가베이스 데이터 추가 실패");
+      return false;
+    } finally {
+      setLoadingCostBase(false);
+    }
+  };
+
   const handleCostCellChange = (rowIndex, colIndex, value) => {
     setCostRows((prev) =>
       prev.map((row) =>
@@ -376,6 +408,9 @@ export default function JejuHapbaePage({ headerExtra = null }) {
           </button>
           <button type="button" className={styles.secondaryBtn} onClick={handleCostBaseDownload}>
             다운로드
+          </button>
+          <button type="button" className={styles.secondaryBtn} onClick={() => setShowTsvAppendModal(true)}>
+            원가베이스 데이터 추가
           </button>
           <button type="button" className={styles.secondaryBtn} onClick={openCostEditor}>
             편집
@@ -523,7 +558,7 @@ export default function JejuHapbaePage({ headerExtra = null }) {
             {
               step: "STEP 3",
               desc: "원가베이스 매칭",
-              detail: "가공된 상품명을 원가베이스 A열과 비교해 상품코드를 찾습니다.",
+              detail: "가공된 상품명을 원가베이스 I열과 비교해 A열 상품코드를 찾습니다.",
             },
             {
               step: "STEP 4",
@@ -672,6 +707,14 @@ export default function JejuHapbaePage({ headerExtra = null }) {
           </div>
         </div>
       )}
+      <TsvAppendModal
+        open={showTsvAppendModal}
+        title="원가베이스 데이터 추가"
+        styles={styles}
+        loading={loadingCostBase}
+        onClose={() => setShowTsvAppendModal(false)}
+        onSubmit={handleCostBaseAppendTsv}
+      />
     </div>
   );
 }

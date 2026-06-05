@@ -11,7 +11,6 @@ import ReturnsPage from './components/Barcode/ReturnsPage';
 import AuthPage from './components/Auth/AuthPage';
 import AdminUsers from './components/Admin/AdminUsers';
 import OrderPage from './components/Admin/OrderPage';
-import CostBaseManagerPage from './components/Admin/CostBaseManagerPage';
 import SettingsPage from './components/Layout/SettingsPage';
 import NoyeKimPage from './components/NoyeKim/NoyeKimPage';
 import ClientSchedulePage from './components/ClientSchedule/ClientSchedulePage';
@@ -21,13 +20,14 @@ import MobileRequestKimsungilPage from './components/Mobile/MobileRequestKimsung
 import CollabPortalPage from './components/Collab/CollabPortalPage';
 import AttendancePage from './components/Attendance/AttendancePage';
 import AttendanceAdminPage from './components/Attendance/AttendanceAdminPage';
+import TestTabs from './components/Test/TestTabs';
 import { COLLAB_API_BASE } from './lib/api';
 
 
 const KNOWN_TABS = [
   'dashboard', 'barcode', 'returns', 'barcode-product-upload', 'shared-files',
   'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'hapbae-management',
-  'order', 'cost-base-manager', 'admin', 'settings',
+  'test', 'order', 'admin', 'settings',
 ];
 
 const App = () => {
@@ -48,9 +48,10 @@ const App = () => {
   const [hiddenTabs, setHiddenTabs] = useState([]);
 
   const isTabAllowed = (tab, adminFlag = isAdmin, hidden = hiddenTabs, userRole = role) => {
+    if (!KNOWN_TABS.includes(tab)) return false;
     if (userRole === 'viewer') return tab === 'dashboard';
     if (tab === 'settings') return true;
-    if (tab === 'order' || tab === 'admin' || tab === 'cost-base-manager') {
+    if (tab === 'order' || tab === 'admin') {
       return adminFlag && !hidden.includes(tab);
     }
     return !hidden.includes(tab);
@@ -58,8 +59,8 @@ const App = () => {
 
   const getFallbackTab = (adminFlag = isAdmin, hidden = hiddenTabs, userRole = role) => {
     if (userRole === 'viewer') return 'dashboard';
-    const candidates = [...KNOWN_TABS.filter((t) => !['order', 'cost-base-manager', 'admin'].includes(t))];
-    if (adminFlag) candidates.push('order', 'cost-base-manager', 'admin');
+    const candidates = [...KNOWN_TABS.filter((t) => !['order', 'admin'].includes(t))];
+    if (adminFlag) candidates.push('order', 'admin');
     candidates.push('settings');
     return candidates.find((tab) => isTabAllowed(tab, adminFlag, hidden, userRole)) || 'settings';
   };
@@ -173,7 +174,7 @@ const App = () => {
 
   // viewer 역할이면 hiddenTabs 무시하고 대시보드만 허용
   const effectiveHiddenTabs = role === 'viewer'
-    ? ['barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'order', 'cost-base-manager', 'admin', 'settings', 'hapbae-management']
+    ? ['barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'order', 'admin', 'settings', 'hapbae-management', 'test']
     : hiddenTabs;
 
   const handleLogout = () => {
@@ -263,8 +264,8 @@ const App = () => {
         {visibleActiveTab === 'sms' && !effectiveHiddenTabs.includes('sms') && <SMSPage />}
         {visibleActiveTab === 'collaboration-menu' && !effectiveHiddenTabs.includes('collaboration-menu') && <CollaborationMenuPage />}
         {visibleActiveTab === 'hapbae-management' && !effectiveHiddenTabs.includes('hapbae-management') && <HapbaeManagementTabs />}
+        {visibleActiveTab === 'test' && !effectiveHiddenTabs.includes('test') && <TestTabs />}
         {visibleActiveTab === 'order' && isAdmin && !effectiveHiddenTabs.includes('order') && <OrderPage />}
-        {visibleActiveTab === 'cost-base-manager' && isAdmin && !effectiveHiddenTabs.includes('cost-base-manager') && <CostBaseManagerPage />}
         {visibleActiveTab === 'admin' && isAdmin && !effectiveHiddenTabs.includes('admin') && <AdminUsers currentUser={username} />}
         {visibleActiveTab === 'settings' && (
           <SettingsPage hiddenTabs={hiddenTabs} setHiddenTabs={setHiddenTabs} isAdmin={isAdmin} />

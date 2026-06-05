@@ -16,6 +16,7 @@ import pandas as pd
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 import xlwt
+from services.cost_base_append import append_tsv_rows_to_excel
 
 try:
     from PIL import Image as _PILImage, ImageDraw as _PILDraw, ImageFont as _PILFont
@@ -581,6 +582,30 @@ def build_noye_kimsungil_router(*, get_current_user):
             raise HTTPException(status_code=500, detail=f"원가베이스 저장 실패: {e}")
 
         return {"ok": True, "path": str(KDG_BASE_PATH)}
+
+    @router.post("/kdg/base/append-tsv")
+    def kdg_base_append_tsv(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        raw_text = _safe_str(payload.get("text"))
+        skip_header = bool(payload.get("skip_header"))
+
+        try:
+            result = append_tsv_rows_to_excel(
+                KDG_BASE_PATH,
+                raw_text,
+                read_df=_read_base_df,
+                save_df=_save_base_df,
+                required_columns=2,
+                append_columns=2,
+                skip_header=skip_header,
+            )
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="케이디지 원가베이스 파일이 없습니다.")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"원가베이스 데이터 추가 실패: {e}")
+
+        return {"ok": True, "path": str(KDG_BASE_PATH), **result}
 
     @router.get("/kdg/base/download")
     def kdg_base_download(user: str = Depends(get_current_user)):

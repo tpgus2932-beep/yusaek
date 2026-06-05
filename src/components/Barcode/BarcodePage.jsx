@@ -56,7 +56,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [defectMode, setDefectMode] = useState(false);
   const [showDefectList, setShowDefectList] = useState(false);
   const [defectList, setDefectList] = useState([]);
-  const [defectBaseHeaders, setDefectBaseHeaders] = useState(["상품코드", "상품명", "공급처상품명", "D열", "옵션", "F열", "G열"]);
+  const [defectRecentCodes, setDefectRecentCodes] = useState([]);
+  const [defectBaseHeaders, setDefectBaseHeaders] = useState(["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]);
   const [defectBaseRows, setDefectBaseRows] = useState([]);
   const [defectBasePath, setDefectBasePath] = useState("");
   const [defectBaseQuery, setDefectBaseQuery] = useState("");
@@ -135,7 +136,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       setCount(data.invoices ?? null); setCodesTotal(data.codes_total ?? null);
       pushLog(`업로드 완료 (송장 ${data.invoices ?? "-"} / 코드 ${data.codes_total ?? "-"})`);
       setCurrentInvoice(null); setInvoiceDone(false);
-      setItems([]); setNextPreview(null); setScanText("");
+      setItems([]); setNextPreview(null); setDefectRecentCodes([]); setScanText("");
       setTimeout(() => scanRef.current?.focus(), 50);
     } catch (err) {
       setUploadMsg(`업로드 실패: ${err.message || ""}`.trim());
@@ -178,6 +179,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (!res.ok) throw new Error(data?.detail || "불량 등록 실패");
       setItems(data.items ?? items); setNextPreview(data.next_preview ?? null);
       setDefectList(data.defects ?? defectList);
+      setDefectRecentCodes((prev) => [data.code, ...prev.filter((code) => code !== data.code)]);
       pushLog(`불량 등록: ${data.code} (누적 ${data.defect_count})`);
     } catch (err) { pushLog(`불량 등록 실패: ${err.message || ""}`.trim()); }
     finally { setScanText(""); setTimeout(() => scanRef.current?.focus(), 0); }
@@ -238,6 +240,19 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     [item.base_name || item.name, item.base_option || item.option].filter(Boolean).join(" ").trim()
     || item.code
     || "(상품명 없음)";
+
+  const getDefectPreviewList = () => {
+    const orderMap = new Map(defectRecentCodes.map((code, index) => [code, index]));
+    return [...defectList].sort((a, b) => {
+      const aOrder = orderMap.has(a.code) ? orderMap.get(a.code) : Number.MAX_SAFE_INTEGER;
+      const bOrder = orderMap.has(b.code) ? orderMap.get(b.code) : Number.MAX_SAFE_INTEGER;
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      return String(a.code || "").localeCompare(String(b.code || ""));
+    });
+  };
+
+  const getDefectTotalCount = () =>
+    defectList.reduce((sum, item) => sum + (Number(item.count) || 0), 0);
 
   const fetchDefectList = async () => {
     try {
@@ -309,7 +324,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "불량베이스 불러오기 실패");
-      setDefectBaseHeaders(data.headers ?? ["상품코드", "상품명", "공급처상품명", "D열", "옵션", "F열"]);
+      setDefectBaseHeaders(data.headers ?? ["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]);
       setDefectBaseRows(data.rows ?? []);
       setDefectBasePath(data.path ?? "");
       setDefectBaseMessage(`불량베이스 ${data.rows?.length ?? 0}건 로드 완료`);
@@ -597,6 +612,41 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            {defectMode && (
+              <div style={{
+                borderRadius: "var(--radius-md)",
+                border: "1px solid rgba(220,53,69,0.35)",
+                background: "rgba(220,53,69,0.06)",
+                padding: "1rem 1.25rem",
+                display: "flex",
+                flexDirection: "column",
+                gap: "0.6rem",
+              }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: "0.45rem", flexWrap: "wrap" }}>
+                  <span className={styles.infoLabel}>불량 등록 카드</span>
+                  <span className={styles.inlineTagDanger}>합계 {getDefectTotalCount()}</span>
+                </span>
+                {defectList.length > 0 ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.55rem" }}>
+                    {getDefectPreviewList().map((item, idx) => (
+                      <span
+                        key={`${item.code}-preview-defect-${idx}`}
+                        style={{ display: "inline-flex", alignItems: "center", gap: "0.45rem", flexWrap: "wrap" }}
+                      >
+                        <span style={{ fontWeight: 800, fontSize: "1.05rem", overflowWrap: "anywhere" }}>
+                          {renderDefectLabel(item)}
+                        </span>
+                        <span className={styles.inlineTagDanger}>불량 {item.count}</span>
+                        {item.code && <span className={styles.inlineMeta}>{item.code}</span>}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <span style={{ color: "var(--text-muted)", fontSize: "0.95rem" }}>등록된 불량이 없습니다.</span>
+                )}
+              </div>
+            )}
+
             {/* 현재 상품 */}
             <div style={{
               borderRadius: "var(--radius-md)",

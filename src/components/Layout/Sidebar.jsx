@@ -3,7 +3,6 @@ import {
     LayoutDashboard,
     Users,
     ShoppingBag,
-    BarChart3,
     Settings,
     LogOut,
     Moon,
@@ -18,6 +17,7 @@ import {
     PackageCheck,
     CalendarDays,
     Handshake,
+    FlaskConical,
 } from 'lucide-react';
 import styles from './Sidebar.module.css';
 import ServerStatsModal from '../Admin/ServerStatsModal';
@@ -126,6 +126,15 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     합배송관리
                 </div>
                 )}
+                {!isHidden('test') && (
+                <div
+                    className={`${styles.navItem} ${activeTab === 'test' ? styles.active : ''}`}
+                    onClick={() => setActiveTab('test')}
+                >
+                    <FlaskConical size={20} />
+                    테스트
+                </div>
+                )}
 
                 {isAdmin && !isHidden('order') && (
                     <div
@@ -134,16 +143,6 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     >
                         <ShoppingBag size={20} />
                         발주
-                    </div>
-                )}
-
-                {isAdmin && !isHidden('cost-base-manager') && (
-                    <div
-                        className={`${styles.navItem} ${activeTab === 'cost-base-manager' ? styles.active : ''}`}
-                        onClick={() => setActiveTab('cost-base-manager')}
-                    >
-                        <BarChart3 size={20} />
-                        원가베이스 관리
                     </div>
                 )}
 

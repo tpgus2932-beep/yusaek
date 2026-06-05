@@ -212,6 +212,18 @@
 }
 .memberItem:last-child { border-bottom: none; }
 .memberName { flex: 1; font-size: 15px; font-weight: 500; color: #1e293b; }
+.editMemberBtn {
+  padding: 5px 13px;
+  background: #dbeafe;
+  color: #2563eb;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  margin-right: 6px;
+}
 .delBtn {
   padding: 5px 13px;
   background: #fee2e2;
@@ -344,6 +356,18 @@
   transition: color 0.15s, background 0.15s;
 }
 .editSmBtn:hover { color: #2563eb; background: #dbeafe; }
+.addSmBtn {
+  padding: 4px 10px;
+  border: none;
+  border-radius: 7px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+}
+.addSmBtn:hover { background: #dbeafe; color: #2563eb; }
 
 /* ── 근무시간 소계 행 ── */
 .durationRow td {

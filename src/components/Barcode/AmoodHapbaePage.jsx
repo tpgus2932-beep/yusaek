@@ -1,5 +1,7 @@
 import React, { useCallback, useMemo, useState } from "react";
 import styles from "./BarcodePage.module.css";
+import TsvAppendModal from "../Common/TsvAppendModal";
+import { appendTsvToCostBase } from "../../lib/costBase";
 
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
@@ -28,6 +30,7 @@ export default function AmoodHapbaePage({ headerExtra = null }) {
   const [costOffset, setCostOffset] = useState(0);
   const [costQuery, setCostQuery] = useState("");
   const [costEdits, setCostEdits] = useState({});
+  const [showTsvAppendModal, setShowTsvAppendModal] = useState(false);
   const costLimit = 50;
   const [sheetName, setSheetName] = useState("");
   const [conflicts, setConflicts] = useState([]);
@@ -273,6 +276,35 @@ export default function AmoodHapbaePage({ headerExtra = null }) {
     }
   };
 
+  const handleCostBaseAppendTsv = async ({ text, skipHeader }) => {
+    setLoadingCostBase(true);
+    setCostMessage("");
+    try {
+      const data = await appendTsvToCostBase({
+        apiBase: API,
+        endpoint: "/amood-hapbae/cost-base/append-tsv",
+        text,
+        headers: getAuthHeaders(),
+        skipHeader,
+      });
+      setCostBase(data.status || null);
+      if (showCostEditor) {
+        const nextTotal = Number(data?.total || 0);
+        const nextOffset = costQuery.trim()
+          ? 0
+          : Math.max(0, Math.floor(Math.max(nextTotal - 1, 0) / costLimit) * costLimit);
+        await fetchCostPreview(nextOffset, costQuery.trim() ? costQuery : "");
+      }
+      setCostMessage(`원가베이스 데이터 추가 완료 (${data?.appended || 0}건)`);
+      return true;
+    } catch (err) {
+      setCostMessage(err.message || "원가베이스 데이터 추가 실패");
+      return false;
+    } finally {
+      setLoadingCostBase(false);
+    }
+  };
+
   const handleCostCellChange = (rowIndex, colIndex, value) => {
     setCostRows((prev) =>
       prev.map((row) =>
@@ -423,6 +455,9 @@ export default function AmoodHapbaePage({ headerExtra = null }) {
           <button type="button" className={styles.secondaryBtn} onClick={handleCostBaseDownload}>
             다운로드
           </button>
+          <button type="button" className={styles.secondaryBtn} onClick={() => setShowTsvAppendModal(true)}>
+            원가베이스 데이터 추가
+          </button>
           <button type="button" className={styles.secondaryBtn} onClick={openCostEditor}>
             편집
           </button>
@@ -450,7 +485,7 @@ export default function AmoodHapbaePage({ headerExtra = null }) {
         </div>
         {!costBaseExists && (
           <div className={styles.statusMsg} style={{ borderColor: "rgba(220,53,69,0.3)", backgroundColor: "rgba(220,53,69,0.05)" }}>
-            원가베이스 파일이 없어 B열 매칭 점검을 생략했습니다.
+            원가베이스 파일이 없어 A열 상품코드 매칭 점검을 생략했습니다.
           </div>
         )}
         {costBaseExists && unmatchedRowCount > 0 && (
@@ -605,6 +640,14 @@ export default function AmoodHapbaePage({ headerExtra = null }) {
           </div>
         </div>
       )}
+      <TsvAppendModal
+        open={showTsvAppendModal}
+        title="원가베이스 데이터 추가"
+        styles={styles}
+        loading={loadingCostBase}
+        onClose={() => setShowTsvAppendModal(false)}
+        onSubmit={handleCostBaseAppendTsv}
+      />
     </div>
   );
 }

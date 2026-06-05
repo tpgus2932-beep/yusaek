@@ -306,6 +306,48 @@
   line-height: 1.6;
 }
 
+.inputLabelRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.slotTabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+
+.slotTab {
+  height: 28px;
+  min-width: 42px;
+  padding: 0 0.55rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.slotTab:hover {
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
+
+.slotTabActive {
+  color: #fff;
+  background: #0f172a;
+  border-color: #0f172a;
+}
+
 .optionGrid {
   display: flex;
   gap: 1.25rem;

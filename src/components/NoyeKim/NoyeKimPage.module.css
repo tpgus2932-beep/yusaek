@@ -296,6 +296,30 @@
   white-space: nowrap;
 }
 
+.sortableHeader {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.sortableHeader:hover {
+  color: var(--text-primary);
+}
+
+.sortIcon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+}
+
 .table td {
   padding: 0.65rem 0.85rem;
   border-bottom: 1px solid var(--border-color);
@@ -353,6 +377,10 @@
   gap: 1rem;
   max-height: 85vh;
   overflow: hidden;
+}
+
+.wideModal {
+  width: min(1120px, 96vw);
 }
 
 .modalHeader {
@@ -458,4 +486,616 @@
   .page { padding: 1rem; }
   .card { padding: 1.1rem; }
   .tabBtn { padding: 0.55rem 0.75rem; font-size: 0.82rem; }
+}
+
+/* ── Tab Badge ── */
+@keyframes badgePop {
+  0%   { transform: scale(0.5); opacity: 0; }
+  70%  { transform: scale(1.15); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.tabBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #16a34a;
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  animation: badgePop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* ── Misong Alert Box ── */
+@keyframes alertSlideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes alertItemIn {
+  from { opacity: 0; transform: translateX(-6px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.misongAlertBox {
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-left: 4px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.06);
+  padding: 1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  animation: alertSlideDown 0.25s ease both;
+}
+
+.misongMatchAlertBox {
+  border-color: rgba(59, 130, 246, 0.35);
+  border-left-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.06);
+}
+
+:global([data-theme='dark']) .misongAlertBox {
+  border-color: rgba(251, 191, 36, 0.25);
+  border-left-color: #fbbf24;
+  background: rgba(251, 191, 36, 0.05);
+}
+
+:global([data-theme='dark']) .misongMatchAlertBox {
+  border-color: rgba(96, 165, 250, 0.25);
+  border-left-color: #60a5fa;
+  background: rgba(96, 165, 250, 0.06);
+}
+
+.misongAlertHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: #b45309;
+}
+
+:global([data-theme='dark']) .misongAlertHeader {
+  color: #fbbf24;
+}
+
+.misongAlertHeader > span {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.misongAlertList {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.misongAlertItem {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.82rem;
+  flex-wrap: wrap;
+  animation: alertItemIn 0.2s ease both;
+  padding: 0.3rem 0;
+}
+
+.misongAlertCode {
+  font-family: 'Outfit', monospace;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+}
+
+.misongAlertDetail {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.misongAlertRow {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-style: italic;
+}
+
+.misongAlertMatchBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 0.2rem 0.55rem;
+  border-radius: 5px;
+  border: 1px solid rgba(22, 163, 74, 0.25);
+  background: rgba(22, 163, 74, 0.08);
+  color: #15803d;
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.misongAlertMatchBtn:hover:not(:disabled) {
+  border-color: rgba(22, 163, 74, 0.42);
+  background: rgba(22, 163, 74, 0.14);
+}
+
+.misongAlertMatchBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+:global([data-theme='dark']) .misongAlertMatchBtn {
+  border-color: rgba(74, 222, 128, 0.22);
+  background: rgba(74, 222, 128, 0.1);
+  color: #4ade80;
+}
+
+/* ── Alert Type Badges ── */
+.misongBadgeNotFound {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  background: rgba(245, 158, 11, 0.15);
+  color: #b45309;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  white-space: nowrap;
+}
+
+.misongBadgeNegative {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  background: rgba(239, 68, 68, 0.1);
+  color: #b91c1c;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  white-space: nowrap;
+}
+
+.misongBadgeMissing {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  white-space: nowrap;
+}
+
+:global([data-theme='dark']) .misongBadgeNotFound {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.2);
+}
+
+:global([data-theme='dark']) .misongBadgeNegative {
+  background: rgba(248, 113, 113, 0.1);
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.2);
+}
+
+/* ── Misong Table ── */
+:global([data-theme='dark']) .misongBadgeMissing {
+  background: rgba(96, 165, 250, 0.12);
+  color: #60a5fa;
+  border-color: rgba(96, 165, 250, 0.2);
+}
+
+.misongContentStack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.misongSupplierSummary {
+  margin: 0 1.25rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+
+.misongSummaryTitle {
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: var(--text-secondary);
+  margin-bottom: 0.6rem;
+}
+
+.misongSummaryList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.misongSummaryItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  min-height: 30px;
+}
+
+.misongSummaryName {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.misongSummaryQty {
+  color: #16a34a;
+  font-size: 0.86rem;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.misongTotalFooter {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0 1.25rem 1.25rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.misongTotalFooter strong {
+  color: #16a34a;
+  font-size: 1.08rem;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.misongCode {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-family: 'Outfit', monospace;
+  font-weight: 600;
+}
+
+.misongDeleteBtn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.misongDeleteBtn:hover {
+  color: #b91c1c;
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+/* ── Misong Date Cell (날짜 + 로그 버튼) ── */
+.misongDateCell {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.misongLogBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  background: rgba(79, 70, 229, 0.08);
+  color: #4f46e5;
+  border: 1px solid rgba(79, 70, 229, 0.2);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+.misongLogBtn:hover { background: rgba(79, 70, 229, 0.16); border-color: rgba(79, 70, 229, 0.35); }
+
+:global([data-theme='dark']) .misongLogBtn {
+  background: rgba(99, 102, 241, 0.1);
+  color: #818cf8;
+  border-color: rgba(99, 102, 241, 0.2);
+}
+
+.misongEditBtn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.misongEditBtn:hover {
+  color: #4f46e5;
+  border-color: rgba(79, 70, 229, 0.3);
+  background: rgba(79, 70, 229, 0.06);
+}
+
+/* ── Misong Log Modal ── */
+@keyframes misongModalIn {
+  from { opacity: 0; transform: scale(0.97) translateY(6px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.misongLogBody {
+  padding: 1rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: 400px;
+  overflow: auto;
+}
+
+.misongLogEntry {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  font-size: 0.82rem;
+  animation: alertItemIn 0.15s ease both;
+}
+
+.misongLogBadgeAdd {
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  background: rgba(22, 163, 74, 0.1);
+  color: #16a34a;
+  border: 1px solid rgba(22, 163, 74, 0.25);
+  white-space: nowrap;
+}
+
+.misongLogBadgeSub {
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  background: rgba(239, 68, 68, 0.1);
+  color: #b91c1c;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  white-space: nowrap;
+}
+
+:global([data-theme='dark']) .misongLogBadgeAdd { color: #4ade80; background: rgba(74, 222, 128, 0.1); border-color: rgba(74, 222, 128, 0.2); }
+:global([data-theme='dark']) .misongLogBadgeSub { color: #f87171; background: rgba(248, 113, 113, 0.1); border-color: rgba(248, 113, 113, 0.2); }
+
+.misongLogQty {
+  font-weight: 800;
+  font-size: 0.9rem;
+  min-width: 2.8rem;
+  color: var(--text-primary);
+}
+
+.misongLogDate {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.misongLogTs {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  margin-left: auto;
+}
+
+/* ── Misong Edit/Add Form ── */
+.misongFormGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  padding: 1.25rem 1.4rem;
+}
+
+.misongFormField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.misongFormLabel {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.misongFormInput {
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.875rem;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.misongFormInput:focus {
+  outline: none;
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+:global([data-theme='dark']) .misongFormInput:focus {
+  border-color: #818cf8;
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.12);
+}
+
+@media (max-width: 480px) {
+  .misongFormGrid { grid-template-columns: 1fr; }
+}
+
+/* ── Log Date Filter ── */
+.misongLogFilter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 1.4rem;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  flex-wrap: wrap;
+}
+
+/* ── Log Header Row ── */
+.misongLogHeader {
+  display: grid;
+  grid-template-columns: 90px 52px 70px 70px 1fr 140px;
+  gap: 0.5rem;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color);
+}
+
+/* ── Log Entry (new grid layout) ── */
+.misongLogEntry {
+  display: grid;
+  grid-template-columns: 90px 52px 70px 70px 1fr 140px;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  font-size: 0.82rem;
+  animation: alertItemIn 0.15s ease both;
+}
+
+.misongLogRemain {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.misongLogMemo {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.misongSearchHeader {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.8fr) minmax(160px, 1.2fr) 110px 90px 90px 90px 58px 78px 78px 150px;
+  gap: 0.5rem;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.misongSearchEntry {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.8fr) minmax(160px, 1.2fr) 110px 90px 90px 90px 58px 78px 78px 150px;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  font-size: 0.82rem;
+  animation: alertItemIn 0.15s ease both;
+}
+
+.misongSearchName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.misongAppendBody {
+  padding: 1.25rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* ── Confirm Box ── */
+@keyframes confirmPop {
+  from { opacity: 0; transform: scale(0.94) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.misongConfirmBox {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.22);
+  padding: 1.75rem 1.75rem 1.4rem;
+  width: min(400px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  animation: confirmPop 0.2s cubic-bezier(0.34, 1.4, 0.64, 1) both;
+}
+
+.misongConfirmMsg {
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.55;
+  color: var(--text-primary);
+  white-space: pre-line;
+}
+
+.misongConfirmActions {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: flex-end;
 }

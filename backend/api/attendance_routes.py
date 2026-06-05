@@ -80,12 +80,23 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         name: str
         pin: str
 
+    class MemberUpdate(BaseModel):
+        name: str
+        pin: str
+
     class MemberDelete(BaseModel):
         pin: str
 
     class RecordCreate(BaseModel):
         member_name: str
         type: str  # "출근" | "퇴근"
+
+    class ManualRecordCreate(BaseModel):
+        pin: str
+        member_name: str
+        type: str  # "출근" | "퇴근"
+        date: str   # YYYY-MM-DD (KST)
+        time: str   # HH:MM (KST)
 
     class RecordDelete(BaseModel):
         pin: str
@@ -143,6 +154,41 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.close()
         return {"ok": True}
 
+    @router.patch("/members/{member_id}")
+    def update_member(member_id: int, body: MemberUpdate):
+        _check_pin(body.pin)
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="이름을 입력하세요.")
+
+        conn = get_db()
+        old = conn.execute(
+            "SELECT name FROM attendance_members WHERE id = ?",
+            (member_id,),
+        ).fetchone()
+        if not old:
+            conn.close()
+            raise HTTPException(status_code=404, detail="직원을 찾을 수 없습니다.")
+
+        try:
+            conn.execute(
+                "UPDATE attendance_members SET name = ? WHERE id = ?",
+                (name, member_id),
+            )
+            conn.execute(
+                "UPDATE attendance_records SET member_name = ? WHERE member_name = ?",
+                (name, old["name"]),
+            )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            if "UNIQUE" in str(e).upper():
+                raise HTTPException(status_code=409, detail="이미 존재하는 이름입니다.")
+            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            conn.close()
+        return {"ok": True}
+
     # ── 출퇴근 기록 (인증 불필요) ──────────────────────
     @router.post("/record")
     def record_attendance(body: RecordCreate):
@@ -159,6 +205,29 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.commit()
         conn.close()
         return {"ok": True, "timestamp": now_utc.isoformat()}
+
+    @router.post("/records")
+    def add_manual_record(body: ManualRecordCreate):
+        _check_pin(body.pin)
+        att_type = body.type.strip()
+        if att_type not in ("출근", "퇴근"):
+            raise HTTPException(status_code=400, detail="type은 출근 또는 퇴근이어야 합니다.")
+        try:
+            dt_kst = datetime.strptime(
+                f"{body.date} {body.time}", "%Y-%m-%d %H:%M"
+            ).replace(tzinfo=KST)
+            dt_utc = dt_kst.astimezone(timezone.utc)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="날짜/시간 형식이 올바르지 않습니다.")
+
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO attendance_records (member_name, type, timestamp, date) VALUES (?, ?, ?, ?)",
+            (body.member_name.strip(), att_type, dt_utc.isoformat(), body.date),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "timestamp": dt_utc.isoformat()}
 
     # ── 오늘 기록 (인증 불필요, 메인 페이지용) ─────────
     @router.get("/records/today")
