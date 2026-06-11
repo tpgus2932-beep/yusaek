@@ -1,3 +1,4 @@
+import asyncio
 import os
 import tempfile
 import traceback
@@ -5,8 +6,13 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, Response, UploadFile
+import httpx
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+
+_ABLY_BASE     = "https://api.a-bly.com"
+_ABLY_EMAIL    = "eostm1997@naver.com"
+_ABLY_PASSWORD = "!Glqgkqdldi1126"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.environ.setdefault("APP_DB_PATH", os.environ.get("COLLAB_DB_PATH", os.path.join(BASE_DIR, "collab_app.db")))
@@ -23,6 +29,7 @@ from api.auth_admin_routes import build_auth_admin_router
 from api.collab_routes import build_collab_router
 from api.sms_routes import build_sms_router
 from api.attendance_routes import build_attendance_router
+from api.guidebook_routes import build_guidebook_router
 from main import (
     ALLOWED_REQUEST_EXTS,
     ALLOWED_SHARED_EXTS,
@@ -47,7 +54,11 @@ from main import (
     _verify_password,
     _verify_pin,
 )
-from services.easyadmin_product import _content_disposition, _process_easyadmin_product_upload
+from services.easyadmin_product import (
+    _content_disposition,
+    _process_easyadmin_product_upload,
+    process_easyadmin_product_from_api,
+)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -144,6 +155,16 @@ app.include_router(
     )
 )
 
+_GUIDEBOOK_UPLOAD_BASE = Path(os.environ.get("GUIDEBOOK_UPLOAD_BASE") or os.path.join(BASE_DIR, "uploads", "guidebook_images"))
+
+app.include_router(
+    build_guidebook_router(
+        get_db=_get_db,
+        get_current_user=_get_current_user,
+        guidebook_upload_base=_GUIDEBOOK_UPLOAD_BASE,
+    )
+)
+
 
 @app.get("/")
 def root():
@@ -174,6 +195,111 @@ async def product_upload(
     filename = f"easyadmin_products_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xls"
     headers = {"Content-Disposition": _content_disposition(filename)}
     return Response(content=xls_bytes, media_type="application/vnd.ms-excel", headers=headers)
+
+
+@app.post("/barcode/product/upload-from-api")
+async def product_upload_from_api(
+    payload: dict = Body(default={}),
+    user: str = Depends(_get_current_user),
+):
+    start_date = payload.get("start_date", "")
+    end_date   = payload.get("end_date", "")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        res = await client.post(
+            f"{_ABLY_BASE}/seller/login/",
+            json={"email": _ABLY_EMAIL, "password": _ABLY_PASSWORD},
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "https://seller-admin.a-bly.com",
+                "Referer": "https://seller-admin.a-bly.com/",
+                "User-Agent": "Mozilla/5.0",
+            },
+        )
+        if not res.is_success:
+            raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
+    token = res.json().get("token")
+    if not token:
+        raise HTTPException(status_code=502, detail="에이블리 로그인 실패: 토큰 없음")
+
+    ably_headers = {
+        "Authorization": f"JWT {token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Origin": "https://seller-admin.a-bly.com",
+        "Referer": "https://seller-admin.a-bly.com/",
+        "User-Agent": "Mozilla/5.0",
+    }
+
+    all_goods = []
+    page = 1
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while True:
+                res = await client.post(
+                    f"{_ABLY_BASE}/seller/goods/search/",
+                    headers=ably_headers,
+                    json={"page": page, "per_page": 30},
+                )
+                res.raise_for_status()
+                data = res.json()
+                goods = data.get("goods", [])
+                if not goods:
+                    break
+                all_goods.extend(goods)
+                if page >= data.get("max_page_number", 1):
+                    break
+                page += 1
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"상품 목록 조회 실패: {exc}")
+
+    if start_date or end_date:
+        filtered = []
+        for g in all_goods:
+            date_str = (g.get("registered_at") or g.get("created_at") or "")[:10]
+            if start_date and date_str < start_date:
+                continue
+            if end_date and date_str > end_date:
+                continue
+            filtered.append(g)
+        all_goods = filtered
+
+    if all_goods:
+        async def _fetch_detail(client, sno):
+            try:
+                r = await client.get(
+                    f"{_ABLY_BASE}/seller/goods/{sno}/",
+                    headers=ably_headers,
+                )
+                r.raise_for_status()
+                return sno, r.json().get("goods", {})
+            except Exception:
+                return sno, {}
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            results = await asyncio.gather(
+                *[_fetch_detail(client, g["sno"]) for g in all_goods]
+            )
+        detail_map = {sno: detail for sno, detail in results}
+        for i, g in enumerate(all_goods):
+            detail = detail_map.get(g["sno"])
+            if detail:
+                all_goods[i] = {
+                    **g,
+                    "option_groups": detail.get("option_groups") or g.get("option_groups"),
+                    "options": detail.get("options") or g.get("options"),
+                }
+
+    try:
+        xls_bytes = process_easyadmin_product_from_api(all_goods)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"XLS 생성 실패: {exc}")
+
+    filename = f"easyadmin_products_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xls"
+    resp_headers = {"Content-Disposition": _content_disposition(filename)}
+    return Response(content=xls_bytes, media_type="application/vnd.ms-excel", headers=resp_headers)
 
 
 @app.get("/ping")
