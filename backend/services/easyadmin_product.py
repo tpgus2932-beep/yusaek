@@ -101,6 +101,38 @@ def _save_as_xls_bytes(df: pd.DataFrame) -> bytes:
     return buf.getvalue()
 
 
+def process_easyadmin_product_from_api(goods: list) -> bytes:
+    rows = []
+    for g in goods:
+        col_a = _strip_edge_brackets(g.get("name") or "")
+        c_val, h_val = _split_b_to_c_and_h(g.get("custom_code"))
+
+        options = g.get("options") or []
+        if not options:
+            options = [{}]
+
+        for opt in options:
+            vals = opt.get("option_values") or []
+            v1 = opt.get("option1") or (vals[0] if len(vals) > 0 else "")
+            v2 = opt.get("option2") or (vals[1] if len(vals) > 1 else "")
+            v3 = opt.get("option3") or (vals[2] if len(vals) > 2 else "")
+
+            row = {h: "" for h in HEADER_LIST}
+            row[HEADER_LIST[_pos0("A")]] = col_a
+            row[HEADER_LIST[_pos0("B")]] = "유색"
+            row[HEADER_LIST[_pos0("C")]] = "" if pd.isna(c_val) else c_val
+            row[HEADER_LIST[_pos0("H")]] = "" if pd.isna(h_val) else h_val
+            row[HEADER_LIST[_pos0("L")]] = f":{v1}" if v1 else ""
+            row[HEADER_LIST[_pos0("M")]] = f":{v2}" if v2 else ""
+            row[HEADER_LIST[_pos0("N")]] = f":{v3}" if v3 else ""
+            row[HEADER_LIST[_pos0("O")]] = 1
+            row[HEADER_LIST[_pos0("BG")]] = opt.get("stock_sync_code") or ""
+            rows.append(row)
+
+    df = pd.DataFrame(rows, columns=HEADER_LIST) if rows else pd.DataFrame(columns=HEADER_LIST)
+    return _save_as_xls_bytes(df)
+
+
 def _process_easyadmin_product_upload(path: Path) -> bytes:
     ext = path.suffix.lower()
     if ext == ".xlsx":

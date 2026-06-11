@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import traceback
 import uuid
@@ -7,10 +8,16 @@ from pathlib import Path
 import json
 import re
 
+import httpx
 import xlwt
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile
 from openpyxl import load_workbook
 from api.amood_hapbae import SHARED_COST_BASE_PATH
+from services.easyadmin_product import process_easyadmin_product_from_api
+
+_ABLY_BASE     = "https://api.a-bly.com"
+_ABLY_EMAIL    = "eostm1997@naver.com"
+_ABLY_PASSWORD = "!Glqgkqdldi1126"
 
 
 def build_barcode_router(
@@ -90,6 +97,9 @@ def build_barcode_router(
         }
         set_setting(hapbae_checked_rows_key, json.dumps(clean, ensure_ascii=False))
         return clean
+
+    def _clear_hapbae_checked_rows():
+        return _set_hapbae_checked_rows({})
 
     def _extract_hapbae_pre_match_rows(path: Path) -> list[dict]:
         wb, ws = load_excel_any(path)
@@ -462,6 +472,7 @@ def build_barcode_router(
                 "_invoice_lookup": None,
             }
         )
+        _clear_hapbae_checked_rows()
         return {"ok": True, "invoices": len(mapping), "codes_total": sum(len(v) for v in mapping.values())}
 
     @router.post("/barcode/incoming/upload")
@@ -510,6 +521,111 @@ def build_barcode_router(
         filename = f"easyadmin_products_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xls"
         headers = {"Content-Disposition": content_disposition(filename)}
         return Response(content=xls_bytes, media_type="application/vnd.ms-excel", headers=headers)
+
+    @router.post("/barcode/product/upload-from-api")
+    async def product_upload_from_api(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        start_date = payload.get("start_date", "")
+        end_date   = payload.get("end_date", "")
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.post(
+                f"{_ABLY_BASE}/seller/login/",
+                json={"email": _ABLY_EMAIL, "password": _ABLY_PASSWORD},
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": "https://seller-admin.a-bly.com",
+                    "Referer": "https://seller-admin.a-bly.com/",
+                    "User-Agent": "Mozilla/5.0",
+                },
+            )
+            if not res.is_success:
+                raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
+        token = res.json().get("token")
+        if not token:
+            raise HTTPException(status_code=502, detail="에이블리 로그인 실패: 토큰 없음")
+
+        ably_headers = {
+            "Authorization": f"JWT {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": "https://seller-admin.a-bly.com",
+            "Referer": "https://seller-admin.a-bly.com/",
+            "User-Agent": "Mozilla/5.0",
+        }
+
+        all_goods = []
+        page = 1
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                while True:
+                    res = await client.post(
+                        f"{_ABLY_BASE}/seller/goods/search/",
+                        headers=ably_headers,
+                        json={"page": page, "per_page": 30},
+                    )
+                    res.raise_for_status()
+                    data = res.json()
+                    goods = data.get("goods", [])
+                    if not goods:
+                        break
+                    all_goods.extend(goods)
+                    if page >= data.get("max_page_number", 1):
+                        break
+                    page += 1
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"상품 목록 조회 실패: {exc}")
+
+        if start_date or end_date:
+            filtered = []
+            for g in all_goods:
+                date_str = (g.get("registered_at") or g.get("created_at") or "")[:10]
+                if start_date and date_str < start_date:
+                    continue
+                if end_date and date_str > end_date:
+                    continue
+                filtered.append(g)
+            all_goods = filtered
+
+        # search API returns option_groups=null; fetch per-goods detail to get option names
+        if all_goods:
+            async def _fetch_detail(client, sno):
+                try:
+                    r = await client.get(
+                        f"{_ABLY_BASE}/seller/goods/{sno}/",
+                        headers=ably_headers,
+                    )
+                    r.raise_for_status()
+                    return sno, r.json().get("goods", {})
+                except Exception:
+                    return sno, {}
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                results = await asyncio.gather(
+                    *[_fetch_detail(client, g["sno"]) for g in all_goods]
+                )
+            detail_map = {sno: detail for sno, detail in results}
+            for i, g in enumerate(all_goods):
+                detail = detail_map.get(g["sno"])
+                if detail:
+                    all_goods[i] = {
+                        **g,
+                        "option_groups": detail.get("option_groups") or g.get("option_groups"),
+                        "options": detail.get("options") or g.get("options"),
+                    }
+
+        try:
+            xls_bytes = process_easyadmin_product_from_api(all_goods)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"XLS 생성 실패: {exc}")
+
+        filename = f"easyadmin_products_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xls"
+        resp_headers = {"Content-Disposition": content_disposition(filename)}
+        return Response(content=xls_bytes, media_type="application/vnd.ms-excel", headers=resp_headers)
 
     @router.get("/barcode/status")
     def barcode_status(user: str = Depends(get_current_user)):
@@ -564,45 +680,36 @@ def build_barcode_router(
             if _normalize_text(row.get("duplicateKey")) and counts_by_key[_normalize_text(row.get("duplicateKey"))] >= 2
         ]
         result_rows = []
-        stock_rows = []
-        remaining_incoming_counts = dict(incoming_counts)
         for row in duplicate_rows:
             code = row.get("code") or ""
             order_qty = to_int(row.get("orderQty"), default=0)
-            remaining_qty = int(remaining_incoming_counts.get(code, 0) or 0)
-            incoming_qty = min(order_qty, remaining_qty) if order_qty > 0 else 0
-            stock_qty = max(order_qty - incoming_qty, 0) if order_qty > 0 else 0
-
-            if incoming_qty > 0:
-                remaining_incoming_counts[code] = remaining_qty - incoming_qty
-                result_rows.append({
-                    "rowNumber": row.get("rowNumber"),
-                    "duplicateKey": row.get("duplicateKey", ""),
-                    "code": code,
-                    "productName": row.get("productName", ""),
-                    "optionName": row.get("optionName", ""),
-                    "orderQty": incoming_qty,
-                    "incomingQty": incoming_qty,
-                })
-
-            if incoming_counts and stock_qty > 0:
-                stock_rows.append({
-                    "rowNumber": row.get("rowNumber"),
-                    "duplicateKey": row.get("duplicateKey", ""),
-                    "code": code,
-                    "productName": row.get("productName", ""),
-                    "optionName": row.get("optionName", ""),
-                    "orderQty": stock_qty,
-                    "incomingQty": 0,
-                })
+            if order_qty <= 0:
+                continue
+            result_rows.append({
+                "rowNumber": row.get("rowNumber"),
+                "duplicateKey": row.get("duplicateKey", ""),
+                "code": code,
+                "productName": row.get("productName", ""),
+                "optionName": row.get("optionName", ""),
+                "orderQty": order_qty,
+                "incomingQty": int(incoming_counts.get(code, 0) or 0),
+            })
 
         def _group_hapbae_rows(target: list[dict]) -> list[dict]:
             grouped_rows = []
             grouped_lookup = {}
             for row in target:
+                incoming_qty = int(row.get("incomingQty") or 0)
+                if incoming_qty >= 10:
+                    incoming_bucket = "high"
+                elif incoming_qty > 0:
+                    incoming_bucket = "normal"
+                else:
+                    incoming_bucket = "none"
                 key = (
                     _normalize_text(row.get("productName")),
                     _normalize_text(row.get("optionName")),
+                    incoming_bucket,
                 )
                 qty = to_int(row.get("orderQty"), default=0)
                 if key not in grouped_lookup:
@@ -610,12 +717,11 @@ def build_barcode_router(
                         "productName": row.get("productName", ""),
                         "optionName": row.get("optionName", ""),
                         "orderQty": qty,
-                        "incomingQty": int(row.get("incomingQty") or 0),
+                        "incomingQty": incoming_qty,
                     }
                     grouped_rows.append(grouped_lookup[key])
                 else:
                     grouped_lookup[key]["orderQty"] += qty
-                    grouped_lookup[key]["incomingQty"] += int(row.get("incomingQty") or 0)
             grouped_rows.sort(
                 key=lambda row: (
                     _normalize_text(row.get("productName")),
@@ -625,7 +731,7 @@ def build_barcode_router(
             return grouped_rows
 
         grouped_rows = _group_hapbae_rows(result_rows)
-        grouped_stock_rows = _group_hapbae_rows(stock_rows)
+        grouped_stock_rows = []
 
         return {
             "ok": True,
@@ -639,7 +745,7 @@ def build_barcode_router(
                 "duplicateRows": len(duplicate_rows),
                 "incomingRows": len(result_rows),
                 "groupedRows": len(grouped_rows),
-                "stockRows": len(stock_rows),
+                "stockRows": 0,
                 "groupedStockRows": len(grouped_stock_rows),
             },
         }
@@ -782,6 +888,37 @@ def build_barcode_router(
         if not state["loaded"]:
             raise HTTPException(status_code=400, detail="Upload barcode data first")
         return {"ok": True, "defects": _get_defect_list(state)}
+
+    @router.get("/barcode/defect/search")
+    def search_defects(q: str = "", user: str = Depends(get_current_user)):
+        query = _normalize_text(q).casefold()
+        if not query:
+            return {"ok": True, "rows": []}
+        keywords = [kw for kw in query.split() if kw]
+
+        _, rows = _read_defect_base_table()
+        matches = []
+        for row in rows:
+            values = row.get("values") or []
+            code = values[0] if len(values) > 0 else ""
+            display_name = values[6] if len(values) > 6 else ""
+            if not code or not display_name:
+                continue
+            normalized = _normalize_text(display_name).casefold()
+            if not all(kw in normalized for kw in keywords):
+                continue
+            matches.append({
+                "code": normalize_to_yusas(code) or str(code).strip(),
+                "base_code": str(code).strip(),
+                "base_name": display_name,
+                "base_vendor": values[2] if len(values) > 2 else "",
+                "base_product": values[3] if len(values) > 3 else "",
+                "base_color": values[4] if len(values) > 4 else "",
+                "base_addr": values[5] if len(values) > 5 else "",
+            })
+            if len(matches) >= 50:
+                break
+        return {"ok": True, "rows": matches}
 
     @router.get("/barcode/defect/export")
     def export_defects(user: str = Depends(get_current_user)):

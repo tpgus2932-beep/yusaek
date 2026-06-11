@@ -43,6 +43,12 @@ const ReturnsPage = () => {
     const [onebeRows, setOnebeRows] = useState([]);
     const [activeTab, setActiveTab] = useState('all');
     const [loading, setLoading] = useState(false);
+    const [isLoadingAbly, setIsLoadingAbly] = useState(false);
+    const [isLoadingExchange, setIsLoadingExchange] = useState(false);
+    const [lotteDateFr, setLotteDateFr] = useState(
+        new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10)
+    );
+    const [lotteDateTo, setLotteDateTo] = useState(new Date().toISOString().slice(0, 10));
     const [scanText, setScanText] = useState('');
     const [lastType, setLastType] = useState('-');
     const [onebeFormat, setOnebeFormat] = useState('xls');
@@ -237,9 +243,71 @@ const ReturnsPage = () => {
         await handleUpload(file, '/returns/excel_lotte', '롯데택배 엑셀');
     };
 
+    const handleLotteFromApi = async () => {
+        setLoading(true);
+        setMessage('');
+        try {
+            const res = await fetch(`${API}/returns/lotte-from-api`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({
+                    date_fr: lotteDateFr.replace(/-/g, ''),
+                    date_to: lotteDateTo.replace(/-/g, ''),
+                }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '불러오기 실패');
+            setStatus(data.status || status);
+            await refreshState();
+            setMessage(`롯데 API 불러오기 완료 — ${data.map_count}건 매핑`);
+        } catch (err) {
+            setMessage(err.message || '불러오기 실패');
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleExcel2Change = async (file) => {
         if (!file) return;
         await handleUpload(file, '/returns/excel2', '에이블리 엑셀');
+    };
+
+    const handleLoadAblyApi = async () => {
+        setIsLoadingAbly(true);
+        setMessage('');
+        try {
+            const res = await fetch(`${API}/returns/load-ably-api`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '에이블리 API 호출 실패');
+            if (data.status) setStatus(data.status);
+            setMessage(`에이블리 반품 ${data.loaded}건 로드 완료`);
+        } catch (err) {
+            setMessage(err.message || '에이블리 API 호출 실패');
+        } finally {
+            setIsLoadingAbly(false);
+        }
+    };
+
+    const handleLoadExchangeApi = async () => {
+        setIsLoadingExchange(true);
+        setMessage('');
+        try {
+            const res = await fetch(`${API}/returns/load-exchange-api`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '교환 API 호출 실패');
+            if (data.status) setStatus(data.status);
+            setMessage(`교환 ${data.loaded}건 로드 완료`);
+        } catch (err) {
+            setMessage(err.message || '교환 API 호출 실패');
+        } finally {
+            setIsLoadingExchange(false);
+        }
     };
 
     const handleExchangeExcelChange = async (files) => {
@@ -614,6 +682,8 @@ const ReturnsPage = () => {
             return <div className={pageStyles.empty}>데이터가 없습니다.</div>;
         }
         const hasReason = items.some((item) => item.reason);
+        const hasDetailReason = items.some((item) => item.detail_reason);
+        const hasUserComment = items.some((item) => item.user_comment);
         return (
             <div className={pageStyles.tableWrap}>
                 <table className={pageStyles.table}>
@@ -625,6 +695,8 @@ const ReturnsPage = () => {
                             <th>입고수량</th>
                             <th>분류</th>
                             {hasReason && <th>사유</th>}
+                            {hasDetailReason && <th>상세사유</th>}
+                            {hasUserComment && <th>고객메모</th>}
                         </tr>
                     </thead>
                     <tbody>
@@ -636,6 +708,8 @@ const ReturnsPage = () => {
                                 <td>{item.qty}</td>
                                 <td>{item.type}</td>
                                 {hasReason && <td>{item.reason || ''}</td>}
+                                {hasDetailReason && <td>{item.detail_reason || ''}</td>}
+                                {hasUserComment && <td>{item.user_comment || ''}</td>}
                             </tr>
                         ))}
                     </tbody>
@@ -679,31 +753,60 @@ const ReturnsPage = () => {
                             />
                             CJ 엑셀 선택
                         </label>
-                        <label className={pageStyles.fileInput}>
-                            <input
-                                type="file"
-                                accept=".xls,.xlsx,.xlsm"
-                                onChange={(e) => handleLotteExcelChange(e.target.files?.[0] ?? null)}
-                            />
-                            롯데택배 엑셀 선택
-                        </label>
-                        <label className={pageStyles.fileInput}>
-                            <input
-                                type="file"
-                                accept=".xls,.xlsx,.xlsm"
-                                onChange={(e) => handleExcel2Change(e.target.files?.[0] ?? null)}
-                            />
-                            에이블리 엑셀 선택
-                        </label>
-                        <label className={pageStyles.fileInput}>
-                            <input
-                                type="file"
-                                accept=".xls,.xlsx,.xlsm"
-                                multiple
-                                onChange={(e) => handleExchangeExcelChange(e.target.files)}
-                            />
-                            교환 엑셀 선택
-                        </label>
+                        <button
+                            type="button"
+                            className={pageStyles.fileInput}
+                            onClick={handleLotteFromApi}
+                            disabled={loading}
+                        >
+                            <span style={{
+                                display: 'inline-block',
+                                width: 8,
+                                height: 8,
+                                borderRadius: '50%',
+                                background: (status?.lotte_loaded || status?.map_lotte_count > 0) ? '#22c55e' : '#d1d5db',
+                                marginRight: 6,
+                                verticalAlign: 'middle',
+                                flexShrink: 0,
+                            }} />
+                            롯데 API 불러오기
+                        </button>
+                        <button
+                            type="button"
+                            className={pageStyles.fileInput}
+                            onClick={handleLoadAblyApi}
+                            disabled={isLoadingAbly}
+                        >
+                            <span style={{
+                                display: 'inline-block',
+                                width: 8,
+                                height: 8,
+                                borderRadius: '50%',
+                                background: status?.excel2_loaded ? '#22c55e' : '#d1d5db',
+                                marginRight: 6,
+                                verticalAlign: 'middle',
+                                flexShrink: 0,
+                            }} />
+                            {isLoadingAbly ? '불러오는 중...' : '반품 API 불러오기'}
+                        </button>
+                        <button
+                            type="button"
+                            className={pageStyles.fileInput}
+                            onClick={handleLoadExchangeApi}
+                            disabled={isLoadingExchange}
+                        >
+                            <span style={{
+                                display: 'inline-block',
+                                width: 8,
+                                height: 8,
+                                borderRadius: '50%',
+                                background: status?.exchange_loaded ? '#22c55e' : '#d1d5db',
+                                marginRight: 6,
+                                verticalAlign: 'middle',
+                                flexShrink: 0,
+                            }} />
+                            {isLoadingExchange ? '불러오는 중...' : '교환 API 불러오기'}
+                        </button>
                     </div>
                     <div className={`${pageStyles.uploadRow} ${styles.compactActions}`}>
                         <button className={pageStyles.secondaryBtn} onClick={handleCostReload} disabled={loading}>

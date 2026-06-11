@@ -3,12 +3,18 @@ import pageStyles from './BarcodePage.module.css';
 import { COLLAB_API_BASE as API, getAuthHeaders } from '../../lib/api';
 import { getDownloadFilename } from '../../lib/download';
 
+const today = () => new Date().toISOString().slice(0, 10);
+const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+
 const ProductUploadPage = () => {
     const [file, setFile] = useState(null);
     const [loading, setLoading] = useState(false);
+    const [apiLoading, setApiLoading] = useState(false);
     const [status, setStatus] = useState(null); // { type: 'success'|'error', msg: string }
     const [dragging, setDragging] = useState(false);
     const inputRef = useRef(null);
+    const [startDate, setStartDate] = useState(daysAgo(30));
+    const [endDate, setEndDate] = useState(today());
 
     const handleFile = (f) => {
         if (!f) return;
@@ -72,6 +78,39 @@ const ProductUploadPage = () => {
         }
     };
 
+    const handleApiDownload = async () => {
+        setApiLoading(true);
+        setStatus(null);
+        try {
+            const res = await fetch(`${API}/barcode/product/upload-from-api`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ start_date: startDate, end_date: endDate }),
+            });
+            if (!res.ok) {
+                let msg = 'API 호출 실패';
+                try { msg = (await res.json())?.detail || msg; } catch { /* ignore */ }
+                throw new Error(msg);
+            }
+            const blob = await res.blob();
+            const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
+            const filename = getDownloadFilename(res, `easyadmin_products_${stamp}.xls`);
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(url);
+            setStatus({ type: 'success', msg: filename });
+        } catch (err) {
+            setStatus({ type: 'error', msg: err.message || 'API 호출 실패' });
+        } finally {
+            setApiLoading(false);
+        }
+    };
+
     const formatBytes = (bytes) => {
         if (bytes < 1024) return `${bytes} B`;
         if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -88,6 +127,39 @@ const ProductUploadPage = () => {
             </div>
 
             <div className={pageStyles.stack}>
+                {/* API 다운로드 */}
+                <section className={pageStyles.card}>
+                    <div className={pageStyles.cardHeader}>
+                        <h3 className={pageStyles.cardTitle}>에이블리 API로 다운로드</h3>
+                        {apiLoading && <span className={pageStyles.pill}>처리 중</span>}
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <label style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>등록일</label>
+                        <input
+                            type="date"
+                            value={startDate}
+                            onChange={(e) => setStartDate(e.target.value)}
+                            className={pageStyles.searchInput}
+                            style={{ width: 'auto' }}
+                        />
+                        <span style={{ color: 'var(--text-muted)' }}>~</span>
+                        <input
+                            type="date"
+                            value={endDate}
+                            onChange={(e) => setEndDate(e.target.value)}
+                            className={pageStyles.searchInput}
+                            style={{ width: 'auto' }}
+                        />
+                        <button
+                            className={pageStyles.primaryBtn}
+                            onClick={handleApiDownload}
+                            disabled={apiLoading}
+                        >
+                            {apiLoading ? '처리 중...' : 'API로 다운로드'}
+                        </button>
+                    </div>
+                </section>
+
                 {/* 드래그앤드롭 업로드 영역 */}
                 <section className={pageStyles.card}>
                     <div className={pageStyles.cardHeader}>

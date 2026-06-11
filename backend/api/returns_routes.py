@@ -3,14 +3,35 @@ import json
 import re
 import shutil
 import tempfile
+import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 import pandas as pd
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile
 from typing import List
 from fastapi.responses import FileResponse
+
+LLOGIS_LOGIN_URL  = "https://partner.alps.llogis.com/auth/login"
+LLOGIS_PID_BASE   = "https://pid.alps.llogis.com:18210"
+LLOGIS_PRINCIPAL  = "331595"
+LLOGIS_CREDENTIAL = "plan123!"
+
+ABLY_BASE     = "https://api.a-bly.com"
+ABLY_EMAIL    = "eostm1997@naver.com"
+ABLY_PASSWORD = "!Glqgkqdldi1126"
+
+_SELLER_REASON_CODES   = {32, 1}  # 상품 하자/오배송, 셀러 변경
+_SELLER_EXCHANGE_CODES = {2, 3}   # 상품 하자, 오배송 → 판매자 부담
+
+_CANCEL_REASON_TEXT = {
+    30: "단순변심",
+    31: "사이즈/색상 불만족",
+    32: "상품 하자/오배송",
+    1:  "셀러 변경",
+}
 
 
 def build_returns_router(
@@ -313,6 +334,211 @@ def build_returns_router(
         state.df2 = df
         state.df2_index = idx
         return {"ok": True, "index_count": len(idx), "status": return_status(state)}
+
+    async def _ably_login() -> str:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.post(
+                f"{ABLY_BASE}/seller/login/",
+                json={"email": ABLY_EMAIL, "password": ABLY_PASSWORD},
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": "https://seller-admin.a-bly.com",
+                    "Referer": "https://seller-admin.a-bly.com/",
+                    "User-Agent": "Mozilla/5.0",
+                },
+            )
+            res.raise_for_status()
+        token = res.json().get("token")
+        if not token:
+            raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
+        return token
+
+    @router.post("/returns/load-ably-api")
+    async def load_ably_api(user: str = Depends(get_current_user)):
+        try:
+            token = await _ably_login()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        today_dt = datetime.now(timezone.utc).date()
+        headers = {
+            "Authorization": f"JWT {token}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+            "Origin": "https://my.a-bly.com",
+            "Referer": "https://my.a-bly.com/",
+        }
+
+        start_dt = today_dt - timedelta(days=365)
+        all_raw = []
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                page = 1
+                while True:
+                    res = await client.get(
+                        f"{ABLY_BASE}/seller/order_cancels/",
+                        headers=headers,
+                        params={
+                            "cancel_type": "return",
+                            "processing_sub_status[]": ["41", "42"],
+                            "delivery_type[]": ["standard", "today", "combine", "reserved"],
+                            "order": "cancel_received_at",
+                            "page": page,
+                            "per_page": 30,
+                            "start_date": start_dt.strftime("%Y-%m-%d"),
+                            "end_date": today_dt.strftime("%Y-%m-%d"),
+                        },
+                    )
+                    res.raise_for_status()
+                    data = res.json()
+                    cancels = data.get("order_cancels", [])
+                    if not cancels:
+                        break
+                    for cancel in cancels:
+                        for item in cancel.get("order_items", []):
+                            item["_cancel_reason"] = item.get("cancel_reason")
+                            all_raw.append(item)
+                    if page >= data.get("max_page_number", 1):
+                        break
+                    page += 1
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"반품 목록 조회 실패: {e}")
+
+        rows = []
+        for item in all_raw:
+            f_name  = clean_product_name(item.get("goods_name") or "")
+            g_opt   = option_slash_to_space(lowercase_size_words(item.get("option_info") or ""))
+            qty     = str(item.get("ea") or 1)
+            m_clean = clean_invoice(str(item.get("invoice") or ""))
+            fee           = item.get("return_delivery_fee")
+            rtype         = "고객" if (fee is not None and fee < 0) else "판매자"
+            reason_code   = item.get("_cancel_reason")
+            detail_reason = _CANCEL_REASON_TEXT.get(reason_code, f"기타({reason_code})" if reason_code is not None else "")
+            user_comment  = item.get("user_comment") or ""
+            rows.append({
+                "F_name":        f_name,
+                "G_opt":         g_opt,
+                "QTY":           qty,
+                "ITEM_TEXT":     normalize_spaces(f"{f_name} {g_opt}"),
+                "REASON_TYPE":   rtype,
+                "M_clean":       m_clean,
+                "DETAIL_REASON": detail_reason,
+                "USER_COMMENT":  user_comment,
+            })
+
+        df = pd.DataFrame(rows) if rows else pd.DataFrame(
+            columns=["F_name", "G_opt", "QTY", "ITEM_TEXT", "REASON_TYPE", "M_clean", "DETAIL_REASON", "USER_COMMENT"])
+        idx: dict[str, list[int]] = {}
+        for i, v in enumerate(df["M_clean"].tolist()):
+            if v:
+                idx.setdefault(v, []).append(i)
+
+        state = get_return_state(user)
+        state.df2 = df
+        state.df2_index = idx
+        return {"ok": True, "loaded": len(rows), "index_count": len(idx), "status": return_status(state)}
+
+    @router.post("/returns/load-exchange-api")
+    async def load_exchange_api(user: str = Depends(get_current_user)):
+        try:
+            token = await _ably_login()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        today_dt = datetime.now(timezone.utc).date()
+        headers = {
+            "Authorization": f"JWT {token}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+            "Origin": "https://my.a-bly.com",
+            "Referer": "https://my.a-bly.com/",
+        }
+
+        start_dt = today_dt - timedelta(days=365)
+        all_raw = []
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                page = 1
+                while True:
+                    res = await client.get(
+                        f"{ABLY_BASE}/seller/exchanges/",
+                        headers=headers,
+                        params={
+                            "page": page,
+                            "per_page": 30,
+                            "requested_at_start": f"{start_dt.strftime('%Y-%m-%d')} 00:00:00",
+                            "requested_at_end": f"{today_dt.strftime('%Y-%m-%d')} 23:59:59",
+                            "status[]": [3, 4],
+                        },
+                    )
+                    res.raise_for_status()
+                    data = res.json()
+                    exchanges = data.get("exchanges", [])
+                    if not exchanges:
+                        break
+                    all_raw.extend(exchanges)
+                    if page >= data.get("max_page_number", 1):
+                        break
+                    page += 1
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"교환 목록 조회 실패: {e}")
+
+        rows = []
+        for ex in all_raw:
+            rd = ex.get("return_delivery") or {}
+            t_raw = rd.get("invoice_number")
+            if not t_raw:
+                continue  # 수거 송장 미등록 → 스캔 불가, 스킵
+
+            items_list = ex.get("exchange_items") or []
+            if not items_list:
+                continue
+            first = items_list[0]
+            order_item = first.get("order_item") or {}
+
+            goods_name   = order_item.get("goods_name") or ""
+            option_values = (first.get("exchange_goods_option") or {}).get("option_values") or []
+            option_str   = "/".join(str(v) for v in option_values)
+            qty          = str(order_item.get("quantity") or 1)
+            reason_code  = ex.get("reason_code")
+
+            f_name        = clean_product_name(goods_name)
+            g_opt         = option_slash_to_space(lowercase_size_words(option_str))
+            t_clean       = clean_invoice(str(t_raw))
+            rtype         = "판매자" if reason_code in _SELLER_EXCHANGE_CODES else "구매자"
+            detail_reason = ex.get("detail_reason") or ""
+
+            rows.append({
+                "F_name":          f_name,
+                "G_opt":           g_opt,
+                "QTY":             qty,
+                "ITEM_TEXT":       normalize_spaces(f"{f_name} {g_opt}"),
+                "EXCHANGE_REASON": rtype,
+                "T_clean":         t_clean,
+                "DETAIL_REASON":   detail_reason,
+            })
+
+        df = pd.DataFrame(rows) if rows else pd.DataFrame(
+            columns=["F_name", "G_opt", "QTY", "ITEM_TEXT", "EXCHANGE_REASON", "T_clean", "DETAIL_REASON"])
+        idx: dict[str, list[int]] = {}
+        for i, v in enumerate(df["T_clean"].tolist()):
+            if v:
+                idx.setdefault(v, []).append(i)
+
+        state = get_return_state(user)
+        state.exchange_df    = df
+        state.exchange_index = idx
+        return {"ok": True, "loaded": len(rows), "index_count": len(idx), "status": return_status(state)}
 
     @router.post("/returns/exchange")
     def returns_upload_exchange(
@@ -640,6 +866,7 @@ def build_returns_router(
                     "type": exchange_type,
                     "reason": exchange_reason,
                     "sound_type": sound_type,
+                    "detail_reason": row.get("DETAIL_REASON", ""),
                 }
                 state.next_id += 1
                 state.last_added_ids.append(item["id"])
@@ -700,6 +927,8 @@ def build_returns_router(
                 "item_text": item_text,
                 "qty": qty,
                 "type": rtype,
+                "detail_reason": row.get("DETAIL_REASON", ""),
+                "user_comment": row.get("USER_COMMENT", ""),
             }
             state.next_id += 1
             state.last_added_ids.append(item["id"])
@@ -979,6 +1208,8 @@ def build_returns_router(
                         "qty": "입고수량",
                         "type": "분류",
                         "reason": "사유",
+                        "detail_reason": "상세사유",
+                        "user_comment": "고객메모",
                     },
                     inplace=True,
                 )
@@ -1010,5 +1241,68 @@ def build_returns_router(
 
         headers = {"Content-Disposition": content_disposition(filename)}
         return Response(content=buf.getvalue(), media_type=media_type, headers=headers)
+
+    async def _llogis_login() -> str:
+        async with httpx.AsyncClient(verify=False, timeout=15.0) as c:
+            res = await c.post(
+                LLOGIS_LOGIN_URL,
+                json={"principal": LLOGIS_PRINCIPAL, "credential": LLOGIS_CREDENTIAL, "macAddress": "normal-browser"},
+            )
+            res.raise_for_status()
+        token = res.json().get("accessToken")
+        if not token:
+            raise HTTPException(502, "llogis 로그인 실패")
+        return token
+
+    @router.post("/returns/lotte-from-api")
+    async def returns_lotte_from_api(
+        date_fr: str = Body(...),
+        date_to: str = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        token = await _llogis_login()
+        filter_obj = {
+            "srchPickYmd": "", "srchPickYmdStrt": date_fr, "srchPickYmdEnd": date_to,
+            "cboSrchCustSctCd": "10", "srchCustCd": "331595", "srchCustNm": "바브",
+            "cboSrchWkSctCd": "02", "jobCustCd": "", "tabIdx": "", "rowCount": "",
+            "dispCount": "", "pickYmd": "", "colNm": "", "ustRtgSctCd": "",
+            "fstmIstrYmd": "", "srchHdqrCd": "", "srchHdqrNm": "", "srchBrnCd": "",
+            "srchBrnNm": "", "srchBrshCd": "", "srchBrshNm": "", "_STATUS_": "U",
+        }
+        hdrs = {
+            "authorization": token,
+            "content-type": "application/json",
+            "menulink": json.dumps({
+                "menuId": "22004",
+                "pgmId": "100000491",
+                "pgmUrl": f"{LLOGIS_PID_BASE}/pid/pages/ftr/PIDFTR017U",
+            }),
+            "referer": f"{LLOGIS_PID_BASE}/pid/pages/ftr/PIDFTR017U",
+            "x-requested-with": "XMLHttpRequest",
+        }
+        async with httpx.AsyncClient(verify=False, timeout=30.0) as c:
+            res = await c.get(
+                f"{LLOGIS_PID_BASE}/pid/ftr/hdarvmgr/daily/dtls",
+                headers=hdrs,
+                params={"filter": json.dumps(filter_obj, ensure_ascii=False), "_": int(time.time() * 1000)},
+            )
+        if res.status_code != 200:
+            raise HTTPException(502, f"llogis 조회 실패 (HTTP {res.status_code}): {res.text[:200]}")
+
+        raw = res.json()
+        items = raw if isinstance(raw, list) else (raw.get("list") or raw.get("data") or [])
+
+        mapping: dict[str, str] = {}
+        for item in items:
+            if item.get("acperNm") != "유색":
+                continue
+            inv  = clean_invoice(str(item.get("invNo") or ""))
+            orig = clean_invoice(str(item.get("orglInvNo") or ""))
+            if inv and inv not in mapping:
+                mapping[inv] = orig
+
+        state = get_return_state(user)
+        state.map_lotte = mapping
+        return {"ok": True, "map_count": len(mapping), "status": return_status(state)}
 
     return router
