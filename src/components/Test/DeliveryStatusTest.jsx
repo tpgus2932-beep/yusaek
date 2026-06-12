@@ -43,30 +43,35 @@ export default function DeliveryStatusTest() {
   useEffect(() => { LS.set("dstat_singleInv", singleInvNo); }, [singleInvNo]);
   useEffect(() => { LS.set("dstat_singleResult", singleResult); }, [singleResult]);
 
-  // 컴포넌트 마운트 시 서버에서 메모 로드 + localStorage 마이그레이션
+  // 메모 변경 시 localStorage에도 저장 (서버 장애 시 백업)
+  useEffect(() => { LS.set("dstat_memos", memos); }, [memos]);
+
+  // 마운트 시: localStorage로 먼저 표시 → 서버에서 로드해 덮어씀 (서버 실패 시 localStorage 유지)
   useEffect(() => {
-    const migrate = async () => {
-      // localStorage에 이전 메모가 있으면 서버에 먼저 올림
-      const legacy = LS.get("dstat_memos", null);
-      if (legacy && typeof legacy === "object" && Object.keys(legacy).length > 0) {
-        await Promise.allSettled(
-          Object.entries(legacy).map(([inv, memo]) =>
-            memo ? fetch(`${API}/return-shipping/memo`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-              body: JSON.stringify({ invoice_no: inv, memo }),
-            }).catch(() => {}) : Promise.resolve()
-          )
-        );
-        localStorage.removeItem("dstat_memos");
-      }
-      // 서버에서 최신 메모 로드
-      const data = await fetch(`${API}/return-shipping/memos`, { headers: getAuthHeaders() })
-        .then((r) => r.json())
-        .catch(() => ({}));
-      setMemos(data || {});
-    };
-    migrate();
+    const localMemos = LS.get("dstat_memos", {});
+    if (Object.keys(localMemos).length > 0) setMemos(localMemos);
+
+    fetch(`${API}/return-shipping/memos`, { headers: getAuthHeaders() })
+      .then((r) => r.ok ? r.json() : null)
+      .then((serverMemos) => {
+        if (!serverMemos) return;
+        // 서버 메모와 로컬 메모 병합 (서버 우선, 로컬에만 있는 것도 유지)
+        setMemos((prev) => {
+          const merged = { ...prev, ...serverMemos };
+          // 서버에 없는 로컬 메모는 서버로 동기화
+          for (const [inv, memo] of Object.entries(prev)) {
+            if (!serverMemos[inv] && memo) {
+              fetch(`${API}/return-shipping/memo`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+                body: JSON.stringify({ invoice_no: inv, memo }),
+              }).catch(() => {});
+            }
+          }
+          return merged;
+        });
+      })
+      .catch(() => {});
   }, []);
 
   const saveMemoToServer = (inv, val) => {
