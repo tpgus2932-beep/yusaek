@@ -14,8 +14,7 @@ function formatScanDate(raw) {
 
 function formatSentDate(raw) {
   if (!raw) return "-";
-  const s = String(raw).slice(0, 10);
-  return s;
+  return String(raw).slice(0, 10);
 }
 
 const LS = {
@@ -26,6 +25,7 @@ const LS = {
 export default function DeliveryStatusTest() {
   const [items, setItems] = useState(() => LS.get("dstat_items", []));
   const [llogisResults, setLlogisResults] = useState(() => LS.get("dstat_llogis", {}));
+  const [memos, setMemos] = useState(() => LS.get("dstat_memos", {}));
   const [loading, setLoading] = useState(false);
   const [llogisLoading, setLlogisLoading] = useState(false);
   const [message, setMessage] = useState(() => LS.get("dstat_message", ""));
@@ -35,6 +35,7 @@ export default function DeliveryStatusTest() {
 
   useEffect(() => { LS.set("dstat_items", items); }, [items]);
   useEffect(() => { LS.set("dstat_llogis", llogisResults); }, [llogisResults]);
+  useEffect(() => { LS.set("dstat_memos", memos); }, [memos]);
   useEffect(() => { LS.set("dstat_message", message); }, [message]);
   useEffect(() => { LS.set("dstat_singleInv", singleInvNo); }, [singleInvNo]);
   useEffect(() => { LS.set("dstat_singleResult", singleResult); }, [singleResult]);
@@ -50,8 +51,18 @@ export default function DeliveryStatusTest() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "에이블리 조회 실패");
-      setItems(data.items || []);
-      setMessage(`조회 완료: ${(data.items || []).length}건`);
+      const newItems = data.items || [];
+      setItems(newItems);
+      // 더 이상 존재하지 않는 송장번호의 메모 삭제
+      const newInvSet = new Set(newItems.map((i) => i["송장번호"]).filter(Boolean));
+      setMemos((prev) => {
+        const cleaned = {};
+        for (const [inv, memo] of Object.entries(prev)) {
+          if (newInvSet.has(inv)) cleaned[inv] = memo;
+        }
+        return cleaned;
+      });
+      setMessage(`조회 완료: ${newItems.length}건`);
     } catch (err) {
       setMessage(err.message || "에이블리 조회 실패");
     } finally {
@@ -179,7 +190,7 @@ export default function DeliveryStatusTest() {
             조회
           </button>
           {singleResult && (
-            <div style={{ width: "100%", marginTop: "0.5rem", fontSize: "0.875rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+            <div style={{ width: "100%", marginTop: "0.5rem", fontSize: "0.875rem" }}>
               {singleResult.error ? (
                 <div style={{ color: "#ef4444" }}>{singleResult.error}</div>
               ) : (
@@ -205,6 +216,7 @@ export default function DeliveryStatusTest() {
             <div className={styles.sectionMeta}>
               <span>{items.length}건</span>
               <span>송장 {items.filter((i) => i["송장번호"]).length}건</span>
+              <span>메모 {Object.values(memos).filter(Boolean).length}건</span>
             </div>
           </div>
           <div className={styles.tableWrap}>
@@ -220,6 +232,7 @@ export default function DeliveryStatusTest() {
                   <th>배송상태</th>
                   <th>위치</th>
                   <th>최종스캔일</th>
+                  <th>메모</th>
                 </tr>
               </thead>
               <tbody>
@@ -249,6 +262,36 @@ export default function DeliveryStatusTest() {
                           </>
                         );
                       })()}
+                      <td>
+                        <input
+                          type="text"
+                          value={inv ? (memos[inv] || "") : ""}
+                          onChange={(e) => {
+                            if (!inv) return;
+                            const val = e.target.value;
+                            setMemos((prev) => {
+                              if (!val) {
+                                const next = { ...prev };
+                                delete next[inv];
+                                return next;
+                              }
+                              return { ...prev, [inv]: val };
+                            });
+                          }}
+                          disabled={!inv}
+                          placeholder={inv ? "메모 입력" : ""}
+                          style={{
+                            width: "140px",
+                            fontSize: "0.8rem",
+                            padding: "2px 6px",
+                            border: "1px solid var(--border-color)",
+                            borderRadius: "var(--radius-sm)",
+                            background: "var(--bg-primary)",
+                            color: "var(--text-primary)",
+                            outline: "none",
+                          }}
+                        />
+                      </td>
                     </tr>
                   );
                 })}
