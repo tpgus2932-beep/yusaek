@@ -43,12 +43,30 @@ export default function DeliveryStatusTest() {
   useEffect(() => { LS.set("dstat_singleInv", singleInvNo); }, [singleInvNo]);
   useEffect(() => { LS.set("dstat_singleResult", singleResult); }, [singleResult]);
 
-  // 컴포넌트 마운트 시 서버에서 메모 로드
+  // 컴포넌트 마운트 시 서버에서 메모 로드 + localStorage 마이그레이션
   useEffect(() => {
-    fetch(`${API}/return-shipping/memos`, { headers: getAuthHeaders() })
-      .then((r) => r.json())
-      .catch(() => ({}))
-      .then((data) => setMemos(data || {}));
+    const migrate = async () => {
+      // localStorage에 이전 메모가 있으면 서버에 먼저 올림
+      const legacy = LS.get("dstat_memos", null);
+      if (legacy && typeof legacy === "object" && Object.keys(legacy).length > 0) {
+        await Promise.allSettled(
+          Object.entries(legacy).map(([inv, memo]) =>
+            memo ? fetch(`${API}/return-shipping/memo`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+              body: JSON.stringify({ invoice_no: inv, memo }),
+            }).catch(() => {}) : Promise.resolve()
+          )
+        );
+        localStorage.removeItem("dstat_memos");
+      }
+      // 서버에서 최신 메모 로드
+      const data = await fetch(`${API}/return-shipping/memos`, { headers: getAuthHeaders() })
+        .then((r) => r.json())
+        .catch(() => ({}));
+      setMemos(data || {});
+    };
+    migrate();
   }, []);
 
   const saveMemoToServer = (inv, val) => {
