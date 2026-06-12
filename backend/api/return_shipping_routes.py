@@ -346,9 +346,10 @@ def build_return_shipping_router(*, get_current_user):
                         "옵션": item.get("option_info"),
                         "주문번호": item.get("order_sno") or item.get("sno"),
                         "송장번호": item.get("invoice"),
-                        "수취인명": item.get("receiver_name"),
+                        "전화번호": item.get("receiver_phone") or item.get("phone_number") or item.get("mobile") or "",
                         "발송일": item.get("goods_sent_at"),
                         "수량": item.get("ea") or 1,
+                        "_debug_keys": list(item.keys()),
                     })
 
         return {"items": all_items, "total": len(all_items)}

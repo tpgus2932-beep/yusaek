@@ -226,7 +226,7 @@ export default function DeliveryStatusTest() {
                   <th>주문번호</th>
                   <th>상품명</th>
                   <th>옵션</th>
-                  <th>수취인</th>
+                  <th>전화번호</th>
                   <th>발송일</th>
                   <th>송장번호</th>
                   <th>배송상태</th>
@@ -267,7 +267,7 @@ export default function DeliveryStatusTest() {
                         <td style={{ fontVariantNumeric: "tabular-nums" }}>{item["주문번호"] || "-"}</td>
                         <td>{item["상품명"] || "-"}</td>
                         <td>{item["옵션"] || "-"}</td>
-                        <td>{item["수취인명"] || "-"}</td>
+                        <td style={{ fontVariantNumeric: "tabular-nums" }}>{item["전화번호"] || "-"}</td>
                         <td style={{ whiteSpace: "nowrap" }}>{formatSentDate(item["발송일"])}</td>
                         <td style={{ fontVariantNumeric: "tabular-nums" }}>{inv || "-"}</td>
                         {(() => {
