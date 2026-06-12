@@ -274,6 +274,9 @@ export default function NoyeKimPage() {
   const [misongLogDateTo, setMisongLogDateTo] = useState("");
   const [misongEditItem, setMisongEditItem] = useState(null);
   const [misongEditForm, setMisongEditForm] = useState({});
+  const [misongBaseQuery, setMisongBaseQuery] = useState("");
+  const [misongBaseResults, setMisongBaseResults] = useState([]);
+  const [misongBaseSearching, setMisongBaseSearching] = useState(false);
   const [misongConfirm, setMisongConfirm] = useState(null); // { message, onConfirm }
   const [misongSort, setMisongSort] = useState({ key: "A", direction: "asc" });
   const [misongLogSearchOpen, setMisongLogSearchOpen] = useState(false);
@@ -1301,10 +1304,43 @@ export default function NoyeKimPage() {
   const openMisongEdit = (item) => {
     setMisongEditForm(item ? { ...item } : { A: "", B: "", C: "", D: "", E: "", F: "", G: "", originalF: "" });
     setMisongEditItem(item || {});
+    setMisongBaseQuery("");
+    setMisongBaseResults([]);
+  };
+
+  const searchMisongBase = async (q) => {
+    setMisongBaseQuery(q);
+    if (!q.trim()) { setMisongBaseResults([]); return; }
+    setMisongBaseSearching(true);
+    try {
+      const res = await fetch(
+        `${API}/noye-kimsungil/misong/waiting-base/search?q=${encodeURIComponent(q.trim())}`,
+        { headers: getAuthHeaders() }
+      );
+      const data = await res.json().catch(() => ({}));
+      setMisongBaseResults(data.results || []);
+    } catch { setMisongBaseResults([]); }
+    finally { setMisongBaseSearching(false); }
+  };
+
+  const applyMisongBaseResult = (row) => {
+    setMisongEditForm((prev) => ({
+      ...prev,
+      A: row.A || prev.A,
+      B: row.B || prev.B,
+      D: row.D || prev.D,
+      E: row.E || prev.E,
+      originalF: row.originalF || prev.originalF,
+    }));
+    setMisongBaseResults([]);
+    setMisongBaseQuery("");
   };
 
   const saveMisongEdit = async () => {
-    const f = misongEditForm;
+    const f = {
+      ...misongEditForm,
+      G: misongEditForm.G?.trim() || formatLocalDate(),
+    };
     setLoading(true);
     try {
       let res, data;
@@ -1362,7 +1398,15 @@ export default function NoyeKimPage() {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      setMessage("입고대기 다운로드 완료");
+
+      const unmatchedCount = parseInt(res.headers.get("X-Unmatched-Count") || "0", 10);
+      const unmatchedCodes = res.headers.get("X-Unmatched-Codes") || "";
+      if (unmatchedCount > 0) {
+        const codeList = unmatchedCodes ? `\n미매칭 코드: ${unmatchedCodes}` : "";
+        setMessage(`입고대기 다운로드 완료 ⚠️ 원가베이스유에 없는 코드 ${unmatchedCount}건 누락됨${codeList}`);
+      } else {
+        setMessage("입고대기 다운로드 완료 (전체 매칭)");
+      }
     } catch (err) {
       setMessage(err.message || "입고대기 다운로드 실패");
     } finally {
@@ -2101,6 +2145,43 @@ export default function NoyeKimPage() {
                     <X size={13} />취소
                   </button>
                 </div>
+                {/* G열 검색 자동완성 */}
+                <div className={styles.misongBaseSearch}>
+                  <label className={styles.misongFormLabel}>G열(상품명) 검색 → 자동채우기</label>
+                  <div className={styles.misongBaseSearchRow}>
+                    <Search size={14} className={styles.misongBaseSearchIcon} />
+                    <input
+                      className={styles.misongFormInput}
+                      type="text"
+                      value={misongBaseQuery}
+                      onChange={(e) => searchMisongBase(e.target.value)}
+                      placeholder="상품명 입력 후 결과 클릭 시 자동 채우기"
+                      style={{ paddingLeft: "2rem" }}
+                    />
+                    {misongBaseSearching && <span className={styles.misongBaseSpinner}><RefreshCw size={13} /></span>}
+                  </div>
+                  {misongBaseResults.length > 0 && (
+                    <div className={styles.misongBaseDropdown}>
+                      {misongBaseResults.map((row, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          className={styles.misongBaseDropdownItem}
+                          onClick={() => applyMisongBaseResult(row)}
+                        >
+                          <span className={styles.misongBaseItemName}>{row.B}</span>
+                          <span className={styles.misongBaseItemMeta}>
+                            {row.A && <span>{row.A}</span>}
+                            {row.D && <span>{row.D}</span>}
+                            {row.E && <span>{row.E}</span>}
+                            {row.originalF && <span className={styles.misongBaseItemCode}>{row.originalF}</span>}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <div className={styles.misongFormGrid}>
                   {[
                     { key: "A", label: "공급처" },

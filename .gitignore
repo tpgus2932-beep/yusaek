@@ -1,6 +1,5 @@
 # Node.js
 node_modules/
-dist/
 dist-ssr/
 *.local
 npm-debug.log*
@@ -10,7 +9,12 @@ pnpm-debug.log*
 lerna-debug.log*
 
 # Vite / Build
-dist/
+/dist/
+/DIST/
+
+# Local scripts
+/자동.PY
+/가공.PY
 *.suo
 *.ntvs*
 *.njsproj

@@ -470,6 +470,34 @@ def build_misong_router(*, get_current_user, get_db):
         finally:
             conn.close()
 
+    @router.get("/waiting-base/search")
+    def search_waiting_base(q: str = "", user: str = Depends(get_current_user)):
+        q = q.strip()
+        if not q:
+            return {"results": []}
+        if not WAITING_BASE_PATH.exists():
+            raise HTTPException(404, "원가베이스유 파일을 찾을 수 없습니다.")
+        query = q.lower()
+        wb = openpyxl.load_workbook(WAITING_BASE_PATH, data_only=True, read_only=True)
+        try:
+            ws = wb.worksheets[0]
+            results = []
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                g_val = str(row[6] if len(row) > 6 and row[6] is not None else "").strip()
+                if query in g_val.lower():
+                    results.append({
+                        "A": str(row[5] if len(row) > 5 and row[5] is not None else "").strip(),
+                        "B": g_val,
+                        "D": str(row[2] if len(row) > 2 and row[2] is not None else "").strip(),
+                        "E": str(row[3] if len(row) > 3 and row[3] is not None else "").strip(),
+                        "originalF": str(row[0] if row[0] is not None else "").strip(),
+                    })
+                    if len(results) >= 30:
+                        break
+        finally:
+            wb.close()
+        return {"results": results}
+
     @router.get("/waiting-base/download")
     def download_waiting_base(user: str = Depends(get_current_user)):
         if not WAITING_BASE_PATH.exists():
@@ -508,11 +536,15 @@ def build_misong_router(*, get_current_user, get_db):
                 detail=f"원가베이스유 Sheet2를 읽지 못했습니다: {exc}",
             ) from exc
 
+        # Sheet2에 존재하는 코드 수집
+        matched_codes = set()
         buf = io.BytesIO()
         out_wb = xlwt.Workbook()
         out_ws = out_wb.add_sheet(ws.title[:31] or "Sheet1")
         for row_idx in range(1, ws.max_row + 1):
             code = _normalize_code(ws.cell(row=row_idx, column=1).value)
+            if code and row_idx > 1:
+                matched_codes.add(code)
             for col_idx in range(1, ws.max_column + 1):
                 value = ws.cell(row=row_idx, column=col_idx).value
                 if col_idx == 2:
@@ -520,11 +552,23 @@ def build_misong_router(*, get_current_user, get_db):
                 out_ws.write(row_idx - 1, col_idx - 1, "" if value is None else value)
         out_wb.save(buf)
         buf.seek(0)
+
+        # 미매칭: misong에는 있지만 Sheet2에 코드가 없는 항목
+        unmatched = [code for code in qty_by_code if code not in matched_codes]
+        unmatched_count = len(unmatched)
+        # 헤더에 미매칭 코드 목록 전달 (쉼표 구분, 최대 500자)
+        unmatched_str = ",".join(unmatched)[:500]
+
         filename = "입고대기_미송수량.xls"
         return Response(
             content=buf.getvalue(),
             media_type="application/vnd.ms-excel",
-            headers={"Content-Disposition": _content_disposition(filename)},
+            headers={
+                "Content-Disposition": _content_disposition(filename),
+                "X-Unmatched-Count": str(unmatched_count),
+                "X-Unmatched-Codes": unmatched_str,
+                "Access-Control-Expose-Headers": "X-Unmatched-Count, X-Unmatched-Codes",
+            },
         )
 
     @router.post("/waiting-base/append")

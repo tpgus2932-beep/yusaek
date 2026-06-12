@@ -8,7 +8,7 @@ const TABS = [
   { key: "amood", label: "아무드" },
 ];
 
-export default function BarcodeTabs() {
+export default function BarcodeTabs({ onOpenTestTab = null, onTransferAmoodHapbae = null }) {
   const [activeTab, setActiveTab] = useState("barcode");
   const headerExtra = (
     <div className={styles.tabRow}>
@@ -25,7 +25,13 @@ export default function BarcodeTabs() {
   );
 
   if (activeTab === "amood") {
-    return <AmoodBarcodePage headerExtra={headerExtra} />;
+    return (
+      <AmoodBarcodePage
+        headerExtra={headerExtra}
+        onOpenTestTab={onOpenTestTab}
+        onTransferAmoodHapbae={onTransferAmoodHapbae}
+      />
+    );
   }
 
   return <BarcodePage title="Barcode" headerExtra={headerExtra} />;

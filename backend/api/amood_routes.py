@@ -9,6 +9,14 @@ from pathlib import Path
 import pandas as pd
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
+from openpyxl import Workbook, load_workbook
+
+from services.pastelco_utils import (
+    pastelco_fetch_all_orders,
+    pastelco_fetch_shipping_processing_today,
+    pastelco_login,
+    pastelco_today_kst,
+)
 
 
 def build_amood_router(
@@ -45,6 +53,43 @@ def build_amood_router(
     get_shared_defect_counts,
 ):
     router = APIRouter()
+
+    def load_pastelco_items_into_state(user: str, items: list):
+        wb = Workbook()
+        ws_placeholder = wb.active
+        ws_placeholder.title = "Sheet1"
+        ws_data = wb.create_sheet("주문데이터")
+
+        ws_data.cell(1, 2).value = "주문번호(외부)"
+        ws_data.cell(1, 3).value = "주문번호(내부)"
+        ws_data.cell(1, 4).value = "선적바코드"
+        ws_data.cell(1, 8).value = "상품명"
+
+        for i, item in enumerate(items, start=2):
+            hbl = item.get("ably_pantos_hbl") or {}
+            ws_data.cell(i, 2).value = item.get("id")
+            ws_data.cell(i, 3).value = (item.get("order") or {}).get("id")
+            ws_data.cell(i, 4).value = hbl.get("hbl_no") or ""
+            ws_data.cell(i, 8).value = (item.get("product") or {}).get("name_origin") or ""
+
+        tmp_path = Path(tempfile.gettempdir()) / f"amood_pastelco_{uuid.uuid4().hex}.xlsx"
+        wb.save(tmp_path)
+
+        state = get_amood_state(user)
+        if state.file1_path and isinstance(state.file1_path, Path) and state.file1_path.exists():
+            try:
+                state.file1_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        state.file1_path = tmp_path
+        state.file1_name = "pastelco_orders.xlsx"
+        state.processed1_path = None
+        state.wb1 = None
+        state.ws1 = None
+        state.current_invoice = None
+        state.pending_items = []
+        state.waiting_for_items = False
+        return state
 
     def _amood_defect_count(code: str) -> int:
         normalized = amood_norm_barcode(code)
@@ -267,6 +312,60 @@ def build_amood_router(
         filename = f"{Path(name).stem}_processed.xlsx"
         return FileResponse(state.processed2_path, filename=filename)
 
+    @router.post("/amood/hapbae-remaining")
+    def amood_hapbae_remaining(user: str = Depends(get_current_user)):
+        state = get_amood_state(user)
+        if not state.file1_path or not state.file2_path:
+            raise HTTPException(status_code=400, detail="excel1/excel2가 모두 필요합니다.")
+        try:
+            amood_load_workbooks(state)
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=400, detail="엑셀 로드 실패")
+
+        source_path = state.processed1_path if state.processed1_path and state.processed1_path.exists() else state.file1_path
+        wb1 = load_workbook(source_path)
+        if len(wb1.worksheets) < 2:
+            wb1.close()
+            raise HTTPException(status_code=400, detail="아무드 엑셀에 두번째 시트가 없습니다.")
+        ws1 = wb1.worksheets[1]
+        ws2 = state.ws2
+
+        amood_fill_down_merged_column(ws2, AMOOD_COL2_ORDER_KEY, start_row=2)
+        matched_keys = {
+            amood_norm_key(amood_ws_cell(ws2, AMOOD_COL2_ORDER_KEY, r).value)
+            for r in range(2, ws2.max_row + 1)
+        }
+        matched_keys.discard("")
+
+        delete_rows = []
+        for r in range(2, ws1.max_row + 1):
+            order_key = amood_norm_key(amood_ws_cell(ws1, AMOOD_COL1_ORDER_KEY, r).value)
+            if order_key and order_key in matched_keys:
+                delete_rows.append(r)
+
+        for row_idx in reversed(delete_rows):
+            ws1.delete_rows(row_idx, 1)
+
+        remaining_rows = max(ws1.max_row - 1, 0)
+        buf = io.BytesIO()
+        wb1.save(buf)
+        wb1.close()
+        buf.seek(0)
+        base = Path(state.file1_name or "amood").stem
+        filename = f"{base}_합배송.xlsx"
+        headers = {
+            "Content-Disposition": content_disposition(filename),
+            "X-Deleted-Rows": str(len(delete_rows)),
+            "X-Remaining-Rows": str(remaining_rows),
+        }
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers=headers,
+        )
+
     @router.get("/amood/scan/status")
     def amood_scan_status(user: str = Depends(get_current_user)):
         state = get_amood_state(user)
@@ -421,7 +520,7 @@ def build_amood_router(
         }
 
     @router.post("/amood/export-shipping")
-    def amood_export_shipping(user: str = Depends(get_current_user)):
+    def amood_export_shipping(format: str = "xlsx", user: str = Depends(get_current_user)):
         state = get_amood_state(user)
         if not state.file1_path or not state.file2_path:
             raise HTTPException(status_code=400, detail="excel1/excel2가 모두 필요합니다.")
@@ -479,6 +578,12 @@ def build_amood_router(
             raise HTTPException(status_code=400, detail="추출할 데이터가 없습니다.")
 
         rows.sort(key=lambda row: str(row.get("Description", "")), reverse=True)
+        if str(format or "").lower() == "json":
+            return {
+                "ok": True,
+                "rows": rows,
+                "filename": "선적바코드_추출.xlsx",
+            }
         df = pd.DataFrame(rows, columns=["Title", "Description", "Code"])
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
@@ -491,5 +596,48 @@ def build_amood_router(
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers=headers,
         )
+
+    @router.post("/amood/load-from-pastelco")
+    async def amood_load_from_pastelco(user: str = Depends(get_current_user)):
+        try:
+            token = await pastelco_login()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Pastelco 로그인 실패: {e}")
+
+        try:
+            items = await pastelco_fetch_all_orders(token)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"주문 조회 실패: {e}")
+
+        state = load_pastelco_items_into_state(user, items)
+
+        return {"ok": True, "count": len(items), "status": amood_status(state)}
+
+    @router.post("/amood/load-from-pastelco-shipping-processing-today")
+    async def amood_load_from_pastelco_shipping_processing_today(user: str = Depends(get_current_user)):
+        today = pastelco_today_kst()
+        try:
+            token = await pastelco_login()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Pastelco 로그인 실패: {e}")
+
+        try:
+            items = await pastelco_fetch_shipping_processing_today(token, today)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"주문 조회 실패: {e}")
+
+        state = load_pastelco_items_into_state(user, items)
+
+        return {
+            "ok": True,
+            "count": len(items),
+            "date": today,
+            "status": "SHIPPING_PROCESSING",
+            "amood_status": amood_status(state),
+        }
 
     return router

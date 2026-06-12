@@ -55,6 +55,15 @@ const Header = ({ onLogout, displayName, onProfileUpdate }) => {
                 >
                     🏢 출퇴근
                 </a>
+                <a
+                    href="/guidebook"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={styles.guidebookLink}
+                    title="가이드북 열기"
+                >
+                    📖 가이드북
+                </a>
                 <button className={styles.notificationBtn}>
                     <Bell size={22} />
                     <span className={styles.badge}></span>

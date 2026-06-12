@@ -145,9 +145,11 @@ const toEnglishKey = (text) => {
   return out.toUpperCase();
 };
 
-export default function AmoodBarcodePage({ headerExtra = null }) {
-  const [file1, setFile1] = useState(null);
+export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = null, onTransferAmoodHapbae = null }) {
   const [file2, setFile2] = useState(null);
+  const [loadingApi, setLoadingApi] = useState(false);
+  const [loadingShippingApi, setLoadingShippingApi] = useState(false);
+  const [apiCount, setApiCount] = useState(null);
   const [message, setMessage] = useState("");
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -171,6 +173,8 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
   const [easyadminBPreviewOpen, setEasyadminBPreviewOpen] = useState(false);
   const [easyadminBPreviewText, setEasyadminBPreviewText] = useState("");
   const [easyadminBCopyMessage, setEasyadminBCopyMessage] = useState("");
+  const [hblLoading, setHblLoading] = useState(false);
+  const [hblResult, setHblResult] = useState(null);
 
   const refreshStatus = async () => {
     try {
@@ -292,29 +296,43 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
     }
   };
 
-  const uploadExcel1 = async () => {
-    if (!file1) {
-      setMessage("아무드 엑셀을 선택해 주세요.");
-      return;
-    }
-    setLoading(true);
+  const loadFromApi = async () => {
+    setLoadingApi(true);
     setMessage("");
     try {
-      const formData = new FormData();
-      formData.append("file", file1);
-      const res = await fetch(`${API}/amood/excel1`, {
+      const res = await fetch(`${API}/amood/load-from-pastelco`, {
         method: "POST",
         headers: getAuthHeaders(),
-        body: formData,
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "아무드 엑셀 업로드 실패");
-      setMessage("아무드 엑셀 업로드 완료");
+      if (!res.ok) throw new Error(data?.detail || "API 불러오기 실패");
+      setApiCount(data.count ?? null);
+      setMessage(`아무드 주문 ${data.count ?? 0}건 불러옴`);
       await refreshStatus();
     } catch (err) {
-      setMessage(err.message || "아무드 엑셀 업로드 실패");
+      setMessage(err.message || "API 불러오기 실패");
     } finally {
-      setLoading(false);
+      setLoadingApi(false);
+    }
+  };
+
+  const loadFromShippingProcessingToday = async () => {
+    setLoadingShippingApi(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/amood/load-from-pastelco-shipping-processing-today`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "배송중 불러오기 실패");
+      setApiCount(data.count ?? null);
+      setMessage(`배송중 주문 ${data.count ?? 0}건 불러옴 (${data.date || ""})`);
+      await refreshStatus();
+    } catch (err) {
+      setMessage(err.message || "배송중 불러오기 실패");
+    } finally {
+      setLoadingShippingApi(false);
     }
   };
 
@@ -389,29 +407,6 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
       setMessage(err.message || "전처리 가공 실패");
     } finally {
       setProcessing(false);
-    }
-  };
-
-  const downloadProcessed = async (which) => {
-    try {
-      const res = await fetch(`${API}/amood/download/${which}`, { headers: getAuthHeaders() });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data?.detail || "다운로드 실패");
-      }
-      const blob = await res.blob();
-      const fallback = which === 1 ? "excel1_processed.xlsx" : "excel2_processed.xlsx";
-      const filename = getDownloadFilename(res, fallback);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      setMessage(err.message || "다운로드 실패");
     }
   };
 
@@ -496,33 +491,80 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
     setProcessing(true);
     setMessage("");
     try {
-      const res = await fetch(`${API}/amood/export-shipping`, {
+      const res = await fetch(`${API}/amood/export-shipping?format=json`, {
         method: "POST",
         headers: getAuthHeaders(),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data?.detail || "선적바코드 추출 실패");
-      }
-      const blob = await res.blob();
-      const filename = getDownloadFilename(res, "선적바코드_추출.xlsx");
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-      setMessage("선적바코드 추출 완료");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "선적바코드 인쇄 데이터 생성 실패");
+      const items = (data.rows || []).map((row) => ({
+        title: String(row.Title ?? "").trim(),
+        description: String(row.Description ?? "").trim(),
+        barcodeText: String(row.Code ?? "").trim(),
+      })).filter((item) => item.title || item.description || item.barcodeText);
+      if (!items.length) throw new Error("인쇄할 선적바코드 데이터가 없습니다.");
+      localStorage.setItem("amoodBarcodePrintItems", JSON.stringify({
+        items,
+        fileName: data.filename || "선적바코드_인쇄",
+        createdAt: Date.now(),
+      }));
+      localStorage.setItem("testActiveTab", "amood-barcode");
+      setMessage("선적바코드 인쇄 데이터 전달 완료");
+      if (onOpenTestTab) onOpenTestTab();
     } catch (err) {
-      setMessage(err.message || "선적바코드 추출 실패");
+      setMessage(err.message || "선적바코드 인쇄 준비 실패");
     } finally {
       setProcessing(false);
     }
   };
 
-  const processedReady = !!status?.processed;
+  const transferHapbaeRemaining = async () => {
+    setProcessing(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/amood/hapbae-remaining`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.detail || "합배송 넘기기 실패");
+      }
+      const blob = await res.blob();
+      const filename = getDownloadFilename(res, "아무드_합배송.xlsx");
+      const file = new File([blob], filename, {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      if (onTransferAmoodHapbae) {
+        onTransferAmoodHapbae(file);
+      }
+      const deletedRows = res.headers.get("x-deleted-rows");
+      const remainingRows = res.headers.get("x-remaining-rows");
+      setMessage(`합배송관리로 전달 완료${deletedRows ? ` (삭제 ${deletedRows}행` : ""}${remainingRows ? ` / 남은 ${remainingRows}행` : ""}${deletedRows || remainingRows ? ")" : ""}`);
+    } catch (err) {
+      setMessage(err.message || "합배송 넘기기 실패");
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const issueHbl = async () => {
+    if (!window.confirm("SHIPPING_READYING 주문의 선적바코드를 일괄 발급합니다.\n(바코드 없는 주문에만 발급, 중복 충돌 시 삭제 후 재발급)\n\n진행하시겠습니까?")) return;
+    setHblLoading(true);
+    setHblResult(null);
+    try {
+      const res = await fetch(`${API}/pastelco/issue-hbl`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      setHblResult(data);
+    } catch (err) {
+      setHblResult({ ok: false, error: err.message });
+    } finally {
+      setHblLoading(false);
+    }
+  };
 
   const resetUploads = async () => {
     setResetting(true);
@@ -535,8 +577,8 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "초기화 실패");
       setStatus(data.status || null);
-      setFile1(null);
       setFile2(null);
+      setApiCount(null);
       setScanText("");
       setCurrentInvoice(null);
       setItems([]);
@@ -599,7 +641,7 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
       <div className={styles.pageHeader}>
         <div>
           <h2 className={styles.title}>아무드</h2>
-          <p className={styles.subtitle}>아무드/이지어드민 엑셀 업로드 후 전처리 가공 실행</p>
+          <p className={styles.subtitle}>아무드 API 불러오기 + 이지어드민 엑셀 업로드 후 전처리 가공 실행</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
           {headerExtra}
@@ -609,28 +651,60 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
         </div>
       </div>
       <div className={styles.stack}>
+        {/* 선적바코드 발급 */}
+        <section className={styles.card}>
+          <div className={styles.cardHeader}>
+            <h3 className={styles.cardTitle}>선적바코드 발급</h3>
+          </div>
+          <div className={styles.uploadRow}>
+            <button
+              type="button"
+              className={styles.primaryBtn}
+              onClick={issueHbl}
+              disabled={hblLoading}
+            >
+              {hblLoading ? "발급 중..." : "선적바코드 발급"}
+            </button>
+            {hblResult && (
+              <span style={{ fontSize: "0.85rem", color: hblResult.ok ? "#15803d" : hblResult.issued > 0 ? "#b45309" : "#dc2626" }}>
+                {hblResult.error && !hblResult.issued
+                  ? `오류: ${hblResult.error}`
+                  : `발급 ${hblResult.issued ?? 0}건 / 스킵 ${hblResult.skipped ?? 0}건 / 삭제 ${hblResult.deleted ?? 0}건`}
+                {hblResult.errors?.length > 0 && (
+                  <span style={{ color: "#dc2626", marginLeft: "0.5rem" }}
+                    title={hblResult.errors.join("\n")}>
+                    (오류 {hblResult.errors.length}건 ⚠)
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
+        </section>
+
         {/* ① ② 엑셀 업로드 */}
         <section className={`${styles.card} ${styles.dualCard}`}>
           <div className={styles.dualGrid}>
             <div className={styles.dualItem}>
               <div className={styles.cardHeader}>
-                <h3 className={styles.cardTitle}>① 아무드 엑셀</h3>
+                <h3 className={styles.cardTitle}>① 아무드 (Pastelco API 자동)</h3>
                 {status?.excel1_loaded && (
-                  <span className={styles.pill} style={{ background: "rgba(34,197,94,0.12)", color: "#15803d" }}>업로드됨</span>
+                  <span className={styles.pill} style={{ background: "rgba(34,197,94,0.12)", color: "#15803d" }}>불러옴</span>
+                )}
+                {apiCount !== null && !loadingApi && !loadingShippingApi && (
+                  <span className={styles.pill}>{apiCount}건</span>
                 )}
               </div>
               <div className={styles.uploadRow}>
-                <label className={styles.fileInput} style={{ flex: 1, justifyContent: "flex-start" }}>
-                  <input
-                    key={`file1-${fileInputKey}`}
-                    type="file"
-                    accept=".xlsx,.xlsm"
-                    onChange={(e) => setFile1(e.target.files?.[0] ?? null)}
-                  />
-                  {file1 ? file1.name : "파일 선택"}
-                </label>
-                <button type="button" className={styles.primaryBtn} onClick={uploadExcel1} disabled={loading}>
-                  업로드
+                <button type="button" className={styles.primaryBtn} onClick={loadFromApi} disabled={loadingApi || loadingShippingApi}>
+                  {loadingApi ? "불러오는 중..." : "API에서 불러오기"}
+                </button>
+                <button
+                  type="button"
+                  className={styles.primaryBtn}
+                  onClick={loadFromShippingProcessingToday}
+                  disabled={loadingApi || loadingShippingApi}
+                >
+                  {loadingShippingApi ? "불러오는 중..." : "배송중에서 불러오기"}
                 </button>
               </div>
             </div>
@@ -695,7 +769,7 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
         {/* ④ 전처리 가공 */}
         <section className={styles.card}>
           <div className={styles.cardHeader}>
-            <h3 className={styles.cardTitle}>④ 전처리 가공 / 선적바코드 추출</h3>
+            <h3 className={styles.cardTitle}>④ 전처리 가공 / 선적바코드 인쇄</h3>
           </div>
           <div className={styles.uploadRow}>
             <button
@@ -712,18 +786,16 @@ export default function AmoodBarcodePage({ headerExtra = null }) {
               onClick={exportShipping}
               disabled={processing || !status?.excel1_loaded || !status?.excel2_loaded}
             >
-              {processing ? "추출 중..." : "선적바코드 추출"}
+              {processing ? "인쇄 준비 중..." : "선적바코드 인쇄"}
             </button>
-            {processedReady && (
-              <>
-                <button type="button" className={styles.secondaryBtn} onClick={() => downloadProcessed(1)}>
-                  첫번째 결과 다운로드
-                </button>
-                <button type="button" className={styles.secondaryBtn} onClick={() => downloadProcessed(2)}>
-                  두번째 결과 다운로드
-                </button>
-              </>
-            )}
+            <button
+              type="button"
+              className={styles.secondaryBtn}
+              onClick={transferHapbaeRemaining}
+              disabled={processing || !status?.excel1_loaded || !status?.excel2_loaded}
+            >
+              {processing ? "넘기는 중..." : "합배송 넘기기"}
+            </button>
           </div>
           {message && (
             <div className={styles.statusMsg} style={{

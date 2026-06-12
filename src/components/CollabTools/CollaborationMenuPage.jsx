@@ -3,7 +3,7 @@ import styles from './CollaborationMenuPage.module.css';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import {
   ArrowDownToLine, CheckCircle, ChevronDown, ChevronUp, Clipboard,
-  Database, Download, Eye, FileSpreadsheet, RefreshCw, Save, Upload, XCircle,
+  Database, Download, Eye, FileSpreadsheet, Plus, RefreshCw, Save, Trash2, Upload, XCircle,
 } from 'lucide-react';
 
 const TOOL_TABS = [
@@ -14,6 +14,13 @@ const TOOL_TABS = [
 const DEFAULT_ACCOUNT_PATH = String.raw`C:\Users\ksh29\OneDrive\Desktop\원베\거래처계좌데이터.xlsx`;
 const ACCOUNT_COLUMNS = ['A', 'B', 'C', 'D', 'E', 'F'];
 const SHARED_PASTE_SLOTS = [1, 2, 3, 4, 5];
+const SHARED_PASTE_SLOT_LABELS = {
+  1: '세현',
+  2: '병욱',
+  3: '동수',
+};
+
+const getSharedPasteSlotLabel = (slot) => SHARED_PASTE_SLOT_LABELS[slot] || `${slot}번`;
 
 const formatAmount = (value) =>
   new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 2 }).format(Number(value || 0));
@@ -250,8 +257,9 @@ export default function CollaborationMenuPage() {
         throw new Error(data.detail || '공용 복붙 데이터를 불러오지 못했습니다.');
       }
       setPastedText(data.pasted_text || '');
-      setSharedPasteMeta(data.updated_by ? `${sharedPasteSlot}번 최근 저장: ${data.updated_by}` : `${sharedPasteSlot}번 공용 데이터 없음`);
-      setFeedback('ok', `${sharedPasteSlot}번 공용 복붙 데이터를 불러왔습니다.`);
+      const slotLabel = getSharedPasteSlotLabel(sharedPasteSlot);
+      setSharedPasteMeta(data.updated_by ? `${slotLabel} 최근 저장: ${data.updated_by}` : `${slotLabel} 공용 데이터 없음`);
+      setFeedback('ok', `${slotLabel} 공용 복붙 데이터를 불러왔습니다.`);
     } catch (error) {
       setFeedback('error', error.message || '공용 복붙 데이터를 불러오지 못했습니다.');
     } finally {
@@ -272,8 +280,9 @@ export default function CollaborationMenuPage() {
       if (!res.ok || data.ok === false) {
         throw new Error(data.detail || '공용 복붙 데이터 저장에 실패했습니다.');
       }
-      setSharedPasteMeta(data.updated_by ? `${sharedPasteSlot}번 최근 저장: ${data.updated_by}` : '');
-      setFeedback('ok', `${sharedPasteSlot}번 공용 복붙 데이터를 저장했습니다.`);
+      const slotLabel = getSharedPasteSlotLabel(sharedPasteSlot);
+      setSharedPasteMeta(data.updated_by ? `${slotLabel} 최근 저장: ${data.updated_by}` : '');
+      setFeedback('ok', `${slotLabel} 공용 복붙 데이터를 저장했습니다.`);
     } catch (error) {
       setFeedback('error', error.message || '공용 복붙 데이터 저장에 실패했습니다.');
     } finally {
@@ -374,6 +383,17 @@ export default function CollaborationMenuPage() {
     setAccountRows((prev) =>
       prev.map((row, index) => (index === rowIndex ? { ...row, [key]: value } : row)),
     );
+  };
+
+  const handleAddAccountRow = () => {
+    setAccountRows((prev) => [
+      ...prev,
+      { row_index: `new_${Date.now()}`, A: '', B: '', C: '', D: '', E: '', F: '' },
+    ]);
+  };
+
+  const handleDeleteAccountRow = (rowIndex) => {
+    setAccountRows((prev) => prev.filter((_, index) => index !== rowIndex));
   };
 
   const handleSaveAccountRows = async () => {
@@ -534,7 +554,7 @@ export default function CollaborationMenuPage() {
                     setSharedPasteMeta('');
                   }}
                 >
-                  {slot}번
+                  {getSharedPasteSlotLabel(slot)}
                 </button>
               ))}
             </div>
@@ -607,6 +627,7 @@ export default function CollaborationMenuPage() {
               <table className={styles.table}>
                 <thead>
                   <tr>
+                    <th style={{ width: '32px' }} />
                     {ACCOUNT_COLUMNS.map((column) => (
                       <th key={column}>{column}</th>
                     ))}
@@ -617,6 +638,20 @@ export default function CollaborationMenuPage() {
                     const rowIndex = accountRows.findIndex((item) => item.row_index === row.row_index);
                     return (
                       <tr key={row.row_index ?? rowIndex}>
+                        <td style={{ textAlign: 'center', padding: '0 4px' }}>
+                          <button
+                            type="button"
+                            title="행 삭제"
+                            onClick={() => handleDeleteAccountRow(rowIndex)}
+                            style={{
+                              background: 'none', border: 'none', cursor: 'pointer',
+                              color: 'var(--text-muted)', padding: '2px', lineHeight: 1,
+                              display: 'inline-flex', alignItems: 'center',
+                            }}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </td>
                         {ACCOUNT_COLUMNS.map((column) => (
                           <td key={`${row.row_index ?? rowIndex}-${column}`}>
                             <input
@@ -631,6 +666,11 @@ export default function CollaborationMenuPage() {
                   })}
                 </tbody>
               </table>
+            </div>
+            <div style={{ padding: '0.5rem 0 0.25rem' }}>
+              <button type="button" className={styles.secondaryBtn} onClick={handleAddAccountRow}>
+                <Plus size={13} /> 행 추가
+              </button>
             </div>
           </>
         )}

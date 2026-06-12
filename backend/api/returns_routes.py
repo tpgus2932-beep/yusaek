@@ -506,9 +506,15 @@ def build_returns_router(
             first = items_list[0]
             order_item = first.get("order_item") or {}
 
-            goods_name   = order_item.get("goods_name") or ""
-            option_values = (first.get("exchange_goods_option") or {}).get("option_values") or []
-            option_str   = "/".join(str(v) for v in option_values)
+            goods_name    = order_item.get("goods_name") or first.get("goods_name") or ""
+            option_values = (order_item.get("original_goods_option") or {}).get("option_values") or []
+            option_parts  = []
+            for v in option_values:
+                if isinstance(v, dict):
+                    option_parts.append(str(v.get("value") or v.get("name") or ""))
+                else:
+                    option_parts.append(str(v))
+            option_str = "/".join(p for p in option_parts if p)
             qty          = str(order_item.get("quantity") or 1)
             reason_code  = ex.get("reason_code")
 

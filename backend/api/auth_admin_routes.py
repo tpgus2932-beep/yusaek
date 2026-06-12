@@ -432,4 +432,23 @@ def build_auth_admin_router(
         )
         return {"ok": True, "activity_panel_width": width}
 
+    @router.get("/settings/barcode-label")
+    def get_barcode_label_settings(user: str = Depends(get_current_user)):
+        raw = get_setting(f"barcode_label:{user}") or "{}"
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = {}
+        return {"ok": True, "sizes": data.get("sizes") or {}, "gaps": data.get("gaps") or {}}
+
+    @router.patch("/settings/barcode-label")
+    def set_barcode_label_settings(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        sizes = payload.get("sizes") or {}
+        gaps  = payload.get("gaps")  or {}
+        set_setting(
+            f"barcode_label:{user}",
+            json.dumps({"sizes": sizes, "gaps": gaps}, ensure_ascii=False),
+        )
+        return {"ok": True}
+
     return router

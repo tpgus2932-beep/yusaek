@@ -56,6 +56,10 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [defectMode, setDefectMode] = useState(false);
   const [showDefectList, setShowDefectList] = useState(false);
   const [defectList, setDefectList] = useState([]);
+  const [defectSearchQuery, setDefectSearchQuery] = useState("");
+  const [defectSearchRows, setDefectSearchRows] = useState([]);
+  const [defectSearchLoading, setDefectSearchLoading] = useState(false);
+  const [defectSearchMessage, setDefectSearchMessage] = useState("");
   const [defectRecentCodes, setDefectRecentCodes] = useState([]);
   const [defectBaseHeaders, setDefectBaseHeaders] = useState(["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]);
   const [defectBaseRows, setDefectBaseRows] = useState([]);
@@ -183,6 +187,53 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       pushLog(`불량 등록: ${data.code} (누적 ${data.defect_count})`);
     } catch (err) { pushLog(`불량 등록 실패: ${err.message || ""}`.trim()); }
     finally { setScanText(""); setTimeout(() => scanRef.current?.focus(), 0); }
+  };
+
+  const searchDefectBaseByName = async () => {
+    const query = defectSearchQuery.trim();
+    if (!query) {
+      setDefectSearchRows([]);
+      setDefectSearchMessage("검색어를 입력하세요.");
+      return;
+    }
+    try {
+      setDefectSearchLoading(true);
+      setDefectSearchMessage("");
+      const res = await fetch(`${API}/barcode/defect/search?q=${encodeURIComponent(query)}`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "불량 검색 실패");
+      setDefectSearchRows(data.rows || []);
+      setDefectSearchMessage((data.rows || []).length ? `${data.rows.length}건 검색됨` : "검색 결과가 없습니다.");
+    } catch (err) {
+      setDefectSearchRows([]);
+      setDefectSearchMessage(err.message || "불량 검색 실패");
+    } finally {
+      setDefectSearchLoading(false);
+    }
+  };
+
+  const addDefectFromSearch = async (row) => {
+    const code = row?.code || row?.base_code;
+    if (!code) return;
+    try {
+      const res = await fetch(`${API}/barcode/defect/add`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ code }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "불량 추가 실패");
+      setItems(data.items ?? items);
+      setNextPreview(data.next_preview ?? null);
+      setDefectList(data.defects ?? defectList);
+      setDefectRecentCodes((prev) => [data.code, ...prev.filter((itemCode) => itemCode !== data.code)]);
+      setDefectSearchMessage(`불량 추가 완료: ${row.base_name || data.code}`);
+      pushLog(`불량 검색 추가: ${data.code} ${row.base_name || ""}`.trim());
+    } catch (err) {
+      setDefectSearchMessage(err.message || "불량 추가 실패");
+    }
   };
 
   const handleScan = async () => {
@@ -731,6 +782,38 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 <button className={styles.secondaryBtn} onClick={() => setShowDefectList(false)}>닫기</button>
               </div>
             </div>
+            <div className={styles.uploadRow}>
+              <input
+                value={defectSearchQuery}
+                onChange={(e) => setDefectSearchQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") searchDefectBaseByName(); }}
+                placeholder="G열 상품명 검색"
+                className={styles.searchInput}
+              />
+              <button className={styles.secondaryBtn} onClick={searchDefectBaseByName} disabled={defectSearchLoading}>
+                {defectSearchLoading ? "검색 중..." : "불량 검색"}
+              </button>
+            </div>
+            <div className={styles.modalBody}>
+            {defectSearchMessage && (
+              <div className={styles.statusMsg}>
+                <strong>{defectSearchMessage}</strong>
+              </div>
+            )}
+            {defectSearchRows.length > 0 && (
+              <div className={styles.defectList} style={{ marginBottom: "0.75rem" }}>
+                {defectSearchRows.map((row, idx) => (
+                  <div key={`${row.code}-${idx}`} className={styles.defectLine}>
+                    <span className={styles.defectText}>
+                      {row.base_name}
+                      {row.base_color && <span className={styles.inlineMeta} style={{ marginLeft: "0.4rem" }}>{row.base_color}</span>}
+                      {row.base_code && <span className={styles.inlineMeta} style={{ marginLeft: "0.4rem" }}>{row.base_code}</span>}
+                    </span>
+                    <button className={styles.ghostBtn} onClick={() => addDefectFromSearch(row)}>추가</button>
+                  </div>
+                ))}
+              </div>
+            )}
             {defectList.length === 0 ? (
               <div className={styles.empty}>등록된 불량이 없습니다.</div>
             ) : (
@@ -747,6 +830,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 ))}
               </div>
             )}
+            </div>
           </div>
         </div>
       )}

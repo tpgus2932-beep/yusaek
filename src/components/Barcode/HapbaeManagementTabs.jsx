@@ -8,8 +8,11 @@ const TABS = [
   { key: "jeju-hapbae", label: "제주합배송" },
 ];
 
-export default function HapbaeManagementTabs() {
-  const [activeTab, setActiveTab] = useState("amood-hapbae");
+export default function HapbaeManagementTabs({ transferredAmoodFile = null }) {
+  const [activeTab, setActiveTab] = useState(() => {
+    const savedTab = localStorage.getItem("hapbaeManagementActiveTab");
+    return TABS.some((tab) => tab.key === savedTab) ? savedTab : "amood-hapbae";
+  });
 
   const headerExtra = (
     <div className={styles.tabRow}>
@@ -17,7 +20,10 @@ export default function HapbaeManagementTabs() {
         <button
           key={tab.key}
           className={`${styles.tabBtn} ${activeTab === tab.key ? styles.tabActive : ""}`}
-          onClick={() => setActiveTab(tab.key)}
+          onClick={() => {
+            localStorage.setItem("hapbaeManagementActiveTab", tab.key);
+            setActiveTab(tab.key);
+          }}
         >
           {tab.label}
         </button>
@@ -29,5 +35,5 @@ export default function HapbaeManagementTabs() {
     return <JejuHapbaePage headerExtra={headerExtra} />;
   }
 
-  return <AmoodHapbaePage headerExtra={headerExtra} />;
+  return <AmoodHapbaePage headerExtra={headerExtra} transferredFile={transferredAmoodFile} />;
 }

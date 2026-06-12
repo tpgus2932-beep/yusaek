@@ -281,7 +281,44 @@
 }
 
 .activityItemCompleted {
-  opacity: 0.6;
+  background: #f0fdf4;
+  border: 1.5px solid #86efac;
+  border-left: 5px solid #16a34a;
+  opacity: 0.82;
+}
+
+/* 완료 카드 — 점을 초록 체크로 */
+.activityItemCompleted .activityDot {
+  background: #16a34a;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  position: relative;
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+.activityItemCompleted .activityDot::after {
+  content: '✓';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+/* 완료 카드 — 본문 취소선 + 흐린 색 */
+.activityItemCompleted .activityText {
+  text-decoration: line-through;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+/* 완료 카드 — 메타 더 흐리게 */
+.activityItemCompleted .activityMeta {
+  color: #9ca3af;
 }
 
 .activityDot {
@@ -383,8 +420,23 @@
 .doneBadge,
 .statusDone,
 .completedBadge {
-  background: #dcfce7;
-  color: #166534;
+  background: #16a34a;
+  color: #fff;
+  box-shadow: 0 1px 4px rgba(22, 163, 74, 0.35);
+}
+
+/* 다크모드 */
+[data-theme='dark'] .activityItemCompleted {
+  background: rgba(22, 163, 74, 0.08);
+  border: 1.5px solid rgba(22, 163, 74, 0.4);
+  border-left: 5px solid #16a34a;
+  opacity: 0.75;
+}
+[data-theme='dark'] .activityItemCompleted .activityText {
+  color: #9ca3af;
+}
+[data-theme='dark'] .activityItemCompleted .activityMeta {
+  color: #6b7280;
 }
 
 .statusOpen {

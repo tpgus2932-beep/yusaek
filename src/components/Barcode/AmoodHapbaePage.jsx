@@ -1,11 +1,11 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import styles from "./BarcodePage.module.css";
 import TsvAppendModal from "../Common/TsvAppendModal";
 import { appendTsvToCostBase } from "../../lib/costBase";
 
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
-export default function AmoodHapbaePage({ headerExtra = null }) {
+export default function AmoodHapbaePage({ headerExtra = null, transferredFile = null }) {
   const [file, setFile] = useState(null);
   const [skipHeader, setSkipHeader] = useState(true);
   const [headerCol1, setHeaderCol1] = useState("상품명");
@@ -44,6 +44,11 @@ export default function AmoodHapbaePage({ headerExtra = null }) {
     [conflicts, selectedC]
   );
 
+  useEffect(() => {
+    if (!transferredFile?.file) return;
+    setFile(transferredFile.file);
+    setMessage(`합배송 파일 전달됨: ${transferredFile.file.name}`);
+  }, [transferredFile]);
 
   const fetchCostBaseStatus = useCallback(async () => {
     try {
