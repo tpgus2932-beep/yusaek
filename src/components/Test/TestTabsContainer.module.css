@@ -1,0 +1,50 @@
+.container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+/* ── Tab bar ─────────────────────────────────────── */
+.tabBar {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    padding: 0 1.5rem;
+    border-bottom: 2px solid var(--border-color);
+    background: var(--bg-secondary);
+    flex-shrink: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+.tabBar::-webkit-scrollbar { display: none; }
+
+.tabBtn {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    padding: 0.7rem 1.1rem;
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color 0.12s, border-color 0.12s;
+    font-family: inherit;
+}
+
+.tabBtn:hover {
+    color: var(--text-primary);
+}
+
+.tabBtn.active {
+    color: var(--text-primary);
+    border-bottom-color: var(--accent-black);
+}
+
+/* ── Content ─────────────────────────────────────── */
+.content {
+    flex: 1;
+    overflow-y: auto;
+}

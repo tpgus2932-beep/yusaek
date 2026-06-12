@@ -1,0 +1,192 @@
+.overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 500;
+    padding: 1rem;
+}
+
+.modal {
+    background: #1e1e1e;
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    max-width: 96vw;
+    max-height: 94vh;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.5);
+}
+
+/* ── 툴바 ────────────────────────────────────────────── */
+.toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: #2d2d2d;
+    border-bottom: 1px solid #3a3a3a;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+}
+
+.toolGroup {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+
+.toolDivider {
+    width: 1px;
+    height: 24px;
+    background: #3a3a3a;
+    margin: 0 4px;
+}
+
+.toolBtn {
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    color: #aaa;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.toolBtn:hover { background: #3a3a3a; color: #fff; }
+.toolBtn.active { background: #2563eb; color: #fff; border-color: #1d4ed8; }
+
+.colorBtn {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: transform 0.12s;
+    padding: 0;
+    flex-shrink: 0;
+}
+.colorBtn:hover { transform: scale(1.2); }
+.colorActive { border-color: #fff !important; transform: scale(1.15); box-shadow: 0 0 0 2px #2563eb; }
+
+.strokeBtn {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.12s;
+}
+.strokeBtn:hover { background: #3a3a3a; }
+.strokeBtn.active { background: #3a3a3a; border-color: #555; }
+
+.strokeDot {
+    background: #fff;
+    border-radius: 50%;
+    display: block;
+    min-width: 4px;
+    min-height: 4px;
+}
+
+.undoBtn {
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    color: #aaa;
+    transition: background 0.12s, color 0.12s;
+}
+.undoBtn:hover:not(:disabled) { background: #3a3a3a; color: #fff; }
+.undoBtn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.saveBtn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    border-radius: 7px;
+    padding: 6px 14px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: opacity 0.12s;
+    font-family: inherit;
+}
+.saveBtn:hover { opacity: 0.85; }
+
+.cancelBtn {
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    cursor: pointer;
+    color: #aaa;
+    transition: background 0.12s, color 0.12s;
+}
+.cancelBtn:hover { background: #3a3a3a; color: #fff; }
+
+/* ── 캔버스 ──────────────────────────────────────────── */
+.canvasWrap {
+    flex: 1;
+    overflow: auto;
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-start;
+    background: #111;
+    position: relative;
+}
+
+.canvas {
+    display: block;
+    max-width: 100%;
+    max-height: calc(94vh - 68px);
+    object-fit: contain;
+}
+
+/* 도구별 커서 */
+.cursor_pen    { cursor: crosshair; }
+.cursor_circle { cursor: crosshair; }
+.cursor_rect   { cursor: crosshair; }
+.cursor_line   { cursor: crosshair; }
+.cursor_arrow  { cursor: crosshair; }
+.cursor_text   { cursor: text; }
+
+/* ── 텍스트 입력 ─────────────────────────────────────── */
+.textInputWrap {
+    position: absolute;
+    z-index: 10;
+    transform: translateY(-50%);
+}
+
+.textInput {
+    background: rgba(0,0,0,0.5);
+    border: 1px dashed rgba(255,255,255,0.5);
+    border-radius: 3px;
+    padding: 2px 6px;
+    font-weight: 700;
+    font-family: sans-serif;
+    outline: none;
+    min-width: 120px;
+    white-space: nowrap;
+}
+.textInput::placeholder { color: rgba(255,255,255,0.4); font-size: 0.8em; }
