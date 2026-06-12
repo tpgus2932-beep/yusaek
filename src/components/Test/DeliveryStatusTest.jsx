@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { RefreshCw, Search } from "lucide-react";
+import { RefreshCw, Search, MessageSquare } from "lucide-react";
 import styles from "./TestTabs.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
@@ -26,6 +26,7 @@ export default function DeliveryStatusTest() {
   const [items, setItems] = useState(() => LS.get("dstat_items", []));
   const [llogisResults, setLlogisResults] = useState(() => LS.get("dstat_llogis", {}));
   const [memos, setMemos] = useState(() => LS.get("dstat_memos", {}));
+  const [expandedMemos, setExpandedMemos] = useState(new Set());
   const [loading, setLoading] = useState(false);
   const [llogisLoading, setLlogisLoading] = useState(false);
   const [message, setMessage] = useState(() => LS.get("dstat_message", ""));
@@ -45,6 +46,7 @@ export default function DeliveryStatusTest() {
     setMessage("");
     setItems([]);
     setLlogisResults({});
+    setExpandedMemos(new Set());
     try {
       const res = await fetch(`${API}/return-shipping/ably-shipping`, {
         headers: getAuthHeaders(),
@@ -53,7 +55,6 @@ export default function DeliveryStatusTest() {
       if (!res.ok) throw new Error(data?.detail || "에이블리 조회 실패");
       const newItems = data.items || [];
       setItems(newItems);
-      // 더 이상 존재하지 않는 송장번호의 메모 삭제
       const newInvSet = new Set(newItems.map((i) => i["송장번호"]).filter(Boolean));
       setMemos((prev) => {
         const cleaned = {};
@@ -127,6 +128,14 @@ export default function DeliveryStatusTest() {
     }
   };
 
+  const toggleMemo = (inv) => {
+    setExpandedMemos((prev) => {
+      const next = new Set(prev);
+      next.has(inv) ? next.delete(inv) : next.add(inv);
+      return next;
+    });
+  };
+
   const hasInvoice = items.some((i) => i["송장번호"]);
 
   return (
@@ -143,12 +152,7 @@ export default function DeliveryStatusTest() {
         </div>
 
         <div className={styles.controls}>
-          <button
-            className={styles.refreshBtn}
-            onClick={fetchAbly}
-            disabled={loading}
-            type="button"
-          >
+          <button className={styles.refreshBtn} onClick={fetchAbly} disabled={loading} type="button">
             <RefreshCw size={13} className={loading ? styles.spinning : undefined} />
             에이블리 조회
           </button>
@@ -180,12 +184,7 @@ export default function DeliveryStatusTest() {
             onKeyDown={(e) => e.key === "Enter" && searchSingle()}
             placeholder="송장번호 입력"
           />
-          <button
-            className={styles.refreshBtn}
-            onClick={searchSingle}
-            disabled={singleLoading || !singleInvNo.trim()}
-            type="button"
-          >
+          <button className={styles.refreshBtn} onClick={searchSingle} disabled={singleLoading || !singleInvNo.trim()} type="button">
             <Search size={13} className={singleLoading ? styles.spinning : undefined} />
             조회
           </button>
@@ -223,6 +222,7 @@ export default function DeliveryStatusTest() {
             <table className={styles.table}>
               <thead>
                 <tr>
+                  <th style={{ width: "28px" }}></th>
                   <th>주문번호</th>
                   <th>상품명</th>
                   <th>옵션</th>
@@ -232,67 +232,100 @@ export default function DeliveryStatusTest() {
                   <th>배송상태</th>
                   <th>위치</th>
                   <th>최종스캔일</th>
-                  <th>메모</th>
                 </tr>
               </thead>
               <tbody>
                 {items.map((item, idx) => {
                   const inv = item["송장번호"];
                   const lr = inv ? llogisResults[inv] : null;
+                  const hasMemo = inv && !!memos[inv];
+                  const isExpanded = inv && expandedMemos.has(inv);
                   return (
-                    <tr key={idx}>
-                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{item["주문번호"] || "-"}</td>
-                      <td>{item["상품명"] || "-"}</td>
-                      <td>{item["옵션"] || "-"}</td>
-                      <td>{item["수취인명"] || "-"}</td>
-                      <td style={{ whiteSpace: "nowrap" }}>{formatSentDate(item["발송일"])}</td>
-                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{inv || "-"}</td>
-                      {(() => {
-                        if (!inv) return <><td>-</td><td>-</td><td>-</td></>;
-                        if (llogisLoading && !lr) return <><td colSpan={3} style={{ textAlign: "center" }}>…</td></>;
-                        if (!lr) return <><td>-</td><td>-</td><td>-</td></>;
-                        if (lr.error) return (
-                          <><td colSpan={3} title={lr.error} style={{ color: "#ef4444", cursor: "help" }}>{lr.error}</td></>
-                        );
-                        return (
-                          <>
-                            <td>{lr.status || "-"}</td>
-                            <td>{lr.location || "-"}</td>
-                            <td style={{ whiteSpace: "nowrap" }}>{formatScanDate(lr.scan_date)}</td>
-                          </>
-                        );
-                      })()}
-                      <td>
-                        <input
-                          type="text"
-                          value={inv ? (memos[inv] || "") : ""}
-                          onChange={(e) => {
-                            if (!inv) return;
-                            const val = e.target.value;
-                            setMemos((prev) => {
-                              if (!val) {
-                                const next = { ...prev };
-                                delete next[inv];
-                                return next;
-                              }
-                              return { ...prev, [inv]: val };
-                            });
-                          }}
-                          disabled={!inv}
-                          placeholder={inv ? "메모 입력" : ""}
-                          style={{
-                            width: "140px",
-                            fontSize: "0.8rem",
-                            padding: "2px 6px",
-                            border: "1px solid var(--border-color)",
-                            borderRadius: "var(--radius-sm)",
-                            background: "var(--bg-primary)",
-                            color: "var(--text-primary)",
-                            outline: "none",
-                          }}
-                        />
-                      </td>
-                    </tr>
+                    <React.Fragment key={idx}>
+                      <tr>
+                        <td style={{ textAlign: "center", padding: "0 4px" }}>
+                          {inv ? (
+                            <button
+                              type="button"
+                              onClick={() => toggleMemo(inv)}
+                              title={hasMemo ? memos[inv] : "메모 추가"}
+                              style={{
+                                background: "none",
+                                border: "none",
+                                cursor: "pointer",
+                                padding: "2px",
+                                color: hasMemo ? "var(--accent-blue, #3b82f6)" : "var(--text-muted)",
+                                opacity: hasMemo ? 1 : 0.45,
+                                display: "flex",
+                                alignItems: "center",
+                              }}
+                            >
+                              <MessageSquare size={14} fill={hasMemo ? "currentColor" : "none"} />
+                            </button>
+                          ) : null}
+                        </td>
+                        <td style={{ fontVariantNumeric: "tabular-nums" }}>{item["주문번호"] || "-"}</td>
+                        <td>{item["상품명"] || "-"}</td>
+                        <td>{item["옵션"] || "-"}</td>
+                        <td>{item["수취인명"] || "-"}</td>
+                        <td style={{ whiteSpace: "nowrap" }}>{formatSentDate(item["발송일"])}</td>
+                        <td style={{ fontVariantNumeric: "tabular-nums" }}>{inv || "-"}</td>
+                        {(() => {
+                          if (!inv) return <><td>-</td><td>-</td><td>-</td></>;
+                          if (llogisLoading && !lr) return <><td colSpan={3} style={{ textAlign: "center" }}>…</td></>;
+                          if (!lr) return <><td>-</td><td>-</td><td>-</td></>;
+                          if (lr.error) return (
+                            <><td colSpan={3} title={lr.error} style={{ color: "#ef4444", cursor: "help" }}>{lr.error}</td></>
+                          );
+                          return (
+                            <>
+                              <td>{lr.status || "-"}</td>
+                              <td>{lr.location || "-"}</td>
+                              <td style={{ whiteSpace: "nowrap" }}>{formatScanDate(lr.scan_date)}</td>
+                            </>
+                          );
+                        })()}
+                      </tr>
+                      {isExpanded && (
+                        <tr style={{ background: "var(--bg-secondary)" }}>
+                          <td colSpan={10} style={{ padding: "0.5rem 1rem 0.75rem 2.5rem" }}>
+                            <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.3rem" }}>
+                              메모 — {inv}
+                            </div>
+                            <textarea
+                              value={memos[inv] || ""}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setMemos((prev) => {
+                                  if (!val) {
+                                    const next = { ...prev };
+                                    delete next[inv];
+                                    return next;
+                                  }
+                                  return { ...prev, [inv]: val };
+                                });
+                              }}
+                              placeholder="메모를 입력하세요..."
+                              rows={2}
+                              style={{
+                                width: "100%",
+                                maxWidth: "600px",
+                                fontSize: "0.85rem",
+                                padding: "0.4rem 0.6rem",
+                                border: "1px solid var(--border-color)",
+                                borderRadius: "var(--radius-sm)",
+                                background: "var(--bg-primary)",
+                                color: "var(--text-primary)",
+                                resize: "vertical",
+                                outline: "none",
+                                lineHeight: 1.5,
+                              }}
+                              autoFocus
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
