@@ -18,6 +18,7 @@ import {
     CalendarDays,
     Handshake,
     FlaskConical,
+    TrendingUp,
 } from 'lucide-react';
 import styles from './Sidebar.module.css';
 import ServerStatsModal from '../Admin/ServerStatsModal';
@@ -126,13 +127,22 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     합배송관리
                 </div>
                 )}
-                {!isHidden('test') && (
+{!isHidden('test') && (
                 <div
                     className={`${styles.navItem} ${activeTab === 'test' ? styles.active : ''}`}
                     onClick={() => setActiveTab('test')}
                 >
                     <FlaskConical size={20} />
                     테스트
+                </div>
+                )}
+                {!isHidden('margin-calc') && (
+                <div
+                    className={`${styles.navItem} ${activeTab === 'margin-calc' ? styles.active : ''}`}
+                    onClick={() => setActiveTab('margin-calc')}
+                >
+                    <TrendingUp size={20} />
+                    마진계산
                 </div>
                 )}
 

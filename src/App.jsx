@@ -21,13 +21,15 @@ import CollabPortalPage from './components/Collab/CollabPortalPage';
 import AttendancePage from './components/Attendance/AttendancePage';
 import AttendanceAdminPage from './components/Attendance/AttendanceAdminPage';
 import TestTabs from './components/Test/TestTabs';
+import GuidebookPage from './components/Guidebook/GuidebookPage';
+import AmoodSettlement from './components/AmoodSettlement/AmoodSettlement';
 import { COLLAB_API_BASE } from './lib/api';
 
 
 const KNOWN_TABS = [
   'dashboard', 'barcode', 'returns', 'barcode-product-upload', 'shared-files',
   'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'hapbae-management',
-  'test', 'order', 'admin', 'settings',
+  'test', 'order', 'admin', 'settings', 'margin-calc',
 ];
 
 const App = () => {
@@ -36,6 +38,7 @@ const App = () => {
   const isCollabPortalRoute = pathname === '/collab';
   const isAttendanceRoute = pathname === '/attendance';
   const isAttendanceAdminRoute = pathname === '/attendance-admin';
+  const isGuidebookRoute = pathname === '/guidebook';
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'dashboard');
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [token, setToken] = useState(localStorage.getItem('token'));
@@ -46,6 +49,7 @@ const App = () => {
   const [isAdmin, setIsAdmin] = useState(localStorage.getItem('isAdmin') === 'true');
   const [role, setRole] = useState(localStorage.getItem('role') || 'user');
   const [hiddenTabs, setHiddenTabs] = useState([]);
+  const [amoodHapbaeTransfer, setAmoodHapbaeTransfer] = useState(null);
 
   const isTabAllowed = (tab, adminFlag = isAdmin, hidden = hiddenTabs, userRole = role) => {
     if (!KNOWN_TABS.includes(tab)) return false;
@@ -174,7 +178,7 @@ const App = () => {
 
   // viewer 역할이면 hiddenTabs 무시하고 대시보드만 허용
   const effectiveHiddenTabs = role === 'viewer'
-    ? ['barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'order', 'admin', 'settings', 'hapbae-management', 'test']
+    ? ['barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'order', 'admin', 'settings', 'hapbae-management', 'test', 'margin-calc']
     : hiddenTabs;
 
   const handleLogout = () => {
@@ -193,9 +197,16 @@ const App = () => {
     setHiddenTabs([]);
   };
 
+  const handleAmoodHapbaeTransfer = (file) => {
+    setAmoodHapbaeTransfer({ file, id: Date.now() });
+    localStorage.setItem('hapbaeManagementActiveTab', 'amood-hapbae');
+    setActiveTab('hapbae-management');
+  };
+
   // 출퇴근 페이지 — 로그인 불필요, 최우선 처리
   if (isAttendanceRoute) return <AttendancePage />;
   if (isAttendanceAdminRoute) return <AttendanceAdminPage />;
+  if (isGuidebookRoute) return <GuidebookPage />;
 
   if (!authChecked) {
     if (isMobileKimsungilRequestRoute) {
@@ -255,7 +266,12 @@ const App = () => {
         />
 
         {visibleActiveTab === 'dashboard' && !effectiveHiddenTabs.includes('dashboard') && <Overview currentUser={username} currentUserPhone={phoneNumber} />}
-        {visibleActiveTab === 'barcode' && !effectiveHiddenTabs.includes('barcode') && <BarcodeTabs />}
+        {visibleActiveTab === 'barcode' && !effectiveHiddenTabs.includes('barcode') && (
+          <BarcodeTabs
+            onOpenTestTab={() => setActiveTab('test')}
+            onTransferAmoodHapbae={handleAmoodHapbaeTransfer}
+          />
+        )}
         {visibleActiveTab === 'returns' && !effectiveHiddenTabs.includes('returns') && <ReturnsPage />}
         {visibleActiveTab === 'barcode-product-upload' && !effectiveHiddenTabs.includes('barcode-product-upload') && <ProductUploadPage />}
         {visibleActiveTab === 'shared-files' && !effectiveHiddenTabs.includes('shared-files') && <SharedFilesPage />}
@@ -263,10 +279,13 @@ const App = () => {
         {visibleActiveTab === 'client-schedule' && !effectiveHiddenTabs.includes('client-schedule') && <ClientSchedulePage />}
         {visibleActiveTab === 'sms' && !effectiveHiddenTabs.includes('sms') && <SMSPage />}
         {visibleActiveTab === 'collaboration-menu' && !effectiveHiddenTabs.includes('collaboration-menu') && <CollaborationMenuPage />}
-        {visibleActiveTab === 'hapbae-management' && !effectiveHiddenTabs.includes('hapbae-management') && <HapbaeManagementTabs />}
+        {visibleActiveTab === 'hapbae-management' && !effectiveHiddenTabs.includes('hapbae-management') && (
+          <HapbaeManagementTabs transferredAmoodFile={amoodHapbaeTransfer} />
+        )}
         {visibleActiveTab === 'test' && !effectiveHiddenTabs.includes('test') && <TestTabs />}
         {visibleActiveTab === 'order' && isAdmin && !effectiveHiddenTabs.includes('order') && <OrderPage />}
         {visibleActiveTab === 'admin' && isAdmin && !effectiveHiddenTabs.includes('admin') && <AdminUsers currentUser={username} />}
+        {visibleActiveTab === 'margin-calc' && !effectiveHiddenTabs.includes('margin-calc') && <AmoodSettlement />}
         {visibleActiveTab === 'settings' && (
           <SettingsPage hiddenTabs={hiddenTabs} setHiddenTabs={setHiddenTabs} isAdmin={isAdmin} />
         )}

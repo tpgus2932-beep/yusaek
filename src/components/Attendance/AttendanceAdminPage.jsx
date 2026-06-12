@@ -7,7 +7,6 @@ const todayStr = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
-const FIXED_NAMES = ['효진', '은영', '가희', '영아', '은진', '미진', '정란', '주아'];
 
 export default function AttendanceAdminPage() {
   const [pinAuth, setPinAuth] = useState(false);
@@ -213,6 +212,7 @@ export default function AttendanceAdminPage() {
     const cell = (val, style = '') =>
       `<td style="${BD}${style}">${val ?? ''}</td>`;
     const BLUE = "color:#0000FF;mso-number-format:'0.0'";
+    const exportNames = members.map((m) => m.name);
 
     // 날짜 오름차순 정렬
     const uniqueDates = [...new Set(groupedRecords.map((g) => g.date))].sort();
@@ -232,18 +232,18 @@ export default function AttendanceAdminPage() {
     const empty8 = `<td style="${BD}"></td>`.repeat(8); // B~I (A=날짜 뒤 8칸)
 
     // Row 1: "날짜" + B~I 빈칸 + J열~ 이름
-    const row1 = `<tr>${cell('날짜')}${empty8}${FIXED_NAMES.map((n) => cell(n)).join('')}</tr>`;
+    const row1 = `<tr>${cell('날짜')}${empty8}${exportNames.map((n) => cell(n)).join('')}</tr>`;
 
     // Row 2~: 날짜 + B~I 빈칸 + J열~ 일별 근무시간 (파란색)
     const summaryRows = perDay.map(({ date, map }) =>
-      `<tr>${cell(date)}${empty8}${FIXED_NAMES.map((n) => {
+      `<tr>${cell(date)}${empty8}${exportNames.map((n) => {
         const val = map[n] !== undefined ? fmtDecimalHours(map[n]) : '0.0';
         return cell(val, BLUE);
       }).join('')}</tr>`
     ).join('');
 
     // 빈 구분 행
-    const blankRow = `<tr>${`<td style="${BD}"></td>`.repeat(9 + FIXED_NAMES.length)}</tr>`;
+    const blankRow = `<tr>${`<td style="${BD}"></td>`.repeat(9 + exportNames.length)}</tr>`;
 
     // 상세 헤더
     const detailHeader = `<tr>${['이름', '날짜', '출근', '퇴근', '근무시간'].map((h) => cell(h)).join('')}</tr>`;

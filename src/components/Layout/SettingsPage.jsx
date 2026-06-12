@@ -14,6 +14,7 @@ const menuLabels = {
   "collaboration-menu": "협업메뉴",
   "hapbae-management": "합배송관리",
   test: "테스트",
+  "margin-calc": "마진계산",
   order: "발주",
   admin: "관리자",
 };
@@ -36,6 +37,7 @@ const SettingsPage = ({ hiddenTabs, setHiddenTabs, isAdmin }) => {
       "collaboration-menu",
       "hapbae-management",
       "test",
+      "margin-calc",
     ];
     if (isAdmin) {
       base.push("order", "admin");

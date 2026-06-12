@@ -41,8 +41,16 @@ from api.order_routes import build_order_router
 from api.noye_kimsungil_routes import build_noye_kimsungil_router
 from api.misong_routes import build_misong_router
 from api.sms_routes import build_sms_router
+from api.return_shipping_routes import build_return_shipping_router
+from api.exchange_return_routes import build_exchange_return_router
+from api.pastelco_routes import build_pastelco_router
+from api.ably_minus_routes import build_ably_minus_router
+from api.accident_cargo_routes import build_accident_cargo_router
 from api.collaboration_tools_routes import build_collaboration_tools_router
 from api.attendance_routes import build_attendance_router
+from api.guidebook_routes import build_guidebook_router
+from api.amood_settlement_routes import build_amood_settlement_router
+from api.ably_settlement_routes import build_ably_settlement_router
 from services.easyadmin_product import _content_disposition, _process_easyadmin_product_upload
 from services.returns_utils import (
     ReturnState,
@@ -1153,6 +1161,30 @@ _sms_router, _enqueue_sms_fn = build_sms_router(
 app.include_router(_sms_router)
 
 app.include_router(
+    build_return_shipping_router(
+        get_current_user=_get_current_user,
+    )
+)
+
+app.include_router(
+    build_exchange_return_router(
+        get_current_user=_get_current_user,
+    )
+)
+
+app.include_router(
+    build_pastelco_router(
+        get_current_user=_get_current_user,
+    )
+)
+
+app.include_router(
+    build_ably_minus_router(
+        get_current_user=_get_current_user,
+    )
+)
+
+app.include_router(
     build_collab_router(
         get_current_user=_get_current_user,
         require_admin=_require_admin,
@@ -1273,6 +1305,61 @@ app.include_router(
     )
 )
 
+def _init_accident_invoices():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS accident_invoices (
+            inv_no TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS accident_completed (
+            inv_no TEXT PRIMARY KEY,
+            acper_nm TEXT NOT NULL DEFAULT '',
+            gds_amt TEXT NOT NULL DEFAULT '',
+            agr_amt TEXT NOT NULL DEFAULT '',
+            acd_prgs_sct_cd TEXT NOT NULL DEFAULT '',
+            completed_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_accident_invoices()
+
+
+def _ensure_accident_invoice_memo():
+    conn = _get_shared_db()
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(accident_invoices)").fetchall()]
+    if "memo" not in cols:
+        conn.execute("ALTER TABLE accident_invoices ADD COLUMN memo TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    conn.close()
+
+
+_ensure_accident_invoice_memo()
+
+app.include_router(
+    build_accident_cargo_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+    )
+)
+
+app.include_router(
+    build_guidebook_router(
+        get_db=_get_db,
+        get_current_user=_get_current_user,
+        guidebook_upload_base=BASE_DIR / "uploads" / "guidebook_images",
+    )
+)
+
 def _init_sms_history():
     conn = _get_shared_db()
     conn.execute(
@@ -1299,6 +1386,77 @@ def _init_sms_history():
 
 
 _init_sms_history()
+
+
+def _init_amood_settlement():
+    conn = _get_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS amood_product_costs (
+            product_name TEXT PRIMARY KEY,
+            cost_price INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS amood_order_cache (
+            order_id TEXT PRIMARY KEY,
+            name_origin TEXT,
+            processed_name TEXT,
+            quantity INTEGER,
+            fetched_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS amood_settlement_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_amood_settlement()
+
+
+def _init_ably_settlement():
+    conn = _get_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ably_order_cache (
+            order_id TEXT PRIMARY KEY,
+            name_origin TEXT,
+            processed_name TEXT,
+            quantity INTEGER,
+            fetched_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_ably_settlement()
+
+app.include_router(
+    build_amood_settlement_router(
+        get_current_user=_get_current_user,
+        get_db=_get_db,
+    )
+)
+
+app.include_router(
+    build_ably_settlement_router(
+        get_current_user=_get_current_user,
+        get_db=_get_db,
+    )
+)
 
 
 @app.get("/ping")

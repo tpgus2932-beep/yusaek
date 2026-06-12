@@ -262,8 +262,7 @@ def build_exchange_return_router(*, get_current_user):
                     break
                 for ex in exchanges:
                     rd = ex.get("return_delivery") or {}
-                    if not rd.get("invoice_number"):
-                        continue
+                    invoice = rd.get("invoice_number") or None
                     items_list = ex.get("exchange_items") or []
                     first = items_list[0] if items_list else {}
                     order_item = first.get("order_item") or {}
@@ -273,7 +272,7 @@ def build_exchange_return_router(*, get_current_user):
                         "option_info": order_item.get("option_info") or first.get("option_info") or "",
                         "member_name": (ex.get("member") or {}).get("name") or "",
                         "requested_at": ex.get("requested_at") or "",
-                        "return_invoice": rd["invoice_number"],
+                        "return_invoice": invoice,
                     })
                 if page >= data.get("max_page_number", 1):
                     break
@@ -282,25 +281,26 @@ def build_exchange_return_router(*, get_current_user):
         if not registered:
             return {"items": []}
 
-        try:
-            llogis_token = await _llogis_login()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"llogis 로그인 실패: {e}")
-
-        results = []
-        for item in registered:
+        # 반송장 있는 항목만 llogis 조회
+        has_invoice = [item for item in registered if item["return_invoice"]]
+        if has_invoice:
             try:
-                status = await _llogis_query_status(item["return_invoice"], llogis_token)
-                item.update(status)
+                llogis_token = await _llogis_login()
             except Exception as e:
-                item.update({
-                    "llogis_status": "-",
-                    "llogis_location": "-",
-                    "llogis_scan_date": str(e)[:80],
-                })
-            results.append(item)
+                raise HTTPException(status_code=502, detail=f"llogis 로그인 실패: {e}")
 
-        return {"items": results}
+            for item in has_invoice:
+                try:
+                    status = await _llogis_query_status(item["return_invoice"], llogis_token)
+                    item.update(status)
+                except Exception as e:
+                    item.update({
+                        "llogis_status": "-",
+                        "llogis_location": "-",
+                        "llogis_scan_date": str(e)[:80],
+                    })
+
+        return {"items": registered}
 
     @router.post("/process-one")
     async def process_one(
