@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { RefreshCw, Search, MessageSquare } from "lucide-react";
 import styles from "./TestTabs.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
@@ -25,7 +25,7 @@ const LS = {
 export default function DeliveryStatusTest() {
   const [items, setItems] = useState(() => LS.get("dstat_items", []));
   const [llogisResults, setLlogisResults] = useState(() => LS.get("dstat_llogis", {}));
-  const [memos, setMemos] = useState(() => LS.get("dstat_memos", {}));
+  const [memos, setMemos] = useState({});
   const [expandedMemos, setExpandedMemos] = useState(new Set());
   const [loading, setLoading] = useState(false);
   const [llogisLoading, setLlogisLoading] = useState(false);
@@ -34,12 +34,33 @@ export default function DeliveryStatusTest() {
   const [singleResult, setSingleResult] = useState(() => LS.get("dstat_singleResult", null));
   const [singleLoading, setSingleLoading] = useState(false);
 
+  // 메모 저장 디바운스 타이머 {invoice_no: timeoutId}
+  const debounceRef = useRef({});
+
   useEffect(() => { LS.set("dstat_items", items); }, [items]);
   useEffect(() => { LS.set("dstat_llogis", llogisResults); }, [llogisResults]);
-  useEffect(() => { LS.set("dstat_memos", memos); }, [memos]);
   useEffect(() => { LS.set("dstat_message", message); }, [message]);
   useEffect(() => { LS.set("dstat_singleInv", singleInvNo); }, [singleInvNo]);
   useEffect(() => { LS.set("dstat_singleResult", singleResult); }, [singleResult]);
+
+  // 컴포넌트 마운트 시 서버에서 메모 로드
+  useEffect(() => {
+    fetch(`${API}/return-shipping/memos`, { headers: getAuthHeaders() })
+      .then((r) => r.json())
+      .catch(() => ({}))
+      .then((data) => setMemos(data || {}));
+  }, []);
+
+  const saveMemoToServer = (inv, val) => {
+    clearTimeout(debounceRef.current[inv]);
+    debounceRef.current[inv] = setTimeout(() => {
+      fetch(`${API}/return-shipping/memo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ invoice_no: inv, memo: val }),
+      }).catch(() => {});
+    }, 400);
+  };
 
   const fetchAbly = async () => {
     setLoading(true);
@@ -55,14 +76,25 @@ export default function DeliveryStatusTest() {
       if (!res.ok) throw new Error(data?.detail || "에이블리 조회 실패");
       const newItems = data.items || [];
       setItems(newItems);
-      const newInvSet = new Set(newItems.map((i) => i["송장번호"]).filter(Boolean));
-      setMemos((prev) => {
-        const cleaned = {};
-        for (const [inv, memo] of Object.entries(prev)) {
-          if (newInvSet.has(inv)) cleaned[inv] = memo;
-        }
-        return cleaned;
-      });
+
+      // 목록에 없는 송장번호 메모 서버에서도 삭제
+      const activeInvoices = newItems.map((i) => i["송장번호"]).filter(Boolean);
+      if (activeInvoices.length > 0) {
+        fetch(`${API}/return-shipping/memos/cleanup`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+          body: JSON.stringify({ invoice_nos: activeInvoices }),
+        }).catch(() => {});
+        setMemos((prev) => {
+          const invSet = new Set(activeInvoices);
+          const cleaned = {};
+          for (const [k, v] of Object.entries(prev)) {
+            if (invSet.has(k)) cleaned[k] = v;
+          }
+          return cleaned;
+        });
+      }
+
       setMessage(`조회 완료: ${newItems.length}건`);
     } catch (err) {
       setMessage(err.message || "에이블리 조회 실패");
@@ -304,6 +336,7 @@ export default function DeliveryStatusTest() {
                                   }
                                   return { ...prev, [inv]: val };
                                 });
+                                saveMemoToServer(inv, val);
                               }}
                               placeholder="메모를 입력하세요..."
                               rows={2}

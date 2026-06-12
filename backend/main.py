@@ -823,6 +823,24 @@ def _init_return_saved_states():
 _init_return_saved_states()
 
 
+def _init_delivery_memos():
+    conn = _get_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS delivery_memos (
+            invoice_no TEXT PRIMARY KEY,
+            memo TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_delivery_memos()
+
+
 def _init_client_schedule_db():
     conn = _get_shared_db()
     conn.execute(
@@ -1163,6 +1181,7 @@ app.include_router(_sms_router)
 app.include_router(
     build_return_shipping_router(
         get_current_user=_get_current_user,
+        get_db=_get_db,
     )
 )
 

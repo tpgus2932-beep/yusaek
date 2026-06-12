@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import httpx
+
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 ABLY_BASE = "https://api.a-bly.com"
@@ -26,7 +27,7 @@ _CANCEL_REASON = {
 }
 
 
-def build_return_shipping_router(*, get_current_user):
+def build_return_shipping_router(*, get_current_user, get_db):
     router = APIRouter(prefix="/return-shipping")
 
     async def _ably_login() -> str:
@@ -417,5 +418,46 @@ def build_return_shipping_router(*, get_current_user):
             "scan_date": latest.get("rgstYmd") or "-",
             "returns": returns,
         }
+
+    @router.get("/memos")
+    async def get_memos(user=Depends(get_current_user)):
+        conn = get_db()
+        rows = conn.execute("SELECT invoice_no, memo FROM delivery_memos").fetchall()
+        conn.close()
+        return {row["invoice_no"]: row["memo"] for row in rows}
+
+    @router.post("/memo")
+    async def upsert_memo(payload: dict = Body(...), user=Depends(get_current_user)):
+        invoice_no = (payload.get("invoice_no") or "").strip()
+        memo = (payload.get("memo") or "").strip()
+        if not invoice_no:
+            raise HTTPException(status_code=400, detail="invoice_no 필요")
+        conn = get_db()
+        if memo:
+            conn.execute(
+                "INSERT INTO delivery_memos (invoice_no, memo, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(invoice_no) DO UPDATE SET memo=excluded.memo, updated_at=excluded.updated_at",
+                (invoice_no, memo, datetime.now(timezone.utc).isoformat()),
+            )
+        else:
+            conn.execute("DELETE FROM delivery_memos WHERE invoice_no = ?", (invoice_no,))
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+
+    @router.post("/memos/cleanup")
+    async def cleanup_memos(payload: dict = Body(...), user=Depends(get_current_user)):
+        active_invoices: list[str] = payload.get("invoice_nos") or []
+        if not active_invoices:
+            return {"deleted": 0}
+        conn = get_db()
+        placeholders = ",".join("?" * len(active_invoices))
+        cur = conn.execute(
+            f"DELETE FROM delivery_memos WHERE invoice_no NOT IN ({placeholders})",
+            active_invoices,
+        )
+        conn.commit()
+        conn.close()
+        return {"deleted": cur.rowcount}
 
     return router
