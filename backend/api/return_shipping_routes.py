@@ -325,29 +325,22 @@ def build_return_shipping_router(*, get_current_user):
         }
 
         all_items = []
-        page = 1
         async with httpx.AsyncClient(timeout=30.0) as client:
-            while True:
-                res = await client.get(
-                    f"{ABLY_BASE}/seller/order_items/",
-                    headers=headers,
-                    params={
-                        "processing_status[]": 3,
-                        "processing_sub_status[]": 0,
-                        "order": "-goods_sent_at",
-                        "delivery_type[]": ["standard", "today", "combine", "reserved"],
-                        "per_page": 30,
-                        "sponsorship_type": -1,
-                        "page": page,
-                    },
-                )
-                if res.status_code != 200:
-                    break
-                data = res.json()
-                items = data.get("order_items", [])
-                if not items:
-                    break
-                for item in items:
+            res = await client.get(
+                f"{ABLY_BASE}/seller/order_items/",
+                headers=headers,
+                params={
+                    "processing_status[]": 3,
+                    "processing_sub_status[]": 0,
+                    "order": "goods_sent_at",
+                    "delivery_type[]": ["standard", "today", "combine", "reserved"],
+                    "per_page": 100,
+                    "sponsorship_type": -1,
+                    "page": 1,
+                },
+            )
+            if res.status_code == 200:
+                for item in res.json().get("order_items", []):
                     all_items.append({
                         "상품명": item.get("goods_name"),
                         "옵션": item.get("option_info"),
@@ -357,9 +350,6 @@ def build_return_shipping_router(*, get_current_user):
                         "발송일": item.get("goods_sent_at"),
                         "수량": item.get("ea") or 1,
                     })
-                if page >= data.get("max_page_number", 1):
-                    break
-                page += 1
 
         return {"items": all_items, "total": len(all_items)}
 
