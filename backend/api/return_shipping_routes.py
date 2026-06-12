@@ -309,6 +309,60 @@ def build_return_shipping_router(*, get_current_user):
 
         return {"results": results}
 
+    @router.get("/ably-shipping")
+    async def get_ably_shipping(user=Depends(get_current_user)):
+        try:
+            token = await _ably_login()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        headers = {
+            "Authorization": f"JWT {token}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+            "Origin": "https://my.a-bly.com",
+            "Referer": "https://my.a-bly.com/",
+        }
+
+        all_items = []
+        page = 1
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while True:
+                res = await client.get(
+                    f"{ABLY_BASE}/seller/order_items/",
+                    headers=headers,
+                    params={
+                        "processing_status[]": 3,
+                        "processing_sub_status[]": 0,
+                        "order": "-goods_sent_at",
+                        "delivery_type[]": ["standard", "today", "combine", "reserved"],
+                        "per_page": 30,
+                        "sponsorship_type": -1,
+                        "page": page,
+                    },
+                )
+                if res.status_code != 200:
+                    break
+                data = res.json()
+                items = data.get("order_items", [])
+                if not items:
+                    break
+                for item in items:
+                    all_items.append({
+                        "상품명": item.get("goods_name"),
+                        "옵션": item.get("option_info"),
+                        "주문번호": item.get("order_sno") or item.get("sno"),
+                        "송장번호": item.get("invoice"),
+                        "수취인명": item.get("receiver_name"),
+                        "발송일": item.get("goods_sent_at"),
+                        "수량": item.get("ea") or 1,
+                    })
+                if page >= data.get("max_page_number", 1):
+                    break
+                page += 1
+
+        return {"items": all_items, "total": len(all_items)}
+
     @router.get("/llogis-detail")
     async def llogis_detail(inv_no: str, user=Depends(get_current_user)):
         token = await _llogis_login()
