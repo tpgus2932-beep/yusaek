@@ -2,6 +2,8 @@ import asyncio
 import tempfile
 import traceback
 import uuid
+import warnings
+warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -14,10 +16,17 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, Upl
 from openpyxl import load_workbook
 from api.amood_hapbae import SHARED_COST_BASE_PATH
 from services.easyadmin_product import process_easyadmin_product_from_api
+from services.pastelco_utils import pastelco_login
 
 _ABLY_BASE     = "https://api.a-bly.com"
 _ABLY_EMAIL    = "eostm1997@naver.com"
 _ABLY_PASSWORD = "!Glqgkqdldi1126"
+
+_EZADMIN_BASE        = "https://ga80.ezadmin.co.kr"
+_EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+
+_WONKA_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스유.xlsx")
+_WONKA_OPTION_COL = 11  # K열 (1-indexed): 옵션번호
 
 
 def build_barcode_router(
@@ -432,6 +441,72 @@ def build_barcode_router(
         buf.close()
         return data
 
+    def _copy_original_mapping(mapping) -> dict:
+        return {
+            invoice: {code: int(qty or 0) for code, qty in codes.items()}
+            for invoice, codes in (mapping or {}).items()
+        }
+
+    def _is_invoice_completed(state, invoice: str) -> bool:
+        codes = (state.get("mapping") or {}).get(invoice) or {}
+        return bool(codes) and all(int(remain or 0) == 0 for remain in codes.values())
+
+    def _build_completed_xls_bytes(state) -> tuple[bytes, int]:
+        original_mapping = state.get("original_mapping") or {}
+        details = state.get("details") or {}
+        invoice_order = state.get("invoice_order") or {}
+        invoice_seq = state.get("invoice_seq") or list(original_mapping.keys())
+
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("completed")
+        header_style = xlwt.easyxf("font: bold on; align: horiz center;")
+        headers = ["송장번호", "상품코드", "상품명", "옵션", "수량"]
+        for col_idx, header in enumerate(headers):
+            sheet.write(0, col_idx, header, header_style)
+
+        row_idx = 1
+        completed_count = 0
+        seen = set()
+        invoice_seq_set = set(invoice_seq)
+        ordered_invoices = list(invoice_seq) + [
+            invoice for invoice in original_mapping.keys() if invoice not in invoice_seq_set
+        ]
+        for invoice in ordered_invoices:
+            if invoice in seen:
+                continue
+            seen.add(invoice)
+            if not _is_invoice_completed(state, invoice):
+                continue
+            completed_count += 1
+            codes = invoice_order.get(invoice) or list((original_mapping.get(invoice) or {}).keys())
+            written_codes = set()
+            for code in codes:
+                if code in written_codes:
+                    continue
+                written_codes.add(code)
+                qty = int((original_mapping.get(invoice) or {}).get(code, 0) or 0)
+                if qty <= 0:
+                    continue
+                det = (details.get(invoice) or {}).get(code, {})
+                sheet.write(row_idx, 0, str(invoice))
+                sheet.write(row_idx, 1, str(code))
+                sheet.write(row_idx, 2, det.get("name", "") or "")
+                sheet.write(row_idx, 3, det.get("option", "") or "")
+                sheet.write(row_idx, 4, qty)
+                row_idx += 1
+
+        sheet.col(0).width = 22 * 256
+        sheet.col(1).width = 18 * 256
+        sheet.col(2).width = 36 * 256
+        sheet.col(3).width = 36 * 256
+        sheet.col(4).width = 10 * 256
+        buf = tempfile.SpooledTemporaryFile()
+        book.save(buf)
+        buf.seek(0)
+        data = buf.read()
+        buf.close()
+        return data, completed_count
+
     @router.post("/barcode/upload")
     async def barcode_upload(file: UploadFile = File(...), user: str = Depends(get_current_user)):
         name = (file.filename or "").lower()
@@ -462,6 +537,7 @@ def build_barcode_router(
                 "loaded": True,
                 "processed_path": str(processed_path) if processed_path else None,
                 "mapping": mapping,
+                "original_mapping": _copy_original_mapping(mapping),
                 "details": details,
                 "runs": runs,
                 "invoice_order": invoice_order,
@@ -952,6 +1028,95 @@ def build_barcode_router(
             headers=headers,
         )
 
+    @router.post("/barcode/defect/export-to-ezadmin")
+    async def defect_export_to_ezadmin(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        defect_counts = get_shared_defect_counts()
+        if not defect_counts:
+            return {"ok": False, "error": "불량 목록이 비어 있습니다."}
+
+        xls_bytes = _build_defect_xls_bytes()
+        cookies = {"PHPSESSID": phpsessid}
+        ez_headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://ga80.ezadmin.co.kr/template40.htm?template=I210",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        base_url = f"{_EZADMIN_BASE}/function.htm"
+        ts_ms = str(int(datetime.now().timestamp() * 1000))
+
+        try:
+            async with httpx.AsyncClient(timeout=120.0, verify=False, follow_redirects=True) as client:
+                # Step 1: XLS 업로드 (응답이 JSON이 아닐 수 있으므로 상태코드만 확인)
+                upload_r = await client.post(
+                    base_url,
+                    data={"template": "I200", "action": "upload_new"},
+                    files={"_file": (f"defects_work_{ts_ms}.xls", xls_bytes, "application/vnd.ms-excel")},
+                    cookies=cookies,
+                    headers=ez_headers,
+                )
+                if upload_r.status_code >= 400:
+                    return {"ok": False, "error": f"업로드 실패 (HTTP {upload_r.status_code})"}
+
+                # Step 2: 미리보기 확인
+                preview_r = await client.post(
+                    base_url,
+                    data={
+                        "_search": "false", "nd": ts_ms,
+                        "rows": "99999", "page": "1", "sidx": "", "sord": "asc",
+                        "template": "I200", "action": "load_template_data_new",
+                    },
+                    cookies=cookies,
+                    headers=ez_headers,
+                )
+                try:
+                    preview_r.json()
+                except Exception:
+                    return {"ok": False, "need_session": True}
+
+                # Step 3: 출고처리 실행
+                time_flag = datetime.now().strftime("%a %b %d %Y %H:%M:%S GMT+0900 (한국 표준시)")
+                apply_r = await client.post(
+                    base_url,
+                    data={
+                        "template": "I200", "action": "apply_new",
+                        "bad": "0", "type": "out",
+                        "move_warehouse": "0", "save_stock": "0",
+                        "stock_tag": "", "timeFlag": time_flag,
+                    },
+                    cookies=cookies,
+                    headers=ez_headers,
+                )
+                try:
+                    apply_r.json()
+                except Exception:
+                    return {"ok": False, "error": "출고처리 응답 파싱 실패"}
+
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        return {"ok": True, "count": len(defect_counts)}
+
+    @router.get("/barcode/completed/export-xls")
+    def export_completed_xls(user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
+        if not state["loaded"]:
+            raise HTTPException(status_code=400, detail="Upload barcode data first")
+
+        content, completed_count = _build_completed_xls_bytes(state)
+        if completed_count <= 0:
+            raise HTTPException(status_code=400, detail="다운로드할 완료목록이 없습니다")
+
+        filename = f"completed_products_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xls"
+        headers = {"Content-Disposition": content_disposition(filename)}
+        return Response(content=content, media_type="application/vnd.ms-excel", headers=headers)
+
     @router.get("/barcode/defect/base")
     def get_defect_base(user: str = Depends(get_current_user)):
         headers, rows = _read_defect_base_table()
@@ -1035,5 +1200,515 @@ def build_barcode_router(
             "current_next": _get_first_remaining_item(state, inv),
             "next_preview": _get_next_item_preview(state, inv),
         }
+
+    @router.post("/barcode/defect/ochuul-minus")
+    async def defect_ochuul_minus(user: str = Depends(get_current_user)):
+        """불량 목록 기준으로 Ably 오출 재고 차감."""
+        defect_counts = get_shared_defect_counts()
+        if not defect_counts:
+            return {"ok": True, "matched": 0, "details": [], "message": "불량 목록이 없습니다."}
+
+        if not _WONKA_PATH.exists():
+            raise HTTPException(status_code=404,
+                detail=f"원가베이스 파일을 찾을 수 없습니다: {_WONKA_PATH}")
+
+        code_to_sno: dict[str, int] = {}
+        wb = load_workbook(_WONKA_PATH, data_only=True)
+        try:
+            ws = wb.active
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                a_val = str(row[0] or "").strip()
+                k_val = row[_WONKA_OPTION_COL - 1] if len(row) >= _WONKA_OPTION_COL else None
+                if not a_val or k_val is None:
+                    continue
+                normalized = normalize_to_yusas(a_val) or a_val
+                try:
+                    code_to_sno[normalized] = int(k_val)
+                except (ValueError, TypeError):
+                    pass
+        finally:
+            wb.close()
+
+        sno_to_ea: dict[int, int] = {}
+        for code, count in defect_counts.items():
+            sno = code_to_sno.get(code)
+            if sno and count > 0:
+                sno_to_ea[sno] = sno_to_ea.get(sno, 0) + count
+
+        if not sno_to_ea:
+            return {"ok": True, "matched": 0, "details": [],
+                    "message": "매칭된 옵션이 없습니다. 원가베이스 K열을 확인하세요."}
+
+        try:
+            token = await pastelco_login()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        ably_base = "https://api.a-bly.com"
+        my_headers = {
+            "Authorization": f"JWT {token}", "Accept": "application/json",
+            "Origin": "https://my.a-bly.com", "Referer": "https://my.a-bly.com/",
+            "User-Agent": "Mozilla/5.0",
+        }
+        admin_headers = {
+            "Authorization": f"JWT {token}", "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": "https://seller-admin.a-bly.com",
+            "Referer": "https://seller-admin.a-bly.com/",
+            "User-Agent": "Mozilla/5.0",
+        }
+
+        all_opts = []
+        page = 1
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while True:
+                res = await client.get(
+                    f"{ably_base}/seller/today-delivery-goods-options/",
+                    headers=my_headers,
+                    params={"keyword_type": "goods_name", "current_page": page, "per_page": 50},
+                )
+                if res.status_code != 200:
+                    break
+                data = res.json()
+                opts = data.get("data", [])
+                if not opts:
+                    break
+                all_opts.extend(opts)
+                if page >= data.get("max_page_number", 1):
+                    break
+                page += 1
+
+        updates = []
+        for opt in all_opts:
+            sno = opt.get("sno")
+            if sno not in sno_to_ea:
+                continue
+            ea = sno_to_ea[sno]
+            current = int(opt.get("stock") or 0)
+            new_stock = max(0, current - ea)
+            updates.append({
+                "sno": sno,
+                "stock_sync_code": str(opt.get("stock_sync_code") or ""),
+                "delivery_type": opt.get("delivery_type", "today"),
+                "stock": new_stock,
+                "safety_stock": int(opt.get("safety_stock") or 0),
+                "use_stock": bool(opt.get("use_stock", False)),
+                "is_display": bool(opt.get("is_display", True)),
+                "_goods_name": opt.get("goods_name", ""),
+                "_option_name": opt.get("option_name", ""),
+                "_ea_minus": ea,
+                "_prev_stock": current,
+            })
+
+        if updates:
+            patch_payload = [{k: v for k, v in u.items() if not k.startswith("_")} for u in updates]
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                res = await client.patch(
+                    f"{ably_base}/seller/today-delivery-goods-options/bulk-update/",
+                    headers=admin_headers,
+                    json={"options": patch_payload},
+                )
+            if res.status_code not in (200, 201, 204):
+                raise HTTPException(status_code=502,
+                    detail=f"bulk-update 실패 (HTTP {res.status_code}): {res.text[:300]}")
+
+        return {"ok": True, "matched": len(updates), "details": updates}
+
+    @router.get("/ezadmin/session")
+    def ezadmin_session_status(user: str = Depends(get_current_user)):
+        phpsessid = get_setting(_EZADMIN_SESSION_KEY) or ""
+        return {"ok": True, "has_session": bool(phpsessid.strip()), "phpsessid": phpsessid}
+
+    @router.post("/ezadmin/session")
+    def save_ezadmin_session(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        phpsessid = str(payload.get("phpsessid") or "").strip()
+        if not phpsessid:
+            raise HTTPException(status_code=400, detail="phpsessid is required")
+        set_setting(_EZADMIN_SESSION_KEY, phpsessid)
+        return {"ok": True}
+
+    @router.post("/barcode/incoming/upload-from-ezadmin")
+    async def incoming_upload_from_ezadmin(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        from io import BytesIO
+
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        today = str(payload.get("date") or datetime.now().strftime("%Y-%m-%d"))
+        cookies = {"PHPSESSID": phpsessid}
+
+        _ez_client_kwargs = {"timeout": 20.0, "verify": False, "follow_redirects": True}
+
+        # 1) 전표 목록 조회
+        try:
+            async with httpx.AsyncClient(**_ez_client_kwargs) as client:
+                r = await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data={
+                        "_search": "false",
+                        "nd": str(int(datetime.now().timestamp() * 1000)),
+                        "rows": "9999",
+                        "page": "1",
+                        "sidx": "",
+                        "sord": "asc",
+                        "template": "IM00",
+                        "action": "get_IM00_grid",
+                        "par": (
+                            "template=IM00&action=&page_code=IM00&search=1"
+                            "&_sort=&sort_order=&date_type=crdate"
+                            f"&start_date={today}&end_date={today}"
+                            "&date_period_sel=0&query_option=title&query_str=&req_status=0"
+                        ),
+                    },
+                    cookies=cookies,
+                )
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"EZAdmin 연결 실패: {exc}")
+
+        try:
+            obj = r.json()
+        except Exception:
+            return {"ok": False, "need_session": True}
+
+        if "rows" not in obj:
+            return {"ok": False, "need_session": True}
+
+        sheet_list = [
+            str(row["cell"]["sheet"])
+            for row in obj.get("rows", [])
+            if row.get("cell", {}).get("sheet")
+        ]
+        if not sheet_list:
+            return {"ok": False, "need_session": False, "detail": f"{today} 전표가 없습니다."}
+
+        # 2) 다운로드 작업 등록
+        par = (
+            "template=IM00&action=save_file_IM00&filename=&page_code=IM10_file_2"
+            f"&sheet_list={','.join(sheet_list)}&download_type=1&select_code=IM00_file"
+            f"&date_type=crdate&start_date={today}&end_date={today}&date_period_sel="
+            "&multi_supply_group=undefined&multi_supply=undefined&str_supply_code=undefined"
+            "&sub_domain_seq=undefined&req_status=0&query_option=title&query_str=&readonly=T"
+        )
+        try:
+            async with httpx.AsyncClient(**_ez_client_kwargs) as client:
+                await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data={
+                        "template": "download",
+                        "action": "ins_download_worklist",
+                        "work_template": "IM00",
+                        "work_func": "save_file_IM00",
+                        "par": par,
+                    },
+                    headers={"X-Requested-With": "XMLHttpRequest"},
+                    cookies=cookies,
+                )
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"다운로드 작업 등록 실패: {exc}")
+
+        # 3) BL30 폴링 (최대 30회 × 2초)
+        file_url = None
+        for _ in range(30):
+            await asyncio.sleep(2)
+            try:
+                async with httpx.AsyncClient(**_ez_client_kwargs) as client:
+                    r = await client.post(
+                        f"{_EZADMIN_BASE}/function.htm",
+                        data={
+                            "_search": "false",
+                            "nd": str(int(datetime.now().timestamp() * 1000)),
+                            "rows": "300",
+                            "page": "1",
+                            "sidx": "",
+                            "sord": "asc",
+                            "template": "BL30",
+                            "action": "grid_BL30",
+                            "par": (
+                                "template=BL30&action=&bck_search="
+                                f"&start_date={today}&start_hour=00%3A00%3A00"
+                                f"&end_date={today}&end_hour=23%3A59%3A59"
+                                "&date_period_sel=0"
+                            ),
+                        },
+                        cookies=cookies,
+                    )
+                try:
+                    bl = r.json()
+                except Exception:
+                    return {"ok": False, "need_session": True}
+                if "rows" not in bl:
+                    return {"ok": False, "need_session": True}
+                for row in bl.get("rows", []):
+                    cell = row.get("cell", {})
+                    if cell.get("template") == "입고요청전표2" and cell.get("status") == "완료":
+                        file_url = cell.get("file_name")
+                        break
+                if file_url:
+                    break
+            except Exception:
+                continue
+
+        if not file_url:
+            return {"ok": False, "need_session": False, "detail": "완료된 다운로드 파일을 찾지 못했습니다."}
+
+        # 4) 파일 다운로드 & 파싱
+        try:
+            async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+                r = await client.get(file_url, cookies=cookies)
+            r.raise_for_status()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"파일 다운로드 실패: {exc}")
+
+        suffix = ".xls"
+        tmp_path = Path(tempfile.gettempdir()) / f"yusaek_ezadmin_incoming_{uuid.uuid4().hex}{suffix}"
+        tmp_path.write_bytes(r.content)
+        try:
+            wb, ws = load_excel_any(tmp_path)
+            counts = Counter()
+            for row_num in range(1, ws.max_row + 1):
+                code = normalize_to_yusas(ws.cell(row_num, 1).value)
+                qty = to_int(ws.cell(row_num, 2).value, default=0)
+                if code and qty > 0:
+                    counts[code] += qty
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"파일 파싱 실패: {exc}")
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        set_shared_incoming_counts(dict(counts))
+        return {"ok": True, "codes": len(counts), "total_qty": sum(counts.values())}
+
+    @router.post("/barcode/incoming/raw-file-from-ezadmin")
+    async def incoming_raw_file_from_ezadmin(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        today = str(payload.get("date") or datetime.now().strftime("%Y-%m-%d"))
+        cookies = {"PHPSESSID": phpsessid}
+        _kw = {"timeout": 20.0, "verify": False, "follow_redirects": True}
+
+        try:
+            async with httpx.AsyncClient(**_kw) as client:
+                r = await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data={
+                        "_search": "false",
+                        "nd": str(int(datetime.now().timestamp() * 1000)),
+                        "rows": "9999", "page": "1", "sidx": "", "sord": "asc",
+                        "template": "IM00", "action": "get_IM00_grid",
+                        "par": (
+                            "template=IM00&action=&page_code=IM00&search=1"
+                            "&_sort=&sort_order=&date_type=crdate"
+                            f"&start_date={today}&end_date={today}"
+                            "&date_period_sel=0&query_option=title&query_str=&req_status=0"
+                        ),
+                    },
+                    cookies=cookies,
+                )
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        try:
+            obj = r.json()
+        except Exception:
+            return {"ok": False, "need_session": True}
+
+        if "rows" not in obj:
+            return {"ok": False, "need_session": True}
+
+        sheet_list = [
+            str(row["cell"]["sheet"])
+            for row in obj.get("rows", [])
+            if row.get("cell", {}).get("sheet")
+        ]
+        if not sheet_list:
+            return {"ok": False, "error": f"{today} 전표가 없습니다."}
+
+        par = (
+            "template=IM00&action=save_file_IM00&filename=&page_code=IM10_file_2"
+            f"&sheet_list={','.join(sheet_list)}&download_type=1&select_code=IM00_file"
+            f"&date_type=crdate&start_date={today}&end_date={today}&date_period_sel="
+            "&multi_supply_group=undefined&multi_supply=undefined&str_supply_code=undefined"
+            "&sub_domain_seq=undefined&req_status=0&query_option=title&query_str=&readonly=T"
+        )
+        try:
+            async with httpx.AsyncClient(**_kw) as client:
+                await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data={
+                        "template": "download", "action": "ins_download_worklist",
+                        "work_template": "IM00", "work_func": "save_file_IM00", "par": par,
+                    },
+                    headers={"X-Requested-With": "XMLHttpRequest"},
+                    cookies=cookies,
+                )
+        except Exception as exc:
+            return {"ok": False, "error": f"다운로드 작업 등록 실패: {type(exc).__name__}: {exc}"}
+
+        file_url = None
+        for _ in range(30):
+            await asyncio.sleep(2)
+            try:
+                async with httpx.AsyncClient(**_kw) as client:
+                    r = await client.post(
+                        f"{_EZADMIN_BASE}/function.htm",
+                        data={
+                            "_search": "false",
+                            "nd": str(int(datetime.now().timestamp() * 1000)),
+                            "rows": "300", "page": "1", "sidx": "", "sord": "asc",
+                            "template": "BL30", "action": "grid_BL30",
+                            "par": (
+                                "template=BL30&action=&bck_search="
+                                f"&start_date={today}&start_hour=00%3A00%3A00"
+                                f"&end_date={today}&end_hour=23%3A59%3A59"
+                                "&date_period_sel=0"
+                            ),
+                        },
+                        cookies=cookies,
+                    )
+                try:
+                    bl = r.json()
+                except Exception:
+                    return {"ok": False, "need_session": True}
+                if "rows" not in bl:
+                    return {"ok": False, "need_session": True}
+                for row in bl.get("rows", []):
+                    cell = row.get("cell", {})
+                    if cell.get("template") == "입고요청전표2" and cell.get("status") == "완료":
+                        file_url = cell.get("file_name")
+                        break
+                if file_url:
+                    break
+            except Exception:
+                continue
+
+        if not file_url:
+            return {"ok": False, "error": "완료된 다운로드 파일을 찾지 못했습니다."}
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+                r = await client.get(file_url, cookies=cookies)
+            r.raise_for_status()
+        except Exception as exc:
+            return {"ok": False, "error": f"파일 다운로드 실패: {type(exc).__name__}: {exc}"}
+
+        from fastapi.responses import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=r.content,
+            media_type="application/vnd.ms-excel",
+            headers={"Content-Disposition": 'attachment; filename="incoming.xls"'},
+        )
+
+    @router.post("/barcode/base-file-from-ezadmin")
+    async def base_file_from_ezadmin(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        from datetime import timedelta
+        import io as _io
+        today = datetime.now()
+        start = str(payload.get("start_date") or (today - timedelta(days=90)).strftime("%Y-%m-%d"))
+        end = str(payload.get("end_date") or today.strftime("%Y-%m-%d"))
+        nd = str(int(today.timestamp() * 1000))
+
+        par = (
+            f"template=IO30&action=&page_code=IO00&search=1&now_page=&is_sort=&"
+            f"_sort=supply_options&sort_order=1&product_qty_list=&bill_seq=&"
+            f"offset_top=&work_no=&location_str=&date_type=collect_date&"
+            f"start_date={start}&start_hour=00%3A00%3A00&"
+            f"end_date={end}&end_hour=23%3A59%3A59&"
+            f"date_period_sel=9&multi_shop_group=&multi_shop=&str_shop_code=0&"
+            f"multi_supply_group=&multi_supply=&str_supply_code=0&"
+            f"supply_name_search=&brand=&supply_options=&tags_string=&"
+            f"product_tag_include_type=1&product_id=&name=&options=&"
+            f"search_keyword_type=origin&search_keyword=&enable_stock_type=2&"
+            f"order_status=3&except_soldout=1&sel_reserve_qty=none&"
+            f"sel_return_qty=none&sel_lack_qty=none&sel_req_qty=none&category=0"
+        )
+
+        cookies = {"PHPSESSID": phpsessid}
+        _kw = {"timeout": 30.0, "verify": False, "follow_redirects": True}
+
+        try:
+            async with httpx.AsyncClient(**_kw) as client:
+                r = await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data={
+                        "_search": "false", "nd": nd,
+                        "rows": "1000", "page": "1", "sidx": "", "sord": "asc",
+                        "template": "IO30", "action": "search_IO30", "par": par,
+                    },
+                    cookies=cookies,
+                    headers={
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": "https://ga80.ezadmin.co.kr/template40.htm?template=IO30",
+                    },
+                )
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        try:
+            obj = r.json()
+        except Exception:
+            return {"ok": False, "need_session": True}
+
+        if "rows" not in obj:
+            return {"ok": False, "need_session": True}
+
+        def _ez_val(html_str):
+            s = str(html_str or "")
+            # <input ... value='X' ...> → X
+            m = re.search(r"<input[^>]+\bvalue=['\"]([^'\"]*)['\"]", s, re.IGNORECASE)
+            if m:
+                return m.group(1)
+            # <a ...>TEXT</a> → TEXT
+            m = re.search(r">([^<]+)</a>", s)
+            if m:
+                return m.group(1).strip()
+            # 태그 없으면 그대로
+            return re.sub(r"<[^>]+>", "", s).strip()
+
+        wb = xlwt.Workbook()
+        ws = wb.add_sheet("Sheet1")
+        for ci, h in enumerate(["상품명", "공급처상품명", "옵션추가항목5", "옵션추가항목6", "옵션추가항목7",
+                                 "옵션", "요청수량", "입고수량", "상품코드", "옵션추가항목8", "원가", "입고대기"]):
+            ws.write(0, ci, h)
+
+        for ri, row in enumerate(obj.get("rows", []), 1):
+            cell = row.get("cell", row)
+            ws.write(ri, 0, _ez_val(cell.get("product_name")))
+            ws.write(ri, 1, _ez_val(cell.get("supply_product_name")))
+            ws.write(ri, 2, ""); ws.write(ri, 3, ""); ws.write(ri, 4, "")
+            ws.write(ri, 5, _ez_val(cell.get("options")))
+            ws.write(ri, 6, _ez_val(cell.get("request_qty")))
+            ws.write(ri, 7, "")
+            ws.write(ri, 8, _ez_val(cell.get("product_id")))
+            ws.write(ri, 9, ""); ws.write(ri, 10, "")
+            ws.write(ri, 11, _ez_val(cell.get("reserve_qty")))
+
+        buf = _io.BytesIO()
+        wb.save(buf)
+
+        from fastapi.responses import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=buf.getvalue(),
+            media_type="application/vnd.ms-excel",
+            headers={"Content-Disposition": 'attachment; filename="base_file.xls"'},
+        )
 
     return router
