@@ -50,9 +50,10 @@ const Header = ({ onLogout, displayName, onProfileUpdate }) => {
         setEzadminMsgType('');
         setEzadminVisible(false);
         setEzadminInput('');
+        setEzadminValue('');
+        setEzadminLoading(true);
         setShowEzadmin(true);
         try {
-            setEzadminLoading(true);
             const res = await fetch(`${LOCAL_API_BASE}/ezadmin/session`, {
                 headers: getAuthHeaders(),
             });
@@ -217,6 +218,7 @@ const Header = ({ onLogout, displayName, onProfileUpdate }) => {
                         )}
 
                         <button
+                            type="button"
                             className={styles.primaryBtn}
                             onClick={saveEzadmin}
                             disabled={ezadminLoading}
