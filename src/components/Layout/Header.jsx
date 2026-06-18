@@ -1,7 +1,7 @@
-import { Search, Bell } from 'lucide-react';
+import { Bell, Key } from 'lucide-react';
 import { useState } from 'react';
 import styles from './Header.module.css';
-import { COLLAB_API_BASE } from '../../lib/api';
+import { COLLAB_API_BASE, LOCAL_API_BASE, getAuthHeaders } from '../../lib/api';
 
 const Header = ({ onLogout, displayName, onProfileUpdate }) => {
     const initials = displayName ? displayName.slice(0, 2) : 'JD';
@@ -9,6 +9,13 @@ const Header = ({ onLogout, displayName, onProfileUpdate }) => {
     const [nameInput, setNameInput] = useState(displayName || '');
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState('');
+    const [showEzadmin, setShowEzadmin] = useState(false);
+    const [ezadminValue, setEzadminValue] = useState('');
+    const [ezadminInput, setEzadminInput] = useState('');
+    const [ezadminVisible, setEzadminVisible] = useState(false);
+    const [ezadminLoading, setEzadminLoading] = useState(false);
+    const [ezadminMsg, setEzadminMsg] = useState('');
+    const [ezadminMsgType, setEzadminMsgType] = useState('');
 
     const saveProfile = async () => {
         setError('');
@@ -38,12 +45,63 @@ const Header = ({ onLogout, displayName, onProfileUpdate }) => {
         }
     };
 
+    const openEzadmin = async () => {
+        setEzadminMsg('');
+        setEzadminMsgType('');
+        setEzadminVisible(false);
+        setEzadminInput('');
+        setShowEzadmin(true);
+        try {
+            setEzadminLoading(true);
+            const res = await fetch(`${LOCAL_API_BASE}/ezadmin/session`, {
+                headers: getAuthHeaders(),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.ok) {
+                setEzadminValue(data.phpsessid || '');
+                setEzadminInput(data.phpsessid || '');
+            }
+        } catch {
+            // 조회 실패 시 빈 값으로 진행
+        } finally {
+            setEzadminLoading(false);
+        }
+    };
+
+    const saveEzadmin = async () => {
+        const phpsessid = ezadminInput.trim();
+        if (!phpsessid) {
+            setEzadminMsg('PHPSESSID를 입력해주세요.');
+            setEzadminMsgType('error');
+            return;
+        }
+        try {
+            setEzadminLoading(true);
+            setEzadminMsg('');
+            const res = await fetch(`${LOCAL_API_BASE}/ezadmin/session`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ phpsessid }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data?.ok) throw new Error(data?.detail || '저장 실패');
+            setEzadminValue(phpsessid);
+            setEzadminMsg('저장 완료');
+            setEzadminMsgType('ok');
+        } catch (err) {
+            setEzadminMsg(err.message || '저장 실패');
+            setEzadminMsgType('error');
+        } finally {
+            setEzadminLoading(false);
+        }
+    };
+
     return (
         <header className={styles.header}>
-            <div className={styles.searchBar}>
-                <Search size={18} className={styles.searchIcon} />
-                <input type="text" placeholder="Search anything..." />
-            </div>
+            <button type="button" className={styles.ezadminBtn} onClick={openEzadmin}>
+                <Key size={15} />
+                EZAdmin 설정
+            </button>
 
             <div className={styles.profileSection}>
                 <a
@@ -100,6 +158,70 @@ const Header = ({ onLogout, displayName, onProfileUpdate }) => {
                         {error && <div className={styles.error}>{error}</div>}
                         <button className={styles.primaryBtn} onClick={saveProfile} disabled={saving}>
                             {saving ? '저장 중...' : '저장'}
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {showEzadmin && (
+                <div className={styles.modalOverlay} onClick={() => { setShowEzadmin(false); setEzadminMsg(''); }}>
+                    <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+                        <div className={styles.modalHeader}>
+                            <h4 className={styles.modalTitle}>EZAdmin 세션 설정</h4>
+                            <button
+                                className={styles.secondaryBtn}
+                                onClick={() => { setShowEzadmin(false); setEzadminMsg(''); }}
+                            >
+                                닫기
+                            </button>
+                        </div>
+
+                        <label className={styles.modalLabel}>
+                            현재 저장된 PHPSESSID
+                            <div className={styles.sessionValueRow}>
+                                <div className={`${styles.sessionValue} ${!ezadminValue ? styles.sessionValueEmpty : ''}`}>
+                                    {ezadminLoading
+                                        ? '불러오는 중...'
+                                        : ezadminValue
+                                            ? (ezadminVisible ? ezadminValue : `${ezadminValue.slice(0, 6)}${'•'.repeat(Math.max(0, ezadminValue.length - 6))}`)
+                                            : '저장된 값 없음'}
+                                </div>
+                                {ezadminValue && (
+                                    <button
+                                        type="button"
+                                        className={styles.toggleVisibilityBtn}
+                                        onClick={() => setEzadminVisible((v) => !v)}
+                                    >
+                                        {ezadminVisible ? '숨기기' : '보기'}
+                                    </button>
+                                )}
+                            </div>
+                        </label>
+
+                        <label className={styles.modalLabel}>
+                            새 값으로 변경
+                            <input
+                                type="text"
+                                value={ezadminInput}
+                                onChange={(e) => setEzadminInput(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') saveEzadmin(); }}
+                                placeholder="PHPSESSID 값 붙여넣기"
+                                disabled={ezadminLoading}
+                            />
+                        </label>
+
+                        {ezadminMsg && (
+                            <div className={ezadminMsgType === 'ok' ? styles.successMsg : styles.error}>
+                                {ezadminMsg}
+                            </div>
+                        )}
+
+                        <button
+                            className={styles.primaryBtn}
+                            onClick={saveEzadmin}
+                            disabled={ezadminLoading}
+                        >
+                            {ezadminLoading ? '처리 중...' : '저장'}
                         </button>
                     </div>
                 </div>
