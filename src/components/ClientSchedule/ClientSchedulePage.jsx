@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarDays, Database, Download, GitMerge, Search, Sparkles, FileUp, Trash2, X } from 'lucide-react';
+import { CalendarDays, Database, Download, GitMerge, RefreshCw, Search, Sparkles, FileUp, Trash2, X } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { COLLAB_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
+import { COLLAB_API_BASE as API, LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
+import { useEzadminSession } from '../../lib/EzadminSessionContext';
 import styles from './ClientSchedulePage.module.css';
 
 const DEFAULT_PREFIX = '\uc548\ub155\ud558\uc138\uc694';
@@ -152,32 +153,28 @@ function normalizeDValueForMerge(value, baseDate) {
   const text = toDisplayText(value).replace(/\s+/g, '');
   if (!text) return '';
 
-  const weekday = baseDate.getDay();
   const monday = new Date(baseDate);
   monday.setDate(baseDate.getDate() - ((baseDate.getDay() + 6) % 7));
-  const thisThursday = new Date(monday);
-  thisThursday.setDate(monday.getDate() + 3);
-  const thisFriday = new Date(monday);
-  thisFriday.setDate(monday.getDate() + 4);
-  const nextFriday = new Date(monday);
-  nextFriday.setDate(monday.getDate() + 11);
 
-  let normalized = text;
-  if (weekday === 0) {
-    if (normalized === '\ub2e4\uc74c\uc8fc\uc911') normalized = '\uc774\ubc88\uc8fc\uc911';
-    else if (normalized === '\ub2e4\ub2e4\uc74c\uc8fc\uc911') normalized = '\ub2e4\uc74c\uc8fc\uc911';
-  }
+  const thisFriday      = new Date(monday); thisFriday.setDate(monday.getDate() + 4);
+  const nextMonday      = new Date(monday); nextMonday.setDate(monday.getDate() + 7);
+  const nextFriday      = new Date(monday); nextFriday.setDate(monday.getDate() + 11);
+  const nextNextMonday  = new Date(monday); nextNextMonday.setDate(monday.getDate() + 14);
+  const nextNextFriday  = new Date(monday); nextNextFriday.setDate(monday.getDate() + 18);
 
-  if (normalized === '\uc774\ubc88\uc8fc\uc911') {
-    return baseDate > thisThursday ? '' : normalized;
+  if (text === '\uc774\ubc88\uc8fc\uc911') {
+    return baseDate > thisFriday ? '' : text;
   }
-  if (normalized === '\ub2e4\uc74c\uc8fc\uc911') {
-    return baseDate > thisFriday ? '' : normalized;
+  if (text === '\ub2e4\uc74c\uc8fc\uc911') {
+    if (baseDate >= nextMonday) return baseDate > nextFriday ? '' : '\uc774\ubc88\uc8fc\uc911';
+    return text;
   }
-  if (normalized === '\ub2e4\ub2e4\uc74c\uc8fc\uc911') {
-    return baseDate > nextFriday ? '' : normalized;
+  if (text === '\ub2e4\ub2e4\uc74c\uc8fc\uc911') {
+    if (baseDate >= nextNextMonday) return baseDate > nextNextFriday ? '' : '\uc774\ubc88\uc8fc\uc911';
+    if (baseDate >= nextMonday) return '\ub2e4\uc74c\uc8fc\uc911';
+    return text;
   }
-  return normalized;
+  return text;
 }
 
 function mergeScheduleRows(baseRows, mergeRows, baseDate) {
@@ -364,8 +361,13 @@ async function readWorkbook(file, preferredSheetName) {
 }
 
 export default function ClientSchedulePage() {
+  const { openModal: openEzadminModal } = useEzadminSession();
   const [baseFile, setBaseFile] = useState(null);
   const [incomingFile, setIncomingFile] = useState(null);
+  const [incomingEzLoading, setIncomingEzLoading] = useState(false);
+  const [baseEzLoading, setBaseEzLoading] = useState(false);
+  const [baseEzStart, setBaseEzStart] = useState(() => formatInputDate(new Date(Date.now() - 90 * 86400000)));
+  const [baseEzEnd, setBaseEzEnd] = useState(() => formatInputDate());
   const [baseDateText, setBaseDateText] = useState(formatInputDate());
   const [msgPrefix, setMsgPrefix] = useState(DEFAULT_PREFIX);
   const [msgSuffix, setMsgSuffix] = useState(DEFAULT_SUFFIX);
@@ -541,6 +543,59 @@ export default function ClientSchedulePage() {
     }
   };
 
+  const handleIncomingFromEzadmin = async () => {
+    try {
+      setIncomingEzLoading(true);
+      setStatus('EZAdmin에서 입고파일 불러오는 중...');
+      const res = await fetch(`${LOCAL_API_BASE}/barcode/incoming/raw-file-from-ezadmin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({}),
+      });
+      if (res.headers.get('content-type')?.includes('application/json')) {
+        const data = await res.json().catch(() => ({}));
+        if (data?.need_session) { openEzadminModal(handleIncomingFromEzadmin); return; }
+        setStatus(data?.error || 'EZAdmin 입고파일 불러오기 실패');
+        return;
+      }
+      if (!res.ok) { setStatus(`EZAdmin 입고파일 불러오기 실패 (HTTP ${res.status})`); return; }
+      const blob = await res.blob();
+      const file = new File([blob], 'incoming.xls', { type: 'application/vnd.ms-excel' });
+      setIncomingFile(file);
+      setStatus('EZAdmin 입고파일 불러오기 완료');
+    } catch (err) {
+      setStatus(`EZAdmin 입고파일 불러오기 실패: ${err.message || ''}`);
+    } finally {
+      setIncomingEzLoading(false);
+    }
+  };
+
+  const handleBaseFromEzadmin = async () => {
+    try {
+      setBaseEzLoading(true);
+      setStatus('EZAdmin에서 기준 파일 불러오는 중...');
+      const res = await fetch(`${LOCAL_API_BASE}/barcode/base-file-from-ezadmin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ start_date: baseEzStart, end_date: baseEzEnd }),
+      });
+      if (res.headers.get('content-type')?.includes('application/json')) {
+        const data = await res.json().catch(() => ({}));
+        if (data?.need_session) { openEzadminModal(handleBaseFromEzadmin); return; }
+        setStatus(data?.error || 'EZAdmin 기준 파일 불러오기 실패');
+        return;
+      }
+      if (!res.ok) { setStatus(`EZAdmin 기준 파일 불러오기 실패 (HTTP ${res.status})`); return; }
+      const blob = await res.blob();
+      setBaseFile(new File([blob], 'base_file.xls', { type: 'application/vnd.ms-excel' }));
+      setStatus('EZAdmin 기준 파일 불러오기 완료');
+    } catch (err) {
+      setStatus(`EZAdmin 기준 파일 불러오기 실패: ${err.message || ''}`);
+    } finally {
+      setBaseEzLoading(false);
+    }
+  };
+
   const handleBaseProcess = async () => {
     if (!baseFile) {
       setStatus('기준 파일을 먼저 선택하세요.');
@@ -580,6 +635,19 @@ export default function ClientSchedulePage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleNormalizeDates = () => {
+    let changed = 0;
+    setSheet2Rows(prev =>
+      prev.map(row => {
+        const normalized = normalizeDValueForMerge(row.D, baseDateText);
+        if (normalized === row.D) return row;
+        changed++;
+        return { ...row, D: normalized };
+      })
+    );
+    setStatus(`날짜 정규화 완료${changed ? ` (${changed}행 변경)` : ' (변경 없음)'}`);
   };
 
   const handleRunAll = () => {
@@ -746,6 +814,21 @@ export default function ClientSchedulePage() {
                 <input type="file" accept=".xls,.xlsx,.xlsm" onChange={(e) => setBaseFile(e.target.files?.[0] ?? null)} />
                 {baseFile ? baseFile.name : '파일 선택 → DB 자동 병합'}
               </label>
+              <div style={{ display: 'flex', gap: '0.25rem', marginTop: '0.25rem', alignItems: 'center' }}>
+                <input type="date" value={baseEzStart} onChange={(e) => setBaseEzStart(e.target.value)}
+                  style={{ fontSize: '0.75rem', padding: '2px 4px' }} />
+                <span style={{ fontSize: '0.75rem' }}>~</span>
+                <input type="date" value={baseEzEnd} onChange={(e) => setBaseEzEnd(e.target.value)}
+                  style={{ fontSize: '0.75rem', padding: '2px 4px' }} />
+                <button
+                  className={styles.ghostBtn}
+                  onClick={handleBaseFromEzadmin}
+                  disabled={baseEzLoading}
+                  style={{ fontSize: '0.8rem' }}
+                >
+                  {baseEzLoading ? '불러오는 중...' : 'EZAdmin 불러오기'}
+                </button>
+              </div>
             </div>
             <div className={styles.fileField}>
               <span className={styles.fieldLabel}>입고 파일 <small>(선택 · (A,F) 삭제)</small></span>
@@ -754,6 +837,14 @@ export default function ClientSchedulePage() {
                 <input type="file" accept=".xls,.xlsx,.xlsm" onChange={(e) => setIncomingFile(e.target.files?.[0] ?? null)} />
                 {incomingFile ? incomingFile.name : '파일 선택'}
               </label>
+              <button
+                className={styles.ghostBtn}
+                onClick={handleIncomingFromEzadmin}
+                disabled={incomingEzLoading}
+                style={{ marginTop: '0.25rem', fontSize: '0.8rem' }}
+              >
+                {incomingEzLoading ? '불러오는 중...' : 'EZAdmin 불러오기'}
+              </button>
             </div>
           </div>
           {/* 액션 버튼 */}
@@ -763,6 +854,9 @@ export default function ClientSchedulePage() {
             </button>
             <button className={styles.ghostBtn} onClick={handleRunAll} disabled={loading}>
               <CalendarDays size={14} /> 통합 실행
+            </button>
+            <button className={styles.ghostBtn} onClick={handleNormalizeDates} disabled={!sheet2Rows.length}>
+              <RefreshCw size={14} /> 날짜 정규화
             </button>
             <button className={styles.ghostBtn} onClick={handleDownload} disabled={loading}>
               <Download size={14} /> 결과 다운로드

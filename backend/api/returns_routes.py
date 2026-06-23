@@ -1,4 +1,5 @@
 import io
+import asyncio
 import json
 import re
 import shutil
@@ -10,6 +11,7 @@ from pathlib import Path
 
 import httpx
 import pandas as pd
+import xlwt
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile
 from typing import List
 from fastapi.responses import FileResponse
@@ -22,6 +24,12 @@ LLOGIS_CREDENTIAL = "plan123!"
 ABLY_BASE     = "https://api.a-bly.com"
 ABLY_EMAIL    = "eostm1997@naver.com"
 ABLY_PASSWORD = "!Glqgkqdldi1126"
+
+_EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
+_EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+_KST = timezone(timedelta(hours=9))
+_BROWSER_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_BROWSER_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 _SELLER_REASON_CODES   = {32, 1}  # 상품 하자/오배송, 셀러 변경
 _SELLER_EXCHANGE_CODES = {2, 3}   # 상품 하자, 오배송 → 판매자 부담
@@ -40,6 +48,7 @@ def build_returns_router(
     require_admin,
     get_return_state,
     get_db,
+    get_setting,
     return_status,
     return_queue_payload,
     return_rows,
@@ -115,6 +124,142 @@ def build_returns_router(
         buf = io.BytesIO()
         book.save(buf)
         return buf.getvalue()
+
+    def _build_onebe_im25_xls_bytes(df: pd.DataFrame) -> tuple[bytes, int]:
+        if df is None or df.empty:
+            raise HTTPException(status_code=400, detail="원베양식 데이터가 없습니다.")
+        if "상품코드" not in df.columns:
+            raise HTTPException(status_code=400, detail="원베양식에 상품코드 열이 없습니다.")
+
+        qty_col = "입고수량" if "입고수량" in df.columns else "수량" if "수량" in df.columns else "요청수량"
+        if qty_col not in df.columns:
+            raise HTTPException(status_code=400, detail="원베양식에 수량 열이 없습니다.")
+
+        rows: list[tuple[str, object, object]] = []
+        for _, row in df.iterrows():
+            code = str(row.get("상품코드") or "").strip()
+            if not code or code.lower() in ("nan", "none"):
+                continue
+
+            raw_qty = row.get(qty_col)
+            try:
+                qty = int(float(str(raw_qty).replace(",", "").strip()))
+            except Exception:
+                qty = 0
+            if qty <= 0:
+                continue
+
+            req_qty = row.get("요청수량", 0)
+            try:
+                req_qty = int(float(str(req_qty).replace(",", "").strip()))
+            except Exception:
+                req_qty = 0
+            rows.append((code, req_qty, qty))
+
+        if not rows:
+            raise HTTPException(status_code=400, detail="상품코드와 수량이 있는 원베양식 행이 없습니다.")
+
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("상품일괄추가")
+        headers = ["상품코드", "요청수량", "입고수량"]
+        for col_idx, header in enumerate(headers):
+            sheet.write(0, col_idx, header)
+        for row_idx, (code, req_qty, qty) in enumerate(rows, start=1):
+            sheet.write(row_idx, 0, code)
+            sheet.write(row_idx, 1, req_qty)
+            sheet.write(row_idx, 2, qty)
+
+        buf = io.BytesIO()
+        book.save(buf)
+        return buf.getvalue(), len(rows)
+
+    def _browser_time_flag(now: datetime) -> str:
+        return (
+            f"{_BROWSER_WEEKDAYS[now.weekday()]} "
+            f"{_BROWSER_MONTHS[now.month - 1]} "
+            f"{now.day:02d} {now.year} "
+            f"{now:%H:%M:%S} GMT+0900 (한국 표준시)"
+        )
+
+    def _looks_like_ezadmin_session_error(response: httpx.Response, body: str) -> bool:
+        lowered = (body or "").lower()
+        if response.url and "login" in str(response.url).lower():
+            return True
+        if "<html" in lowered or "<!doctype html" in lowered:
+            return True
+        return any(token in lowered for token in ("login", "phpsessid", "session", "로그인"))
+
+    def _looks_like_ezadmin_login_page(response: httpx.Response, body: str) -> bool:
+        lowered = (body or "").lower()
+        if response.url and "login" in str(response.url).lower():
+            return True
+        return "login.htm" in lowered or "login_form" in lowered
+
+    async def _find_ezadmin_sheet_seq(
+        client: httpx.AsyncClient,
+        *,
+        phpsessid: str,
+        start_date: str,
+        sheet_title: str,
+    ) -> str | None:
+        response = await client.post(
+            f"{_EZADMIN_BASE}/function.htm",
+            data={
+                "_search": "false",
+                "nd": str(int(datetime.now(_KST).timestamp() * 1000)),
+                "rows": "9999",
+                "page": "1",
+                "sidx": "",
+                "sord": "asc",
+                "template": "IM00",
+                "action": "get_IM00_grid",
+                "par": (
+                    "template=IM00&action=&page_code=IM00&search=1"
+                    "&_sort=&sort_order=&date_type=crdate"
+                    f"&start_date={start_date}&end_date={start_date}"
+                    "&date_period_sel=0&query_option=title&query_str=&req_status=0"
+                ),
+            },
+            cookies={"PHPSESSID": phpsessid},
+            headers={"User-Agent": "Mozilla/5.0", "X-Requested-With": "XMLHttpRequest"},
+        )
+        body = response.text or ""
+        if _looks_like_ezadmin_session_error(response, body):
+            return None
+        try:
+            obj = response.json()
+        except Exception:
+            return None
+
+        html_tag = re.compile(r"<[^>]+>")
+        matches: list[str] = []
+        for row in obj.get("rows", []):
+            cell = row.get("cell", {}) or {}
+            clean = {
+                key: html_tag.sub("", str(value)).strip() if isinstance(value, str) else value
+                for key, value in cell.items()
+            }
+            title = str(clean.get("title") or clean.get("sheet_title") or "").strip()
+            if title and title != sheet_title:
+                continue
+            sheet_no = str(cell.get("sheet") or clean.get("sheet") or "").strip()
+            for value in cell.values():
+                if sheet_no:
+                    break
+                if isinstance(value, str):
+                    match = re.search(r"sheet=['\"]?(\w+)['\"]?", value, re.IGNORECASE)
+                    if match:
+                        sheet_no = match.group(1)
+            if sheet_no:
+                matches.append(sheet_no)
+
+        def sort_key(value: str):
+            try:
+                return int(value)
+            except Exception:
+                return 0
+
+        return sorted(matches, key=sort_key)[-1] if matches else None
 
     def _clean_exchange_reason(value) -> str:
         if value is None or pd.isna(value):
@@ -398,8 +543,17 @@ def build_returns_router(
                     if not cancels:
                         break
                     for cancel in cancels:
+                        cancel_sno        = str(cancel.get("sno") or "")
+                        refund_holder     = str(cancel.get("refund_bank_account_holder") or "")
+                        refund_account    = str(cancel.get("refund_bank_account_number") or "")
+                        refund_bank_sno   = cancel.get("refund_bank_sno")
                         for item in cancel.get("order_items", []):
-                            item["_cancel_reason"] = item.get("cancel_reason")
+                            item["_cancel_reason"]   = item.get("cancel_reason")
+                            item["_cancel_sno"]      = cancel_sno
+                            item["_item_sno"]        = item.get("sno")
+                            item["_refund_holder"]   = refund_holder
+                            item["_refund_account"]  = refund_account
+                            item["_refund_bank_sno"] = refund_bank_sno
                             all_raw.append(item)
                     if page >= data.get("max_page_number", 1):
                         break
@@ -421,18 +575,23 @@ def build_returns_router(
             detail_reason = _CANCEL_REASON_TEXT.get(reason_code, f"기타({reason_code})" if reason_code is not None else "")
             user_comment  = item.get("user_comment") or ""
             rows.append({
-                "F_name":        f_name,
-                "G_opt":         g_opt,
-                "QTY":           qty,
-                "ITEM_TEXT":     normalize_spaces(f"{f_name} {g_opt}"),
-                "REASON_TYPE":   rtype,
-                "M_clean":       m_clean,
-                "DETAIL_REASON": detail_reason,
-                "USER_COMMENT":  user_comment,
+                "F_name":         f_name,
+                "G_opt":          g_opt,
+                "QTY":            qty,
+                "ITEM_TEXT":      normalize_spaces(f"{f_name} {g_opt}"),
+                "REASON_TYPE":    rtype,
+                "M_clean":        m_clean,
+                "DETAIL_REASON":  detail_reason,
+                "USER_COMMENT":   user_comment,
+                "REQUEST_NO":     item.get("_cancel_sno", ""),
+                "ITEM_SNO":       item.get("_item_sno"),
+                "REFUND_HOLDER":  item.get("_refund_holder", ""),
+                "REFUND_ACCOUNT": item.get("_refund_account", ""),
+                "REFUND_BANK_SNO": item.get("_refund_bank_sno"),
             })
 
         df = pd.DataFrame(rows) if rows else pd.DataFrame(
-            columns=["F_name", "G_opt", "QTY", "ITEM_TEXT", "REASON_TYPE", "M_clean", "DETAIL_REASON", "USER_COMMENT"])
+            columns=["F_name", "G_opt", "QTY", "ITEM_TEXT", "REASON_TYPE", "M_clean", "DETAIL_REASON", "USER_COMMENT", "REQUEST_NO", "ITEM_SNO", "REFUND_HOLDER", "REFUND_ACCOUNT", "REFUND_BANK_SNO"])
         idx: dict[str, list[int]] = {}
         for i, v in enumerate(df["M_clean"].tolist()):
             if v:
@@ -926,6 +1085,12 @@ def build_returns_router(
             if rtype not in ("판매자", "고객"):
                 rtype = "미매칭"
 
+            def _to_int(v):
+                try:
+                    return int(v) if v is not None and str(v).lower() not in ("nan", "none", "") else None
+                except (ValueError, TypeError):
+                    return None
+
             item = {
                 "id": state.next_id,
                 "scan": barcode,
@@ -933,8 +1098,13 @@ def build_returns_router(
                 "item_text": item_text,
                 "qty": qty,
                 "type": rtype,
-                "detail_reason": row.get("DETAIL_REASON", ""),
-                "user_comment": row.get("USER_COMMENT", ""),
+                "detail_reason":  str(row.get("DETAIL_REASON") or ""),
+                "user_comment":   str(row.get("USER_COMMENT") or ""),
+                "request_no":     str(row.get("REQUEST_NO") or ""),
+                "item_sno":       _to_int(row.get("ITEM_SNO")),
+                "refund_holder":  str(row.get("REFUND_HOLDER") or ""),
+                "refund_account": str(row.get("REFUND_ACCOUNT") or ""),
+                "refund_bank_sno": _to_int(row.get("REFUND_BANK_SNO")),
             }
             state.next_id += 1
             state.last_added_ids.append(item["id"])
@@ -1125,6 +1295,188 @@ def build_returns_router(
         state.customer_export_df.at[row_index, column] = value
         return {"ok": True}
 
+    @router.post("/returns/onebe/create-ezadmin-sheet")
+    async def returns_create_onebe_ezadmin_sheet(user: str = Depends(get_current_user)):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        state = get_return_state(user)
+        upload_xls, upload_count = _build_onebe_im25_xls_bytes(state.customer_export_df)
+
+        now = datetime.now(_KST)
+        start_date = now.strftime("%Y-%m-%d")
+        sheet_title = "반품 바코드"
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": f"{_EZADMIN_BASE}/template40.htm?template=IM00",
+            "X-Requested-With": "XMLHttpRequest",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        }
+        payload = {
+            "template": "IM00",
+            "action": "new_sheet_each",
+            "start_date": start_date,
+            "sheet_title": sheet_title,
+            "timeFlag": _browser_time_flag(now),
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+                response = await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data=payload,
+                    cookies={"PHPSESSID": phpsessid},
+                    headers=headers,
+                )
+                body = (response.text or "").strip()
+                if _looks_like_ezadmin_session_error(response, body):
+                    return {"ok": False, "need_session": True}
+                if not (200 <= response.status_code < 300):
+                    return {
+                        "ok": False,
+                        "need_session": False,
+                        "detail": f"EZAdmin 전표 생성 실패 (HTTP {response.status_code})",
+                    }
+                if body:
+                    return {
+                        "ok": False,
+                        "need_session": False,
+                        "detail": f"EZAdmin 전표 생성 응답을 확인할 수 없습니다: {body[:300]}",
+                    }
+
+                sheet_seq = None
+                for _ in range(5):
+                    await asyncio.sleep(0.5)
+                    sheet_seq = await _find_ezadmin_sheet_seq(
+                        client,
+                        phpsessid=phpsessid,
+                        start_date=start_date,
+                        sheet_title=sheet_title,
+                    )
+                    if sheet_seq:
+                        break
+                if not sheet_seq:
+                    return {
+                        "ok": False,
+                        "need_session": False,
+                        "detail": "전표는 생성됐지만 전표번호를 찾지 못해 상품 일괄추가를 진행하지 못했습니다.",
+                    }
+
+                upload_response = await client.post(
+                    f"{_EZADMIN_BASE}/popup_utf8.htm",
+                    data={"template": "IM25", "action": "upload", "seq": sheet_seq},
+                    files={
+                        "_file": (
+                            "returns_onebe_products.xls",
+                            upload_xls,
+                            "application/vnd.ms-excel",
+                        )
+                    },
+                    cookies={"PHPSESSID": phpsessid},
+                    headers={
+                        "User-Agent": "Mozilla/5.0",
+                        "Referer": f"{_EZADMIN_BASE}/popup35.htm?template=IM25&seq={sheet_seq}",
+                    },
+                )
+        except httpx.HTTPError as exc:
+            return {"ok": False, "need_session": False, "detail": f"EZAdmin 요청 실패: {exc}"}
+
+        upload_body = (upload_response.text or "").strip()
+        if _looks_like_ezadmin_login_page(upload_response, upload_body):
+            return {"ok": False, "need_session": True}
+
+        if not (200 <= upload_response.status_code < 300):
+            return {
+                "ok": False,
+                "need_session": False,
+                "detail": f"상품 일괄추가 실패 (HTTP {upload_response.status_code})",
+            }
+
+        return {
+            "ok": True,
+            "sheet_title": sheet_title,
+            "start_date": start_date,
+            "sheet_seq": sheet_seq,
+            "uploaded_count": upload_count,
+        }
+
+    @router.post("/returns/onebe/barcode-print")
+    async def returns_onebe_barcode_print(payload: dict = Body(...), user=Depends(get_current_user)):
+        sheet_seq = str(payload.get("sheet_seq") or "").strip()
+        products = payload.get("products") or []
+        if not sheet_seq:
+            return {"ok": False, "error": "sheet_seq가 필요합니다"}
+
+        phpsessid = get_setting(_EZADMIN_SESSION_KEY)
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        cookies = {"PHPSESSID": phpsessid}
+        ezadmin_base = _EZADMIN_BASE
+
+        arr_product_id = [str(p.get("code") or "") for p in products]
+        arr_product_name = [str(p.get("name") or "") for p in products]
+        arr_product_option = [str(p.get("option") or "") for p in products]
+        arr_qty = [str(int(p.get("qty") or 1)) for p in products]
+
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            try:
+                init_res = await client.get(
+                    f"{ezadmin_base}/popup35.htm",
+                    params={"template": "S500", "sheet_type": "sheet_req", "sheet": sheet_seq},
+                    cookies=cookies,
+                )
+            except httpx.HTTPError as exc:
+                return {"ok": False, "error": f"S500 초기화 실패: {exc}"}
+
+            init_body = (init_res.text or "").strip()
+            if _looks_like_ezadmin_login_page(init_res, init_body):
+                return {"ok": False, "need_session": True}
+
+            try:
+                make_res = await client.post(
+                    f"{ezadmin_base}/function.htm",
+                    data={
+                        "template": "S500",
+                        "action": "make_html2",
+                        "barcode_template": "10009",
+                        "formtec_start_num": "",
+                        "sheet": sheet_seq,
+                        "arr_product_id": json.dumps(arr_product_id, ensure_ascii=False),
+                        "arr_product_name": json.dumps(arr_product_name, ensure_ascii=False),
+                        "arr_product_option": json.dumps(arr_product_option, ensure_ascii=False),
+                        "arr_qty": json.dumps(arr_qty, ensure_ascii=False),
+                        "readonly": "T",
+                    },
+                    cookies=cookies,
+                    headers={
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": f"{ezadmin_base}/popup35.htm?template=S500&sheet_type=sheet_req&sheet={sheet_seq}",
+                    },
+                )
+            except httpx.HTTPError as exc:
+                return {"ok": False, "error": f"make_html2 요청 실패: {exc}"}
+
+            make_body = (make_res.text or "").strip()
+            if _looks_like_ezadmin_login_page(make_res, make_body):
+                return {"ok": False, "need_session": True}
+
+            html_paths = re.findall(r"/data/yusaek/[^\"'<\s]+", make_body)
+            if not html_paths:
+                return {"ok": False, "error": "HTML 경로 추출 실패", "_body": make_body[:300]}
+
+            html_path = html_paths[0]
+            try:
+                html_res = await client.get(
+                    f"{ezadmin_base}{html_path}",
+                    cookies=cookies,
+                )
+            except httpx.HTTPError as exc:
+                return {"ok": False, "error": f"HTML 파일 조회 실패: {exc}"}
+
+            return {"ok": True, "html": html_res.text}
+
     @router.post("/returns/download/onebe")
     def returns_download_onebe(payload: dict = Body(...), user: str = Depends(get_current_user)):
         state = get_return_state(user)
@@ -1216,6 +1568,7 @@ def build_returns_router(
                         "reason": "사유",
                         "detail_reason": "상세사유",
                         "user_comment": "고객메모",
+                        "request_no": "반품요청번호",
                     },
                     inplace=True,
                 )
@@ -1247,6 +1600,299 @@ def build_returns_router(
 
         headers = {"Content-Disposition": content_disposition(filename)}
         return Response(content=buf.getvalue(), media_type=media_type, headers=headers)
+
+    @router.post("/returns/ably-refund-from-excel")
+    async def returns_ably_refund_from_excel(
+        file: UploadFile = File(...),
+        user: str = Depends(get_current_user),
+    ):
+        ext = Path(file.filename or "").suffix.lower()
+        if ext not in return_allowed_exts:
+            raise HTTPException(status_code=400, detail="xls/xlsx/xlsm만 업로드 가능")
+
+        tmp_path = Path(tempfile.gettempdir()) / f"refund_excel_{uuid.uuid4().hex}{ext}"
+        with tmp_path.open("wb") as out:
+            shutil.copyfileobj(file.file, out)
+
+        try:
+            xl = pd.ExcelFile(tmp_path)
+            sheet_name = "고객" if "고객" in xl.sheet_names else xl.sheet_names[1] if len(xl.sheet_names) > 1 else xl.sheet_names[0]
+            df = xl.parse(sheet_name)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"엑셀 읽기 실패: {e}")
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        col = list(df.columns)
+        def get_col(names):
+            for n in names:
+                if n in col:
+                    return n
+            return None
+
+        cancel_col  = get_col(["반품요청번호", "request_no"])
+        item_col    = get_col(["item_sno"])
+        holder_col  = get_col(["refund_holder"])
+        account_col = get_col(["refund_account"])
+        bank_col    = get_col(["refund_bank_sno"])
+
+        if not cancel_col:
+            raise HTTPException(status_code=400, detail="'반품요청번호' 열을 찾을 수 없습니다. 올바른 추출 파일인지 확인하세요.")
+
+        rows = []
+        for _, row in df.iterrows():
+            cancel_sno = str(row.get(cancel_col) or "").strip()
+            if not cancel_sno or cancel_sno.lower() in ("nan", "none", ""):
+                continue
+            try:
+                cancel_sno_int = int(float(cancel_sno))
+            except (ValueError, TypeError):
+                continue
+            item_sno_val = None
+            if item_col:
+                try:
+                    item_sno_val = int(float(row.get(item_col) or 0)) or None
+                except (ValueError, TypeError):
+                    pass
+            rows.append({
+                "cancel_sno": cancel_sno_int,
+                "item_sno": item_sno_val,
+                "refund_holder":  str(row.get(holder_col) or "") if holder_col else "",
+                "refund_account": str(row.get(account_col) or "") if account_col else "",
+                "refund_bank_sno": (lambda v: int(float(v)) if v and str(v).lower() not in ("nan","none","") else None)(row.get(bank_col) if bank_col else None),
+            })
+
+        if not rows:
+            raise HTTPException(status_code=400, detail="처리할 반품 항목이 없습니다.")
+
+        token = await _ably_login()
+        hdrs = {
+            "Authorization": f"JWT {token}",
+            "Content-Type": "application/json",
+            "Origin": "https://my.a-bly.com",
+            "Referer": "https://my.a-bly.com/",
+            "User-Agent": "Mozilla/5.0",
+        }
+
+        results = []
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for row in rows:
+                result = {"cancel_sno": row["cancel_sno"], "ok": False, "error": None}
+                try:
+                    if not row["item_sno"]:
+                        raise ValueError("item_sno 없음 — 반품 API 불러오기 후 추출한 파일이 아닙니다.")
+
+                    r1 = await client.put(
+                        f"{ABLY_BASE}/seller/order_cancels/update_fields/",
+                        headers=hdrs,
+                        json={"data_list": [{"sno_list": [row["cancel_sno"]], "update_list": [
+                            {"field": "refund_bank_account_holder", "value": row["refund_holder"]},
+                            {"field": "refund_bank_account_number", "value": row["refund_account"]},
+                            {"field": "refund_bank_sno", "value": row["refund_bank_sno"]},
+                        ]}]},
+                    )
+                    r1.raise_for_status()
+
+                    r2 = await client.put(
+                        f"{ABLY_BASE}/seller/order_items/request_confirm/",
+                        headers=hdrs,
+                        json={"sno_list": [row["item_sno"]]},
+                    )
+                    r2.raise_for_status()
+                    result["ok"] = True
+                    result["item_sno"] = row["item_sno"]
+                except Exception as e:
+                    result["error"] = str(e)
+                results.append(result)
+
+        ok_count = sum(1 for r in results if r["ok"])
+        return {"ok": True, "total": len(results), "success": ok_count, "results": results}
+
+    @router.post("/returns/ably-refund-submit")
+    async def returns_ably_refund_submit(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        items = payload.get("items", [])
+        if not items:
+            raise HTTPException(status_code=400, detail="선택된 항목이 없습니다.")
+
+        token = await _ably_login()
+        hdrs = {
+            "Authorization": f"JWT {token}",
+            "Content-Type": "application/json",
+            "Origin": "https://my.a-bly.com",
+            "Referer": "https://my.a-bly.com/",
+            "User-Agent": "Mozilla/5.0",
+        }
+
+        results = []
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for item in items:
+                result = {"id": item.get("id"), "scan": item.get("scan"), "ok": False, "error": None}
+                try:
+                    cancel_sno = int(item.get("request_no") or 0)
+                    item_sno   = int(item.get("item_sno") or 0)
+                    if not cancel_sno or not item_sno:
+                        raise ValueError("cancel_sno 또는 item_sno 없음")
+
+                    r1 = await client.put(
+                        f"{ABLY_BASE}/seller/order_cancels/update_fields/",
+                        headers=hdrs,
+                        json={
+                            "data_list": [{
+                                "sno_list": [cancel_sno],
+                                "update_list": [
+                                    {"field": "refund_bank_account_holder", "value": item.get("refund_holder", "")},
+                                    {"field": "refund_bank_account_number", "value": item.get("refund_account", "")},
+                                    {"field": "refund_bank_sno", "value": item.get("refund_bank_sno")},
+                                ],
+                            }]
+                        },
+                    )
+                    r1.raise_for_status()
+
+                    r2 = await client.put(
+                        f"{ABLY_BASE}/seller/order_items/request_confirm/",
+                        headers=hdrs,
+                        json={"sno_list": [item_sno]},
+                    )
+                    r2.raise_for_status()
+                    result["ok"] = True
+                except Exception as e:
+                    result["error"] = str(e)
+                results.append(result)
+
+        return {"results": results}
+
+    @router.post("/returns/ably-refund-single")
+    async def returns_ably_refund_single(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        cancel_sno_str = str(payload.get("cancel_sno") or "").strip()
+        if not cancel_sno_str:
+            raise HTTPException(status_code=400, detail="반품요청번호를 입력하세요.")
+
+        try:
+            cancel_sno_int = int(cancel_sno_str)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="반품요청번호는 숫자여야 합니다.")
+
+        item_sno = None
+        refund_holder = ""
+        refund_account = ""
+        refund_bank_sno = None
+
+        state = get_return_state(user)
+        if state.df2 is not None and not state.df2.empty:
+            matched = state.df2[state.df2["REQUEST_NO"].astype(str) == cancel_sno_str]
+            if not matched.empty:
+                row = matched.iloc[0]
+                try:
+                    item_sno = int(row.get("ITEM_SNO") or 0) or None
+                except (ValueError, TypeError):
+                    item_sno = None
+                refund_holder = str(row.get("REFUND_HOLDER") or "")
+                refund_account = str(row.get("REFUND_ACCOUNT") or "")
+                refund_bank_sno = row.get("REFUND_BANK_SNO")
+
+        token = await _ably_login()
+        hdrs_json = {
+            "Authorization": f"JWT {token}",
+            "Content-Type": "application/json",
+            "Origin": "https://my.a-bly.com",
+            "Referer": "https://my.a-bly.com/",
+            "User-Agent": "Mozilla/5.0",
+        }
+
+        if item_sno is None:
+            hdrs_get = {
+                "Authorization": f"JWT {token}",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0",
+                "Origin": "https://my.a-bly.com",
+                "Referer": "https://my.a-bly.com/",
+            }
+            today_dt = datetime.now(timezone.utc).date()
+            start_dt = today_dt - timedelta(days=365)
+            found_item = None
+            found_cancel_sno_int = None
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    page = 1
+                    while page <= 30:
+                        res = await client.get(
+                            f"{ABLY_BASE}/seller/order_cancels/",
+                            headers=hdrs_get,
+                            params={
+                                "cancel_type": "return",
+                                "delivery_type[]": ["standard", "today", "combine", "reserved"],
+                                "order": "-cancel_received_at",
+                                "page": page,
+                                "per_page": 30,
+                                "start_date": start_dt.strftime("%Y-%m-%d"),
+                                "end_date": today_dt.strftime("%Y-%m-%d"),
+                            },
+                        )
+                        res.raise_for_status()
+                        data = res.json()
+                        for c in data.get("order_cancels", []):
+                            # 최상단 sno 필드가 cancel_sno
+                            if str(c.get("sno") or "") == cancel_sno_str:
+                                order_items = c.get("order_items") or []
+                                if order_items:
+                                    found_item = order_items[0]
+                                    found_cancel_sno_int = int(cancel_sno_str)
+                                break
+                        if found_item or page >= data.get("max_page_number", 1):
+                            break
+                        page += 1
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"에이블리 조회 실패: {e}")
+
+            if not found_item:
+                raise HTTPException(status_code=404, detail=f"반품요청번호 {cancel_sno_str}에 해당하는 항목을 찾을 수 없습니다.")
+
+            try:
+                item_sno = int(found_item.get("sno") or 0) or None
+            except (ValueError, TypeError):
+                item_sno = None
+            refund_holder = str(found_item.get("refund_bank_account_holder") or "")
+            refund_account = str(found_item.get("refund_bank_account_number") or "")
+            refund_bank_sno = (found_item.get("refund_bank") or {}).get("sno")
+
+        if not item_sno:
+            raise HTTPException(status_code=400, detail="해당 항목의 item_sno가 없습니다.")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r1 = await client.put(
+                f"{ABLY_BASE}/seller/order_cancels/update_fields/",
+                headers=hdrs_json,
+                json={
+                    "data_list": [{
+                        "sno_list": [cancel_sno_int],
+                        "update_list": [
+                            {"field": "refund_bank_account_holder", "value": refund_holder},
+                            {"field": "refund_bank_account_number", "value": refund_account},
+                            {"field": "refund_bank_sno", "value": refund_bank_sno},
+                        ],
+                    }]
+                },
+            )
+            r1.raise_for_status()
+
+            r2 = await client.put(
+                f"{ABLY_BASE}/seller/order_items/request_confirm/",
+                headers=hdrs_json,
+                json={"sno_list": [item_sno]},
+            )
+            r2.raise_for_status()
+
+        return {"ok": True, "cancel_sno": cancel_sno_int, "item_sno": item_sno}
 
     async def _llogis_login() -> str:
         async with httpx.AsyncClient(verify=False, timeout=15.0) as c:

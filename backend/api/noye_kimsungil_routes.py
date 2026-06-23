@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from pathlib import Path
 import io
+import warnings
+warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 import os
 import re
 import shutil
@@ -12,10 +14,36 @@ import urllib.parse
 import uuid
 import zipfile
 
+import httpx
 import pandas as pd
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 import xlwt
+
+ABLY_BASE     = "https://api.a-bly.com"
+ABLY_EMAIL    = "eostm1997@naver.com"
+ABLY_PASSWORD = "!Glqgkqdldi1126"
+
+ABLY_STOCK_RESET_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\에이블리재고변경.xlsx")
+
+
+async def _ably_login_noye() -> str:
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        res = await client.post(
+            f"{ABLY_BASE}/seller/login/",
+            json={"email": ABLY_EMAIL, "password": ABLY_PASSWORD},
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "https://seller-admin.a-bly.com",
+                "Referer": "https://seller-admin.a-bly.com/",
+                "User-Agent": "Mozilla/5.0",
+            },
+        )
+        res.raise_for_status()
+    token = res.json().get("token")
+    if not token:
+        raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
+    return token
 from services.cost_base_append import append_tsv_rows_to_excel
 
 try:
@@ -276,7 +304,12 @@ def _bul_sanitize(name: str) -> str:
     return out.strip()[:80] or "거래처"
 
 
-def build_noye_kimsungil_router(*, get_current_user):
+_EZADMIN_BASE        = "https://ga80.ezadmin.co.kr"
+_EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+_TODAY_SUPPLY_CODE   = "20002"
+
+
+def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting):
     router = APIRouter(prefix="/noye-kimsungil")
 
     KDG_BASE_FILENAME = "케이디지원가베이스.xlsx"
@@ -943,6 +976,137 @@ def build_noye_kimsungil_router(*, get_current_user):
 
     # ── 날짜청크 엔드포인트 ───────────────────────────────────────────────
 
+    @router.post("/today/reset-stock")
+    async def today_reset_stock(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        rows = payload.get("rows", [])
+        if not rows:
+            raise HTTPException(status_code=400, detail="가공된 데이터가 없습니다.")
+        if not ABLY_STOCK_RESET_PATH.exists():
+            raise HTTPException(status_code=404, detail=f"파일이 없습니다: {ABLY_STOCK_RESET_PATH}")
+
+        # 가공 데이터를 딕셔너리로 변환 (A열 옵션번호 → B열 수량)
+        update_map = {str(r["A"]).strip(): str(r["B"]).strip() for r in rows if r.get("A")}
+
+        # 기준 xlsx 읽기
+        try:
+            df = pd.read_excel(ABLY_STOCK_RESET_PATH, dtype=str, engine="openpyxl")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"기준 파일 읽기 실패: {e}")
+
+        if df.shape[1] < 2:
+            raise HTTPException(status_code=400, detail="에이블리재고변경.xlsx는 최소 A, B 2열이 필요합니다.")
+
+        col_a = df.columns[0]
+        col_b = df.columns[1]
+
+        matched = 0
+        for idx, val in df[col_a].items():
+            key = str(val).strip() if pd.notna(val) else ""
+            if key in update_map:
+                df.at[idx, col_b] = update_map[key]
+                matched += 1
+
+        # 수정된 xlsx 메모리에 저장
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False)
+        buf.seek(0)
+        file_bytes = buf.getvalue()
+
+        try:
+            token = await _ably_login_noye()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                res = await client.put(
+                    f"{ABLY_BASE}/seller/goods/options-bulk-update/stock/",
+                    headers={
+                        "Authorization": f"JWT {token}",
+                        "Origin": "https://seller-admin.a-bly.com",
+                        "Referer": "https://seller-admin.a-bly.com/",
+                        "User-Agent": "Mozilla/5.0",
+                    },
+                    files={"file": ("에이블리재고변경.xlsx", file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                )
+                res.raise_for_status()
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 재고초기화 실패 (HTTP {e.response.status_code}): {e.response.text[:200]}")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 재고초기화 실패: {e}")
+
+        return {"ok": True, "message": f"오늘출발 재고 초기화 완료 ({matched}건 매칭)"}
+
+    @router.post("/today/set-delivery-type")
+    async def today_set_delivery_type(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        rows = payload.get("rows", [])
+        if not rows:
+            raise HTTPException(status_code=400, detail="가공된 데이터가 없습니다.")
+        if not ABLY_STOCK_RESET_PATH.exists():
+            raise HTTPException(status_code=404, detail=f"파일이 없습니다: {ABLY_STOCK_RESET_PATH}")
+
+        # 기준 xlsx에서 A열 옵션번호 목록 추출
+        try:
+            df = pd.read_excel(ABLY_STOCK_RESET_PATH, dtype=str, engine="openpyxl")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"기준 파일 읽기 실패: {e}")
+
+        if df.shape[1] < 1:
+            raise HTTPException(status_code=400, detail="에이블리재고변경.xlsx A열이 없습니다.")
+
+        base_snos = set(
+            str(v).strip() for v in df.iloc[:, 0] if pd.notna(v) and str(v).strip()
+        )
+
+        # 가공결과 중 기준 파일에 매칭된 A열만 추출
+        item_list = [
+            str(r["A"]).strip()
+            for r in rows
+            if r.get("A") and str(r["A"]).strip() in base_snos
+        ]
+
+        if not item_list:
+            raise HTTPException(status_code=400, detail="기준 파일과 매칭된 옵션번호가 없습니다.")
+
+        try:
+            token = await _ably_login_noye()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                res = await client.put(
+                    f"{ABLY_BASE}/seller/goods/option-delivery-type-in-bulk/",
+                    headers={
+                        "Authorization": f"JWT {token}",
+                        "Content-Type": "application/json",
+                        "Origin": "https://seller-admin.a-bly.com",
+                        "Referer": "https://seller-admin.a-bly.com/",
+                        "User-Agent": "Mozilla/5.0",
+                    },
+                    json={
+                        "column_to_filter": "sno",
+                        "item_list": item_list,
+                        "delivery_type": "today",
+                    },
+                )
+                res.raise_for_status()
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=502, detail=f"오출로 변경 실패 (HTTP {e.response.status_code}): {e.response.text[:200]}")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"오출로 변경 실패: {e}")
+
+        return {"ok": True, "message": f"오출로 변경 완료 ({len(item_list)}건)"}
+
     @router.post("/date-chunk/copy")
     async def date_chunk_copy(file: UploadFile = File(...), user: str = Depends(get_current_user)):
         ext = Path(file.filename or "").suffix.lower()
@@ -966,5 +1130,68 @@ def build_noye_kimsungil_router(*, get_current_user):
 
         tsv = df_out.to_csv(sep="\t", index=False, header=False, lineterminator="\n").rstrip("\n")
         return {"ok": True, "rows": len(df_out), "text": tsv}
+
+    @router.post("/today/load-from-ezadmin")
+    async def today_load_from_ezadmin(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        cookies = {"PHPSESSID": phpsessid}
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
+        try:
+            async with httpx.AsyncClient(timeout=120.0, verify=False, follow_redirects=True) as client:
+                r = await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data={
+                        "_search": "false",
+                        "nd": str(int(datetime.now().timestamp() * 1000)),
+                        "rows": "2000",
+                        "page": "1",
+                        "sidx": "",
+                        "sord": "asc",
+                        "template": "I100",
+                        "action": "search",
+                        "page_code": "I100",
+                        "par": (
+                            f"auto_search=&search_all_product=&multi_supply_group=&multi_supply="
+                            f"&str_supply_code={_TODAY_SUPPLY_CODE}&tags_string=&product_tag_include_type=1"
+                            f"&query_type=name&query_str=&stock_type=0&stock_start=1&stock_end="
+                            f"&notrans_day=&notrans_cnt=&notrans_status=0&stock_status=0"
+                            f"&start_date={today_str}&start_hour=00%3A00%3A00"
+                            f"&end_date={today_str}&end_hour=23%3A59%3A59&date_period_sel=0"
+                            f"&work_type=stockin&work_start=&work_end=&inout_type=0&product_date="
+                            f"&start_date2={today_str}&end_date2={today_str}&date_period_sel2=0"
+                            f"&products_sort=1&category=0&except_soldout=0&temp_soldout=0&location=0"
+                        ),
+                    },
+                    cookies=cookies,
+                )
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        # JSON 파싱 실패 = 로그인 페이지(HTML) 반환 → 세션 만료
+        try:
+            obj = r.json()
+        except Exception:
+            return {"ok": False, "need_session": True}
+
+        # rows 키 없으면 세션 오류 응답으로 판단
+        if "rows" not in obj:
+            return {"ok": False, "need_session": True}
+
+        rows = []
+        for row in obj.get("rows", []):
+            c = row.get("cell", {})
+            option_no = _safe_str(c.get("option_extra_column1"))
+            qty = max(0, int(float(c.get("stock_normal", 0) or 0)))
+            if option_no:
+                rows.append({"A": option_no, "B": str(qty)})
+
+        return {"ok": True, "rows": rows, "count": len(rows)}
 
     return router

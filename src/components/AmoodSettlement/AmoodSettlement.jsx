@@ -708,11 +708,133 @@ function SettingsTab({ onSaved }) {
   );
 }
 
+// ─── 실시간 아무드 탭 ─────────────────────────────────────────────────────────
+
+function RealtimeAmoodView() {
+  const [orderIds, setOrderIds] = useState(() => LS.get('amood_rt_order_ids', ''));
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
+
+  useEffect(() => { LS.set('amood_rt_order_ids', orderIds); }, [orderIds]);
+
+  const handleFetch = async () => {
+    const ids = orderIds.split(/[\n,\s]+/).map((s) => s.trim()).filter(Boolean);
+    if (!ids.length) { setError('주문 번호를 입력하세요'); return; }
+
+    setError('');
+    setLoading(true);
+    setResult(null);
+
+    try {
+      const res = await fetch(`${API}/amood-settlement/realtime-margin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ order_ids: ids }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.detail || '처리 실패');
+      setResult(data);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className={styles.tabContent}>
+      <div className={styles.inputSection}>
+        <div className={styles.inputRow}>
+          <label>주문 번호 (줄바꿈 또는 쉼표로 구분)</label>
+          <textarea
+            className={styles.jwtTextarea}
+            rows={5}
+            placeholder={"7198955\n7198956\n7198957"}
+            value={orderIds}
+            onChange={(e) => setOrderIds(e.target.value)}
+          />
+        </div>
+        <button className={styles.primaryBtn} onClick={handleFetch} disabled={loading}>
+          <Download size={16} />
+          {loading ? '처리 중...' : '마진 계산'}
+        </button>
+        {error && <p className={styles.error}>{error}</p>}
+      </div>
+
+      {loading && (
+        <div className={styles.loadingBox}>
+          <div className={styles.spinner} />
+          <span>주문 상세 조회 중...</span>
+        </div>
+      )}
+
+      {result && (
+        <>
+          <div className={styles.summaryCards}>
+            <div className={styles.card}>
+              <span className={styles.cardLabel}>총 주문 수</span>
+              <span className={styles.cardValue}>{result.summary.total_orders?.toLocaleString()}</span>
+            </div>
+            <div className={styles.card}>
+              <span className={styles.cardLabel}>총 정산금액</span>
+              <span className={styles.cardValue}>{fmt(result.summary.total_settlement_krw)}</span>
+            </div>
+            <div className={styles.card}>
+              <span className={styles.cardLabel}>총 원가</span>
+              <span className={styles.cardValue}>{fmt(result.summary.total_cost)}</span>
+            </div>
+            <div className={styles.card}>
+              <span className={styles.cardLabel}>총 마진</span>
+              <span className={`${styles.cardValue} ${result.summary.total_margin >= 0 ? styles.positive : styles.negative}`}>
+                {fmt(result.summary.total_margin)}
+              </span>
+            </div>
+            <div className={styles.card}>
+              <span className={styles.cardLabel}>전체 마진율</span>
+              <span className={`${styles.cardValue} ${result.summary.overall_margin_rate >= 0 ? styles.positive : styles.negative}`}>
+                {fmtRate(result.summary.overall_margin_rate)}
+              </span>
+            </div>
+            {result.summary.unmatched_count > 0 && (
+              <div className={`${styles.card} ${styles.cardWarn}`}>
+                <span className={styles.cardLabel}>원가 미등록</span>
+                <span className={styles.cardValue}>{result.summary.unmatched_count}개 상품</span>
+              </div>
+            )}
+            {result.summary.failed_orders?.length > 0 && (
+              <div className={`${styles.card} ${styles.cardWarn}`}>
+                <span className={styles.cardLabel}>조회 실패</span>
+                <span className={styles.cardValue}>{result.summary.failed_orders.length}건</span>
+              </div>
+            )}
+          </div>
+
+          {result.summary.failed_orders?.length > 0 && (
+            <div className={styles.errorBox}>
+              <p className={styles.errorBoxTitle}>조회 실패한 주문</p>
+              <div className={styles.failedList}>
+                {result.summary.failed_orders.map((id) => (
+                  <span key={id} className={styles.failedBadge}>#{id}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <ResultTable items={result.items} />
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── 메인 컴포넌트 ────────────────────────────────────────────────────────────
 
 const TABS = [
   { id: 'settlement', label: '아무드 정산 조회' },
   { id: 'ably', label: '에이블리 정산 조회' },
+  { id: 'realtime-amood', label: '실시간 아무드' },
   { id: 'costdb', label: '원가 DB' },
   { id: 'settings', label: '설정' },
 ];
@@ -742,6 +864,7 @@ export default function AmoodSettlement() {
 
       <div style={{ display: activeTab === 'settlement' ? 'block' : 'none' }}><SettlementView /></div>
       <div style={{ display: activeTab === 'ably' ? 'block' : 'none' }}><AblySettlementView /></div>
+      <div style={{ display: activeTab === 'realtime-amood' ? 'block' : 'none' }}><RealtimeAmoodView /></div>
       <div style={{ display: activeTab === 'costdb' ? 'block' : 'none' }}><CostDB /></div>
       <div style={{ display: activeTab === 'settings' ? 'block' : 'none' }}><SettingsTab onSaved={() => {}} /></div>
     </div>

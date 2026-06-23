@@ -1,5 +1,6 @@
 ﻿from dotenv import load_dotenv
 load_dotenv()
+import json
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body, Header, Depends, Response, Request
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -132,9 +133,12 @@ COST_BASE_MATCH_COL = 8
 COST_BASE_REQUIRED_COLS = COST_BASE_MATCH_COL + 1
 SHARED_INCOMING_COUNTS: dict[str, int] = {}
 SHARED_DEFECT_COUNTS: dict[str, int] = {}
+SHARED_KIMSUNGIL_COUNTS: dict[str, int] = {}
+_KIMSUNGIL_LOADED: bool = False
 SHARED_BARCODE_DATA: dict = {
     "loaded": False,
     "mapping": None,
+    "original_mapping": None,
     "details": None,
     "runs": None,
     "invoice_order": None,
@@ -196,6 +200,32 @@ def _set_shared_defect_counts(counts: dict[str, int] | None):
     SHARED_DEFECT_COUNTS.clear()
     if counts:
         SHARED_DEFECT_COUNTS.update(counts)
+
+
+def _get_shared_kimsungil_counts() -> dict[str, int]:
+    global _KIMSUNGIL_LOADED
+    if not _KIMSUNGIL_LOADED:
+        try:
+            val = _get_setting("kimsungil_counts")
+            if val:
+                data = json.loads(val)
+                SHARED_KIMSUNGIL_COUNTS.update({k: int(v) for k, v in data.items()})
+        except Exception:
+            pass
+        _KIMSUNGIL_LOADED = True
+    return SHARED_KIMSUNGIL_COUNTS
+
+
+def _set_shared_kimsungil_counts(counts: dict[str, int] | None):
+    global _KIMSUNGIL_LOADED
+    SHARED_KIMSUNGIL_COUNTS.clear()
+    if counts:
+        SHARED_KIMSUNGIL_COUNTS.update(counts)
+    _KIMSUNGIL_LOADED = True
+    try:
+        _set_setting("kimsungil_counts", json.dumps(SHARED_KIMSUNGIL_COUNTS, ensure_ascii=False))
+    except Exception:
+        pass
 
 
 def _load_return_cost_base(state: ReturnState):
@@ -1163,6 +1193,8 @@ app.include_router(
         set_shared_incoming_counts=_set_shared_incoming_counts,
         get_shared_defect_counts=_get_shared_defect_counts,
         set_shared_defect_counts=_set_shared_defect_counts,
+        get_shared_kimsungil_counts=_get_shared_kimsungil_counts,
+        set_shared_kimsungil_counts=_set_shared_kimsungil_counts,
         set_shared_barcode_data=_set_shared_barcode_data,
         get_setting=_get_setting,
         set_setting=_set_setting,
@@ -1182,12 +1214,18 @@ app.include_router(
     build_return_shipping_router(
         get_current_user=_get_current_user,
         get_db=_get_db,
+        get_setting=_get_setting,
+        enqueue_sms=_enqueue_sms_fn,
+        get_shared_db=_get_shared_db,
     )
 )
 
 app.include_router(
     build_exchange_return_router(
         get_current_user=_get_current_user,
+        get_setting=_get_setting,
+        get_db=_get_shared_db,
+        enqueue_sms=_enqueue_sms_fn,
     )
 )
 
@@ -1267,6 +1305,7 @@ app.include_router(
         require_admin=_require_admin,
         get_return_state=_get_return_state,
         get_db=_get_shared_db,
+        get_setting=_get_setting,
         return_status=_return_status,
         return_queue_payload=_return_queue_payload,
         return_rows=_return_rows,
@@ -1299,12 +1338,15 @@ app.include_router(
 app.include_router(
     build_noye_kimsungil_router(
         get_current_user=_get_current_user,
+        get_setting=_get_setting,
+        set_setting=_set_setting,
     )
 )
 app.include_router(
     build_misong_router(
         get_current_user=_get_current_user,
         get_db=_get_shared_db,
+        get_setting=_get_setting,
     )
 )
 app.include_router(

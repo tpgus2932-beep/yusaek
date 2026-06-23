@@ -64,6 +64,8 @@ def build_amood_router(
         ws_data.cell(1, 3).value = "주문번호(내부)"
         ws_data.cell(1, 4).value = "선적바코드"
         ws_data.cell(1, 8).value = "상품명"
+        ws_data.cell(1, 10).value = "옵션"
+        ws_data.cell(1, 11).value = "수량"
 
         for i, item in enumerate(items, start=2):
             hbl = item.get("ably_pantos_hbl") or {}
@@ -71,6 +73,9 @@ def build_amood_router(
             ws_data.cell(i, 3).value = (item.get("order") or {}).get("id")
             ws_data.cell(i, 4).value = hbl.get("hbl_no") or ""
             ws_data.cell(i, 8).value = (item.get("product") or {}).get("name_origin") or ""
+            opt_vals = (item.get("product_option") or {}).get("option_values_origin") or []
+            ws_data.cell(i, 10).value = "/".join(str(v) for v in opt_vals if v)
+            ws_data.cell(i, 11).value = item.get("quantity") or 1
 
         tmp_path = Path(tempfile.gettempdir()) / f"amood_pastelco_{uuid.uuid4().hex}.xlsx"
         wb.save(tmp_path)

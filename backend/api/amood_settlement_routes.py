@@ -10,8 +10,10 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Upload
 
 from services.amood_settlement_utils import (
     aggregate_by_product,
+    aggregate_realtime_by_product,
     build_settlement_download_url,
     fetch_order_details_batch,
+    fetch_order_details_realtime,
     fetch_settlement_csv,
     fetch_settlement_history_list,
     now_iso,
@@ -323,6 +325,50 @@ def build_amood_settlement_router(*, get_current_user, get_db):
             csv_rows, order_details, cost_map, per_item_cost
         )
 
+        return {"ok": True, "items": items, "summary": summary}
+
+    # ── 실시간 마진 계산 ──────────────────────────────────────────────────────
+
+    @router.post("/realtime-margin")
+    async def realtime_margin(
+        payload: dict = Body(...), user: str = Depends(get_current_user)
+    ):
+        order_ids = [str(oid).strip() for oid in payload.get("order_ids", []) if str(oid).strip()]
+        if not order_ids:
+            raise HTTPException(status_code=400, detail="order_ids 필수")
+
+        try:
+            jwt_token = await pastelco_login()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        order_details = await fetch_order_details_realtime(order_ids, jwt_token, concurrency=10)
+
+        conn = get_db()
+        try:
+            cost_rows = conn.execute(
+                "SELECT product_name, cost_price FROM amood_product_costs"
+            ).fetchall()
+            cost_map = {r["product_name"]: r["cost_price"] for r in cost_rows}
+        finally:
+            conn.close()
+
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT value FROM amood_settlement_settings WHERE key = 'per_item_cost'"
+            ).fetchone()
+            per_item_cost = int(row["value"]) if row else 1900
+        finally:
+            conn.close()
+
+        if "per_item_cost" in payload:
+            try:
+                per_item_cost = int(payload["per_item_cost"])
+            except (TypeError, ValueError):
+                pass
+
+        items, summary = aggregate_realtime_by_product(order_ids, order_details, cost_map, per_item_cost)
         return {"ok": True, "items": items, "summary": summary}
 
     return router

@@ -474,6 +474,16 @@
   border: 1px solid rgba(17, 154, 94, 0.25);
 }
 
+.inlineTagStock {
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  background-color: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
 .inlineTagDanger {
   font-size: 0.75rem;
   font-weight: 700;

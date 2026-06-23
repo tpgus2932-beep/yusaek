@@ -2,12 +2,15 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 import io
+import json
 import os
 import re
 import shutil
+import sqlite3
 import tempfile
 import uuid
 
+import httpx
 import openpyxl
 import pandas as pd
 import urllib.parse
@@ -17,6 +20,21 @@ from fastapi.responses import FileResponse, Response
 from services.cost_base_append import append_tsv_rows_to_excel
 
 router = APIRouter()
+
+_EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
+_EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+_AH_DB_PATH = Path(os.environ.get("APP_DB_PATH") or Path(__file__).resolve().parent.parent / "app.db")
+_amood_ezadmin_log: list[dict] = []
+
+
+def _ah_get_ezadmin_phpsessid() -> str:
+    try:
+        conn = sqlite3.connect(str(_AH_DB_PATH))
+        row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (_EZADMIN_SESSION_KEY,)).fetchone()
+        conn.close()
+        return (row[0] if row else "") or ""
+    except Exception:
+        return ""
 
 AMOOD_HAPBAE_ALLOWED_EXCEL = {".xlsx", ".xlsm"}
 AMOOD_HAPBAE_ALLOWED_COST_BASE = {".xlsx", ".xls", ".xlsm"}
@@ -30,6 +48,29 @@ SHARED_COST_BASE_PATH = Path(
     or r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스유.xlsx"
 )
 AMOOD_HAPBAE_COST_BASE_CACHE: dict[str, object] = {"df": None, "mtime": None, "path": None}
+
+_LAST_FILE_DIR = Path(os.environ.get("AMOOD_HAPBAE_LAST_FILE_DIR") or Path(__file__).resolve().parent.parent / "uploads" / "amood_hapbae")
+_LAST_FILE_PATH = _LAST_FILE_DIR / "last_upload.xlsx"
+_LAST_META_PATH = _LAST_FILE_DIR / "last_upload_meta.json"
+
+
+def _ah_save_last_file(data: bytes, filename: str) -> None:
+    _LAST_FILE_DIR.mkdir(parents=True, exist_ok=True)
+    _LAST_FILE_PATH.write_bytes(data)
+    _LAST_META_PATH.write_text(
+        json.dumps({"filename": filename, "uploaded_at": datetime.now().isoformat()}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _ah_load_last_file() -> tuple[bytes | None, str | None]:
+    if not _LAST_FILE_PATH.exists() or not _LAST_META_PATH.exists():
+        return None, None
+    try:
+        meta = json.loads(_LAST_META_PATH.read_text(encoding="utf-8"))
+        return _LAST_FILE_PATH.read_bytes(), meta.get("filename")
+    except Exception:
+        return None, None
 
 
 def _content_disposition(filename: str) -> str:
@@ -140,7 +181,13 @@ def _ah_build_output_rows_from_hj(path: Path, skip_header: bool = True):
 
         h_val = _ah_normalize(ws.cell(row=r, column=8).value)
         j_val = _ah_normalize(ws.cell(row=r, column=10).value)
-        k_qty = ws.cell(row=r, column=11).value
+        k_raw = ws.cell(row=r, column=11).value
+        try:
+            k_qty = float(k_raw) if k_raw is not None and str(k_raw).strip() != "" else 0.0
+        except Exception:
+            k_qty = 0.0
+        if k_qty <= 0:
+            k_qty = 1
 
         if h_val == "" and j_val == "":
             continue
@@ -493,6 +540,8 @@ def amood_hapbae_cost_base_edit_batch(payload: dict = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"원가베이스 로드 실패: {e}")
 
+    _PREVIEW_COL_MAP = [COST_BASE_CODE_COL, COST_BASE_MATCH_COL]  # display 0→A, 1→I
+
     for item in edits:
         row_index = item.get("row_index")
         column = item.get("column")
@@ -502,9 +551,10 @@ def amood_hapbae_cost_base_edit_batch(payload: dict = Body(...)):
         if row_index >= len(df):
             continue
         if isinstance(column, int):
-            if column < 0 or column >= len(df.columns):
+            if column < 0 or column >= len(_PREVIEW_COL_MAP):
                 continue
-            col_name = df.columns[column]
+            actual_idx = _PREVIEW_COL_MAP[column]
+            col_name = df.columns[actual_idx]
         elif isinstance(column, str) and column in df.columns:
             col_name = column
         else:
@@ -555,16 +605,24 @@ def amood_hapbae_cost_base_add_row(payload: dict = Body(...)):
 
 @router.post("/amood-hapbae/conflicts")
 async def amood_hapbae_conflicts(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
     skip_header: bool = Form(True),
 ):
-    name = file.filename or ""
-    ext = Path(name).suffix.lower()
-    if ext not in AMOOD_HAPBAE_ALLOWED_EXCEL:
-        raise HTTPException(status_code=400, detail="xlsx/xlsm 파일만 업로드 가능합니다.")
+    if file is not None:
+        name = file.filename or ""
+        ext = Path(name).suffix.lower()
+        if ext not in AMOOD_HAPBAE_ALLOWED_EXCEL:
+            raise HTTPException(status_code=400, detail="xlsx/xlsm 파일만 업로드 가능합니다.")
+        data = await file.read()
+        _ah_save_last_file(data, name)
+    else:
+        data, saved_name = _ah_load_last_file()
+        if data is None:
+            raise HTTPException(status_code=400, detail="파일을 선택하거나 이전에 업로드된 파일이 있어야 합니다.")
+        name = saved_name or "last_upload.xlsx"
+        ext = Path(name).suffix.lower()
 
     tmp_path = Path(tempfile.gettempdir()) / f"amood_hapbae_conflicts_{uuid.uuid4().hex}{ext}"
-    data = await file.read()
     tmp_path.write_bytes(data)
 
     try:
@@ -608,7 +666,7 @@ async def amood_hapbae_conflicts(
 
 @router.post("/amood-hapbae/export")
 async def amood_hapbae_export(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
     skip_header: bool = Form(True),
     header_col1: str = Form("상품명"),
     header_col2: str = Form("상품코드"),
@@ -619,10 +677,19 @@ async def amood_hapbae_export(
     include_col3: bool = Form(True),
     include_col4: bool = Form(True),
 ):
-    name = file.filename or "amood_hapbae.xlsx"
-    ext = Path(name).suffix.lower()
-    if ext not in AMOOD_HAPBAE_ALLOWED_EXCEL:
-        raise HTTPException(status_code=400, detail="xlsx/xlsm 파일만 업로드 가능합니다.")
+    if file is not None:
+        name = file.filename or "amood_hapbae.xlsx"
+        ext = Path(name).suffix.lower()
+        if ext not in AMOOD_HAPBAE_ALLOWED_EXCEL:
+            raise HTTPException(status_code=400, detail="xlsx/xlsm 파일만 업로드 가능합니다.")
+        data = await file.read()
+        _ah_save_last_file(data, name)
+    else:
+        data, saved_name = _ah_load_last_file()
+        if data is None:
+            raise HTTPException(status_code=400, detail="파일을 선택하거나 이전에 업로드된 파일이 있어야 합니다.")
+        name = saved_name or "amood_hapbae.xlsx"
+        ext = Path(name).suffix.lower()
 
     if not SHARED_COST_BASE_PATH.exists():
         raise HTTPException(
@@ -631,7 +698,6 @@ async def amood_hapbae_export(
         )
 
     tmp_path = Path(tempfile.gettempdir()) / f"amood_hapbae_export_{uuid.uuid4().hex}{ext}"
-    data = await file.read()
     tmp_path.write_bytes(data)
 
     try:
@@ -667,6 +733,202 @@ async def amood_hapbae_export(
             media_type="application/vnd.ms-excel",
             headers=headers,
         )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _ah_build_ezadmin_xls(rows: list[tuple[str, object]], cost_map: dict) -> bytes:
+    merged_rows: list[tuple[str, object, object]] = []
+    code_index: dict[str, int] = {}
+    for val, qty in rows:
+        product_code = cost_map.get(_ah_normalize_match_key(val), "")
+        code_key = _ah_normalize_match_key(product_code)
+        if not code_key:
+            merged_rows.append((val, qty, product_code))
+            continue
+        if code_key not in code_index:
+            code_index[code_key] = len(merged_rows)
+            merged_rows.append((val, qty, product_code))
+            continue
+        idx = code_index[code_key]
+        prev_val, prev_qty, prev_code = merged_rows[idx]
+        try:
+            prev_num = float(prev_qty) if prev_qty is not None and str(prev_qty).strip() != "" else 0.0
+        except Exception:
+            prev_num = 0.0
+        try:
+            add_num = float(qty) if qty is not None and str(qty).strip() != "" else 0.0
+        except Exception:
+            add_num = 0.0
+        total = prev_num + add_num
+        merged_rows[idx] = (prev_val, int(total) if float(total).is_integer() else total, prev_code)
+
+    book = xlwt.Workbook()
+    sheet = book.add_sheet("작업")
+    sheet.write(0, 0, "상품코드")
+    sheet.write(0, 1, "작업수량")
+    sheet.write(0, 2, "메모")
+    row_idx = 1
+    for _, qty, product_code in merged_rows:
+        if not _ah_normalize(str(product_code or "")):
+            continue
+        sheet.write(row_idx, 0, str(product_code))
+        sheet.write(row_idx, 1, qty if isinstance(qty, (int, float)) else 0)
+        sheet.write(row_idx, 2, "아무드합배")
+        row_idx += 1
+    buf = io.BytesIO()
+    book.save(buf)
+    return buf.getvalue(), row_idx - 1
+
+
+async def _ah_send_to_ezadmin_impl(xls_bytes: bytes, direction: str, phpsessid: str) -> dict:
+    cookies = {"PHPSESSID": phpsessid}
+    ez_headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": f"{_EZADMIN_BASE}/template40.htm?template=I210",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    base_url = f"{_EZADMIN_BASE}/function.htm"
+    ts_ms = str(int(datetime.now().timestamp() * 1000))
+    diag: dict = {}
+
+    async with httpx.AsyncClient(timeout=120.0, verify=False, follow_redirects=True) as client:
+        # 템플릿 페이지 먼저 방문 — EZAdmin 서버 사이드 세션 변수 초기화
+        await client.get(
+            f"{_EZADMIN_BASE}/template40.htm",
+            params={"template": "I210"},
+            cookies=cookies,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+
+        upload_r = await client.post(
+            base_url,
+            data={"template": "I200", "action": "upload_new"},
+            files={"_file": (f"amood_hapbae_{ts_ms}.xls", xls_bytes, "application/vnd.ms-excel")},
+            cookies=cookies,
+            headers=ez_headers,
+        )
+        diag["upload_status"] = upload_r.status_code
+        diag["upload_body"] = upload_r.text[:200]
+        if upload_r.status_code >= 400:
+            return {"ok": False, "error": f"업로드 실패 (HTTP {upload_r.status_code})", "_diag": diag}
+
+        preview_r = await client.post(
+            base_url,
+            data={
+                "_search": "false", "nd": ts_ms,
+                "rows": "99999", "page": "1", "sidx": "", "sord": "asc",
+                "template": "I200", "action": "load_template_data_new",
+            },
+            cookies=cookies,
+            headers=ez_headers,
+        )
+        diag["preview_status"] = preview_r.status_code
+        try:
+            diag["preview_data"] = preview_r.json()
+        except Exception:
+            diag["preview_body"] = preview_r.text[:200]
+            return {"ok": False, "need_session": True, "_diag": diag}
+
+        time_flag = datetime.now().strftime("%a %b %d %Y %H:%M:%S GMT+0900 (한국 표준시)")
+        apply_r = await client.post(
+            base_url,
+            data={
+                "template": "I200", "action": "apply_new",
+                "bad": "0", "type": direction,
+                "move_warehouse": "0", "save_stock": "0",
+                "stock_tag": "", "timeFlag": time_flag,
+            },
+            cookies=cookies,
+            headers=ez_headers,
+        )
+        diag["apply_status"] = apply_r.status_code
+        try:
+            apply_data = apply_r.json()
+            diag["apply_data"] = apply_data
+        except Exception:
+            diag["apply_body"] = apply_r.text[:300]
+            label = "출고" if direction == "out" else "입고"
+            return {"ok": False, "error": f"{label}처리 응답 파싱 실패", "_diag": diag}
+
+        result_code = str(apply_data.get("result", "")).strip()
+        if result_code == "0" or result_code == "false":
+            return {"ok": False, "error": apply_data.get("message") or apply_data.get("msg") or f"EZAdmin 처리 거부 (result={result_code})", "_diag": diag}
+
+    return {"ok": True, "_diag": diag}
+
+
+@router.get("/amood-hapbae/last-file/info")
+def amood_hapbae_last_file_info():
+    if not _LAST_META_PATH.exists():
+        return {"ok": True, "file": None}
+    try:
+        meta = json.loads(_LAST_META_PATH.read_text(encoding="utf-8"))
+        return {"ok": True, "file": meta}
+    except Exception:
+        return {"ok": True, "file": None}
+
+
+@router.get("/amood-hapbae/ezadmin-log")
+def amood_hapbae_ezadmin_log():
+    return {"log": list(reversed(_amood_ezadmin_log))}
+
+
+@router.post("/amood-hapbae/send-to-ezadmin")
+async def amood_hapbae_send_to_ezadmin(
+    file: UploadFile | None = File(None),
+    direction: str = Form("out"),
+    skip_header: bool = Form(True),
+):
+    phpsessid = _ah_get_ezadmin_phpsessid()
+    if not phpsessid:
+        return {"ok": False, "need_session": True}
+
+    if file is not None:
+        name = file.filename or "amood_hapbae.xlsx"
+        ext = Path(name).suffix.lower()
+        if ext not in AMOOD_HAPBAE_ALLOWED_EXCEL:
+            raise HTTPException(status_code=400, detail="xlsx/xlsm 파일만 가능합니다.")
+        data = await file.read()
+        if not data:
+            raise HTTPException(status_code=400, detail="파일이 비어 있습니다.")
+        _ah_save_last_file(data, name)
+    else:
+        data, saved_name = _ah_load_last_file()
+        if data is None:
+            raise HTTPException(status_code=400, detail="파일을 선택하거나 이전에 업로드된 파일이 있어야 합니다.")
+        name = saved_name or "amood_hapbae.xlsx"
+        ext = Path(name).suffix.lower()
+
+    tmp_path = Path(tempfile.gettempdir()) / f"amood_ez_{uuid.uuid4().hex}{ext}"
+    tmp_path.write_bytes(data)
+
+    try:
+        _, rows = _ah_build_output_rows_from_hj(tmp_path, skip_header=skip_header)
+        if not rows:
+            raise HTTPException(status_code=400, detail="가공할 데이터(H/J)가 없습니다.")
+        cost_map = _ah_load_base_cost_map(SHARED_COST_BASE_PATH) if SHARED_COST_BASE_PATH.exists() else {}
+        xls_bytes, count = _ah_build_ezadmin_xls(rows, cost_map)
+        result = await _ah_send_to_ezadmin_impl(xls_bytes, direction, phpsessid)
+        if result.get("ok"):
+            result["count"] = count
+        label = "출고" if direction == "out" else "입고"
+        _amood_ezadmin_log.append({
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "label": label,
+            "ok": bool(result.get("ok")),
+            "count": count if result.get("ok") else 0,
+            "error": result.get("error") or "",
+            "diag": result.get("_diag"),
+        })
+        return result
     except HTTPException:
         raise
     except Exception as e:

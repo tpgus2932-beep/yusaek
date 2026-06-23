@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import styles from "./NoyeKimPage.module.css";
 import { getDownloadFilename } from "../../lib/download";
 import { appendTsvToCostBase } from "../../lib/costBase";
@@ -72,6 +73,11 @@ function hasPickupMarker(value) {
   return normalized.includes("미송픽업") || (normalized.includes("미송") && normalized.includes("픽업"));
 }
 
+function hasExchangePickupMarker(value) {
+  const normalized = normalizePickupText(value);
+  return normalized.includes("교환픽업") || (normalized.includes("교환") && normalized.includes("픽업"));
+}
+
 function isMissingMarker(value) {
   const normalized = normalizePickupText(value);
   return normalized.includes("미송") && !hasPickupMarker(value);
@@ -139,6 +145,7 @@ function convertCurrentReceiptExcelRowsSplitV3(rawData) {
   const date = formatLocalDate();
   const normalCostFormula = "=INDEX(Sheet2!E:E,MATCH([@\uAC70\uB798\uCC98\uC0C1\uD488\uBA85],Sheet2!G:G,0),0)*[@\uAC1C\uC218]";
   const pickupLabel = "\uBBF8\uC1A1\uD53D\uC5C5";
+  const exchangePickupLabel = "교환픽업";
   const missingLabel = "\uBBF8\uC1A1";
   const normalLabel = "\u3147";
 
@@ -158,6 +165,7 @@ function convertCurrentReceiptExcelRowsSplitV3(rawData) {
     const optionMatch = optionCell.match(/\[([^\]]+)\]/);
     const optionText = optionMatch ? optionMatch[1] : optionCell.replace(/^\[|\]$/g, "");
     const { color, size } = extractOptionParts(optionText);
+    const isExchangePickup = hasExchangePickupMarker(pickupText);
     const isPickup = hasPickupMarker(pickupText);
     const pickupOnOriginalRow = isPickup && requestQty <= 0;
 
@@ -165,12 +173,12 @@ function convertCurrentReceiptExcelRowsSplitV3(rawData) {
       rows.push({
         A: supplierPrefix,
         B: supplierSuffix,
-        C: pickupOnOriginalRow ? pickupLabel : normalCostFormula,
+        C: isExchangePickup ? exchangePickupLabel : pickupOnOriginalRow ? pickupLabel : normalCostFormula,
         D: color,
         E: size,
         F: String(originalQty),
         G: date,
-        H: pickupOnOriginalRow ? pickupLabel : normalLabel,
+        H: isExchangePickup ? exchangePickupLabel : pickupOnOriginalRow ? pickupLabel : normalLabel,
         I: originalFVal,
         originalF: originalFVal,
       });
@@ -180,12 +188,12 @@ function convertCurrentReceiptExcelRowsSplitV3(rawData) {
       rows.push({
         A: supplierPrefix,
         B: supplierSuffix,
-        C: isPickup ? pickupLabel : normalCostFormula,
+        C: isExchangePickup ? exchangePickupLabel : isPickup ? pickupLabel : normalCostFormula,
         D: color,
         E: size,
         F: String(requestQty),
         G: date,
-        H: isPickup ? pickupLabel : missingLabel,
+        H: isExchangePickup ? exchangePickupLabel : isPickup ? pickupLabel : missingLabel,
         I: originalFVal,
         originalF: originalFVal,
       });
@@ -261,9 +269,18 @@ export default function NoyeKimPage() {
 
   const [todayFile, setTodayFile] = useState(null);
   const [todayRows, setTodayRows] = useState([]);
+  const [todayResetLoading, setTodayResetLoading] = useState(false);
+  const [todayDeliveryLoading, setTodayDeliveryLoading] = useState(false);
+  const [todayEzadminLoading, setTodayEzadminLoading] = useState(false);
+  const { openModal: openEzadminModal } = useEzadminSession();
+  const [ablyMinusLoading, setAblyMinusLoading] = useState(false);
   const [excelSlipFile, setExcelSlipFile] = useState(null);
   const [excelSlipRows, setExcelSlipRows] = useState([]);
   const [excelSlipOutput, setExcelSlipOutput] = useState("");
+  const [slipVoucherList, setSlipVoucherList] = useState([]);
+  const [showSlipVoucherModal, setShowSlipVoucherModal] = useState(false);
+  const [selectedSlipSheets, setSelectedSlipSheets] = useState([]);
+  const [loadingSlipVoucherList, setLoadingSlipVoucherList] = useState(false);
 
   const [misongItems, setMisongItems] = useState([]);
   const [misongAlerts, setMisongAlerts] = useState([]);
@@ -286,8 +303,11 @@ export default function NoyeKimPage() {
   const [misongDisappearedOpen, setMisongDisappearedOpen] = useState(false);
   const [misongDisappearedItems, setMisongDisappearedItems] = useState([]);
   const [misongDisappearedLoading, setMisongDisappearedLoading] = useState(false);
+  const [misongQtyEdit, setMisongQtyEdit] = useState({ id: null, value: "" });
   const [waitingBaseAppendOpen, setWaitingBaseAppendOpen] = useState(false);
   const [waitingBaseAppendText, setWaitingBaseAppendText] = useState("");
+  const [ingodaegiLoading, setIngodaegiLoading] = useState(false);
+  const [ingodaegiMsg, setIngodaegiMsg] = useState("");
 
   // 불량출력
   const [bulyangFile, setBulyangFile] = useState(null);
@@ -745,6 +765,27 @@ export default function NoyeKimPage() {
     }
   };
 
+  const loadTodayFromEzadmin = async () => {
+    try {
+      setTodayEzadminLoading(true); setMessage("");
+      const res = await fetch(`${API}/noye-kimsungil/today/load-from-ezadmin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) {
+        openEzadminModal(loadTodayFromEzadmin);
+        return;
+      }
+      if (!res.ok || !data?.ok) throw new Error(data?.error || data?.detail || "EZAdmin 불러오기 실패");
+      setTodayRows(data.rows ?? []);
+      setMessage(`EZAdmin 로드 완료: ${data.count ?? 0}행`);
+    } catch (err) {
+      setMessage(err.message || "EZAdmin 불러오기 실패");
+    } finally { setTodayEzadminLoading(false); }
+  };
+
   const processTodayFile = async () => {
     if (!todayFile) {
       setMessage("가공할 XLS 파일을 선택하세요.");
@@ -798,6 +839,73 @@ export default function NoyeKimPage() {
       setMessage(err.message || "다운로드 실패");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleTodayResetStock = async () => {
+    if (!todayRows.length) {
+      setMessage("먼저 파일을 선택하고 가공 버튼을 눌러주세요.");
+      return;
+    }
+    if (!window.confirm(`가공된 ${todayRows.length}건으로 에이블리재고변경.xlsx를 업데이트 후 초기화합니다. 계속하시겠습니까?`)) return;
+    setTodayResetLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/noye-kimsungil/today/reset-stock`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ rows: todayRows }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "재고 초기화 실패");
+      setMessage(data.message || "오늘출발 재고 초기화 완료");
+    } catch (err) {
+      setMessage(err.message || "재고 초기화 실패");
+    } finally {
+      setTodayResetLoading(false);
+    }
+  };
+
+  const handleAblyMinus = async () => {
+    if (!window.confirm("오출 주문 수량만큼 오늘배송 옵션 재고를 차감합니다.\n\n진행하시겠습니까?")) return;
+    setAblyMinusLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/ably-minus/run`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "실행 실패");
+      setMessage(data.message || `완료: 오출 품목 ${data.sync_map_size ?? 0}종 / 재고 차감 ${data.matched ?? 0}건`);
+    } catch (err) {
+      setMessage(err.message || "실행 실패");
+    } finally {
+      setAblyMinusLoading(false);
+    }
+  };
+
+  const handleTodaySetDeliveryType = async () => {
+    if (!todayRows.length) {
+      setMessage("먼저 파일을 선택하고 가공 버튼을 눌러주세요.");
+      return;
+    }
+    if (!window.confirm(`매칭된 옵션번호를 오늘출발(today)로 변경합니다. 계속하시겠습니까?`)) return;
+    setTodayDeliveryLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/noye-kimsungil/today/set-delivery-type`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ rows: todayRows }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "오출로 변경 실패");
+      setMessage(data.message || "오출로 변경 완료");
+    } catch (err) {
+      setMessage(err.message || "오출로 변경 실패");
+    } finally {
+      setTodayDeliveryLoading(false);
     }
   };
 
@@ -978,6 +1086,63 @@ export default function NoyeKimPage() {
         setLoading(false);
       }
     })();
+  };
+
+  const handleSlipFromEzadmin = async () => {
+    try {
+      setLoadingSlipVoucherList(true);
+      setMessage("");
+      const res = await fetch(`${API}/barcode/incoming/ezadmin-voucher-list`, {
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) { openEzadminModal(handleSlipFromEzadmin); return; }
+      if (!res.ok || !data?.ok) { setMessage(data?.detail || "EZAdmin 목록 조회 실패"); return; }
+      if (!data.vouchers?.length) { setMessage("오늘 입고전표가 없습니다."); return; }
+      // 첫 번째 전표의 필드 확인용 로그 (개발 참고 후 제거 가능)
+      if (data.vouchers[0]) console.log("[EZAdmin IM00 cell fields]", data.vouchers[0].cell);
+      setSlipVoucherList(data.vouchers);
+      setSelectedSlipSheets(data.vouchers.map((v) => String(v.sheet)));
+      setShowSlipVoucherModal(true);
+    } catch (err) {
+      setMessage(`목록 조회 실패: ${err.message || ""}`.trim());
+    } finally {
+      setLoadingSlipVoucherList(false);
+    }
+  };
+
+  const handleSlipVoucherConfirm = async () => {
+    if (!selectedSlipSheets.length) return;
+    setShowSlipVoucherModal(false);
+    setLoading(true);
+    setMessage("EZAdmin에서 불러오는 중... (최대 60초)");
+    setExcelSlipRows([]); setExcelSlipOutput("");
+    try {
+      const res = await fetch(`${API}/barcode/incoming/raw-file-from-ezadmin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ sheet_list: selectedSlipSheets, page_code: "IM10_file" }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (data?.need_session) { openEzadminModal(handleSlipFromEzadmin); return; }
+        throw new Error(data?.error || data?.detail || "EZAdmin 다운로드 실패");
+      }
+      const arrayBuffer = await res.arrayBuffer();
+      const XLSX = await import("xlsx");
+      const workbook = XLSX.read(arrayBuffer, { type: "array" });
+      const sheet = getFirstDataSheet(workbook);
+      const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+      const rows = convertCurrentReceiptExcelRowsSplitV3(rawData);
+      if (!rows.length) { setMessage("변환 가능한 행을 찾지 못했습니다."); return; }
+      setExcelSlipRows(rows);
+      setExcelSlipOutput(rowsToTsv(rows));
+      setMessage(`EZAdmin 입고전표 변환 완료: ${rows.length}건 (${selectedSlipSheets.length}개 전표)`);
+    } catch (err) {
+      setMessage(`EZAdmin 불러오기 실패: ${err.message || ""}`.trim());
+    } finally {
+      setLoading(false);
+    }
   };
 
   const copyExcelSlipResult = async () => {
@@ -1373,6 +1538,25 @@ export default function NoyeKimPage() {
     finally { setLoading(false); }
   };
 
+  const commitMisongQtyEdit = async (item) => {
+    const raw = misongQtyEdit.value;
+    setMisongQtyEdit({ id: null, value: "" });
+    const newQty = Number(raw);
+    if (isNaN(newQty) || String(raw).trim() === "" || newQty === Number(item.F)) return;
+    try {
+      const res = await fetch(`${API}/noye-kimsungil/misong/items/${item.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ ...item, F: newQty }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "수정 실패");
+      setMisongItems((prev) => prev.map((i) => i.id === item.id ? data.item : i));
+    } catch (err) {
+      setMessage(err.message || "수정 실패");
+    }
+  };
+
   const downloadMisongXls = async () => {
     if (!misongItems.length) { setMessage("다운로드할 항목이 없습니다."); return; }
     setLoading(true);
@@ -1412,6 +1596,27 @@ export default function NoyeKimPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleIngodaegiEzadmin = async () => {
+    try {
+      setIngodaegiLoading(true); setIngodaegiMsg("입고대기설정 중...");
+      const res = await fetch(`${API}/noye-kimsungil/misong/waiting-base/export-to-ezadmin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) {
+        openEzadminModal(handleIngodaegiEzadmin);
+        return;
+      }
+      if (!data?.ok) { setIngodaegiMsg(data?.error || "입고대기설정 실패"); return; }
+      const applyInfo = data.apply_response ? ` | EZ응답: ${JSON.stringify(data.apply_response).slice(0, 100)}` : "";
+      setIngodaegiMsg(`입고대기설정 완료 (${data.count ?? 0}건)${applyInfo}`);
+    } catch (err) {
+      setIngodaegiMsg(`입고대기설정 실패: ${err.message || ""}`);
+    } finally { setIngodaegiLoading(false); }
   };
 
   const setLayout = (key, val) => setBulyangLayout((prev) => ({ ...prev, [key]: val }));
@@ -1787,6 +1992,13 @@ export default function NoyeKimPage() {
                 </button>
                 <button
                   className={styles.secondaryBtn}
+                  onClick={handleIngodaegiEzadmin}
+                  disabled={ingodaegiLoading || misongItems.length === 0}
+                >
+                  {ingodaegiLoading ? "처리 중..." : "입고대기설정"}
+                </button>
+                <button
+                  className={styles.secondaryBtn}
                   onClick={clearMisongItems}
                   disabled={misongItems.length === 0}
                 >
@@ -1794,6 +2006,11 @@ export default function NoyeKimPage() {
                 </button>
               </div>
             </div>
+            {ingodaegiMsg && (
+              <div style={{ fontSize: "0.85rem", color: "var(--text-muted)", padding: "0.25rem 0" }}>
+                {ingodaegiMsg}
+              </div>
+            )}
 
             {misongItems.length === 0 ? (
               <div className={styles.empty}>미송 항목이 없습니다.</div>
@@ -1837,7 +2054,31 @@ export default function NoyeKimPage() {
                           <td>{item.B}</td>
                           <td>{item.D}</td>
                           <td>{item.E}</td>
-                          <td><span className={styles.pill}>{item.F}</span></td>
+                          <td>
+                            {misongQtyEdit.id === item.id ? (
+                              <input
+                                type="number"
+                                autoFocus
+                                value={misongQtyEdit.value}
+                                onChange={(e) => setMisongQtyEdit({ id: item.id, value: e.target.value })}
+                                onBlur={() => commitMisongQtyEdit(item)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") e.currentTarget.blur();
+                                  if (e.key === "Escape") setMisongQtyEdit({ id: null, value: "" });
+                                }}
+                                style={{ width: "56px", textAlign: "center", fontSize: "0.82rem", padding: "1px 4px" }}
+                              />
+                            ) : (
+                              <span
+                                className={styles.pill}
+                                style={{ cursor: "pointer" }}
+                                onClick={() => setMisongQtyEdit({ id: item.id, value: String(item.F ?? "") })}
+                                title="클릭하여 수량 수정"
+                              >
+                                {item.F}
+                              </span>
+                            )}
+                          </td>
                           <td className={styles.misongCode}>{item.originalF}</td>
                           <td>
                             <div className={styles.misongDateCell}>
@@ -2367,14 +2608,27 @@ export default function NoyeKimPage() {
                 />
                 <FileSpreadsheet size={14} />{todayFile ? todayFile.name : "XLS 파일 선택"}
               </label>
-              <button className={styles.primaryBtn} onClick={processTodayFile} disabled={loading}>
+              <button className={styles.primaryBtn} onClick={processTodayFile} disabled={loading || todayEzadminLoading}>
                 <Zap size={14} />가공
               </button>
+              <button className={styles.secondaryBtn} onClick={loadTodayFromEzadmin} disabled={loading || todayEzadminLoading}>
+                <RefreshCw size={14} />{todayEzadminLoading ? "불러오는 중..." : "API로 불러오기"}
+              </button>
+
               <button className={styles.secondaryBtn} onClick={downloadTodayFile} disabled={loading || !todayRows.length}>
                 <ArrowDownToLine size={13} />다운로드
               </button>
               <button className={styles.secondaryBtn} onClick={copyTodayFile} disabled={loading || !todayRows.length}>
                 <Clipboard size={13} />엑셀 복사
+              </button>
+              <button className={styles.primaryBtn} onClick={handleTodayResetStock} disabled={todayResetLoading}>
+                <RefreshCw size={14} />{todayResetLoading ? "초기화 중..." : "오늘출발 초기화"}
+              </button>
+              <button className={styles.secondaryBtn} onClick={handleTodaySetDeliveryType} disabled={todayDeliveryLoading}>
+                <Zap size={14} />{todayDeliveryLoading ? "변경 중..." : "오출로 변경"}
+              </button>
+              <button className={styles.secondaryBtn} onClick={handleAblyMinus} disabled={ablyMinusLoading}>
+                <RefreshCw size={14} />{ablyMinusLoading ? "실행 중..." : "오출마이너스"}
               </button>
             </div>
             <div className={styles.statusMsg}>
@@ -2411,6 +2665,7 @@ export default function NoyeKimPage() {
               </div>
             </section>
           )}
+
         </>
       )}
 
@@ -2503,7 +2758,7 @@ export default function NoyeKimPage() {
               <span className={styles.pill}>{excelSlipRows.length}건</span>
             </div>
             <div className={styles.statusMsg}>
-              원본 엑셀 1행은 헤더로 건너뛰고, A열 공급처 상품명은 첫 띄어쓰기 기준으로 A/B, B열 옵션은 D/E, F열은 원본 C열로 옮깁니다. 원본 F열 상품코드는 I열로 옮기고, 원본 D열이 0 초과면 H열에 미송, 원본 E열에 미송픽업이 있으면 C/H열에 미송픽업을 넣습니다.
+              원본 엑셀 1행은 헤더로 건너뛰고, A열 공급처 상품명은 첫 띄어쓰기 기준으로 A/B, B열 옵션은 D/E, F열은 원본 C열로 옮깁니다. 원본 F열 상품코드는 I열로 옮기고, 원본 D열이 0 초과면 H열에 미송, 원본 E열에 미송픽업 또는 교환픽업이 있으면 C/H열에 해당 문구를 넣습니다.
             </div>
             <div className={styles.uploadRow}>
               <label className={styles.fileInput}>
@@ -2519,8 +2774,15 @@ export default function NoyeKimPage() {
                 />
                 <FileSpreadsheet size={14} />{excelSlipFile ? excelSlipFile.name : "입고전표 엑셀 선택"}
               </label>
-              <button className={styles.primaryBtn} onClick={runExcelSlipConvert} disabled={loading}>
+              <button className={styles.primaryBtn} onClick={runExcelSlipConvert} disabled={loading || !excelSlipFile}>
                 <Zap size={14} />엑셀 변환
+              </button>
+              <button
+                className={styles.secondaryBtn}
+                onClick={handleSlipFromEzadmin}
+                disabled={loading || loadingSlipVoucherList}
+              >
+                <ArrowDownToLine size={13} />{loadingSlipVoucherList ? "목록 불러오는 중..." : "EZAdmin 불러오기"}
               </button>
               <button
                 className={styles.secondaryBtn}
@@ -2834,6 +3096,59 @@ export default function NoyeKimPage() {
           </div>
         </div>
       )}
+      {/* 입고전표 선택 모달 */}
+      {showSlipVoucherModal && (
+        <div className={styles.modalOverlay} onClick={() => setShowSlipVoucherModal(false)}>
+          <div className={styles.modal} style={{ width: "min(480px, 92vw)", padding: "1.25rem", gap: "0.75rem" }} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader} style={{ padding: 0, borderBottom: "none" }}>
+              <span className={styles.modalTitle}>입고전표 선택</span>
+              <button type="button" className={styles.secondaryBtn} onClick={() => setShowSlipVoucherModal(false)}>닫기</button>
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontWeight: 600, cursor: "pointer", padding: "0.3rem 0" }}>
+              <input
+                type="checkbox"
+                checked={selectedSlipSheets.length === slipVoucherList.length && slipVoucherList.length > 0}
+                onChange={(e) => setSelectedSlipSheets(
+                  e.target.checked ? slipVoucherList.map((v) => String(v.sheet)) : []
+                )}
+              />
+              전체 선택 ({selectedSlipSheets.length}/{slipVoucherList.length})
+            </label>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.1rem", maxHeight: 340, overflowY: "auto", border: "1px solid var(--border-color)", borderRadius: "var(--radius-sm)", padding: "0.25rem" }}>
+              {slipVoucherList.map((v) => {
+                const sheet = String(v.sheet);
+                const checked = selectedSlipSheets.includes(sheet);
+                const c = v.cell || {};
+                const displayName = c.sheet_name || c.title || c.supply_name || "";
+                const subInfo = [c.crdate, c.req_qty ? `${c.req_qty}개` : null].filter(Boolean).join(" · ");
+                return (
+                  <label key={sheet} style={{ display: "flex", alignItems: "center", gap: "0.5rem", padding: "0.35rem 0.6rem", borderRadius: "var(--radius-sm)", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => setSelectedSlipSheets((prev) =>
+                        checked ? prev.filter((s) => s !== sheet) : [...prev, sheet]
+                      )}
+                    />
+                    <span style={{ fontFamily: "monospace", fontSize: "0.82rem", color: "var(--text-muted)", minWidth: "4.5rem", flexShrink: 0 }}>{sheet}</span>
+                    <span style={{ fontSize: "0.9rem", flex: 1 }}>{displayName}</span>
+                    {subInfo && <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", flexShrink: 0 }}>{subInfo}</span>}
+                  </label>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              className={styles.primaryBtn}
+              onClick={handleSlipVoucherConfirm}
+              disabled={!selectedSlipSheets.length}
+            >
+              <ArrowDownToLine size={13} />{selectedSlipSheets.length}건 불러오기
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 미송 확인 팝업 — 탭에 무관하게 항상 렌더 */}
       {misongConfirm && (
         <div className={styles.modalOverlay} onClick={() => setMisongConfirm(null)}>

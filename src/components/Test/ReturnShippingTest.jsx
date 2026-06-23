@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
-import { RefreshCw, Search } from "lucide-react";
+import { RefreshCw, Search, MessageSquare, PackageCheck } from "lucide-react";
 import styles from "./TestTabs.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
+import { useEzadminSession } from "../../lib/EzadminSessionContext";
 
 function toDateStr(d) {
   return d.toISOString().slice(0, 10);
@@ -36,6 +37,12 @@ export default function ReturnShippingTest() {
   const [singleInvNo, setSingleInvNo] = useState(() => LS.get('rship_singleInv', ""));
   const [singleResult, setSingleResult] = useState(() => LS.get('rship_singleResult', null));
   const [singleLoading, setSingleLoading] = useState(false);
+  const [memos, setMemos] = useState(() => LS.get('rship_memos', {}));
+  const [draftMemos, setDraftMemos] = useState({});
+  const [expandedMemos, setExpandedMemos] = useState(new Set());
+  const { openModal: openEzadminModal } = useEzadminSession();
+  const [pickupLoading, setPickupLoading] = useState(false);
+  const [pickupMessage, setPickupMessage] = useState("");
 
   useEffect(() => { LS.set('rship_start', startDate); }, [startDate]);
   useEffect(() => { LS.set('rship_end', endDate); }, [endDate]);
@@ -44,6 +51,70 @@ export default function ReturnShippingTest() {
   useEffect(() => { LS.set('rship_message', message); }, [message]);
   useEffect(() => { LS.set('rship_singleInv', singleInvNo); }, [singleInvNo]);
   useEffect(() => { LS.set('rship_singleResult', singleResult); }, [singleResult]);
+  useEffect(() => { LS.set('rship_memos', memos); }, [memos]);
+
+  useEffect(() => {
+    fetch(`${API}/return-shipping/memos?prefix=rship`, { headers: getAuthHeaders() })
+      .then((r) => r.ok ? r.json() : null)
+      .then((serverMemos) => {
+        if (!serverMemos) return;
+        const stripped = {};
+        Object.entries(serverMemos).forEach(([k, v]) => {
+          if (k.startsWith("rship:")) stripped[k.slice(6)] = v;
+        });
+        setMemos((prev) => ({ ...prev, ...stripped }));
+      })
+      .catch(() => {});
+  }, []);
+
+  const saveMemo = (key) => {
+    const val = draftMemos[key] ?? memos[key] ?? "";
+    setMemos((prev) => {
+      if (!val) { const next = { ...prev }; delete next[key]; return next; }
+      return { ...prev, [key]: val };
+    });
+    fetch(`${API}/return-shipping/memo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      body: JSON.stringify({ invoice_no: `rship:${key}`, memo: val }),
+    }).catch(() => {});
+  };
+
+  const toggleMemo = (key) => {
+    setExpandedMemos((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+        setDraftMemos((d) => ({ ...d, [key]: memos[key] || "" }));
+      }
+      return next;
+    });
+  };
+
+  const newReturnPickup = async () => {
+    setPickupLoading(true);
+    setPickupMessage("처리 중...");
+    try {
+      const res = await fetch(`${API}/return-shipping/new-return-pickup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ start_date: startDate, end_date: endDate }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) { openEzadminModal(newReturnPickup); return; }
+      if (!res.ok) throw new Error(data?.detail || "처리 실패");
+      if (!data?.ok) throw new Error(data?.error || "처리 실패");
+      setPickupMessage(
+        `완료 — 송장 ${data.invoice_count}건 업로드, 에이블리 반품접수 ${data.sno_count}건 (HTTP ${data.ably_status}), 문자 ${data.sms_queued ?? 0}건 발송`
+      );
+    } catch (err) {
+      setPickupMessage(err.message || "처리 실패");
+    } finally {
+      setPickupLoading(false);
+    }
+  };
 
   const fetchAbly = async () => {
     setLoading(true);
@@ -173,9 +244,21 @@ export default function ReturnShippingTest() {
             <Search size={13} className={llogisLoading ? styles.spinning : undefined} />
             llogis 전체조회
           </button>
+          <button
+            className={styles.refreshBtn}
+            onClick={newReturnPickup}
+            disabled={pickupLoading || loading}
+            type="button"
+          >
+            {pickupLoading
+              ? <RefreshCw size={13} className={styles.spinning} />
+              : <PackageCheck size={13} />}
+            신규반품 회수신청
+          </button>
         </div>
       </header>
 
+      {pickupMessage && <div className={styles.message}>{pickupMessage}</div>}
       {message && <div className={styles.message}>{message}</div>}
 
       <section className={`${styles.section} ${styles.sectionStock}`}>
@@ -265,14 +348,16 @@ export default function ReturnShippingTest() {
             <div className={styles.sectionMeta}>
               <span>{items.length}건</span>
               <span>반품송장 {items.filter((i) => i["반품송장번호"]).length}건</span>
+              <span>메모 {Object.values(memos).filter(Boolean).length}건</span>
             </div>
           </div>
           <div className={styles.tableWrap}>
             <table className={styles.table}>
               <thead>
                 <tr>
+                  <th style={{ width: "28px" }}></th>
                   <th>주문번호</th>
-                  <th>원송장번호</th>
+                  <th>전화번호</th>
                   <th>상품명</th>
                   <th>옵션</th>
                   <th>반품신청일</th>
@@ -287,10 +372,35 @@ export default function ReturnShippingTest() {
                 {items.map((item, idx) => {
                   const invNo = item["반품송장번호"];
                   const lr = invNo ? llogisResults[invNo] : null;
+                  const orderNo = item["주문번호"];
+                  const hasMemo = orderNo && !!memos[orderNo];
+                  const isExpanded = orderNo && expandedMemos.has(orderNo);
                   return (
-                    <tr key={idx}>
+                    <React.Fragment key={idx}>
+                    <tr>
+                      <td style={{ textAlign: "center", padding: "0 4px" }}>
+                        {orderNo ? (
+                          <button
+                            type="button"
+                            onClick={() => toggleMemo(orderNo)}
+                            title={hasMemo ? memos[orderNo] : "메모 추가"}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              cursor: "pointer",
+                              padding: "2px",
+                              color: hasMemo ? "var(--accent-blue, #3b82f6)" : "var(--text-muted)",
+                              opacity: hasMemo ? 1 : 0.45,
+                              display: "flex",
+                              alignItems: "center",
+                            }}
+                          >
+                            <MessageSquare size={14} fill={hasMemo ? "currentColor" : "none"} />
+                          </button>
+                        ) : null}
+                      </td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{item["주문번호"] || "-"}</td>
-                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{item["송장번호"] || "-"}</td>
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{item["전화번호"] || "-"}</td>
                       <td>{item["상품명"]}</td>
                       <td>{item["옵션"]}</td>
                       <td style={{ whiteSpace: "nowrap" }}>
@@ -326,6 +436,46 @@ export default function ReturnShippingTest() {
                         );
                       })()}
                     </tr>
+                    {isExpanded && (
+                      <tr style={{ background: "var(--bg-secondary)" }}>
+                        <td colSpan={11} style={{ padding: "0.5rem 1rem 0.75rem 2.5rem" }}>
+                          <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.3rem" }}>
+                            메모 — {orderNo}
+                          </div>
+                          <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start", maxWidth: "620px" }}>
+                            <textarea
+                              value={draftMemos[orderNo] ?? ""}
+                              onChange={(e) => setDraftMemos((d) => ({ ...d, [orderNo]: e.target.value }))}
+                              placeholder="메모를 입력하세요..."
+                              rows={2}
+                              style={{
+                                flex: 1,
+                                fontSize: "0.85rem",
+                                padding: "0.4rem 0.6rem",
+                                border: "1px solid var(--border-color)",
+                                borderRadius: "var(--radius-sm)",
+                                background: "var(--bg-primary)",
+                                color: "var(--text-primary)",
+                                resize: "vertical",
+                                outline: "none",
+                                lineHeight: 1.5,
+                              }}
+                              onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) saveMemo(orderNo); }}
+                              autoFocus
+                            />
+                            <button
+                              type="button"
+                              onClick={() => saveMemo(orderNo)}
+                              className={styles.refreshBtn}
+                              style={{ whiteSpace: "nowrap", alignSelf: "flex-end" }}
+                            >
+                              저장
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>

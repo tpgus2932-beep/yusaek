@@ -504,6 +504,37 @@
   color: var(--text-primary, #111);
 }
 
+/* ── 실시간 아무드 오류 박스 ── */
+.errorBox {
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+
+.errorBoxTitle {
+  margin: 0 0 8px 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #dc2626;
+}
+
+.failedList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.failedBadge {
+  display: inline-block;
+  background: #fee2e2;
+  color: #991b1b;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.78rem;
+  font-family: monospace;
+}
+
 /* ── 에러 / 메시지 ── */
 .error {
   color: #dc2626;

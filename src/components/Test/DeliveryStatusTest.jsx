@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import { RefreshCw, Search, MessageSquare } from "lucide-react";
 import styles from "./TestTabs.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
@@ -25,7 +25,8 @@ const LS = {
 export default function DeliveryStatusTest() {
   const [items, setItems] = useState(() => LS.get("dstat_items", []));
   const [llogisResults, setLlogisResults] = useState(() => LS.get("dstat_llogis", {}));
-  const [memos, setMemos] = useState({});
+  const [memos, setMemos] = useState(() => LS.get("dstat_memos", {}));
+  const [draftMemos, setDraftMemos] = useState({});
   const [expandedMemos, setExpandedMemos] = useState(new Set());
   const [loading, setLoading] = useState(false);
   const [llogisLoading, setLlogisLoading] = useState(false);
@@ -34,23 +35,15 @@ export default function DeliveryStatusTest() {
   const [singleResult, setSingleResult] = useState(() => LS.get("dstat_singleResult", null));
   const [singleLoading, setSingleLoading] = useState(false);
 
-  // 메모 저장 디바운스 타이머 {invoice_no: timeoutId}
-  const debounceRef = useRef({});
-
   useEffect(() => { LS.set("dstat_items", items); }, [items]);
   useEffect(() => { LS.set("dstat_llogis", llogisResults); }, [llogisResults]);
   useEffect(() => { LS.set("dstat_message", message); }, [message]);
   useEffect(() => { LS.set("dstat_singleInv", singleInvNo); }, [singleInvNo]);
   useEffect(() => { LS.set("dstat_singleResult", singleResult); }, [singleResult]);
 
-  // 메모 변경 시 localStorage에도 저장 (서버 장애 시 백업)
   useEffect(() => { LS.set("dstat_memos", memos); }, [memos]);
 
-  // 마운트 시: localStorage로 먼저 표시 → 서버에서 로드해 덮어씀 (서버 실패 시 localStorage 유지)
   useEffect(() => {
-    const localMemos = LS.get("dstat_memos", {});
-    if (Object.keys(localMemos).length > 0) setMemos(localMemos);
-
     fetch(`${API}/return-shipping/memos`, { headers: getAuthHeaders() })
       .then((r) => r.ok ? r.json() : null)
       .then((serverMemos) => {
@@ -74,15 +67,17 @@ export default function DeliveryStatusTest() {
       .catch(() => {});
   }, []);
 
-  const saveMemoToServer = (inv, val) => {
-    clearTimeout(debounceRef.current[inv]);
-    debounceRef.current[inv] = setTimeout(() => {
-      fetch(`${API}/return-shipping/memo`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ invoice_no: inv, memo: val }),
-      }).catch(() => {});
-    }, 400);
+  const saveMemo = (inv) => {
+    const val = draftMemos[inv] ?? memos[inv] ?? "";
+    setMemos((prev) => {
+      if (!val) { const next = { ...prev }; delete next[inv]; return next; }
+      return { ...prev, [inv]: val };
+    });
+    fetch(`${API}/return-shipping/memo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      body: JSON.stringify({ invoice_no: inv, memo: val }),
+    }).catch(() => {});
   };
 
   const fetchAbly = async () => {
@@ -186,7 +181,12 @@ export default function DeliveryStatusTest() {
   const toggleMemo = (inv) => {
     setExpandedMemos((prev) => {
       const next = new Set(prev);
-      next.has(inv) ? next.delete(inv) : next.add(inv);
+      if (next.has(inv)) {
+        next.delete(inv);
+      } else {
+        next.add(inv);
+        setDraftMemos((d) => ({ ...d, [inv]: memos[inv] || "" }));
+      }
       return next;
     });
   };
@@ -347,37 +347,36 @@ export default function DeliveryStatusTest() {
                             <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.3rem" }}>
                               메모 — {inv}
                             </div>
-                            <textarea
-                              value={memos[inv] || ""}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setMemos((prev) => {
-                                  if (!val) {
-                                    const next = { ...prev };
-                                    delete next[inv];
-                                    return next;
-                                  }
-                                  return { ...prev, [inv]: val };
-                                });
-                                saveMemoToServer(inv, val);
-                              }}
-                              placeholder="메모를 입력하세요..."
-                              rows={2}
-                              style={{
-                                width: "100%",
-                                maxWidth: "600px",
-                                fontSize: "0.85rem",
-                                padding: "0.4rem 0.6rem",
-                                border: "1px solid var(--border-color)",
-                                borderRadius: "var(--radius-sm)",
-                                background: "var(--bg-primary)",
-                                color: "var(--text-primary)",
-                                resize: "vertical",
-                                outline: "none",
-                                lineHeight: 1.5,
-                              }}
-                              autoFocus
-                            />
+                            <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start", maxWidth: "620px" }}>
+                              <textarea
+                                value={draftMemos[inv] ?? ""}
+                                onChange={(e) => setDraftMemos((d) => ({ ...d, [inv]: e.target.value }))}
+                                placeholder="메모를 입력하세요..."
+                                rows={2}
+                                style={{
+                                  flex: 1,
+                                  fontSize: "0.85rem",
+                                  padding: "0.4rem 0.6rem",
+                                  border: "1px solid var(--border-color)",
+                                  borderRadius: "var(--radius-sm)",
+                                  background: "var(--bg-primary)",
+                                  color: "var(--text-primary)",
+                                  resize: "vertical",
+                                  outline: "none",
+                                  lineHeight: 1.5,
+                                }}
+                                onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) saveMemo(inv); }}
+                                autoFocus
+                              />
+                              <button
+                                type="button"
+                                onClick={() => saveMemo(inv)}
+                                className={styles.refreshBtn}
+                                style={{ whiteSpace: "nowrap", alignSelf: "flex-end" }}
+                              >
+                                저장
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       )}

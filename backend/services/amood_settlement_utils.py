@@ -308,5 +308,158 @@ def aggregate_by_product(
     return items, summary
 
 
+async def _fetch_single_order_full(
+    client: httpx.AsyncClient,
+    semaphore: asyncio.Semaphore,
+    order_id: str,
+    jwt_token: str,
+) -> tuple[str, dict | None]:
+    async with semaphore:
+        try:
+            res = await client.get(
+                f"{PASTELCO_BASE}/seller/orders/{order_id}/",
+                headers=_order_headers(jwt_token),
+                timeout=15.0,
+            )
+            if res.status_code == 200:
+                data = res.json()
+                product = data.get("product", {})
+                name_origin = product.get("name_origin", "")
+                quantity = data.get("quantity", 1)
+                amount = float(data.get("amount", 0) or 0)
+                amood_coupon = float(data.get("amood_coupon_discount_amount", 0) or 0)
+                point_discount = float(data.get("point_discount_amount", 0) or 0)
+                settlement_krw = round(
+                    (amount - (amount * 0.133) + amood_coupon + point_discount) * 9.4
+                )
+                return order_id, {
+                    "name_origin": name_origin,
+                    "processed_name": preprocess_product_name(name_origin),
+                    "quantity": quantity,
+                    "settlement_krw": settlement_krw,
+                }
+        except Exception:
+            pass
+        return order_id, None
+
+
+async def fetch_order_details_realtime(
+    order_ids: list[str],
+    jwt_token: str,
+    concurrency: int = 10,
+) -> dict[str, dict | None]:
+    semaphore = asyncio.Semaphore(concurrency)
+    result: dict[str, dict | None] = {}
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        tasks = [
+            _fetch_single_order_full(client, semaphore, oid, jwt_token)
+            for oid in order_ids
+        ]
+        for coro in asyncio.as_completed(tasks):
+            oid, detail = await coro
+            result[oid] = detail
+    return result
+
+
+def aggregate_realtime_by_product(
+    order_ids: list[str],
+    order_details: dict[str, dict | None],
+    cost_map: dict[str, int],
+    per_item_cost: int,
+) -> tuple[list[dict], dict]:
+    buckets: dict[str, dict] = {}
+    failed_orders = []
+
+    for oid in order_ids:
+        detail = order_details.get(oid)
+        if detail is None:
+            failed_orders.append(oid)
+            continue
+
+        name = detail["processed_name"] or f"[이름없음:{oid}]"
+        quantity = detail.get("quantity") or 1
+        settlement_krw = detail.get("settlement_krw", 0)
+
+        if name not in buckets:
+            buckets[name] = {
+                "product_name": name,
+                "order_count": 0,
+                "total_quantity": 0,
+                "total_settlement_krw": 0,
+                "orders": [],
+            }
+        buckets[name]["order_count"] += 1
+        buckets[name]["total_quantity"] += quantity
+        buckets[name]["total_settlement_krw"] += settlement_krw
+        buckets[name]["orders"].append({
+            "order_id": oid,
+            "quantity": quantity,
+            "settlement_krw": settlement_krw,
+        })
+
+    items = []
+    total_settlement = 0
+    total_cost = 0
+    total_margin = 0
+    unmatched_count = 0
+
+    for name, bucket in sorted(buckets.items()):
+        cost_price = cost_map.get(name)
+        matched = cost_price is not None
+        qty = bucket["total_quantity"]
+        settlement = bucket["total_settlement_krw"]
+
+        if matched:
+            item_cost = cost_price * qty
+            item_vat = round(item_cost * 0.1)
+            item_extra = per_item_cost * qty
+            item_margin = settlement - item_cost - item_vat - item_extra
+            margin_rate = round(item_margin / settlement * 100, 1) if settlement else 0.0
+        else:
+            item_cost = None
+            item_vat = None
+            item_extra = per_item_cost * qty
+            item_margin = None
+            margin_rate = None
+            unmatched_count += 1
+
+        items.append({
+            "product_name": name,
+            "order_count": bucket["order_count"],
+            "total_quantity": qty,
+            "total_settlement_krw": settlement,
+            "cost_price": cost_price,
+            "total_vat": item_vat,
+            "total_extra_cost": item_extra,
+            "total_margin": item_margin,
+            "margin_rate": margin_rate,
+            "matched": matched,
+            "orders": sorted(bucket["orders"], key=lambda o: o["order_id"]),
+        })
+
+        total_settlement += settlement
+        if matched:
+            total_cost += item_cost
+            total_margin += item_margin
+
+    matched_settlement = sum(it["total_settlement_krw"] for it in items if it["matched"])
+    overall_margin_rate = (
+        round(total_margin / matched_settlement * 100, 1) if matched_settlement else 0.0
+    )
+
+    summary = {
+        "total_orders": len(order_ids),
+        "total_products": len(items),
+        "unmatched_count": unmatched_count,
+        "total_settlement_krw": total_settlement,
+        "total_cost": total_cost,
+        "total_margin": total_margin,
+        "overall_margin_rate": overall_margin_rate,
+        "failed_orders": failed_orders,
+    }
+
+    return items, summary
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()

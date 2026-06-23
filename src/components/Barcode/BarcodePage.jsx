@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import styles from "./BarcodePage.module.css";
-import * as XLSX from "xlsx";
 import { getDownloadFilename } from "../../lib/download";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
@@ -50,9 +50,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const scanRef = useRef(null);
   const [currentInvoice, setCurrentInvoice] = useState(null);
   const [invoiceDone, setInvoiceDone] = useState(false);
-  const [log, setLog] = useState([]);
+  const [, setLog] = useState([]);
   const [items, setItems] = useState([]);
-  const [nextPreview, setNextPreview] = useState(null);
   const [defectMode, setDefectMode] = useState(false);
   const [showDefectList, setShowDefectList] = useState(false);
   const [defectList, setDefectList] = useState([]);
@@ -61,6 +60,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [defectSearchLoading, setDefectSearchLoading] = useState(false);
   const [defectSearchMessage, setDefectSearchMessage] = useState("");
   const [defectRecentCodes, setDefectRecentCodes] = useState([]);
+  const [showKimsungilList, setShowKimsungilList] = useState(false);
+  const [kimsungilList, setKimsungilList] = useState([]);
+  const [kimsungilSearchQuery, setKimsungilSearchQuery] = useState("");
+  const [kimsungilSearchRows, setKimsungilSearchRows] = useState([]);
+  const [kimsungilSearchLoading, setKimsungilSearchLoading] = useState(false);
+  const [kimsungilSearchMessage, setKimsungilSearchMessage] = useState("");
   const [defectBaseHeaders, setDefectBaseHeaders] = useState(["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]);
   const [defectBaseRows, setDefectBaseRows] = useState([]);
   const [defectBasePath, setDefectBasePath] = useState("");
@@ -69,17 +74,16 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [defectBaseSaving, setDefectBaseSaving] = useState(false);
   const [defectBaseMessage, setDefectBaseMessage] = useState("");
   const [showDefectBaseEditor, setShowDefectBaseEditor] = useState(false);
+  const [ochuulLoading, setOchuulLoading] = useState(false);
+  const [ochuulResult, setOchuulResult] = useState(null);
+  const [ezadminLoading, setEzadminLoading] = useState(false);
+  const [ezadminMsg, setEzadminMsg] = useState("");
+  const [defectEzadminLoading, setDefectEzadminLoading] = useState(false);
+  const [defectEzadminMsg, setDefectEzadminMsg] = useState("");
+  const { openModal: openEzadminModal } = useEzadminSession();
   const soundsRef = useRef(null);
 
   const pushLog = (msg) => setLog((prev) => [msg, ...prev]);
-  const downloadLogExcel = () => {
-    if (!log.length) { alert("로그가 없습니다."); return; }
-    const rows = [["번호", "로그"], ...log.map((text, idx) => [idx + 1, text])];
-    const ws = XLSX.utils.aoa_to_sheet(rows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "결과로그");
-    XLSX.writeFile(wb, "barcode_result_log.xlsx");
-  };
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -93,14 +97,13 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (data.loaded) {
         setCurrentInvoice(data.current_invoice ?? null);
         setInvoiceDone(false);
-        setNextPreview(data.next_preview ?? null);
         if (data.current_invoice) setItems(data.items ?? []);
         else if (Array.isArray(data.items) && data.items.length > 0) setItems(data.items);
         setDefectList(data.defects ?? []);
+        setKimsungilList(data.kimsungil ?? []);
       } else {
         setCurrentInvoice(null); setInvoiceDone(false);
-        setNextPreview(null);
-      }
+             }
     } catch { /* ignore */ }
   }, []);
 
@@ -140,7 +143,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       setCount(data.invoices ?? null); setCodesTotal(data.codes_total ?? null);
       pushLog(`업로드 완료 (송장 ${data.invoices ?? "-"} / 코드 ${data.codes_total ?? "-"})`);
       setCurrentInvoice(null); setInvoiceDone(false);
-      setItems([]); setNextPreview(null); setDefectRecentCodes([]); setScanText("");
+      setItems([]); setDefectRecentCodes([]); setScanText("");
       setTimeout(() => scanRef.current?.focus(), 50);
     } catch (err) {
       setUploadMsg(`업로드 실패: ${err.message || ""}`.trim());
@@ -168,6 +171,62 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     } finally { setLoadingIncoming(false); }
   };
 
+  const handleIncomingFromEzadmin = async () => {
+    try {
+      setEzadminLoading(true); setEzadminMsg("EZAdmin에서 불러오는 중... (최대 60초)");
+      setIncomingMsg(""); setIncomingCodes(null); setIncomingTotal(null);
+      const res = await fetch(`${API}/barcode/incoming/upload-from-ezadmin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({}),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) {
+        setEzadminMsg("");
+        openEzadminModal(handleIncomingFromEzadmin);
+        return;
+      }
+      if (!res.ok || !data?.ok) {
+        const msg = data?.detail || "EZAdmin 불러오기 실패";
+        setIncomingMsg(msg); pushLog(msg);
+        return;
+      }
+      setIncomingMsg("EZAdmin 입고 데이터 로드 완료");
+      setIncomingCodes(data.codes ?? null); setIncomingTotal(data.total_qty ?? null);
+      pushLog(`EZAdmin 입고 로드 완료 (코드 ${data.codes ?? "-"} / 수량 ${data.total_qty ?? "-"})`);
+      await refreshStatus();
+    } catch (err) {
+      const msg = `EZAdmin 불러오기 실패: ${err.message || ""}`.trim();
+      setIncomingMsg(msg); pushLog(msg);
+    } finally { setEzadminLoading(false); setEzadminMsg(""); }
+  };
+
+  const handleDefectExportToEzadmin = async () => {
+    try {
+      setDefectEzadminLoading(true); setDefectEzadminMsg("EZAdmin 출고처리 중...");
+      const res = await fetch(`${API}/barcode/defect/export-to-ezadmin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({}),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) {
+        setDefectEzadminMsg("");
+        openEzadminModal(handleDefectExportToEzadmin);
+        return;
+      }
+      if (!data?.ok) {
+        setDefectEzadminMsg(data?.error || "출고처리 실패");
+        return;
+      }
+      setDefectEzadminMsg(`출고처리 완료 (${data.count ?? 0}건)`);
+    } catch (err) {
+      setDefectEzadminMsg(`출고처리 실패: ${err.message || ""}`);
+    } finally { setDefectEzadminLoading(false); }
+  };
+
   const isProbablyInvoice = (s) => /^\d{10,}$/.test((s || "").trim());
 
   const handleDefectAdd = async () => {
@@ -181,8 +240,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "불량 등록 실패");
-      setItems(data.items ?? items); setNextPreview(data.next_preview ?? null);
-      setDefectList(data.defects ?? defectList);
+      setItems(data.items ?? items);      setDefectList(data.defects ?? defectList);
       setDefectRecentCodes((prev) => [data.code, ...prev.filter((code) => code !== data.code)]);
       pushLog(`불량 등록: ${data.code} (누적 ${data.defect_count})`);
     } catch (err) { pushLog(`불량 등록 실패: ${err.message || ""}`.trim()); }
@@ -226,13 +284,67 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "불량 추가 실패");
       setItems(data.items ?? items);
-      setNextPreview(data.next_preview ?? null);
-      setDefectList(data.defects ?? defectList);
+           setDefectList(data.defects ?? defectList);
       setDefectRecentCodes((prev) => [data.code, ...prev.filter((itemCode) => itemCode !== data.code)]);
       setDefectSearchMessage(`불량 추가 완료: ${row.base_name || data.code}`);
       pushLog(`불량 검색 추가: ${data.code} ${row.base_name || ""}`.trim());
     } catch (err) {
       setDefectSearchMessage(err.message || "불량 추가 실패");
+    }
+  };
+
+  const fetchKimsungilList = async () => {
+    try {
+      const res = await fetch(`${API}/barcode/kimsungil/list`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "김승일 목록 조회 실패");
+      setKimsungilList(data.kimsungil ?? []);
+    } catch { /* ignore */ }
+  };
+
+  const searchKimsungilByName = async () => {
+    const query = kimsungilSearchQuery.trim();
+    if (!query) {
+      setKimsungilSearchRows([]);
+      setKimsungilSearchMessage("검색어를 입력하세요.");
+      return;
+    }
+    try {
+      setKimsungilSearchLoading(true);
+      setKimsungilSearchMessage("");
+      const res = await fetch(`${API}/barcode/kimsungil/search?q=${encodeURIComponent(query)}`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "김승일 검색 실패");
+      setKimsungilSearchRows(data.rows || []);
+      setKimsungilSearchMessage((data.rows || []).length ? `${data.rows.length}건 검색됨` : "검색 결과가 없습니다.");
+    } catch (err) {
+      setKimsungilSearchRows([]);
+      setKimsungilSearchMessage(err.message || "김승일 검색 실패");
+    } finally {
+      setKimsungilSearchLoading(false);
+    }
+  };
+
+  const addKimsungilFromSearch = async (row) => {
+    const code = row?.code || row?.base_code;
+    if (!code) return;
+    try {
+      const res = await fetch(`${API}/barcode/kimsungil/add`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ code }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "김승일 추가 실패");
+      setItems(data.items ?? items);
+           setKimsungilList(data.kimsungil ?? kimsungilList);
+      setKimsungilSearchMessage(`김승일 추가 완료: ${row.base_name || data.code}`);
+      pushLog(`김승일 검색 추가: ${data.code} ${row.base_name || ""}`.trim());
+    } catch (err) {
+      setKimsungilSearchMessage(err.message || "김승일 추가 실패");
     }
   };
 
@@ -258,26 +370,25 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (toInvoice) {
         if (data.ok === false && data.result === "NOT_FOUND") {
           pushLog(`송장 없음: ${value}`);
-          setCurrentInvoice(null); setInvoiceDone(false); setItems([]); setNextPreview(null);
-        } else {
+          setCurrentInvoice(null); setInvoiceDone(false); setItems([]);        } else {
           setCurrentInvoice(data.invoice); setInvoiceDone(false);
-          setItems(data.items ?? []); setNextPreview(data.next_preview ?? null);
-          setDefectList(data.defects ?? defectList);
+          setItems(data.items ?? []);          setDefectList(data.defects ?? defectList);
+          setKimsungilList(data.kimsungil ?? kimsungilList);
           if (data.invoice_has_defect) playSound("invoiceDefect");
           pushLog(`송장 SET: ${data.invoice}`);
         }
       } else {
         if (data.ok === false && data.result === "NO_INVOICE") {
           pushLog("송장이 먼저 필요합니다.");
-          setCurrentInvoice(null); setInvoiceDone(false); setItems([]); setNextPreview(null);
-        } else if (data.result === "TRUE") {
+          setCurrentInvoice(null); setInvoiceDone(false); setItems([]);        } else if (data.result === "TRUE") {
           pushLog(`TRUE  ${data.code} (잔여 ${data.remain}) ${data.name || ""} ${data.option || ""}`.trim());
           setItems(data.items ?? []); setDefectList(data.defects ?? defectList);
+          setKimsungilList(data.kimsungil ?? kimsungilList);
           if (data.invoice_done) { playSound("invoiceDone"); pushLog(`송장 완료: ${data.invoice}`); setInvoiceDone(true); }
           else playSound("itemDone");
         } else {
           pushLog(`FALSE ${data.code} (잔여 ${data.remain}) ${data.name || ""} ${data.option || ""}`.trim());
-          setDefectList(data.defects ?? defectList); playSound("bad");
+          setDefectList(data.defects ?? defectList); setKimsungilList(data.kimsungil ?? kimsungilList); playSound("bad");
         }
       }
     } catch (err) { pushLog(`오류: ${err.message || ""}`.trim()); }
@@ -305,6 +416,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const getDefectTotalCount = () =>
     defectList.reduce((sum, item) => sum + (Number(item.count) || 0), 0);
 
+  const getKimsungilTotalCount = () =>
+    kimsungilList.reduce((sum, item) => sum + (Number(item.count) || 0), 0);
+
   const fetchDefectList = async () => {
     try {
       const res = await fetch(`${API}/barcode/defect/list`, { headers: getAuthHeaders() });
@@ -324,8 +438,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "불량 감소 실패");
-      setDefectList(data.defects ?? []); setItems(data.items ?? items); setNextPreview(data.next_preview ?? null);
-    } catch (err) { pushLog(`불량 감소 실패: ${err.message || ""}`.trim()); }
+      setDefectList(data.defects ?? []); setItems(data.items ?? items);    } catch (err) { pushLog(`불량 감소 실패: ${err.message || ""}`.trim()); }
   };
 
   const handleDefectRemove = async (code) => {
@@ -337,8 +450,31 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "불량 삭제 실패");
-      setDefectList(data.defects ?? []); setItems(data.items ?? items); setNextPreview(data.next_preview ?? null);
-    } catch (err) { pushLog(`불량 삭제 실패: ${err.message || ""}`.trim()); }
+      setDefectList(data.defects ?? []); setItems(data.items ?? items);    } catch (err) { pushLog(`불량 삭제 실패: ${err.message || ""}`.trim()); }
+  };
+
+  const handleKimsungilDec = async (code) => {
+    try {
+      const res = await fetch(`${API}/barcode/kimsungil/dec`, {
+        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ code }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "김승일 감소 실패");
+      setKimsungilList(data.kimsungil ?? []); setItems(data.items ?? items);    } catch (err) { pushLog(`김승일 감소 실패: ${err.message || ""}`.trim()); }
+  };
+
+  const handleKimsungilRemove = async (code) => {
+    try {
+      const res = await fetch(`${API}/barcode/kimsungil/remove`, {
+        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ code }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "김승일 삭제 실패");
+      setKimsungilList(data.kimsungil ?? []); setItems(data.items ?? items);    } catch (err) { pushLog(`김승일 삭제 실패: ${err.message || ""}`.trim()); }
   };
 
   const handleDefectExport = async () => {
@@ -466,6 +602,34 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     }
   };
 
+  const handleCompletedXlsDownload = async () => {
+    try {
+      const res = await fetch(`${API}/barcode/completed/export-xls`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      if (!res.ok) {
+        let message = "완료목록 다운로드 실패";
+        try { const data = await res.json(); message = data?.detail || message; }
+        catch { const text = await res.text(); if (text) message = text; }
+        throw new Error(message);
+      }
+      const blob = await res.blob();
+      const fallback = `completed_products_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}.xls`;
+      const filename = getDownloadFilename(res, fallback);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      pushLog(`완료목록 다운로드 완료: ${filename}`);
+    } catch (err) {
+      alert(err.message || "완료목록 다운로드 실패");
+      pushLog(`완료목록 다운로드 실패: ${err.message || ""}`.trim());
+    }
+  };
+
   const handleDefectPrint = async () => {
     if (defectList.length === 0) {
       alert("보낼 불량 목록이 없습니다.");
@@ -509,6 +673,30 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     } catch (err) {
       alert(err.message || "불량출력 전송 실패");
       pushLog(`불량출력 전송 실패: ${err.message || ""}`.trim());
+    }
+  };
+
+  const handleOchuulMinus = async () => {
+    if (defectList.length === 0) { alert("불량 목록이 없습니다."); return; }
+    const total = getDefectTotalCount();
+    if (!window.confirm(`불량 목록 ${defectList.length}종 합계 ${total}개를 오출 차감하겠습니까?`)) return;
+    try {
+      setOchuulLoading(true);
+      setOchuulResult(null);
+      const res = await fetch(`${API}/barcode/defect/ochuul-minus`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "오출내리기 실패");
+      setOchuulResult(data);
+      pushLog(`오출내리기 완료: ${data.matched}건 차감`);
+    } catch (err) {
+      alert(err.message || "오출내리기 실패");
+      pushLog(`오출내리기 실패: ${err.message || ""}`.trim());
+    } finally {
+      setOchuulLoading(false);
     }
   };
 
@@ -577,8 +765,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
           <section className={`${styles.card} ${styles.dualCard}`}>
             <div className={styles.cardHeader}>
               <h3 className={styles.cardTitle}>입고 파일</h3>
-              {loadingIncoming && <span className={styles.pill}>업로드 중</span>}
-              {incomingCodes !== null && !loadingIncoming && (
+              {(loadingIncoming || ezadminLoading) && <span className={styles.pill}>불러오는 중</span>}
+              {incomingCodes !== null && !loadingIncoming && !ezadminLoading && (
                 <span className={styles.pill}>코드 {incomingCodes} · 수량 {incomingTotal}</span>
               )}
             </div>
@@ -587,10 +775,21 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 <input type="file" accept=".xls,.xlsx" onChange={(e) => { setIncomingFile(e.target.files?.[0] ?? null); setIncomingMsg(""); }} />
                 {incomingFile ? incomingFile.name : "파일 선택"}
               </label>
-              <button className={styles.primaryBtn} onClick={handleIncomingUpload} disabled={loadingIncoming || !incomingFile}>
+              <button className={styles.primaryBtn} onClick={handleIncomingUpload} disabled={loadingIncoming || ezadminLoading || !incomingFile}>
                 업로드
               </button>
             </div>
+            <div className={styles.uploadRow}>
+              <button className={styles.secondaryBtn} style={{ flex: 1 }} onClick={handleIncomingFromEzadmin} disabled={loadingIncoming || ezadminLoading}>
+                {ezadminLoading ? "EZAdmin 불러오는 중..." : "EZAdmin에서 불러오기"}
+              </button>
+            </div>
+            {ezadminMsg && (
+              <div className={styles.statusMsg}
+                style={{ borderColor: "rgba(59,130,246,0.4)", backgroundColor: "rgba(59,130,246,0.07)" }}>
+                <strong>{ezadminMsg}</strong>
+              </div>
+            )}
             {incomingMsg && (
               <div className={styles.statusMsg}
                 style={{ borderColor: incomingMsg.includes("실패") ? "rgba(220,53,69,0.4)" : "rgba(34,197,94,0.4)", backgroundColor: incomingMsg.includes("실패") ? "rgba(220,53,69,0.07)" : "rgba(34,197,94,0.07)" }}>
@@ -607,8 +806,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
             <h3 className={styles.cardTitle}>스캔</h3>
             <div className={styles.headerActions}>
               <button className={styles.secondaryBtn} onClick={refreshStatus} title="새로고침">↺</button>
-              <button className={styles.secondaryBtn} onClick={downloadLogExcel} title="로그 다운로드">
-                로그 다운
+              <button className={styles.secondaryBtn} onClick={handleCompletedXlsDownload}>
+                완료목록 다운로드
               </button>
               <button
                 className={`${styles.toggleBtn} ${defectMode ? styles.toggleOn : ""}`}
@@ -621,6 +820,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 불량 목록
                 {defectList.length > 0 && (
                   <span className={styles.inlineTagDanger} style={{ marginLeft: "0.35rem" }}>{defectList.length}</span>
+                )}
+              </button>
+              <button className={styles.secondaryBtn} onClick={() => { setShowKimsungilList(true); fetchKimsungilList(); }}>
+                김승일
+                {kimsungilList.filter(i => (i.incoming_qty || 0) > 0).length > 0 && (
+                  <span className={styles.inlineTagIncoming} style={{ marginLeft: "0.35rem" }}>{kimsungilList.filter(i => (i.incoming_qty || 0) > 0).length}</span>
                 )}
               </button>
               <button className={styles.secondaryBtn} onClick={openDefectBaseEditor}>
@@ -724,6 +929,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                         </span>
                         {item.run_len > 1 && <span className={styles.inlineTagRun}>연속 {item.run_len}</span>}
                         {item.incoming > 0 && <span className={styles.inlineTagIncoming}>입고 {item.incoming}</span>}
+                        {item.stock > 0 && <span className={styles.inlineTagStock}>재고 {item.stock}</span>}
                         {item.remain >= 2 && <span className={styles.inlineMeta}>잔여 {item.remain}</span>}
                         {item.defect > 0 && <span className={styles.inlineTagDanger}>불량 {item.defect}</span>}
                         {item.remain === 0 && <span className={styles.doneBadge}>완료</span>}
@@ -738,36 +944,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               )}
             </div>
 
-            {/* 다음 상품 */}
-            <div style={{
-              borderRadius: "var(--radius-md)",
-              border: "1px dashed var(--border-color)",
-              padding: "1.25rem 1.5rem",
-              display: "flex",
-              flexDirection: "column",
-              gap: "0.75rem",
-            }}>
-              <span className={styles.infoLabel}>다음 상품</span>
-              {nextPreview ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-                  <span style={{ fontWeight: 700, fontSize: "1.2rem", overflowWrap: "anywhere", color: "var(--text-secondary)" }}>
-                    {renderItemLabel(nextPreview)}
-                  </span>
-                  <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
-                    {nextPreview.run_len > 1 && <span className={styles.inlineTagRun}>연속 {nextPreview.run_len}</span>}
-                    {nextPreview.incoming > 0 && <span className={styles.inlineTagIncoming}>입고 {nextPreview.incoming}</span>}
-                    {nextPreview.remain >= 2 && <span className={styles.inlineMeta}>잔여 {nextPreview.remain}</span>}
-                    {nextPreview.invoice && <span className={styles.inlineTag}>송장 {nextPreview.invoice}</span>}
-                  </div>
-                </div>
-              ) : (
-                <span style={{ color: "var(--text-muted)", fontSize: "1rem" }}>—</span>
-              )}
-            </div>
           </div>
         </section>
 
       </div>
+
+
 
       {/* 불량 리스트 모달 */}
       {showDefectList && (
@@ -779,9 +961,34 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 <button className={styles.secondaryBtn} onClick={handleDefectXlsDownload}>xls 다운로드</button>
                 <button className={styles.secondaryBtn} onClick={handleDefectExport}>내보내기</button>
                 <button className={styles.secondaryBtn} onClick={handleDefectPrint}>불량출력</button>
-                <button className={styles.secondaryBtn} onClick={() => setShowDefectList(false)}>닫기</button>
+                <button className={styles.secondaryBtn} onClick={handleDefectExportToEzadmin} disabled={defectEzadminLoading || defectList.length === 0}>
+                  {defectEzadminLoading ? "처리 중..." : "출고처리"}
+                </button>
+                <button className={styles.secondaryBtn} onClick={handleOchuulMinus} disabled={ochuulLoading || defectList.length === 0}>
+                  {ochuulLoading ? "처리 중..." : "오출내리기"}
+                </button>
+                <button className={styles.secondaryBtn} onClick={() => { setShowDefectList(false); setOchuulResult(null); }}>닫기</button>
               </div>
             </div>
+            {defectEzadminMsg && (
+              <div className={styles.statusMsg}>{defectEzadminMsg}</div>
+            )}
+            {ochuulResult && (
+              <div className={styles.statusMsg}
+                style={{ borderColor: ochuulResult.matched > 0 ? "rgba(34,197,94,0.4)" : "rgba(234,179,8,0.4)", backgroundColor: ochuulResult.matched > 0 ? "rgba(34,197,94,0.07)" : "rgba(234,179,8,0.07)" }}>
+                <strong>
+                  오출내리기 완료: {ochuulResult.matched}건 차감
+                  {ochuulResult.message ? ` — ${ochuulResult.message}` : ""}
+                </strong>
+                {ochuulResult.details?.length > 0 && (
+                  <ul style={{ margin: "0.5rem 0 0", paddingLeft: "1rem", fontSize: "0.85rem" }}>
+                    {ochuulResult.details.map((d, i) => (
+                      <li key={i}>{d._goods_name} {d._option_name} — {d._prev_stock} → {d.stock} ({-d._ea_minus})</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
             <div className={styles.uploadRow}>
               <input
                 value={defectSearchQuery}
@@ -825,6 +1032,71 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                     <div className={styles.defectActions}>
                       <button className={styles.ghostBtn} onClick={() => handleDefectDec(item.code)}>-1</button>
                       <button className={styles.ghostBtn} onClick={() => handleDefectRemove(item.code)}>삭제</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 김승일 리스트 모달 */}
+      {showKimsungilList && (
+        <div className={styles.modalOverlay} onClick={() => setShowKimsungilList(false)}>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <h4 className={styles.modalTitle}>김승일 리스트</h4>
+              <div className={styles.modalActions}>
+                <span className={styles.pill}>합계 {getKimsungilTotalCount()}</span>
+                <button className={styles.secondaryBtn} onClick={() => setShowKimsungilList(false)}>닫기</button>
+              </div>
+            </div>
+            <div className={styles.uploadRow}>
+              <input
+                value={kimsungilSearchQuery}
+                onChange={(e) => setKimsungilSearchQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") searchKimsungilByName(); }}
+                placeholder="G열 상품명 검색"
+                className={styles.searchInput}
+              />
+              <button className={styles.secondaryBtn} onClick={searchKimsungilByName} disabled={kimsungilSearchLoading}>
+                {kimsungilSearchLoading ? "검색 중..." : "김승일 검색"}
+              </button>
+            </div>
+            <div className={styles.modalBody}>
+            {kimsungilSearchMessage && (
+              <div className={styles.statusMsg}>
+                <strong>{kimsungilSearchMessage}</strong>
+              </div>
+            )}
+            {kimsungilSearchRows.length > 0 && (
+              <div className={styles.defectList} style={{ marginBottom: "0.75rem" }}>
+                {kimsungilSearchRows.map((row, idx) => (
+                  <div key={`${row.code}-${idx}`} className={styles.defectLine}>
+                    <span className={styles.defectText}>
+                      {row.base_name}
+                      {row.base_color && <span className={styles.inlineMeta} style={{ marginLeft: "0.4rem" }}>{row.base_color}</span>}
+                      {row.base_code && <span className={styles.inlineMeta} style={{ marginLeft: "0.4rem" }}>{row.base_code}</span>}
+                    </span>
+                    <button className={styles.ghostBtn} onClick={() => addKimsungilFromSearch(row)}>추가</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {kimsungilList.length === 0 ? (
+              <div className={styles.empty}>등록된 김승일 상품이 없습니다.</div>
+            ) : (
+              <div className={styles.defectList}>
+                {[...kimsungilList].sort((a, b) => ((b.incoming_qty || 0) > 0 ? 1 : 0) - ((a.incoming_qty || 0) > 0 ? 1 : 0)).map((item, idx) => (
+                  <div key={`${item.code}-kimsungil-${idx}`} className={styles.defectLine}>
+                    <span className={styles.defectText}>{renderDefectLabel(item)}</span>
+                    <span style={{ fontSize:"0.75rem", fontWeight:700, padding:"0.2rem 0.5rem", borderRadius:"999px", backgroundColor:"rgba(56,182,255,0.15)", color:"#0a6fa8", border:"1px solid rgba(56,182,255,0.3)" }}>추가 {item.count}</span>
+                    {(item.incoming_qty || 0) > 0 && <span className={styles.inlineTagIncoming}>입고 {item.incoming_qty}</span>}
+                    <div className={styles.defectActions}>
+                      <button className={styles.ghostBtn} onClick={() => handleKimsungilDec(item.code)}>-1</button>
+                      <button className={styles.ghostBtn} onClick={() => handleKimsungilRemove(item.code)}>삭제</button>
                     </div>
                   </div>
                 ))}

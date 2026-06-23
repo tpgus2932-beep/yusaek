@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import pageStyles from './BarcodePage.module.css';
 import styles from './ReturnsPage.module.css';
 import { getDownloadFilename } from '../../lib/download';
+import { useEzadminSession } from '../../lib/EzadminSessionContext';
 
 import { LOCAL_API_BASE as API, getAuthHeaders } from '../../lib/api';
 
@@ -43,6 +44,9 @@ const ReturnsPage = () => {
     const [onebeRows, setOnebeRows] = useState([]);
     const [activeTab, setActiveTab] = useState('all');
     const [loading, setLoading] = useState(false);
+    const [ezadminSheetLoading, setEzadminSheetLoading] = useState(false);
+    const [lastSheetSeq, setLastSheetSeq] = useState(null);
+    const [barcodePrintLoading, setBarcodePrintLoading] = useState(false);
     const [isLoadingAbly, setIsLoadingAbly] = useState(false);
     const [isLoadingExchange, setIsLoadingExchange] = useState(false);
     const [lotteDateFr, setLotteDateFr] = useState(
@@ -66,6 +70,14 @@ const ReturnsPage = () => {
     const [costAddCode, setCostAddCode] = useState('');
     const [costBatchOpen, setCostBatchOpen] = useState(false);
     const [costBatchText, setCostBatchText] = useState('');
+    const [selectedCustomer, setSelectedCustomer] = useState(new Set());
+    const [refundLoading, setRefundLoading] = useState(false);
+    const [refundResults, setRefundResults] = useState(null);
+    const [singleCancelSno, setSingleCancelSno] = useState('');
+    const [singleRefundLoading, setSingleRefundLoading] = useState(false);
+    const [singleRefundResult, setSingleRefundResult] = useState(null);
+    const [excelRefundLoading, setExcelRefundLoading] = useState(false);
+    const [excelRefundResults, setExcelRefundResults] = useState(null);
     const searchTimer = useRef(null);
     const [selectedCols, setSelectedCols] = useState(() => ({
         상품코드: true,
@@ -84,6 +96,7 @@ const ReturnsPage = () => {
     const audioUnlockedRef = useRef(false);
     const hasLoadedRef = useRef(false);
     const lastTypeRef = useRef('-');
+    const { openModal: openEzadminModal } = useEzadminSession();
 
     const queueSummary = useMemo(
         () => [
@@ -288,6 +301,75 @@ const ReturnsPage = () => {
             setMessage(err.message || '에이블리 API 호출 실패');
         } finally {
             setIsLoadingAbly(false);
+        }
+    };
+
+    const handleSingleRefund = async () => {
+        const sno = singleCancelSno.trim();
+        if (!sno) return;
+        setSingleRefundLoading(true);
+        setSingleRefundResult(null);
+        try {
+            const res = await fetch(`${API}/returns/ably-refund-single`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ cancel_sno: sno }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '처리 실패');
+            setSingleRefundResult({ ok: true, ...data });
+        } catch (err) {
+            setSingleRefundResult({ ok: false, error: err.message });
+        } finally {
+            setSingleRefundLoading(false);
+        }
+    };
+
+    const handleExcelRefund = async (file) => {
+        if (!file) return;
+        setExcelRefundLoading(true);
+        setExcelRefundResults(null);
+        setMessage('');
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
+            const res = await fetch(`${API}/returns/ably-refund-from-excel`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: formData,
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '처리 실패');
+            setExcelRefundResults(data.results);
+            setMessage(`엑셀 환불 완료: ${data.success}/${data.total}건 성공`);
+        } catch (err) {
+            setMessage(err.message || '엑셀 환불 처리 실패');
+        } finally {
+            setExcelRefundLoading(false);
+        }
+    };
+
+    const handleAblyRefundSubmit = async () => {
+        const selectedItems = queues.customer.filter((item) => selectedCustomer.has(item.id));
+        if (!selectedItems.length) return;
+        setRefundLoading(true);
+        setRefundResults(null);
+        setMessage('');
+        try {
+            const res = await fetch(`${API}/returns/ably-refund-submit`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ items: selectedItems }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '처리 실패');
+            setRefundResults(data.results);
+            const ok = data.results.filter((r) => r.ok).length;
+            setMessage(`에이블리 반품 넘기기 완료: ${ok}/${data.results.length}건 성공`);
+        } catch (err) {
+            setMessage(err.message || '에이블리 반품 넘기기 실패');
+        } finally {
+            setRefundLoading(false);
         }
     };
 
@@ -606,6 +688,68 @@ const ReturnsPage = () => {
         }
     };
 
+    const handleCreateEzadminSheet = async () => {
+        try {
+            setEzadminSheetLoading(true);
+            setMessage('');
+            const res = await fetch(`${API}/returns/onebe/create-ezadmin-sheet`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({}),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.need_session) {
+                openEzadminModal(handleCreateEzadminSheet);
+                return;
+            }
+            if (!res.ok || !data?.ok) {
+                throw new Error(data?.detail || data?.error || '전표 생성 실패');
+            }
+            setLastSheetSeq(data.sheet_seq);
+            setMessage(`반품 바코드 전표 생성 및 상품 일괄추가 완료 (${data.uploaded_count ?? 0}건)`);
+        } catch (err) {
+            setMessage(err.message || '전표 생성 실패');
+        } finally {
+            setEzadminSheetLoading(false);
+        }
+    };
+
+    const handleBarcodePrint = async () => {
+        if (!lastSheetSeq || !onebeRows.length) return;
+        setBarcodePrintLoading(true);
+        try {
+            const products = onebeRows
+                .filter(r => r['상품코드'])
+                .sort((a, b) => (b['가공데이터'] || '').localeCompare(a['가공데이터'] || '', 'ko'))
+                .flatMap(r => {
+                    const qty = Number(r['입고수량']) || Number(r['요청수량']) || 1;
+                    return Array.from({ length: qty }, () => ({
+                        code: r['상품코드'],
+                        name: r['가공데이터'] || '',
+                        option: '',
+                        qty: 1,
+                    }));
+                });
+            const res = await fetch(`${API}/returns/onebe/barcode-print`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ sheet_seq: lastSheetSeq, products }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.need_session) { openEzadminModal(handleBarcodePrint); return; }
+            if (!data?.ok) { setMessage(`바코드 출력 오류: ${data?.error || '알 수 없는 오류'}`); return; }
+            const win = window.open('', '_blank', 'width=900,height=700');
+            win.document.write(data.html);
+            win.document.close();
+            win.focus();
+            setTimeout(() => win.print(), 800);
+        } catch (err) {
+            setMessage(`바코드 출력 오류: ${err.message}`);
+        } finally {
+            setBarcodePrintLoading(false);
+        }
+    };
+
     const getOnebeDisplayValue = (row, column) => {
         if (!row) return '';
         if (column === '입고수량' && row['입고수량'] === undefined && row['수량'] !== undefined) {
@@ -916,7 +1060,69 @@ const ReturnsPage = () => {
                         <>
                             {activeTab === 'all' && renderTable(queues.all)}
                             {activeTab === 'seller' && renderTable(queues.seller)}
-                            {activeTab === 'customer' && renderTable(queues.customer)}
+                            {activeTab === 'customer' && (() => {
+                                const items = queues.customer;
+                                if (!items || items.length === 0) return <div className={pageStyles.empty}>데이터가 없습니다.</div>;
+                                const allChecked = items.length > 0 && items.every((i) => selectedCustomer.has(i.id));
+                                const hasDetailReason = items.some((i) => i.detail_reason);
+                                const hasUserComment = items.some((i) => i.user_comment);
+                                return (
+                                    <div className={pageStyles.tableWrap}>
+                                        <table className={pageStyles.table}>
+                                            <thead>
+                                                <tr>
+                                                    <th style={{ width: '32px', textAlign: 'center' }}>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={allChecked}
+                                                            onChange={() => {
+                                                                if (allChecked) {
+                                                                    setSelectedCustomer(new Set());
+                                                                } else {
+                                                                    setSelectedCustomer(new Set(items.map((i) => i.id)));
+                                                                }
+                                                            }}
+                                                        />
+                                                    </th>
+                                                    <th>스캔송장</th>
+                                                    <th>요청메모</th>
+                                                    <th>가공데이터</th>
+                                                    <th>입고수량</th>
+                                                    <th>분류</th>
+                                                    {hasDetailReason && <th>상세사유</th>}
+                                                    {hasUserComment && <th>고객메모</th>}
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {items.map((item) => (
+                                                    <tr key={item.id} style={selectedCustomer.has(item.id) ? { background: 'var(--bg-secondary)' } : undefined}>
+                                                        <td style={{ textAlign: 'center' }}>
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={selectedCustomer.has(item.id)}
+                                                                onChange={() => {
+                                                                    setSelectedCustomer((prev) => {
+                                                                        const next = new Set(prev);
+                                                                        next.has(item.id) ? next.delete(item.id) : next.add(item.id);
+                                                                        return next;
+                                                                    });
+                                                                }}
+                                                            />
+                                                        </td>
+                                                        <td>{item.scan}</td>
+                                                        <td>{item.match}</td>
+                                                        <td>{item.item_text}</td>
+                                                        <td>{item.qty}</td>
+                                                        <td>{item.type}</td>
+                                                        {hasDetailReason && <td>{item.detail_reason || ''}</td>}
+                                                        {hasUserComment && <td>{item.user_comment || ''}</td>}
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                );
+                            })()}
                             {activeTab === 'exchange_seller' && renderTable(queues.exchange_seller)}
                             {activeTab === 'exchange_customer' && renderTable(queues.exchange_customer)}
                             {activeTab === 'unmatched' && renderTable(queues.unmatched)}
@@ -934,6 +1140,21 @@ const ReturnsPage = () => {
                                 </button>
                                 <button className={pageStyles.secondaryBtn} onClick={handleConsolidate}>
                                     같은수량가공
+                                </button>
+                                <button
+                                    className={pageStyles.secondaryBtn}
+                                    onClick={handleCreateEzadminSheet}
+                                    disabled={ezadminSheetLoading}
+                                >
+                                    {ezadminSheetLoading ? '전표/상품 처리 중...' : '전표생성+상품일괄추가'}
+                                </button>
+                                <button
+                                    className={pageStyles.secondaryBtn}
+                                    onClick={handleBarcodePrint}
+                                    disabled={barcodePrintLoading || !lastSheetSeq || !onebeRows.length}
+                                    title={lastSheetSeq ? `전표 ${lastSheetSeq} 바코드 출력` : '전표 생성 후 활성화'}
+                                >
+                                    {barcodePrintLoading ? '출력 중...' : `바코드 출력${lastSheetSeq ? ` (${lastSheetSeq})` : ''}`}
                                 </button>
                                 <button
                                     className={pageStyles.secondaryBtn}
@@ -1079,6 +1300,87 @@ const ReturnsPage = () => {
                             대기 리스트 초기화
                         </button>
                     </div>
+                </section>
+
+                <section className={pageStyles.card}>
+                    <div className={pageStyles.cardHeader}>
+                        <h3 className={pageStyles.cardTitle}>에이블리 반품 넘기기</h3>
+                    </div>
+
+                    {/* 단건 테스트 */}
+                    <div className={pageStyles.uploadRow} style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem', marginBottom: '0.5rem' }}>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>반품요청번호 직접 입력</span>
+                        <input
+                            className={pageStyles.searchInput}
+                            style={{ width: '180px' }}
+                            value={singleCancelSno}
+                            onChange={(e) => { setSingleCancelSno(e.target.value); setSingleRefundResult(null); }}
+                            onKeyDown={(e) => e.key === 'Enter' && handleSingleRefund()}
+                            placeholder="cancel_sno 입력"
+                        />
+                        <button
+                            className={pageStyles.primaryBtn}
+                            onClick={handleSingleRefund}
+                            disabled={singleRefundLoading || !singleCancelSno.trim()}
+                        >
+                            {singleRefundLoading ? '처리 중...' : '환불 요청'}
+                        </button>
+                        {singleRefundResult && (
+                            <span style={{ fontSize: '0.82rem', color: singleRefundResult.ok ? '#22c55e' : '#ef4444' }}>
+                                {singleRefundResult.ok
+                                    ? `✓ 성공 (cancel:${singleRefundResult.cancel_sno} / item:${singleRefundResult.item_sno})`
+                                    : `✗ ${singleRefundResult.error}`}
+                            </span>
+                        )}
+                    </div>
+
+                    {/* 일괄 처리 */}
+                    <div className={pageStyles.uploadRow}>
+                        <button
+                            className={pageStyles.primaryBtn}
+                            onClick={handleAblyRefundSubmit}
+                            disabled={refundLoading || selectedCustomer.size === 0}
+                        >
+                            {refundLoading ? '처리 중...' : `에이블리 환불 요청 (${selectedCustomer.size}건 선택)`}
+                        </button>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                            고객 대기 탭에서 항목을 체크 후 클릭하세요
+                        </span>
+                    </div>
+
+                    {/* 엑셀 파일로 환불 */}
+                    <div className={pageStyles.uploadRow} style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem', marginTop: '0.25rem' }}>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>추출 엑셀로 넘기기</span>
+                        <label className={pageStyles.fileInput} style={{ opacity: excelRefundLoading ? 0.5 : 1, pointerEvents: excelRefundLoading ? 'none' : 'auto' }}>
+                            <input
+                                type="file"
+                                accept=".xls,.xlsx,.xlsm"
+                                onChange={(e) => handleExcelRefund(e.target.files?.[0] ?? null)}
+                            />
+                            {excelRefundLoading ? '처리 중...' : '엑셀 선택'}
+                        </label>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                            추출 파일의 2번째 시트(고객) H열 반품요청번호 기준
+                        </span>
+                    </div>
+                    {excelRefundResults && (
+                        <div style={{ padding: '0.5rem 1rem 0.75rem' }}>
+                            {excelRefundResults.map((r, i) => (
+                                <div key={i} style={{ fontSize: '0.8rem', color: r.ok ? 'var(--text-muted)' : '#ef4444', marginBottom: '2px' }}>
+                                    {r.ok ? '✓' : '✗'} {r.cancel_sno} {r.error ? `— ${r.error}` : ''}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    {refundResults && (
+                        <div style={{ padding: '0.5rem 1rem 0.75rem' }}>
+                            {refundResults.map((r, i) => (
+                                <div key={i} style={{ fontSize: '0.8rem', color: r.ok ? 'var(--text-muted)' : '#ef4444', marginBottom: '2px' }}>
+                                    {r.ok ? '✓' : '✗'} {r.scan} {r.error ? `— ${r.error}` : ''}
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </section>
 
             </div>

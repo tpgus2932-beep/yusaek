@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
+import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import httpx
+import xlwt
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 ABLY_BASE = "https://api.a-bly.com"
@@ -20,9 +23,31 @@ LLOGIS_EMP_NO = "331595"
 
 LLOGIS_COURIER_SNO = 5  # 롯데택배
 
+_EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
+_EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+_KST = timezone(timedelta(hours=9))
+_BROWSER_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_BROWSER_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
-def build_exchange_return_router(*, get_current_user):
+
+def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, enqueue_sms=None):
     router = APIRouter(prefix="/exchange-return")
+
+    def _browser_time_flag(now: datetime) -> str:
+        return (
+            f"{_BROWSER_WEEKDAYS[now.weekday()]} "
+            f"{_BROWSER_MONTHS[now.month - 1]} "
+            f"{now.day:02d} {now.year} "
+            f"{now:%H:%M:%S} GMT+0900 (한국 표준시)"
+        )
+
+    def _looks_like_ezadmin_session_error(response, body: str) -> bool:
+        lowered = (body or "").lower()
+        if response.url and "login" in str(response.url).lower():
+            return True
+        if "<html" in lowered or "<!doctype html" in lowered:
+            return True
+        return any(t in lowered for t in ("login", "phpsessid", "session", "로그인"))
 
     def _ably_headers(token: str) -> dict:
         return {
@@ -216,6 +241,8 @@ def build_exchange_return_router(*, get_current_user):
                         "option_info": order_item.get("option_info") or first.get("option_info"),
                         "member_name": (ex.get("member") or {}).get("name"),
                         "requested_at": ex.get("requested_at"),
+                        "order_sno": order_item.get("order_sno"),
+                        "phone": order_item.get("buyer_tel") or order_item.get("receiver_tel") or "",
                     })
 
                 if page >= data.get("max_page_number", 1):
@@ -346,5 +373,425 @@ def build_exchange_return_router(*, get_current_user):
 
         except Exception as e:
             return {"ok": False, "skipped": False, "error": str(e)}
+
+    @router.post("/ship-pending")
+    async def ship_pending(
+        start_date: str = Body(None),
+        end_date: str = Body(None),
+        user=Depends(get_current_user),
+    ):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        if not end_date:
+            end_date = datetime.now(_KST).strftime("%Y-%m-%d")
+        if not start_date:
+            start_date = (datetime.now(_KST) - timedelta(days=365)).strftime("%Y-%m-%d")
+
+        ez_headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": f"{_EZADMIN_BASE}/template40.htm?template=E900",
+            "X-Requested-With": "XMLHttpRequest",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        }
+
+        # 에이블리 status=9 교환건 수집
+        try:
+            token = await _ably_login()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        all_exchanges = []
+        page = 1
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while True:
+                res = await client.get(
+                    f"{ABLY_BASE}/seller/exchanges/",
+                    headers=_ably_headers(token),
+                    params={
+                        "page": page,
+                        "per_page": 30,
+                        "requested_at_start": f"{start_date} 00:00:00",
+                        "requested_at_end": f"{end_date} 23:59:59",
+                        "status[]": 9,
+                    },
+                )
+                res.raise_for_status()
+                data = res.json()
+                exchanges = data.get("exchanges", [])
+                if not exchanges:
+                    break
+                all_exchanges.extend(exchanges)
+                if page >= data.get("max_page_number", 1):
+                    break
+                page += 1
+
+        results = []
+        async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as ez_client:
+            for ex in all_exchanges:
+                exchange_sno = ex.get("exchange_sno") or ex.get("sno")
+                order_sno = ex.get("order_sno")
+                delivery = ex.get("exchange_delivery") or {}
+
+                if not order_sno:
+                    results.append({"exchange_sno": exchange_sno, "ok": False, "skipped": True, "error": "order_sno 없음"})
+                    continue
+
+                keyword = f"C{order_sno}"
+
+                # EZAdmin 주문 검색
+                try:
+                    search_payload = {
+                        "_search": "false",
+                        "rows": "10",
+                        "page": "1",
+                        "sidx": "",
+                        "sord": "desc",
+                        "readonly": "T",
+                        "template": "E900",
+                        "action": "query_json",
+                        "par": (
+                            f"pack=&history_seq=&date_type=collect_date"
+                            f"&start_date={start_date}&end_date={end_date}"
+                            f"&date_period_sel=0&search_type=7&keyword={keyword}"
+                            f"&keyword1=&keyword2=&keyword3=&keyword4=&keyword5="
+                            f"&super_keyword=&order_status=-1&order_cs=0"
+                            f"&query_trans_who=0&is_gift=0&work_type=0"
+                            f"&labels_string=&checkbox_options_string="
+                        ),
+                    }
+                    search_res = await ez_client.post(
+                        f"{_EZADMIN_BASE}/function.htm",
+                        data=search_payload,
+                        cookies={"PHPSESSID": phpsessid},
+                        headers=ez_headers,
+                    )
+                    search_body = (search_res.text or "").strip()
+                    if _looks_like_ezadmin_session_error(search_res, search_body):
+                        return {"ok": False, "need_session": True}
+
+                    search_data = json.loads(search_body)
+                    rows = search_data.get("rows", [])
+                    if not rows:
+                        results.append({"exchange_sno": exchange_sno, "ok": False, "skipped": True, "error": f"EZAdmin 검색결과 없음 ({keyword})"})
+                        continue
+
+                    pack = None
+                    for row in rows:
+                        cell = row.get("cell", {})
+                        if isinstance(cell, dict):
+                            pack = cell.get("pack")
+                        if pack:
+                            break
+
+                    if not pack:
+                        results.append({"exchange_sno": exchange_sno, "ok": False, "skipped": True, "error": f"pack 없음 ({keyword})"})
+                        continue
+
+                    # EZAdmin pack 상세 조회
+                    now = datetime.now(_KST)
+                    detail_payload = {
+                        "_search": "false",
+                        "rows": "500",
+                        "page": "1",
+                        "sidx": "",
+                        "sord": "",
+                        "readonly": "T",
+                        "template": "E900",
+                        "action": "packlist_json",
+                        "pack": pack,
+                        "stock": "0",
+                        "is_masking": "0",
+                        "timeFlag": _browser_time_flag(now),
+                    }
+                    detail_res = await ez_client.post(
+                        f"{_EZADMIN_BASE}/function.htm",
+                        data=detail_payload,
+                        cookies={"PHPSESSID": phpsessid},
+                        headers=ez_headers,
+                    )
+                    detail_body = (detail_res.text or "").strip()
+                    if _looks_like_ezadmin_session_error(detail_res, detail_body):
+                        return {"ok": False, "need_session": True}
+
+                    detail_data = json.loads(detail_body)
+                    detail_rows = detail_data.get("rows", [])
+
+                    trans_no = None
+                    for drow in detail_rows:
+                        dcell = drow.get("cell", {})
+                        if isinstance(dcell, dict):
+                            data_row_str = dcell.get("data_row")
+                            if data_row_str:
+                                try:
+                                    data_row = json.loads(data_row_str)
+                                    trans_no = data_row.get("trans_no")
+                                    if trans_no:
+                                        break
+                                except Exception:
+                                    pass
+
+                    if not trans_no:
+                        results.append({"exchange_sno": exchange_sno, "ok": False, "skipped": True, "error": f"송장번호 없음 (pack={pack})"})
+                        continue
+
+                    # 에이블리 배송처리
+                    ship_body = {
+                        "delivery_sno": 5,
+                        "invoice": trans_no,
+                        "exchange_deliveries": [{
+                            "exchange_sno": exchange_sno,
+                            "sno": delivery.get("sno"),
+                            "name": delivery.get("name"),
+                            "contact": delivery.get("contact"),
+                            "address": delivery.get("address"),
+                            "zipcode": delivery.get("zipcode"),
+                            "delivery_request": delivery.get("delivery_request"),
+                        }],
+                    }
+                    async with httpx.AsyncClient(timeout=15.0) as ably_client:
+                        ship_res = await ably_client.post(
+                            f"{ABLY_BASE}/seller/exchanges/ship/",
+                            headers=_ably_headers(token),
+                            json=ship_body,
+                        )
+
+                    if ship_res.status_code in (200, 201, 204):
+                        results.append({"exchange_sno": exchange_sno, "ok": True, "skipped": False, "invoice": trans_no, "error": None})
+                    else:
+                        results.append({"exchange_sno": exchange_sno, "ok": False, "skipped": False, "invoice": trans_no, "error": f"배송처리 실패 (HTTP {ship_res.status_code}): {ship_res.text[:100]}"})
+
+                except json.JSONDecodeError as e:
+                    results.append({"exchange_sno": exchange_sno, "ok": False, "skipped": False, "error": f"EZAdmin 응답 파싱 실패: {str(e)[:80]}"})
+                except Exception as e:
+                    results.append({"exchange_sno": exchange_sno, "ok": False, "skipped": False, "error": str(e)[:100]})
+
+        success = sum(1 for r in results if r.get("ok"))
+        skipped = sum(1 for r in results if r.get("skipped"))
+        failed = sum(1 for r in results if not r.get("ok") and not r.get("skipped"))
+        return {
+            "ok": True,
+            "results": results,
+            "total": len(results),
+            "success": success,
+            "skipped": skipped,
+            "failed": failed,
+        }
+
+    @router.post("/process-exchange-pickup")
+    async def process_exchange_pickup(user=Depends(get_current_user)):
+        phpsessid = get_setting(_EZADMIN_SESSION_KEY)
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        try:
+            token = await _ably_login()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        end_date = datetime.today().strftime("%Y-%m-%d")
+        start_date = (datetime.today() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        # 교환요청(status=2) 목록 조회
+        exchanges = []
+        page = 1
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while True:
+                res = await client.get(
+                    f"{ABLY_BASE}/seller/exchanges/",
+                    headers=_ably_headers(token),
+                    params={
+                        "page": page,
+                        "per_page": 30,
+                        "requested_at_start": f"{start_date} 00:00:00",
+                        "requested_at_end": f"{end_date} 23:59:59",
+                        "status[]": 2,
+                    },
+                )
+                res.raise_for_status()
+                data = res.json()
+                for ex in data.get("exchanges", []):
+                    items_list = ex.get("exchange_items") or []
+                    if not items_list:
+                        continue
+                    exchanges.append({
+                        "exchange_sno": ex.get("sno") or ex.get("exchange_sno"),
+                        "reason_code": ex.get("reason_code"),
+                        "detail_reason": ex.get("detail_reason") or "",
+                        "order_item_sno": items_list[0].get("order_item_sno"),
+                        "exchange_items": items_list,
+                        "return_delivery": ex.get("return_delivery") or {},
+                        "exchange_delivery": ex.get("exchange_delivery") or {},
+                    })
+                if page >= data.get("max_page_number", 1):
+                    break
+                page += 1
+
+        if not exchanges:
+            return {"ok": False, "error": "처리할 교환요청이 없습니다"}
+
+        # 원송장 조회 + 수신자 정보 수집
+        invoices = []
+        sms_recipients: list[dict] = []
+        seen_tels: set[str] = set()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for ex in exchanges:
+                sno = ex.get("order_item_sno")
+                if not sno:
+                    continue
+                try:
+                    r = await client.get(
+                        f"{ABLY_BASE}/seller/order_items/{sno}/",
+                        headers={
+                            **_ably_headers(token),
+                            "Origin": "https://my.a-bly.com",
+                            "Referer": "https://my.a-bly.com/",
+                        },
+                    )
+                    item = r.json().get("order_item") or {}
+                    inv = item.get("invoice") or ""
+                    if inv:
+                        invoices.append(str(inv).strip())
+                    tel_raw = item.get("buyer_tel") or item.get("receiver_tel") or ""
+                    tel = "".join(ch for ch in str(tel_raw) if ch.isdigit())
+                    if tel and tel not in seen_tels:
+                        seen_tels.add(tel)
+                        sms_recipients.append({
+                            "tel": tel,
+                            "name": str(item.get("receiver_name") or item.get("buyer_name") or "").strip(),
+                            "goods_name": str(item.get("goods_name") or "").strip(),
+                        })
+                except Exception:
+                    pass
+
+        if not invoices:
+            return {"ok": False, "error": "유효한 송장번호가 없습니다"}
+
+        # EZAdmin 회수등록
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("Sheet1")
+        sheet.write(0, 0, "송장번호")
+        for i, inv in enumerate(invoices, start=1):
+            sheet.write(i, 0, inv)
+        buf = io.BytesIO()
+        book.save(buf)
+        xls_bytes = buf.getvalue()
+
+        ez_headers_base = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": f"{_EZADMIN_BASE}/popup35.htm?template=DS05&set_batch_cs=1",
+        }
+        ezadmin_ok = False
+        async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as ez_client:
+            upload_res = await ez_client.post(
+                f"{_EZADMIN_BASE}/popup35.htm",
+                data={"template": "DS05", "action": "update_batch_cs", "set_batch_cs": "1", "set_order_label": ""},
+                files={"_file": ("exchange_invoice.xls", xls_bytes, "application/vnd.ms-excel")},
+                cookies={"PHPSESSID": phpsessid},
+                headers=ez_headers_base,
+            )
+            upload_body = (upload_res.text or "").strip()
+            m = re.search(r"batch_cs_\w+", upload_body)
+            if not m:
+                if _looks_like_ezadmin_session_error(upload_res, upload_body):
+                    return {"ok": False, "need_session": True}
+                return {"ok": False, "error": f"EZAdmin 업로드 실패: {upload_body[:200]}"}
+            table_name = m.group(0)
+
+            now_kst = datetime.now(_KST)
+            set_res = await ez_client.post(
+                f"{_EZADMIN_BASE}/function.htm",
+                data={
+                    "template": "DS00", "action": "set_batch_cs", "work": "takeback",
+                    "table_name": table_name, "cs_reason": "일반", "arr_product": "[]",
+                    "receiver_seq": "8", "receiver_name": "유색",
+                    "receiver_tel1": "010", "receiver_tel2": "25466058",
+                    "receiver_mobile1": "010", "receiver_mobile2": "25466058",
+                    "receiver_zip1": "120", "receiver_zip2": "10",
+                    "receiver_address": "경기 남양주시 진접읍 장현리 51-1 롯데오성대리점 (유색)",
+                    "trans_who": "04", "trans_due_date": now_kst.strftime("%Y-%m-%d"),
+                    "timeFlag": _browser_time_flag(now_kst),
+                    "cs_content": "", "seq": "", "cancel_pack": "0", "recover_pack": "0",
+                    "delete_pack": "0", "priority": "0", "auto_restockin_all": "0",
+                    "auto_restockin_all_bad": "0", "restockin_ex": "0",
+                    "update_unhold": "0", "unhold": "0", "set_cs_top_fix": "0",
+                },
+                cookies={"PHPSESSID": phpsessid},
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "Referer": f"{_EZADMIN_BASE}/popup35.htm?template=DS05",
+                },
+            )
+            set_body = (set_res.text or "").strip()
+            if _looks_like_ezadmin_session_error(set_res, set_body):
+                return {"ok": False, "need_session": True}
+            ezadmin_ok = True
+
+        # 에이블리 교환접수 승인
+        approve_body = {"exchanges": [
+            {
+                "sno": ex["exchange_sno"],
+                "reason_code": ex["reason_code"],
+                "detail_reason": ex["detail_reason"],
+                "exchange_items": ex["exchange_items"],
+                "return_delivery": ex["return_delivery"],
+                "exchange_delivery": ex["exchange_delivery"],
+            }
+            for ex in exchanges
+        ]}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            approve_res = await client.post(
+                f"{ABLY_BASE}/seller/exchanges/approve/",
+                headers=_ably_headers(token),
+                json=approve_body,
+            )
+        approve_status = approve_res.status_code
+
+        # SMS 발송 — 반품 최초 접수 템플릿 재사용
+        sms_queued = 0
+        if enqueue_sms and sms_recipients and get_db:
+            import os
+            sender = os.environ.get("ALIGO_SENDER", "").strip()
+            if sender:
+                conn = get_db()
+                try:
+                    tmpl = conn.execute(
+                        "SELECT msg, title, msg_type FROM sms_templates WHERE name = ?",
+                        ("반품 최초 접수",),
+                    ).fetchone()
+                finally:
+                    conn.close()
+                if tmpl and tmpl["msg"]:
+                    for r in sms_recipients:
+                        msg = tmpl["msg"]
+                        msg = msg.replace("{이름}", r["name"])
+                        msg = msg.replace("{수령인}", r["name"])
+                        msg = msg.replace("{상품명}", r["goods_name"])
+                        try:
+                            enqueue_sms(
+                                {
+                                    "receiver": r["tel"],
+                                    "msg": msg,
+                                    "msg_type": tmpl["msg_type"] or "LMS",
+                                    "title": tmpl["title"] or "",
+                                    "sender": sender,
+                                },
+                                "auto-exchange-pickup",
+                            )
+                            sms_queued += 1
+                        except Exception:
+                            pass
+
+        return {
+            "ok": True,
+            "exchange_count": len(exchanges),
+            "invoice_count": len(invoices),
+            "ezadmin_ok": ezadmin_ok,
+            "approve_status": approve_status,
+            "sms_queued": sms_queued,
+        }
 
     return router

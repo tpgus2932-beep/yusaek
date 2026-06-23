@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import io
 import json
+import os
+import re
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import httpx
+import xlwt
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
@@ -19,6 +24,12 @@ LLOGIS_PRINCIPAL = "331595"
 LLOGIS_CREDENTIAL = "plan123!"
 LLOGIS_EMP_NO = "331595"
 
+_EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
+_EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+_KST = timezone(timedelta(hours=9))
+_BROWSER_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_BROWSER_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
 _CANCEL_REASON = {
     30: "단순변심",
     31: "사이즈/색상 불만족",
@@ -27,8 +38,24 @@ _CANCEL_REASON = {
 }
 
 
-def build_return_shipping_router(*, get_current_user, get_db):
+def build_return_shipping_router(*, get_current_user, get_db, get_setting, enqueue_sms=None, get_shared_db=None):
     router = APIRouter(prefix="/return-shipping")
+
+    def _browser_time_flag(now: datetime) -> str:
+        return (
+            f"{_BROWSER_WEEKDAYS[now.weekday()]} "
+            f"{_BROWSER_MONTHS[now.month - 1]} "
+            f"{now.day:02d} {now.year} "
+            f"{now:%H:%M:%S} GMT+0900 (한국 표준시)"
+        )
+
+    def _looks_like_ezadmin_session_error(response, body: str) -> bool:
+        lowered = (body or "").lower()
+        if response.url and "login" in str(response.url).lower():
+            return True
+        if "<html" in lowered or "<!doctype html" in lowered:
+            return True
+        return any(t in lowered for t in ("login", "phpsessid", "session", "로그인"))
 
     async def _ably_login() -> str:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -38,8 +65,8 @@ def build_return_shipping_router(*, get_current_user, get_db):
                 headers={
                     "Content-Type": "application/json",
                     "User-Agent": "Mozilla/5.0",
-                    "Referer": "https://seller.a-bly.com/",
-                    "Origin": "https://seller.a-bly.com",
+                    "Referer": "https://my.a-bly.com/",
+                    "Origin": "https://my.a-bly.com",
                 },
             )
             res.raise_for_status()
@@ -132,8 +159,8 @@ def build_return_shipping_router(*, get_current_user, get_db):
             "Authorization": f"JWT {token}",
             "Accept": "application/json",
             "User-Agent": "Mozilla/5.0",
-            "Referer": "https://seller.a-bly.com/",
-            "Origin": "https://seller.a-bly.com",
+            "Referer": "https://my.a-bly.com/",
+            "Origin": "https://my.a-bly.com",
         }
 
         all_items = []
@@ -172,6 +199,7 @@ def build_return_shipping_router(*, get_current_user, get_db):
                                 "상품명": item.get("goods_name"),
                                 "옵션": item.get("option_info"),
                                 "주문번호": item.get("order_sno"),
+                                "전화번호": item.get("buyer_tel") or item.get("receiver_tel") or "",
                                 "송장번호": item.get("invoice"),
                                 "반품신청일시": item.get("cancel_received_at"),
                                 "수취인명": item.get("receiver_name"),
@@ -453,11 +481,231 @@ def build_return_shipping_router(*, get_current_user, get_db):
         conn = get_db()
         placeholders = ",".join("?" * len(active_invoices))
         cur = conn.execute(
-            f"DELETE FROM delivery_memos WHERE invoice_no NOT IN ({placeholders})",
+            f"DELETE FROM delivery_memos WHERE invoice_no NOT IN ({placeholders}) AND invoice_no NOT LIKE '%:%'",
             active_invoices,
         )
         conn.commit()
         conn.close()
         return {"deleted": cur.rowcount}
+
+    @router.post("/new-return-pickup")
+    async def new_return_pickup(
+        user=Depends(get_current_user),
+    ):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        end_date = datetime.now(_KST).strftime("%Y-%m-%d")
+        start_date = (datetime.now(_KST) - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        try:
+            token = await _ably_login()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        ably_headers = {
+            "Authorization": f"JWT {token}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://my.a-bly.com/",
+            "Origin": "https://my.a-bly.com",
+        }
+
+        inv_to_sno: dict[str, int] = {}
+        sms_recipients: list[dict] = []  # [{tel, name, goods_name}]
+        page = 1
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while True:
+                res = await client.get(
+                    f"{ABLY_BASE}/seller/order_cancels/",
+                    headers=ably_headers,
+                    params={
+                        "cancel_type": "return",
+                        "processing_sub_status[]": ["41"],
+                        "delivery_type[]": ["standard", "today", "combine", "reserved"],
+                        "order": "cancel_received_at",
+                        "date_type": "cancel_received_at",
+                        "page": page,
+                        "per_page": 30,
+                        "start_date": start_date,
+                        "end_date": end_date,
+                    },
+                )
+                res.raise_for_status()
+                data = res.json()
+                cancels = data.get("order_cancels", [])
+                if not cancels:
+                    break
+                for cancel in cancels:
+                    items = cancel.get("order_items", [])
+                    for item in items:
+                        inv = str(item.get("invoice") or "").strip()
+                        sno = item.get("sno")
+                        if inv and inv not in inv_to_sno:
+                            inv_to_sno[inv] = sno
+                    if items:
+                        first = items[0]
+                        tel_raw = (
+                            cancel.get("buyer_tel") or cancel.get("receiver_tel") or
+                            first.get("buyer_tel") or first.get("receiver_tel") or ""
+                        )
+                        tel = "".join(ch for ch in str(tel_raw) if ch.isdigit())
+                        name_raw = (
+                            cancel.get("receiver_name") or cancel.get("buyer_name") or
+                            first.get("receiver_name") or first.get("buyer_name") or ""
+                        )
+                        if tel:
+                            sms_recipients.append({
+                                "tel": tel,
+                                "name": str(name_raw).strip(),
+                                "goods_name": str(first.get("goods_name") or "").strip(),
+                            })
+                if page >= data.get("max_page_number", 1):
+                    break
+                page += 1
+
+        if not inv_to_sno:
+            return {"ok": False, "error": "처리할 송장번호가 없습니다 (sub_status=41 건 없음)"}
+
+        invoices = list(inv_to_sno.keys())
+
+        # XLS 생성 (BIFF .xls)
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("Sheet1")
+        sheet.write(0, 0, "송장번호")
+        for i, inv in enumerate(invoices, start=1):
+            sheet.write(i, 0, inv)
+        buf = io.BytesIO()
+        book.save(buf)
+        xls_bytes = buf.getvalue()
+
+        ez_headers_base = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": f"{_EZADMIN_BASE}/popup35.htm?template=DS05&set_batch_cs=1",
+        }
+
+        async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as ez_client:
+            # EZAdmin DS05 XLS 업로드
+            upload_res = await ez_client.post(
+                f"{_EZADMIN_BASE}/popup35.htm",
+                data={"template": "DS05", "action": "update_batch_cs", "set_batch_cs": "1", "set_order_label": ""},
+                files={"_file": ("ably_return_invoice.xls", xls_bytes, "application/vnd.ms-excel")},
+                cookies={"PHPSESSID": phpsessid},
+                headers=ez_headers_base,
+            )
+            upload_body = (upload_res.text or "").strip()
+            m = re.search(r"batch_cs_\w+", upload_body)
+            if not m:
+                if _looks_like_ezadmin_session_error(upload_res, upload_body):
+                    return {"ok": False, "need_session": True}
+                return {"ok": False, "error": f"table_name 추출 실패: {upload_body[:300]}"}
+            table_name = m.group(0)
+
+            # EZAdmin 회수 접수 (DS00 set_batch_cs takeback)
+            now_kst = datetime.now(_KST)
+            today_str = now_kst.strftime("%Y-%m-%d")
+            time_flag = _browser_time_flag(now_kst)
+            set_payload = {
+                "template": "DS00",
+                "action": "set_batch_cs",
+                "work": "takeback",
+                "table_name": table_name,
+                "cs_reason": "일반",
+                "arr_product": "[]",
+                "receiver_seq": "8",
+                "receiver_name": "유색",
+                "receiver_tel1": "010",
+                "receiver_tel2": "25466058",
+                "receiver_mobile1": "010",
+                "receiver_mobile2": "25466058",
+                "receiver_zip1": "120",
+                "receiver_zip2": "10",
+                "receiver_address": "경기 남양주시 진접읍 장현리 51-1 롯데오성대리점 (유색)",
+                "trans_who": "04",
+                "trans_due_date": today_str,
+                "timeFlag": time_flag,
+                "cs_content": "",
+                "seq": "",
+                "cancel_pack": "0",
+                "recover_pack": "0",
+                "delete_pack": "0",
+                "priority": "0",
+                "auto_restockin_all": "0",
+                "auto_restockin_all_bad": "0",
+                "restockin_ex": "0",
+                "update_unhold": "0",
+                "unhold": "0",
+                "set_cs_top_fix": "0",
+            }
+            set_res = await ez_client.post(
+                f"{_EZADMIN_BASE}/function.htm",
+                data=set_payload,
+                cookies={"PHPSESSID": phpsessid},
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "Referer": f"{_EZADMIN_BASE}/popup35.htm?template=DS05",
+                },
+            )
+            set_body = (set_res.text or "").strip()
+            if _looks_like_ezadmin_session_error(set_res, set_body):
+                return {"ok": False, "need_session": True}
+
+        # 에이블리 반품요청접수
+        sno_list = [v for v in inv_to_sno.values() if v]
+        ably_status = None
+        if sno_list:
+            async with httpx.AsyncClient(timeout=15.0) as ably_client:
+                ably_res = await ably_client.put(
+                    f"{ABLY_BASE}/seller/order_items/request_return/",
+                    headers={**ably_headers, "Content-Type": "application/json"},
+                    json={"sno_list": sno_list},
+                )
+                ably_status = ably_res.status_code
+
+        # SMS 발송 — 반품 최초 접수 템플릿
+        sms_queued = 0
+        if enqueue_sms and get_shared_db and sms_recipients:
+            sender = os.environ.get("ALIGO_SENDER", "").strip()
+            if sender:
+                sconn = get_shared_db()
+                try:
+                    tmpl = sconn.execute(
+                        "SELECT msg, title, msg_type FROM sms_templates WHERE name = ?",
+                        ("반품 최초 접수",),
+                    ).fetchone()
+                finally:
+                    sconn.close()
+                if tmpl and tmpl["msg"]:
+                    for r in sms_recipients:
+                        msg = tmpl["msg"]
+                        msg = msg.replace("{이름}", r["name"])
+                        msg = msg.replace("{수령인}", r["name"])
+                        msg = msg.replace("{상품명}", r["goods_name"])
+                        try:
+                            enqueue_sms(
+                                {
+                                    "receiver": r["tel"],
+                                    "msg": msg,
+                                    "msg_type": tmpl["msg_type"] or "LMS",
+                                    "title": tmpl["title"] or "",
+                                    "sender": sender,
+                                },
+                                "auto-return-pickup",
+                            )
+                            sms_queued += 1
+                        except Exception:
+                            pass
+
+        return {
+            "ok": True,
+            "invoice_count": len(invoices),
+            "table_name": table_name,
+            "ably_status": ably_status,
+            "sno_count": len(sno_list) if sno_list else 0,
+            "sms_queued": sms_queued,
+        }
 
     return router

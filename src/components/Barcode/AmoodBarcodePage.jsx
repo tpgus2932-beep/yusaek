@@ -203,6 +203,7 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
         itemDone: new Audio("/sounds/xx.wav"),
         bad: new Audio("/sounds/dd.wav"),
         invoiceDefect: new Audio("/sounds/bb.wav"),
+        scanOk: new Audio("/sounds/tt.wav"),
       };
     }
   }, []);
@@ -469,6 +470,8 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
             pushLog(`송장 완료: ${currentInvoice || ""}`.trim());
           } else if (data.remain === 0) {
             playSound("itemDone");
+          } else {
+            playSound("scanOk");
           }
           pushLog(`${data.item_has_defect ? "[불량] " : ""}TRUE ${data.code} (잔여 ${data.remain})`);
         } else {

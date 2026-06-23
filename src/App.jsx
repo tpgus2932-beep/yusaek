@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { EzadminSessionProvider } from './lib/EzadminSessionContext';
 import Sidebar from './components/Layout/Sidebar';
 import Header from './components/Layout/Header';
 import Overview from './components/Dashboard/Overview';
@@ -244,6 +245,7 @@ const App = () => {
   }
 
   return (
+    <EzadminSessionProvider>
     <div className={styles.appContainer}>
       <Sidebar
         activeTab={visibleActiveTab}
@@ -299,6 +301,7 @@ const App = () => {
 
       </main>
     </div>
+    </EzadminSessionProvider>
   );
 };
 

@@ -7,6 +7,7 @@ import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../..
 
 export default function AmoodHapbaePage({ headerExtra = null, transferredFile = null }) {
   const [file, setFile] = useState(null);
+  const [lastFileInfo, setLastFileInfo] = useState(null);
   const [skipHeader, setSkipHeader] = useState(true);
   const [headerCol1, setHeaderCol1] = useState("상품명");
   const [headerCol2, setHeaderCol2] = useState("상품코드");
@@ -19,6 +20,9 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
   const [loadingConflicts, setLoadingConflicts] = useState(false);
   const [loadingExport, setLoadingExport] = useState(false);
   const [loadingCostBase, setLoadingCostBase] = useState(false);
+  const [loadingEzadmin, setLoadingEzadmin] = useState(false);
+  const [ezadminMsg, setEzadminMsg] = useState("");
+  const [ezadminLog, setEzadminLog] = useState([]);
   const [message, setMessage] = useState("");
   const [costMessage, setCostMessage] = useState("");
   const [costBase, setCostBase] = useState(null);
@@ -80,9 +84,8 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
   };
 
   const buildFormData = () => {
-    if (!file) return null;
     const formData = new FormData();
-    formData.append("file", file);
+    if (file) formData.append("file", file);
     formData.append("skip_header", skipHeader ? "true" : "false");
     formData.append("header_col1", headerCol1);
     formData.append("header_col2", headerCol2);
@@ -95,16 +98,60 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
     return formData;
   };
 
+  const fetchEzadminLog = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/amood-hapbae/ezadmin-log`, { headers: getAuthHeaders() });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      setEzadminLog(Array.isArray(data.log) ? data.log : []);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleSendToEzadmin = async (direction) => {
+    if (!file && !lastFileInfo) { setEzadminMsg("엑셀 파일을 먼저 선택하세요."); return; }
+    setLoadingEzadmin(true);
+    setEzadminMsg("");
+    try {
+      const formData = new FormData();
+      if (file) formData.append("file", file);
+      formData.append("direction", direction);
+      formData.append("skip_header", skipHeader ? "true" : "false");
+      const res = await fetch(`${API}/amood-hapbae/send-to-ezadmin`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: formData,
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) { setEzadminMsg("EZAdmin 세션이 없습니다. 설정에서 PHPSESSID를 입력하세요."); return; }
+      if (!res.ok || !data?.ok) throw new Error(data?.detail || data?.error || "EZAdmin 처리 실패");
+      const label = direction === "out" ? "출고" : "입고";
+      setEzadminMsg(`${label} 처리 완료 (${data.count ?? 0}건)`);
+      await fetchEzadminLog();
+    } catch (err) {
+      setEzadminMsg(err.message || "EZAdmin 처리 실패");
+    } finally {
+      setLoadingEzadmin(false);
+    }
+  };
+
   React.useEffect(() => {
     fetchCostBaseStatus();
-  }, [fetchCostBaseStatus]);
+    fetchEzadminLog();
+    fetch(`${API}/amood-hapbae/last-file/info`, { headers: getAuthHeaders() })
+      .then((r) => r.json())
+      .then((d) => { if (d.file) setLastFileInfo(d.file); })
+      .catch(() => {});
+  }, [fetchCostBaseStatus, fetchEzadminLog]);
 
   const handleFindConflicts = async () => {
-    const formData = buildFormData();
-    if (!formData) {
+    if (!file && !lastFileInfo) {
       setMessage("엑셀 파일을 먼저 선택하세요.");
       return;
     }
+    const formData = buildFormData();
     setLoadingConflicts(true);
     setMessage("");
     try {
@@ -156,11 +203,11 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
       setMessage("다운로드할 열을 최소 1개 선택하세요.");
       return;
     }
-    const formData = buildFormData();
-    if (!formData) {
+    if (!file && !lastFileInfo) {
       setMessage("엑셀 파일을 먼저 선택하세요.");
       return;
     }
+    const formData = buildFormData();
     setLoadingExport(true);
     setMessage("");
     try {
@@ -369,8 +416,20 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
         </div>
         <div className={styles.uploadRow}>
           <label className={styles.fileInput} style={{ flex: 1, justifyContent: "flex-start" }}>
-            <input type="file" accept=".xlsx,.xlsm" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-            {file ? file.name : "파일 선택"}
+            <input
+              type="file"
+              accept=".xlsx,.xlsm"
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                setFile(f);
+                if (f) setLastFileInfo({ filename: f.name, uploaded_at: new Date().toISOString() });
+              }}
+            />
+            {file
+              ? file.name
+              : lastFileInfo
+              ? `이전 파일: ${lastFileInfo.filename} (${new Date(lastFileInfo.uploaded_at).toLocaleString("ko-KR")})`
+              : "파일 선택"}
           </label>
           <label className={styles.checkboxItem}>
             <input type="checkbox" checked={skipHeader} onChange={(e) => setSkipHeader(e.target.checked)} />
@@ -392,7 +451,47 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
           >
             {loadingExport ? "생성 중..." : "H/J 가공 엑셀 생성"}
           </button>
+          <button
+            type="button"
+            className={styles.secondaryBtn}
+            onClick={() => handleSendToEzadmin("out")}
+            disabled={loadingEzadmin || loadingConflicts || loadingExport}
+          >
+            {loadingEzadmin ? "처리 중..." : "EZAdmin 출고"}
+          </button>
+          <button
+            type="button"
+            className={styles.secondaryBtn}
+            onClick={() => handleSendToEzadmin("in")}
+            disabled={loadingEzadmin || loadingConflicts || loadingExport}
+          >
+            {loadingEzadmin ? "처리 중..." : "EZAdmin 입고"}
+          </button>
         </div>
+
+        {ezadminMsg && (
+          <div
+            className={styles.statusMsg}
+            style={{
+              borderColor: ezadminMsg.includes("실패") || ezadminMsg.includes("없습니다") || ezadminMsg.includes("세션")
+                ? "rgba(220,53,69,0.4)" : "rgba(34,197,94,0.4)",
+              backgroundColor: ezadminMsg.includes("실패") || ezadminMsg.includes("없습니다") || ezadminMsg.includes("세션")
+                ? "rgba(220,53,69,0.07)" : "rgba(34,197,94,0.07)",
+            }}
+          >
+            <strong>{ezadminMsg}</strong>
+          </div>
+        )}
+
+        {ezadminLog.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem", marginTop: "0.5rem" }}>
+            {ezadminLog.map((entry, idx) => (
+              <span key={idx} style={{ fontSize: "0.78rem", color: entry.ok ? "var(--text-secondary)" : "rgba(220,53,69,0.8)" }}>
+                {entry.time} · {entry.label}{entry.ok ? ` ${entry.count}건` : ` 실패${entry.error ? ` (${entry.error})` : ""}`}
+              </span>
+            ))}
+          </div>
+        )}
 
         {/* 열 설정 */}
         <div style={{

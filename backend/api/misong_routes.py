@@ -1,6 +1,9 @@
 from urllib.parse import quote
 import io
+import warnings
+from pathlib import Path
 
+import httpx
 import openpyxl
 import xlwt
 from fastapi import APIRouter, Depends, HTTPException, Body
@@ -8,11 +11,15 @@ from fastapi.responses import Response
 from datetime import datetime, timezone
 from api.amood_hapbae import SHARED_COST_BASE_PATH
 
+warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
 WAITING_BASE_PATH = SHARED_COST_BASE_PATH
+_EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
+_EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+_INGODAEGI_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\입고대기.xlsx")
 
 
-def build_misong_router(*, get_current_user, get_db):
+def build_misong_router(*, get_current_user, get_db, get_setting):
     router = APIRouter(prefix="/noye-kimsungil/misong")
 
     # ── DB 초기화 ──────────────────────────────────────────────────────────────
@@ -1191,5 +1198,115 @@ def build_misong_router(*, get_current_user, get_db):
             return {"ok": True}
         finally:
             conn.close()
+
+    # ── 입고대기설정 (EZAdmin I200 입고처리) ──────────────────────────────────
+    @router.post("/waiting-base/export-to-ezadmin")
+    async def waiting_base_export_to_ezadmin(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        conn = get_db()
+        try:
+            _init(conn)
+            rows = conn.execute(
+                "SELECT original_f, SUM(F) AS qty FROM misong_items "
+                "WHERE TRIM(original_f) != '' GROUP BY original_f"
+            ).fetchall()
+            qty_by_code = {
+                _normalize_code(r["original_f"]): int(r["qty"] or 0)
+                for r in rows
+                if _normalize_code(r["original_f"])
+            }
+        finally:
+            conn.close()
+
+        if not qty_by_code:
+            return {"ok": False, "error": "미송목록이 비어 있습니다."}
+
+        if not _INGODAEGI_PATH.exists():
+            return {"ok": False, "error": f"입고대기.xlsx 파일을 찾을 수 없습니다: {_INGODAEGI_PATH}"}
+
+        wb_in = openpyxl.load_workbook(_INGODAEGI_PATH)
+        ws_in = wb_in.active
+
+        out_wb = xlwt.Workbook()
+        out_ws = out_wb.add_sheet("Sheet1")
+        for col_idx in range(1, ws_in.max_column + 1):
+            out_ws.write(0, col_idx - 1, ws_in.cell(row=1, column=col_idx).value or "")
+
+        matched_count = 0
+        out_row = 1
+        for row_idx in range(2, ws_in.max_row + 1):
+            code = _normalize_code(ws_in.cell(row=row_idx, column=1).value)
+            for col_idx in range(1, ws_in.max_column + 1):
+                cell_val = ws_in.cell(row=row_idx, column=col_idx).value
+                if col_idx == 2 and code and code in qty_by_code:
+                    cell_val = qty_by_code[code]
+                out_ws.write(out_row, col_idx - 1, "" if cell_val is None else cell_val)
+            out_row += 1
+            if code and code in qty_by_code:
+                matched_count += 1
+
+        if out_row == 1:
+            return {"ok": False, "error": "입고대기.xlsx에 데이터가 없습니다."}
+
+        buf = io.BytesIO()
+        out_wb.save(buf)
+        xls_bytes = buf.getvalue()
+
+        cookies = {"PHPSESSID": phpsessid}
+        ez_headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://ga80.ezadmin.co.kr/template40.htm?template=I210",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        base_url = f"{_EZADMIN_BASE}/function.htm"
+        ts_ms = str(int(datetime.now().timestamp() * 1000))
+
+        try:
+            async with httpx.AsyncClient(timeout=300.0, verify=False, follow_redirects=True) as client:
+                upload_r = await client.post(
+                    base_url,
+                    data={"template": "I200", "action": "upload_new"},
+                    files={"_file": (f"ingodaegi_{ts_ms}.xls", xls_bytes, "application/vnd.ms-excel")},
+                    cookies=cookies, headers=ez_headers,
+                )
+                if upload_r.status_code >= 400:
+                    return {"ok": False, "error": f"업로드 실패 (HTTP {upload_r.status_code})"}
+
+                preview_r = await client.post(
+                    base_url,
+                    data={"_search": "false", "nd": ts_ms, "rows": "2000", "page": "1",
+                          "sidx": "", "sord": "asc", "template": "I200",
+                          "action": "load_template_data_new"},
+                    cookies=cookies, headers=ez_headers,
+                )
+                try:
+                    preview_r.json()
+                except Exception:
+                    return {"ok": False, "need_session": True}
+
+                time_flag = datetime.now().strftime("%a %b %d %Y %H:%M:%S GMT+0900 (한국 표준시)")
+                apply_r = await client.post(
+                    base_url,
+                    data={"template": "I200", "action": "apply_new",
+                          "bad": "reserve_qty", "type": "arrange",
+                          "move_warehouse": "0", "save_stock": "0",
+                          "stock_tag": "", "timeFlag": time_flag},
+                    cookies=cookies, headers=ez_headers,
+                )
+                try:
+                    apply_data = apply_r.json()
+                except Exception:
+                    return {"ok": False, "error": f"입고처리 응답 파싱 실패: {apply_r.text[:500]}"}
+
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        return {"ok": True, "count": matched_count, "apply_response": apply_data}
 
     return router

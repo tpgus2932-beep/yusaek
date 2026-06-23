@@ -36,6 +36,18 @@ export default function AttendanceAdminPage() {
   const [newPin, setNewPin] = useState('');
   const [pinChangeMsg, setPinChangeMsg] = useState('');
 
+  // 급여명세서
+  const [salaryYear, setSalaryYear] = useState(() => new Date().getFullYear());
+  const [salaryMonth, setSalaryMonth] = useState(() => new Date().getMonth() + 1);
+  const [salaryMember, setSalaryMember] = useState('');
+  const [salaryHourlyRate, setSalaryHourlyRate] = useState(10400);
+  const [salaryHolidayMin, setSalaryHolidayMin] = useState(15);
+  const [salaryWorkDays, setSalaryWorkDays] = useState(5);
+  const [salaryDeductPct, setSalaryDeductPct] = useState(3.3);
+  const [salaryResult, setSalaryResult] = useState(null);
+  const [salaryLoading, setSalaryLoading] = useState(false);
+  const [salaryError, setSalaryError] = useState('');
+
   // 시간 수정
   const [editingRecord, setEditingRecord] = useState(null);
   const [editSaving, setEditSaving] = useState(false);
@@ -263,6 +275,84 @@ export default function AttendanceAdminPage() {
     URL.revokeObjectURL(url);
   };
 
+  const calcSalaryData = (records, cfg) => {
+    const { hourlyRate, holidayMin, workDays, deductPct, memberName, year, month } = cfg;
+    // 30분 단위 반올림: 15분 이하 버림, 16분 이상 올림
+    const roundHalf = (h) => Math.floor((h * 60 + 14) / 30) * 30 / 60;
+    // 날짜별 출/퇴근 그룹화
+    const byDate = {};
+    records.forEach((r) => {
+      if (!byDate[r.date]) byDate[r.date] = { 출근: null, 퇴근: null };
+      if (r.type === '출근' && !byDate[r.date].출근) byDate[r.date].출근 = r;
+      if (r.type === '퇴근') byDate[r.date].퇴근 = r;
+    });
+    // 날짜 → 주(월요일 기준)별 근무시간 집계
+    const weekMap = {};
+    Object.entries(byDate).forEach(([date, pair]) => {
+      const raw = calcHours(pair.출근, pair.퇴근);
+      if (!raw || raw <= 0) return;
+      const h = roundHalf(raw);
+      const d = new Date(`${date}T00:00:00+09:00`);
+      const daysSinceMon = (d.getDay() + 6) % 7; // Mon=0
+      const monday = new Date(d);
+      monday.setDate(d.getDate() - daysSinceMon);
+      const wk = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
+      weekMap[wk] = (weekMap[wk] || 0) + h;
+    });
+
+    const monthlyHours = Object.values(weekMap).reduce((s, h) => s + h, 0);
+    const weeks = Object.entries(weekMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([wkStart, hours], idx) => {
+        const qualifies = hours >= holidayMin;
+        const holPay = qualifies ? Math.round((hours / workDays) * hourlyRate) : 0;
+        return { week: idx + 1, wkStart, hours, qualifies, holPay };
+      });
+
+    const basicPay = Math.round(monthlyHours * hourlyRate);
+    const holTotal = weeks.reduce((s, w) => s + w.holPay, 0);
+    const totalPay = basicPay + holTotal;
+    const deduction = Math.round(totalPay * (deductPct / 100));
+    const netPay = totalPay - deduction;
+
+    return {
+      member: memberName, year, month,
+      hourlyRate, deductPct,
+      monthlyHours, basicPay, holTotal, totalPay, deduction, netPay,
+      qualifyingWeeks: weeks.filter((w) => w.qualifies).length,
+      weeks,
+    };
+  };
+
+  const loadSalary = async () => {
+    if (!salaryMember) { setSalaryError('직원을 선택하세요.'); return; }
+    setSalaryError('');
+    setSalaryResult(null);
+    setSalaryLoading(true);
+    try {
+      const y = salaryYear, m = salaryMonth;
+      const dateFrom = `${y}-${String(m).padStart(2, '0')}-01`;
+      const lastDay = new Date(y, m, 0).getDate();
+      const dateTo = `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+      const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, name: salaryMember });
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/records?${params}`);
+      if (!res.ok) throw new Error('출퇴근 기록 조회 실패');
+      const fetched = await res.json();
+      setSalaryResult(calcSalaryData(fetched, {
+        hourlyRate: salaryHourlyRate,
+        holidayMin: salaryHolidayMin,
+        workDays: salaryWorkDays,
+        deductPct: salaryDeductPct,
+        memberName: salaryMember,
+        year: y, month: m,
+      }));
+    } catch (e) {
+      setSalaryError(e.message || '조회 실패');
+    } finally {
+      setSalaryLoading(false);
+    }
+  };
+
   const changePin = async () => {
     if (!newPin.trim()) return;
     setPinChangeMsg('');
@@ -428,6 +518,12 @@ export default function AttendanceAdminPage() {
           >
             📋 출퇴근 기록
           </button>
+          <button
+            className={`${styles.tabBtn} ${tab === 'salary' ? styles.tabActive : ''}`}
+            onClick={() => setTab('salary')}
+          >
+            💰 급여명세서
+          </button>
         </div>
 
         {/* ── 직원 관리 탭 ── */}
@@ -575,6 +671,124 @@ export default function AttendanceAdminPage() {
                 </div>
               )}
             </div>
+          </>
+        )}
+        {/* ── 급여명세서 탭 ── */}
+        {tab === 'salary' && (
+          <>
+            <div className={styles.card}>
+              <div className={styles.filterRow}>
+                <select className={styles.filterInput} value={salaryYear} onChange={(e) => setSalaryYear(+e.target.value)}>
+                  {[2024, 2025, 2026, 2027].map((y) => <option key={y} value={y}>{y}년</option>)}
+                </select>
+                <select className={styles.filterInput} value={salaryMonth} onChange={(e) => setSalaryMonth(+e.target.value)}>
+                  {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{m}월</option>)}
+                </select>
+                <select className={styles.filterInput} value={salaryMember} onChange={(e) => { setSalaryMember(e.target.value); setSalaryResult(null); }}>
+                  <option value="">직원 선택</option>
+                  {members.map((m) => <option key={m.id} value={m.name}>{m.name}</option>)}
+                </select>
+              </div>
+              <div className={styles.salarySettingRow}>
+                <label className={styles.salarySettingItem}>
+                  <span>시급(원)</span>
+                  <input type="number" className={styles.salarySettingInput} value={salaryHourlyRate} onChange={(e) => setSalaryHourlyRate(+e.target.value)} />
+                </label>
+                <label className={styles.salarySettingItem}>
+                  <span>주휴기준(H)</span>
+                  <input type="number" className={styles.salarySettingInput} value={salaryHolidayMin} onChange={(e) => setSalaryHolidayMin(+e.target.value)} />
+                </label>
+                <label className={styles.salarySettingItem}>
+                  <span>소정근로일</span>
+                  <input type="number" className={styles.salarySettingInput} value={salaryWorkDays} onChange={(e) => setSalaryWorkDays(+e.target.value)} />
+                </label>
+                <label className={styles.salarySettingItem}>
+                  <span>공제율(%)</span>
+                  <input type="number" step="0.1" className={styles.salarySettingInput} value={salaryDeductPct} onChange={(e) => setSalaryDeductPct(+e.target.value)} />
+                </label>
+              </div>
+              <div className={styles.filterBtns}>
+                <button className={styles.searchBtn} onClick={loadSalary} disabled={salaryLoading}>
+                  {salaryLoading ? '조회 중...' : '급여 계산'}
+                </button>
+              </div>
+              {salaryError && <div className={styles.errorMsg}>{salaryError}</div>}
+            </div>
+
+            {salaryResult && (
+              <div className={styles.card}>
+                <div className={styles.slipHeader}>
+                  <div>
+                    <div className={styles.slipTitle}>급여 명세서</div>
+                    <div className={styles.slipPeriod}>{salaryResult.year}년 {salaryResult.month}월</div>
+                  </div>
+                  <button className={styles.exportBtn} onClick={() => window.print()}>🖨 인쇄</button>
+                </div>
+
+                <div className={styles.slipName}>{salaryResult.member}</div>
+
+                <div className={styles.slipRows}>
+                  <div className={styles.slipRow}>
+                    <span className={styles.slipKey}>시급</span>
+                    <span className={styles.slipVal}>{salaryResult.hourlyRate.toLocaleString()}원</span>
+                  </div>
+                  <div className={styles.slipRow}>
+                    <span className={styles.slipKey}>월 근무시간</span>
+                    <span className={styles.slipVal}>{salaryResult.monthlyHours.toFixed(1)}H</span>
+                  </div>
+                  <div className={styles.slipRow}>
+                    <span className={styles.slipKey}>기본급</span>
+                    <span className={styles.slipVal}>{salaryResult.basicPay.toLocaleString()}원</span>
+                  </div>
+                  <div className={styles.slipRow}>
+                    <span className={styles.slipKey}>주휴수당 ({salaryResult.qualifyingWeeks}주)</span>
+                    <span className={styles.slipVal}>{salaryResult.holTotal.toLocaleString()}원</span>
+                  </div>
+                  <div className={styles.slipRow}>
+                    <span className={styles.slipKey}>총지급액</span>
+                    <span className={styles.slipVal}>{salaryResult.totalPay.toLocaleString()}원</span>
+                  </div>
+                  <div className={styles.slipRow}>
+                    <span className={styles.slipKey}>공제 ({salaryResult.deductPct}%)</span>
+                    <span className={`${styles.slipVal} ${styles.slipValDeduct}`}>−{salaryResult.deduction.toLocaleString()}원</span>
+                  </div>
+                  <div className={`${styles.slipRow} ${styles.slipRowNet}`}>
+                    <span className={styles.slipKeyNet}>실지급액</span>
+                    <span className={styles.slipValNet}>{salaryResult.netPay.toLocaleString()}원</span>
+                  </div>
+                </div>
+
+                <div className={styles.slipWeekLabel}>주별 근무 내역</div>
+                <div className={styles.tableWrap}>
+                  <table className={styles.table}>
+                    <thead>
+                      <tr>
+                        <th>주차</th>
+                        <th>주 시작</th>
+                        <th>근무시간</th>
+                        <th>주휴</th>
+                        <th>주휴수당</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {salaryResult.weeks.map((w) => (
+                        <tr key={w.wkStart} style={w.qualifies ? { background: '#f0fdf4' } : {}}>
+                          <td>{w.week}주</td>
+                          <td className={styles.dateCell}>{w.wkStart.slice(5)}</td>
+                          <td>{w.hours.toFixed(1)}H</td>
+                          <td>
+                            {w.qualifies
+                              ? <span className={`${styles.badge} ${styles.badgeIn}`}>적용</span>
+                              : <span style={{ color: '#cbd5e1' }}>—</span>}
+                          </td>
+                          <td>{w.holPay > 0 ? `${w.holPay.toLocaleString()}원` : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>

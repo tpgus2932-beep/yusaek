@@ -43,6 +43,8 @@ def build_barcode_router(
     set_shared_incoming_counts,
     get_shared_defect_counts,
     set_shared_defect_counts,
+    get_shared_kimsungil_counts,
+    set_shared_kimsungil_counts,
     set_shared_barcode_data,
     get_setting,
     set_setting,
@@ -316,13 +318,26 @@ def build_barcode_router(
         if not codes:
             codes = sorted(mapping[inv].keys())
 
-        incoming_counts = get_shared_incoming_counts() or {}
         defect_counts = get_shared_defect_counts()
+        kimsungil_counts = get_shared_kimsungil_counts()
+        incoming_counts = get_shared_incoming_counts() or {}
+        hapbae_rows = state.get("hapbae_pre_match_rows") or []
+        order_qty_by_code: dict[str, int] = {}
+        _target_shop_key = _normalize_shop_name(hapbae_target_shop)
+        for _row in hapbae_rows:
+            if _normalize_shop_name(_row.get("shop")) != _target_shop_key:
+                continue
+            _code = _row.get("code") or ""
+            _qty = to_int(_row.get("orderQty"), default=0)
+            if _code and _qty > 0:
+                order_qty_by_code[_code] = order_qty_by_code.get(_code, 0) + _qty
         details = (state.get("details") or {}).get(inv, {})
         runs = (state.get("runs") or {}).get(inv, {})
         items = []
         for code in codes:
             det = details.get(code, {})
+            incoming_qty = incoming_counts.get(code, 0)
+            order_qty = order_qty_by_code.get(code, 0)
             items.append(
                 {
                     "code": code,
@@ -331,7 +346,9 @@ def build_barcode_router(
                     "remain": mapping[inv].get(code, 0),
                     "run_len": runs.get(code, 0),
                     "defect": defect_counts.get(code, 0),
-                    "incoming": incoming_counts.get(code, 0),
+                    "incoming": incoming_qty,
+                    "stock": max(0, order_qty - incoming_qty) if order_qty > incoming_qty else 0,
+                    "kimsungil_incoming": kimsungil_counts.get(code, 0),
                 }
             )
         return items
@@ -342,25 +359,6 @@ def build_barcode_router(
         for item in _get_all_items(state, inv):
             if item.get("remain", 0) > 0:
                 return item
-        return None
-
-    def _get_next_item_preview(state, current_invoice: str | None):
-        seq = state.get("invoice_seq") or []
-        if not seq:
-            return None
-
-        last_code = state.get("last_scanned_code")
-        start_idx = seq.index(current_invoice) if current_invoice in seq else -1
-        for i in range(start_idx + 1, len(seq)):
-            inv = seq[i]
-            item = _get_first_remaining_item(state, inv)
-            if not item:
-                continue
-            if item.get("run_len", 0) >= 10:
-                continue
-            if last_code and item.get("code") == last_code:
-                continue
-            return {"invoice": inv, **item}
         return None
 
     def _invoice_has_defect(state, inv: str | None):
@@ -386,6 +384,31 @@ def build_barcode_router(
                 {
                     "code": code,
                     "count": count,
+                    "name": det.get("name", ""),
+                    "option": det.get("option", ""),
+                    "base_vendor": base_row.get("c", ""),
+                    "base_product": base_row.get("d", ""),
+                    "base_color": base_row.get("e", ""),
+                    "base_addr": base_row.get("f", ""),
+                    "base_name": base_row.get("g", ""),
+                    "base_option": " " if base_row.get("g", "") else "",
+                }
+            )
+        return rows
+
+    def _get_kimsungil_list(state):
+        kimsungil_counts = get_shared_kimsungil_counts()
+        incoming_counts = get_shared_incoming_counts() or {}
+        defect_base_lookup = _build_defect_base_lookup()
+        rows = []
+        for code, count in sorted(kimsungil_counts.items()):
+            det = _find_item_detail_by_code(state, code)
+            base_row = defect_base_lookup.get(code, {})
+            rows.append(
+                {
+                    "code": code,
+                    "count": count,
+                    "incoming_qty": int(incoming_counts.get(code, 0) or 0),
                     "name": det.get("name", ""),
                     "option": det.get("option", ""),
                     "base_vendor": base_row.get("c", ""),
@@ -721,11 +744,13 @@ def build_barcode_router(
             "processed_path": state["processed_path"],
             "items": _get_all_items(state, state["current_invoice"]) if state["current_invoice"] else [],
             "current_next": _get_first_remaining_item(state, state["current_invoice"]),
-            "next_preview": _get_next_item_preview(state, state["current_invoice"]),
             "defects": _get_defect_list(state),
+            "kimsungil": _get_kimsungil_list(state),
             "invoice_has_defect": _invoice_has_defect(state, state["current_invoice"]),
             "incoming_codes": len(get_shared_incoming_counts() or {}),
             "incoming_total": sum((get_shared_incoming_counts() or {}).values()),
+            "kimsungil_codes": len(get_shared_kimsungil_counts() or {}),
+            "kimsungil_total": sum((get_shared_kimsungil_counts() or {}).values()),
         }
 
     @router.get("/barcode/hapbae-pre-match")
@@ -868,8 +893,8 @@ def build_barcode_router(
             "invoice": resolved_invoice,
             "items": _get_all_items(state, resolved_invoice),
             "current_next": first_item,
-            "next_preview": _get_next_item_preview(state, resolved_invoice),
             "defects": _get_defect_list(state),
+            "kimsungil": _get_kimsungil_list(state),
             "invoice_has_defect": _invoice_has_defect(state, resolved_invoice),
         }
 
@@ -909,8 +934,8 @@ def build_barcode_router(
                 "remain": remain,
                 "items": _get_all_items(state, inv),
                 "current_next": _get_first_remaining_item(state, inv),
-                "next_preview": _get_next_item_preview(state, inv),
                 "defects": _get_defect_list(state),
+                "kimsungil": _get_kimsungil_list(state),
             }
 
         state["mapping"][inv][code] = remain - 1
@@ -928,8 +953,8 @@ def build_barcode_router(
             "invoice_done": all_done,
             "items": _get_all_items(state, inv),
             "current_next": _get_first_remaining_item(state, inv),
-            "next_preview": _get_next_item_preview(state, inv),
             "defects": _get_defect_list(state),
+            "kimsungil": _get_kimsungil_list(state),
         }
 
     @router.post("/barcode/defect/add")
@@ -954,7 +979,6 @@ def build_barcode_router(
             "defect_count": defect_counts[code],
             "items": _get_all_items(state, inv) if inv else [],
             "current_next": _get_first_remaining_item(state, inv),
-            "next_preview": _get_next_item_preview(state, inv),
             "defects": _get_defect_list(state),
         }
 
@@ -995,6 +1019,80 @@ def build_barcode_router(
             if len(matches) >= 50:
                 break
         return {"ok": True, "rows": matches}
+
+    @router.get("/barcode/kimsungil/list")
+    def list_kimsungil(user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
+        return {"ok": True, "kimsungil": _get_kimsungil_list(state)}
+
+    @router.get("/barcode/kimsungil/search")
+    def search_kimsungil(q: str = "", user: str = Depends(get_current_user)):
+        return search_defects(q=q, user=user)
+
+    @router.post("/barcode/kimsungil/add")
+    def add_kimsungil(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
+        raw = (payload.get("code") or "").strip()
+        if not raw:
+            raise HTTPException(status_code=400, detail="code is required")
+
+        code = normalize_to_yusas(raw) or raw
+        kimsungil_counts = dict(get_shared_kimsungil_counts())
+        kimsungil_counts[code] = kimsungil_counts.get(code, 0) + 1
+        set_shared_kimsungil_counts(kimsungil_counts)
+
+        inv = state.get("current_invoice")
+        return {
+            "ok": True,
+            "code": code,
+            "kimsungil_count": kimsungil_counts[code],
+            "items": _get_all_items(state, inv) if inv else [],
+            "current_next": _get_first_remaining_item(state, inv),
+            "kimsungil": _get_kimsungil_list(state),
+        }
+
+    @router.post("/barcode/kimsungil/dec")
+    def decrement_kimsungil(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
+        raw = (payload.get("code") or "").strip()
+        if not raw:
+            raise HTTPException(status_code=400, detail="code is required")
+
+        code = normalize_to_yusas(raw) or raw
+        kimsungil_counts = dict(get_shared_kimsungil_counts())
+        if code in kimsungil_counts:
+            kimsungil_counts[code] -= 1
+            if kimsungil_counts[code] <= 0:
+                del kimsungil_counts[code]
+        set_shared_kimsungil_counts(kimsungil_counts)
+
+        inv = state.get("current_invoice")
+        return {
+            "ok": True,
+            "kimsungil": _get_kimsungil_list(state),
+            "items": _get_all_items(state, inv) if inv else [],
+            "current_next": _get_first_remaining_item(state, inv),
+        }
+
+    @router.post("/barcode/kimsungil/remove")
+    def remove_kimsungil(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
+        raw = (payload.get("code") or "").strip()
+        if not raw:
+            raise HTTPException(status_code=400, detail="code is required")
+
+        code = normalize_to_yusas(raw) or raw
+        kimsungil_counts = dict(get_shared_kimsungil_counts())
+        kimsungil_counts.pop(code, None)
+        set_shared_kimsungil_counts(kimsungil_counts)
+
+        inv = state.get("current_invoice")
+        return {
+            "ok": True,
+            "kimsungil": _get_kimsungil_list(state),
+            "items": _get_all_items(state, inv) if inv else [],
+            "current_next": _get_first_remaining_item(state, inv),
+        }
 
     @router.get("/barcode/defect/export")
     def export_defects(user: str = Depends(get_current_user)):
@@ -1174,7 +1272,6 @@ def build_barcode_router(
             "defects": _get_defect_list(state),
             "items": _get_all_items(state, inv) if inv else [],
             "current_next": _get_first_remaining_item(state, inv),
-            "next_preview": _get_next_item_preview(state, inv),
         }
 
     @router.post("/barcode/defect/remove")
@@ -1198,7 +1295,6 @@ def build_barcode_router(
             "defects": _get_defect_list(state),
             "items": _get_all_items(state, inv) if inv else [],
             "current_next": _get_first_remaining_item(state, inv),
-            "next_preview": _get_next_item_preview(state, inv),
         }
 
     @router.post("/barcode/defect/ochuul-minus")
@@ -1326,6 +1422,72 @@ def build_barcode_router(
             raise HTTPException(status_code=400, detail="phpsessid is required")
         set_setting(_EZADMIN_SESSION_KEY, phpsessid)
         return {"ok": True}
+
+    @router.get("/barcode/incoming/ezadmin-voucher-list")
+    async def incoming_ezadmin_voucher_list(user: str = Depends(get_current_user)):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+        today = datetime.now().strftime("%Y-%m-%d")
+        _ez_client_kwargs = {"timeout": 20.0, "verify": False, "follow_redirects": True}
+        cookies = {"PHPSESSID": phpsessid}
+        try:
+            async with httpx.AsyncClient(**_ez_client_kwargs) as client:
+                r = await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data={
+                        "_search": "false",
+                        "nd": str(int(datetime.now().timestamp() * 1000)),
+                        "rows": "9999",
+                        "page": "1",
+                        "sidx": "",
+                        "sord": "asc",
+                        "template": "IM00",
+                        "action": "get_IM00_grid",
+                        "par": (
+                            "template=IM00&action=&page_code=IM00&search=1"
+                            "&_sort=&sort_order=&date_type=crdate"
+                            f"&start_date={today}&end_date={today}"
+                            "&date_period_sel=0&query_option=title&query_str=&req_status=0"
+                        ),
+                    },
+                    cookies=cookies,
+                )
+        except Exception:
+            return {"ok": False, "need_session": True}
+        try:
+            obj = r.json()
+        except Exception:
+            return {"ok": False, "need_session": True}
+        if "rows" not in obj:
+            return {"ok": False, "need_session": True}
+        _html_tag = re.compile(r"<[^>]+>")
+        vouchers = []
+        for row in obj.get("rows", []):
+            cell = row.get("cell", {}) or {}
+            raw_sheet = str(cell.get("sheet") or "").strip()
+            sheet_no = raw_sheet
+            # HTML <a> 태그에서 sheet 번호 추출
+            for val in cell.values():
+                if not isinstance(val, str) or "<a" not in val:
+                    continue
+                m = re.search(r"sheet=['\"]?(\w+)['\"]?", val, re.IGNORECASE)
+                if m:
+                    sheet_no = m.group(1)
+                break
+            if not sheet_no:
+                continue
+            # HTML 제거한 cell 필드 정리
+            clean = {}
+            for k, v in cell.items():
+                if isinstance(v, str):
+                    stripped = _html_tag.sub("", v).strip()
+                    if stripped:
+                        clean[k] = stripped
+                elif v is not None and v != "":
+                    clean[k] = v
+            vouchers.append({"sheet": sheet_no, "cell": clean})
+        return {"ok": True, "date": today, "vouchers": vouchers}
 
     @router.post("/barcode/incoming/upload-from-ezadmin")
     async def incoming_upload_from_ezadmin(
@@ -1498,45 +1660,50 @@ def build_barcode_router(
         cookies = {"PHPSESSID": phpsessid}
         _kw = {"timeout": 20.0, "verify": False, "follow_redirects": True}
 
-        try:
-            async with httpx.AsyncClient(**_kw) as client:
-                r = await client.post(
-                    f"{_EZADMIN_BASE}/function.htm",
-                    data={
-                        "_search": "false",
-                        "nd": str(int(datetime.now().timestamp() * 1000)),
-                        "rows": "9999", "page": "1", "sidx": "", "sord": "asc",
-                        "template": "IM00", "action": "get_IM00_grid",
-                        "par": (
-                            "template=IM00&action=&page_code=IM00&search=1"
-                            "&_sort=&sort_order=&date_type=crdate"
-                            f"&start_date={today}&end_date={today}"
-                            "&date_period_sel=0&query_option=title&query_str=&req_status=0"
-                        ),
-                    },
-                    cookies=cookies,
-                )
-        except Exception as exc:
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        sheet_list_override = [str(s).strip() for s in (payload.get("sheet_list") or []) if str(s).strip()]
+        if sheet_list_override:
+            sheet_list = sheet_list_override
+        else:
+            try:
+                async with httpx.AsyncClient(**_kw) as client:
+                    r = await client.post(
+                        f"{_EZADMIN_BASE}/function.htm",
+                        data={
+                            "_search": "false",
+                            "nd": str(int(datetime.now().timestamp() * 1000)),
+                            "rows": "9999", "page": "1", "sidx": "", "sord": "asc",
+                            "template": "IM00", "action": "get_IM00_grid",
+                            "par": (
+                                "template=IM00&action=&page_code=IM00&search=1"
+                                "&_sort=&sort_order=&date_type=crdate"
+                                f"&start_date={today}&end_date={today}"
+                                "&date_period_sel=0&query_option=title&query_str=&req_status=0"
+                            ),
+                        },
+                        cookies=cookies,
+                    )
+            except Exception as exc:
+                return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-        try:
-            obj = r.json()
-        except Exception:
-            return {"ok": False, "need_session": True}
+            try:
+                obj = r.json()
+            except Exception:
+                return {"ok": False, "need_session": True}
 
-        if "rows" not in obj:
-            return {"ok": False, "need_session": True}
+            if "rows" not in obj:
+                return {"ok": False, "need_session": True}
 
-        sheet_list = [
-            str(row["cell"]["sheet"])
-            for row in obj.get("rows", [])
-            if row.get("cell", {}).get("sheet")
-        ]
-        if not sheet_list:
-            return {"ok": False, "error": f"{today} 전표가 없습니다."}
+            sheet_list = [
+                str(row["cell"]["sheet"])
+                for row in obj.get("rows", [])
+                if row.get("cell", {}).get("sheet")
+            ]
+            if not sheet_list:
+                return {"ok": False, "error": f"{today} 전표가 없습니다."}
 
+        page_code = str(payload.get("page_code") or "IM10_file_2")
         par = (
-            "template=IM00&action=save_file_IM00&filename=&page_code=IM10_file_2"
+            f"template=IM00&action=save_file_IM00&filename=&page_code={page_code}"
             f"&sheet_list={','.join(sheet_list)}&download_type=1&select_code=IM00_file"
             f"&date_type=crdate&start_date={today}&end_date={today}&date_period_sel="
             "&multi_supply_group=undefined&multi_supply=undefined&str_supply_code=undefined"
