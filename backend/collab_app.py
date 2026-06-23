@@ -30,6 +30,8 @@ from api.collab_routes import build_collab_router
 from api.sms_routes import build_sms_router
 from api.attendance_routes import build_attendance_router
 from api.guidebook_routes import build_guidebook_router
+from api.amood_settlement_routes import build_amood_settlement_router
+from api.ably_settlement_routes import build_ably_settlement_router
 from main import (
     ALLOWED_REQUEST_EXTS,
     ALLOWED_SHARED_EXTS,
@@ -300,6 +302,21 @@ async def product_upload_from_api(
     filename = f"easyadmin_products_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xls"
     resp_headers = {"Content-Disposition": _content_disposition(filename)}
     return Response(content=xls_bytes, media_type="application/vnd.ms-excel", headers=resp_headers)
+
+
+app.include_router(
+    build_amood_settlement_router(
+        get_current_user=_get_current_user,
+        get_db=_get_db,
+    )
+)
+
+app.include_router(
+    build_ably_settlement_router(
+        get_current_user=_get_current_user,
+        get_db=_get_db,
+    )
+)
 
 
 @app.get("/ping")
