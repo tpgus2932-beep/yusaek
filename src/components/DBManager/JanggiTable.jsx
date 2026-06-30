@@ -233,16 +233,25 @@ function JanggiTopComparison() {
   const [dismissed, setDismissed] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem("janggi_top_dismissed") || "[]")); } catch { return new Set(); }
   });
-  const [aliasMap, setAliasMap] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("janggi_top_aliases") || "{}"); } catch { return {}; }
-  });
+  const [aliasMap, setAliasMap] = useState({});
   const [showAliasPanel, setShowAliasPanel] = useState(false);
   const [aliasLeft, setAliasLeft] = useState("");
   const [aliasRight, setAliasRight] = useState("");
 
+  useEffect(() => {
+    fetch(`${API}/wonbe/janggi/aliases`, { headers: getAuthHeaders() })
+      .then((r) => r.json())
+      .then((d) => { if (d.ok) setAliasMap(d.aliases || {}); })
+      .catch(() => {});
+  }, []);
+
   const saveAliases = (map) => {
     setAliasMap(map);
-    localStorage.setItem("janggi_top_aliases", JSON.stringify(map));
+    fetch(`${API}/wonbe/janggi/aliases`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      body: JSON.stringify({ aliases: map }),
+    }).catch(() => {});
   };
 
   const addAlias = () => {
