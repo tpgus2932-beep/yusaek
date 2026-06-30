@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { RefreshCw, Trash2, GitCompare, SlidersHorizontal } from "lucide-react";
+import { RefreshCw, Trash2, GitCompare, SlidersHorizontal, Plus, X } from "lucide-react";
 import styles from "./DBManager.module.css";
 import topStyles from "./JanggiTop.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
@@ -97,6 +97,40 @@ function JanggiListView() {
     if (e.key === "Escape") setEditing(null);
   };
 
+  const handleAddRow = async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+      const res = await fetch(`${API}/wonbe/janggi/row`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ 날짜: today }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "행 추가 실패");
+      setRows((prev) => [data.row, ...prev]);
+      setTotal((t) => t + 1);
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const handleDeleteRow = async (id) => {
+    if (!window.confirm("이 행을 삭제하시겠습니까?")) return;
+    try {
+      const res = await fetch(`${API}/wonbe/janggi/row`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "삭제 실패");
+      setRows((prev) => prev.filter((r) => r.id !== id));
+      setTotal((t) => t - 1);
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
   const handleDeleteByDate = async () => {
     const dateStr = dateFilter || window.prompt("삭제할 날짜를 입력하세요 (예: 2025-06-26)");
     if (!dateStr) return;
@@ -151,6 +185,9 @@ function JanggiListView() {
         <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => fetchRows(query, dateFilter, offset)} disabled={loading}>
           <RefreshCw size={13} />새로고침
         </button>
+        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleAddRow} disabled={loading}>
+          <Plus size={13} />행 추가
+        </button>
         <button className={`${styles.btn} ${styles.btnDanger}`} onClick={handleDeleteByDate} disabled={loading}>
           <Trash2 size={13} />날짜별 삭제
         </button>
@@ -162,15 +199,29 @@ function JanggiListView() {
       <div className={styles.tableWrap}>
         <table className={styles.table}>
           <thead>
-            <tr>{COLS.map((col) => (
-              <th key={col} className={styles.sortableHeader} onClick={() => handleSort(col)}>
-                {col} ✎{sortCol === col ? <span className={styles.sortIcon}>{sortDir === "asc" ? "▲" : "▼"}</span> : ""}
-              </th>
-            ))}</tr>
+            <tr>
+              <th style={{ width: "2rem" }} />
+              {COLS.map((col) => (
+                <th key={col} className={styles.sortableHeader} onClick={() => handleSort(col)}>
+                  {col} ✎{sortCol === col ? <span className={styles.sortIcon}>{sortDir === "asc" ? "▲" : "▼"}</span> : ""}
+                </th>
+              ))}
+            </tr>
           </thead>
           <tbody>
             {sortedRows.map((row) => (
               <tr key={row.id}>
+                <td style={{ textAlign: "center", padding: "0.25rem" }}>
+                  <button
+                    onClick={() => handleDeleteRow(row.id)}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "0.15rem", lineHeight: 1, borderRadius: "3px" }}
+                    title="행 삭제"
+                    onMouseEnter={(e) => e.currentTarget.style.color = "#b91c1c"}
+                    onMouseLeave={(e) => e.currentTarget.style.color = "var(--text-muted)"}
+                  >
+                    <X size={12} />
+                  </button>
+                </td>
                 {COLS.map((col) => {
                   const isEditing = editing?.id === row.id && editing?.col === col;
                   if (isEditing) {

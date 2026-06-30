@@ -613,6 +613,44 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
         finally:
             conn.close()
 
+    @router.post("/janggi/row")
+    def janggi_add_row(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        conn = _get_janggi_db()
+        try:
+            _init_janggi_table(conn)
+            values = tuple(str(payload.get(col) or "") for col in JANGGI_COLUMNS)
+            cur = conn.execute(
+                f"INSERT INTO 날짜별장끼정리 ({', '.join(JANGGI_COLUMNS)}) VALUES ({', '.join(['?'] * len(JANGGI_COLUMNS))})",
+                values,
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM 날짜별장끼정리 WHERE id = ?", (cur.lastrowid,)).fetchone()
+            return {"ok": True, "row": dict(row)}
+        finally:
+            conn.close()
+
+    @router.delete("/janggi/row")
+    def janggi_delete_row(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        row_id = payload.get("id")
+        if row_id is None:
+            raise HTTPException(status_code=400, detail="id 필요")
+        conn = _get_janggi_db()
+        try:
+            _init_janggi_table(conn)
+            cur = conn.execute("DELETE FROM 날짜별장끼정리 WHERE id = ?", (row_id,))
+            conn.commit()
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="해당 id 없음")
+            return {"ok": True, "deleted": cur.rowcount}
+        finally:
+            conn.close()
+
     @router.delete("/janggi/by-date")
     def janggi_delete_by_date(
         payload: dict = Body(...),
