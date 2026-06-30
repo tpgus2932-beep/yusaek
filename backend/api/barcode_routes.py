@@ -14,7 +14,7 @@ import httpx
 import xlwt
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile
 from openpyxl import load_workbook
-from api.amood_hapbae import SHARED_COST_BASE_PATH
+
 from services.easyadmin_product import process_easyadmin_product_from_api
 from services.pastelco_utils import pastelco_login
 
@@ -25,8 +25,7 @@ _ABLY_PASSWORD = "!Glqgkqdldi1126"
 _EZADMIN_BASE        = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
 
-_WONKA_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스유.xlsx")
-_WONKA_OPTION_COL = 11  # K열 (1-indexed): 옵션번호
+from api.wonbe_routes import _get_wonbe_db as _get_wonbe_db
 
 
 def build_barcode_router(
@@ -50,19 +49,7 @@ def build_barcode_router(
     set_setting,
 ):
     router = APIRouter()
-    defect_base_path = SHARED_COST_BASE_PATH
-    defect_base_default_headers = ["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]
-    defect_base_cache = {"mtime": None, "headers": None, "rows": None, "lookup": None}
-    defect_base_columns = {
-        "code": 1,
-        "name": 2,
-        "color": 3,
-        "size": 4,
-        "vendor": 6,
-        "vendor_product": 7,
-        "display_name": 9,
-        "address": 10,
-    }
+    _DEFECT_BASE_HEADERS = ["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]
     hapbae_target_shop = "에이블리(유색)"
     hapbae_checked_rows_key = "test_hapbae_checked_rows"
 
@@ -128,6 +115,7 @@ def build_barcode_router(
                 shop = _normalize_text(ws.cell(row_idx, 4).value)
                 if not duplicate_key and not shop and not code:
                     continue
+                trans_date = _normalize_text(ws.cell(row_idx, 14).value)
                 rows.append({
                     "rowNumber": row_idx,
                     "shop": shop,
@@ -136,7 +124,20 @@ def build_barcode_router(
                     "productName": _normalize_text(ws.cell(row_idx, name_col).value),
                     "optionName": _normalize_text(ws.cell(row_idx, option_col).value),
                     "orderQty": _normalize_text(ws.cell(row_idx, qty_col).value),
+                    "transDate": trans_date,
+                    "runLen": 0,
                 })
+            # 송장입력일 오름차순 → 같은 날짜 내 바코드 기준 정렬 → runLen 정확도 향상
+            rows.sort(key=lambda r: (r["transDate"] or "", r["code"] or ""))
+            i = 0
+            while i < len(rows):
+                j = i
+                while j < len(rows) and rows[j]["code"] == rows[i]["code"]:
+                    j += 1
+                run_len = j - i
+                for k in range(i, j):
+                    rows[k]["runLen"] = run_len
+                i = j
             return rows
         finally:
             try:
@@ -147,11 +148,17 @@ def build_barcode_router(
     def _csv_escape(value) -> str:
         return '"' + str(value or "").replace('"', '""') + '"'
 
-    def _normalize_defect_base_row(row) -> list[str]:
-        cells = list(row[:7]) if row else []
-        while len(cells) < 7:
-            cells.append("")
-        return [str(cell or "").strip() for cell in cells[:7]]
+    def _defect_db_row_to_values(row) -> list[str]:
+        color_size = " ".join(p for p in [str(row["색상"] or ""), str(row["사이즈"] or "")] if p.strip())
+        return [
+            str(row["상품코드"] or ""),
+            str(row["상품명"] or ""),
+            str(row["거래처"] or ""),
+            str(row["거래처상품명"] or ""),
+            color_size,
+            str(row["거래처주소"] or ""),
+            str(row["상품명합"] or ""),
+        ]
 
     def _ws_text(ws, row_idx: int, col_idx: int) -> str:
         return str(ws.cell(row_idx, col_idx).value or "").strip()
@@ -168,95 +175,42 @@ def build_barcode_router(
             return parts[0], ""
         return parts[0], parts[1]
 
-    def _defect_base_virtual_row_from_sheet(ws, row_idx: int) -> list[str]:
-        return [
-            _ws_text(ws, row_idx, defect_base_columns["code"]),
-            _ws_text(ws, row_idx, defect_base_columns["name"]),
-            _ws_text(ws, row_idx, defect_base_columns["vendor"]),
-            _ws_text(ws, row_idx, defect_base_columns["vendor_product"]),
-            _combine_color_size(
-                _ws_text(ws, row_idx, defect_base_columns["color"]),
-                _ws_text(ws, row_idx, defect_base_columns["size"]),
-            ),
-            _ws_text(ws, row_idx, defect_base_columns["address"]),
-            _ws_text(ws, row_idx, defect_base_columns["display_name"]),
-        ]
-
-    def _write_defect_base_virtual_row(ws, row_idx: int, cells: list[str]):
-        color, size = _split_color_size(cells[4] if len(cells) > 4 else "")
-        ws.cell(row_idx, defect_base_columns["code"], cells[0] if len(cells) > 0 else "")
-        ws.cell(row_idx, defect_base_columns["name"], cells[1] if len(cells) > 1 else "")
-        ws.cell(row_idx, defect_base_columns["vendor"], cells[2] if len(cells) > 2 else "")
-        ws.cell(row_idx, defect_base_columns["vendor_product"], cells[3] if len(cells) > 3 else "")
-        ws.cell(row_idx, defect_base_columns["color"], color)
-        ws.cell(row_idx, defect_base_columns["size"], size)
-        ws.cell(row_idx, defect_base_columns["address"], cells[5] if len(cells) > 5 else "")
-        ws.cell(row_idx, defect_base_columns["display_name"], cells[6] if len(cells) > 6 else "")
-
-    def _invalidate_defect_base_cache():
-        defect_base_cache["mtime"] = None
-        defect_base_cache["headers"] = None
-        defect_base_cache["rows"] = None
-        defect_base_cache["lookup"] = None
-
-    def _load_defect_base_sheet():
-        if not defect_base_path.exists():
-            raise HTTPException(status_code=404, detail=f"Defect base file not found: {defect_base_path}")
-        wb = load_workbook(defect_base_path)
-        ws = wb[wb.sheetnames[0]]
-        return wb, ws
-
     def _read_defect_base_table():
-        mtime = defect_base_path.stat().st_mtime if defect_base_path.exists() else None
-        if (
-            defect_base_cache["rows"] is not None
-            and defect_base_cache["headers"] is not None
-            and defect_base_cache["mtime"] == mtime
-        ):
-            return defect_base_cache["headers"], defect_base_cache["rows"]
-
-        wb, ws = _load_defect_base_sheet()
+        conn = _get_wonbe_db()
         try:
-            headers = defect_base_default_headers[:]
-            rows = []
-            for row_idx in range(2, ws.max_row + 1):
-                cells = _defect_base_virtual_row_from_sheet(ws, row_idx)
-                if any(cells):
-                    rows.append({"row_index": row_idx, "values": cells})
-            defect_base_cache["mtime"] = mtime
-            defect_base_cache["headers"] = headers
-            defect_base_cache["rows"] = rows
-            defect_base_cache["lookup"] = None
-            return headers, rows
+            db_rows = conn.execute(
+                "SELECT 상품코드, 상품명, 거래처, 거래처상품명, 색상, 사이즈, 거래처주소, 상품명합"
+                " FROM wonbe ORDER BY rowid ASC"
+            ).fetchall()
+            rows = [{"row_index": i, "values": _defect_db_row_to_values(r)} for i, r in enumerate(db_rows)]
+            return _DEFECT_BASE_HEADERS, rows
         finally:
-            wb.close()
+            conn.close()
 
     def _build_defect_base_lookup():
-        if not defect_base_path.exists():
-            return {}
-
-        mtime = defect_base_path.stat().st_mtime if defect_base_path.exists() else None
-        if defect_base_cache["lookup"] is not None and defect_base_cache["mtime"] == mtime:
-            return defect_base_cache["lookup"]
-
-        _, rows = _read_defect_base_table()
-        lookup = {}
-        for row in rows:
-            values = row["values"]
-            raw_code = values[0]
-            normalized_code = normalize_to_yusas(raw_code) or raw_code.strip()
-            if normalized_code:
-                lookup[normalized_code] = {
-                    "a": values[0],
-                    "b": values[1],
-                    "c": values[2],
-                    "d": values[3],
-                    "e": values[4],
-                    "f": values[5],
-                    "g": values[6],
-                }
-        defect_base_cache["lookup"] = lookup
-        return lookup
+        conn = _get_wonbe_db()
+        try:
+            db_rows = conn.execute(
+                "SELECT 상품코드, 상품명, 거래처, 거래처상품명, 색상, 사이즈, 거래처주소, 상품명합 FROM wonbe"
+            ).fetchall()
+            lookup = {}
+            for row in db_rows:
+                raw_code = str(row["상품코드"] or "").strip()
+                normalized_code = normalize_to_yusas(raw_code) or raw_code
+                if normalized_code:
+                    color_size = _combine_color_size(str(row["색상"] or ""), str(row["사이즈"] or ""))
+                    lookup[normalized_code] = {
+                        "a": raw_code,
+                        "b": str(row["상품명"] or ""),
+                        "c": str(row["거래처"] or ""),
+                        "d": str(row["거래처상품명"] or ""),
+                        "e": color_size,
+                        "f": str(row["거래처주소"] or ""),
+                        "g": str(row["상품명합"] or ""),
+                    }
+            return lookup
+        finally:
+            conn.close()
 
     def _get_item_detail_lookup(state) -> dict[str, dict]:
         cached = state.get("_detail_lookup")
@@ -574,6 +528,163 @@ def build_barcode_router(
         _clear_hapbae_checked_rows()
         return {"ok": True, "invoices": len(mapping), "codes_total": sum(len(v) for v in mapping.values())}
 
+    @router.post("/barcode/upload-from-ezadmin-orders")
+    async def upload_from_ezadmin_orders(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        today = str(payload.get("date") or datetime.now().strftime("%Y-%m-%d"))
+        cookies = {"PHPSESSID": phpsessid}
+        _kw = {"timeout": 600.0, "verify": False, "follow_redirects": True}
+
+        par = (
+            f"template=DS00&action=&search=1&page=1&_sort=&sort_order=&panel_open=true"
+            f"&field_change=&bck_search=0&recover_delete=&date_type=trans_date"
+            f"&start_date={today}&start_hour=00&end_date={today}&end_hour=23"
+            f"&date_period_sel=0&option%5B%5D=seq&query_str%5B%5D="
+            f"&multi_supply_group=&multi_supply=&str_supply_code=0"
+            f"&status_sel=4&pack_sel=0&check_set_match=0&order_cs_sel=0&work_type=0"
+            f"&checkbox_options_string=&trans_corp=99&user_area="
+            f"&multi_shop_group=&multi_shop=&str_shop_code=0"
+            f"&tags_string=&product_tag_include_type=1&labels_string=&order_label_include_type=1"
+            f"&date_type2=0&start_date2={today}&start_hour2=00&end_date2={today}&end_hour2=23"
+            f"&date_period_sel2=0&category=0&option%5B%5D=&query_str%5B%5D="
+            f"&c_cs=blink&order_copy=0&create_order=0&print_enable=0&product_expect=0"
+            f"&return_money_expect_price=&return_money_return_price="
+            f"&trans_who=0&cs_reason=&multi_user_cs_type=&user_cs_type=0"
+            f"&special_option%5B%5D=%EC%82%AC%EC%9D%80%ED%92%88%EC%84%A0%ED%83%9D"
+            f"&select_field=DS00_1&download_field=DS00_file&download_type=0&include_sum=on"
+        )
+
+        try:
+            async with httpx.AsyncClient(**_kw) as client:
+                r = await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data={
+                        "_search": "false",
+                        "nd": str(int(datetime.now().timestamp() * 1000)),
+                        "rows": "5000",
+                        "page": "1",
+                        "sidx": "",
+                        "sord": "asc",
+                        "template": "DS00",
+                        "action": "grid_DS00",
+                        "bck_search": "0",
+                        "par": par,
+                    },
+                    cookies=cookies,
+                    headers={
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": f"{_EZADMIN_BASE}/template40.htm?template=DS00",
+                    },
+                )
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        try:
+            obj = r.json()
+        except Exception:
+            return {"ok": False, "need_session": True}
+
+        if "rows" not in obj:
+            return {"ok": False, "need_session": True}
+
+        ez_rows = obj.get("rows", [])
+        if not ez_rows:
+            return {"ok": False, "error": f"{today} 조회된 주문이 없습니다."}
+
+        _html_re = re.compile(r"<[^>]+>")
+
+        def _strip(val):
+            return _html_re.sub("", str(val or "")).strip()
+
+        book = xlwt.Workbook()
+        ws_xls = book.add_sheet("Sheet1")
+        for ci, h in enumerate([
+            "쇼핑몰", "주문번호", "수취인", "쇼핑몰", "", "", "",
+            "상품코드", "상품명", "옵션", "수량", "", "송장번호", "주문일시",
+        ]):
+            ws_xls.write(0, ci, h)
+
+        for ri, row in enumerate(ez_rows, 1):
+            cell = row.get("cell", {}) or {}
+            shop  = _strip(cell.get("shop_id", ""))
+            pid   = _strip(cell.get("product_id", ""))
+            name  = _strip(cell.get("name", ""))
+            opts  = re.sub(r"^\[|\]$", "", _strip(cell.get("p_options", ""))).strip()
+            trans = _strip(cell.get("trans_no", ""))
+            tdate = _strip(cell.get("trans_date", "") or cell.get("collect_date", ""))
+            try:
+                qty_val = int(float(_strip(cell.get("qty", "1")) or "1"))
+            except Exception:
+                qty_val = 1
+
+            ws_xls.write(ri, 0, shop)
+            ws_xls.write(ri, 1, _strip(cell.get("order_id", "")))
+            ws_xls.write(ri, 2, _strip(cell.get("recv_name", "")))
+            ws_xls.write(ri, 3, shop)    # col 4: 쇼핑몰 (hapbae 고정)
+            ws_xls.write(ri, 4, "")
+            ws_xls.write(ri, 5, "")
+            ws_xls.write(ri, 6, "")
+            ws_xls.write(ri, 7, pid)     # col 8: 상품코드
+            ws_xls.write(ri, 8, name)    # col 9: 상품명
+            ws_xls.write(ri, 9, opts)    # col 10: 옵션
+            ws_xls.write(ri, 10, qty_val) # col 11: 수량
+            ws_xls.write(ri, 11, "")
+            ws_xls.write(ri, 12, trans)  # col 13: 송장번호
+            ws_xls.write(ri, 13, tdate)  # col 14: 주문일시
+
+        import io as _io
+        buf = _io.BytesIO()
+        book.save(buf)
+        xls_bytes = buf.getvalue()
+
+        tmp_path = Path(tempfile.gettempdir()) / f"yusaek_ezadmin_orders_{uuid.uuid4().hex}.xls"
+        tmp_path.write_bytes(xls_bytes)
+
+        try:
+            hapbae_pre_match_rows = _extract_hapbae_pre_match_rows(tmp_path)
+            result = process_and_load_any(tmp_path)
+            if len(result) == 7:
+                processed_path, mapping, details, runs, invoice_order, invoice_seq, code_o_text = result
+            elif len(result) == 6:
+                mapping, details, runs, invoice_order, invoice_seq, code_o_text = result
+                processed_path = None
+            else:
+                raise RuntimeError(f"unexpected return count: {len(result)}")
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"주문 데이터 처리 실패: {exc}")
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        set_shared_barcode_data({
+            "loaded": True,
+            "processed_path": str(processed_path) if processed_path else None,
+            "mapping": mapping,
+            "original_mapping": _copy_original_mapping(mapping),
+            "details": details,
+            "runs": runs,
+            "invoice_order": invoice_order,
+            "invoice_seq": invoice_seq,
+            "code_o_text": code_o_text,
+            "hapbae_pre_match_rows": hapbae_pre_match_rows,
+            "_detail_lookup": None,
+            "_invoice_lookup": None,
+        })
+        _clear_hapbae_checked_rows()
+        return {
+            "ok": True,
+            "invoices": len(mapping),
+            "codes_total": sum(len(v) for v in mapping.values()),
+            "total_rows": len(ez_rows),
+            "date": today,
+        }
+
     @router.post("/barcode/incoming/upload")
     async def incoming_upload(file: UploadFile = File(...), user: str = Depends(get_current_user)):
         name = (file.filename or "").lower()
@@ -834,12 +945,55 @@ def build_barcode_router(
         grouped_rows = _group_hapbae_rows(result_rows)
         grouped_stock_rows = []
 
+        # TODAY 대량: 송장번호가 딱 1번만 나온 단건 주문 중 같은 상품이 10건 이상인 것
+        unique_invoice_rows = [
+            row for row in target_rows
+            if _normalize_text(row.get("duplicateKey"))
+            and counts_by_key[_normalize_text(row.get("duplicateKey"))] == 1
+        ]
+        today_bulk_lookup: dict[tuple, dict] = {}
+        for row in unique_invoice_rows:
+            key = (
+                _normalize_text(row.get("productName")),
+                _normalize_text(row.get("optionName")),
+            )
+            if key not in today_bulk_lookup:
+                today_bulk_lookup[key] = {
+                    "productName": row.get("productName", ""),
+                    "optionName": row.get("optionName", ""),
+                    "orderCount": 0,
+                    "orderQty": 0,
+                    "_codes": set(),
+                    "_max_run_len": 0,
+                }
+            today_bulk_lookup[key]["orderCount"] += 1
+            today_bulk_lookup[key]["orderQty"] += to_int(row.get("orderQty"), default=0)
+            if row.get("code"):
+                today_bulk_lookup[key]["_codes"].add(row["code"])
+            run_len = int(row.get("runLen") or 0)
+            if run_len > today_bulk_lookup[key]["_max_run_len"]:
+                today_bulk_lookup[key]["_max_run_len"] = run_len
+        today_bulk_rows = sorted(
+            [
+                {
+                    **{k: v for k, v in entry.items() if k not in ("_codes", "_max_run_len")},
+                    "runLen": entry["_max_run_len"],
+                    "incomingQty": sum(int(incoming_counts.get(code, 0) or 0) for code in entry["_codes"]),
+                }
+                for entry in today_bulk_lookup.values()
+                if entry["_max_run_len"] >= 10
+                and any(int(incoming_counts.get(code, 0) or 0) >= 10 for code in entry["_codes"])
+            ],
+            key=lambda r: (-r["orderCount"], _normalize_text(r.get("productName")), _normalize_text(r.get("optionName"))),
+        )
+
         return {
             "ok": True,
             "loaded": True,
             "incoming_loaded": bool(incoming_counts),
             "rows": grouped_rows,
             "stock_rows": grouped_stock_rows,
+            "today_bulk_rows": today_bulk_rows,
             "stats": {
                 "totalRows": len(source_rows),
                 "targetRows": len(target_rows),
@@ -995,26 +1149,30 @@ def build_barcode_router(
         if not query:
             return {"ok": True, "rows": []}
         keywords = [kw for kw in query.split() if kw]
-
-        _, rows = _read_defect_base_table()
+        conn = _get_wonbe_db()
+        try:
+            db_rows = conn.execute(
+                "SELECT 상품코드, 상품명, 거래처, 거래처상품명, 색상, 사이즈, 거래처주소, 상품명합"
+                " FROM wonbe WHERE 상품명합 IS NOT NULL AND 상품명합 != '' ORDER BY rowid ASC"
+            ).fetchall()
+        finally:
+            conn.close()
         matches = []
-        for row in rows:
-            values = row.get("values") or []
-            code = values[0] if len(values) > 0 else ""
-            display_name = values[6] if len(values) > 6 else ""
+        for row in db_rows:
+            code = str(row["상품코드"] or "").strip()
+            display_name = str(row["상품명합"] or "")
             if not code or not display_name:
                 continue
-            normalized = _normalize_text(display_name).casefold()
-            if not all(kw in normalized for kw in keywords):
+            if not all(kw in _normalize_text(display_name).casefold() for kw in keywords):
                 continue
             matches.append({
-                "code": normalize_to_yusas(code) or str(code).strip(),
-                "base_code": str(code).strip(),
+                "code": normalize_to_yusas(code) or code,
+                "base_code": code,
                 "base_name": display_name,
-                "base_vendor": values[2] if len(values) > 2 else "",
-                "base_product": values[3] if len(values) > 3 else "",
-                "base_color": values[4] if len(values) > 4 else "",
-                "base_addr": values[5] if len(values) > 5 else "",
+                "base_vendor": str(row["거래처"] or ""),
+                "base_product": str(row["거래처상품명"] or ""),
+                "base_color": _combine_color_size(str(row["색상"] or ""), str(row["사이즈"] or "")),
+                "base_addr": str(row["거래처주소"] or ""),
             })
             if len(matches) >= 50:
                 break
@@ -1218,7 +1376,7 @@ def build_barcode_router(
     @router.get("/barcode/defect/base")
     def get_defect_base(user: str = Depends(get_current_user)):
         headers, rows = _read_defect_base_table()
-        return {"ok": True, "path": str(defect_base_path), "headers": headers, "rows": rows}
+        return {"ok": True, "headers": headers, "rows": rows}
 
     @router.post("/barcode/defect/base")
     def save_defect_base(payload: dict = Body(...), user: str = Depends(get_current_user)):
@@ -1226,27 +1384,27 @@ def build_barcode_router(
         if not isinstance(rows, list):
             raise HTTPException(status_code=400, detail="rows must be a list")
 
-        wb, ws = _load_defect_base_sheet()
+        conn = _get_wonbe_db()
         try:
-            write_row = 2
             for row in rows:
                 values = row.get("values") if isinstance(row, dict) else row
-                cells = _normalize_defect_base_row(values)
-                if not any(cells):
+                cells = [str(v or "").strip() for v in (values or [])]
+                while len(cells) < 7:
+                    cells.append("")
+                code = normalize_to_yusas(cells[0]) or cells[0]
+                if not code:
                     continue
-                _write_defect_base_virtual_row(ws, write_row, cells)
-                write_row += 1
-
-            for row_idx in range(write_row, ws.max_row + 1):
-                _write_defect_base_virtual_row(ws, row_idx, ["", "", "", "", "", "", ""])
-
-            wb.save(defect_base_path)
+                color, size = _split_color_size(cells[4])
+                conn.execute(
+                    """UPDATE wonbe SET 상품명=?, 거래처=?, 거래처상품명=?, 색상=?, 사이즈=?,
+                       거래처주소=?, 상품명합=? WHERE 상품코드=?""",
+                    (cells[1], cells[2], cells[3], color, size, cells[5], cells[6], code),
+                )
+            conn.commit()
+            headers, saved_rows = _read_defect_base_table()
+            return {"ok": True, "headers": headers, "rows": saved_rows}
         finally:
-            wb.close()
-
-        _invalidate_defect_base_cache()
-        headers, saved_rows = _read_defect_base_table()
-        return {"ok": True, "path": str(defect_base_path), "headers": headers, "rows": saved_rows}
+            conn.close()
 
     @router.post("/barcode/defect/dec")
     def decrement_defect(payload: dict = Body(...), user: str = Depends(get_current_user)):
@@ -1304,18 +1462,15 @@ def build_barcode_router(
         if not defect_counts:
             return {"ok": True, "matched": 0, "details": [], "message": "불량 목록이 없습니다."}
 
-        if not _WONKA_PATH.exists():
-            raise HTTPException(status_code=404,
-                detail=f"원가베이스 파일을 찾을 수 없습니다: {_WONKA_PATH}")
-
         code_to_sno: dict[str, int] = {}
-        wb = load_workbook(_WONKA_PATH, data_only=True)
+        _wconn = _get_wonbe_db()
         try:
-            ws = wb.active
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                a_val = str(row[0] or "").strip()
-                k_val = row[_WONKA_OPTION_COL - 1] if len(row) >= _WONKA_OPTION_COL else None
-                if not a_val or k_val is None:
+            for _row in _wconn.execute(
+                "SELECT 상품코드, 옵션번호 FROM wonbe WHERE 옵션번호 IS NOT NULL AND 옵션번호 != ''"
+            ).fetchall():
+                a_val = str(_row["상품코드"] or "").strip()
+                k_val = _row["옵션번호"]
+                if not a_val or not k_val:
                     continue
                 normalized = normalize_to_yusas(a_val) or a_val
                 try:
@@ -1323,7 +1478,7 @@ def build_barcode_router(
                 except (ValueError, TypeError):
                     pass
         finally:
-            wb.close()
+            _wconn.close()
 
         sno_to_ea: dict[int, int] = {}
         for code, count in defect_counts.items():

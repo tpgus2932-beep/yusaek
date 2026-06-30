@@ -131,6 +131,33 @@ function rowsToTsv(rows) {
   return rows.map((row) => [row.A, row.B, row.C, row.D, row.E, row.F, row.G, row.H, row.I].join("\t")).join("\n");
 }
 
+async function fillCostPrices(rows, authHeaders) {
+  const codes = [...new Set(
+    rows.filter((r) => r.C === "__COST__" && r.I).map((r) => r.I)
+  )];
+  if (!codes.length) return rows.map((r) => r.C === "__COST__" ? { ...r, C: "" } : r);
+
+  let priceMap = {};
+  try {
+    const res = await fetch(`${API}/wonbe/lookup-prices`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({ codes }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.ok) priceMap = data.prices || {};
+  } catch (_) {}
+
+  return rows.map((r) => {
+    if (r.C !== "__COST__") return r;
+    const raw원가 = priceMap[r.I];
+    if (!raw원가) return { ...r, C: "" };
+    const 원가 = parseNumber(raw원가);
+    const 개수 = parseNumber(r.F);
+    return { ...r, C: String(Math.round(원가 * 개수)) };
+  });
+}
+
 function getFirstDataSheet(workbook) {
   for (const sheetName of workbook.SheetNames || []) {
     const sheet = workbook.Sheets[sheetName];
@@ -143,7 +170,7 @@ function convertCurrentReceiptExcelRowsSplitV3(rawData) {
   const rows = [];
   const dataRows = Array.isArray(rawData) ? rawData.slice(1) : [];
   const date = formatLocalDate();
-  const normalCostFormula = "=INDEX(Sheet2!E:E,MATCH([@\uAC70\uB798\uCC98\uC0C1\uD488\uBA85],Sheet2!G:G,0),0)*[@\uAC1C\uC218]";
+  const normalCostFormula = "__COST__";
   const pickupLabel = "\uBBF8\uC1A1\uD53D\uC5C5";
   const exchangePickupLabel = "교환픽업";
   const missingLabel = "\uBBF8\uC1A1";
@@ -160,6 +187,9 @@ function convertCurrentReceiptExcelRowsSplitV3(rawData) {
     if (!supplierProductName && !optionCell && !originalQty && !requestQty && !pickupText) {
       continue;
     }
+    if (/합\s*계/i.test(supplierProductName)) {
+      continue;
+    }
 
     const { supplierPrefix, supplierSuffix } = extractProductName(supplierProductName);
     const optionMatch = optionCell.match(/\[([^\]]+)\]/);
@@ -168,6 +198,9 @@ function convertCurrentReceiptExcelRowsSplitV3(rawData) {
     const isExchangePickup = hasExchangePickupMarker(pickupText);
     const isPickup = hasPickupMarker(pickupText);
     const pickupOnOriginalRow = isPickup && requestQty <= 0;
+    const memoNumber = Number(pickupText);
+    const isMemoPositiveNumber = pickupText !== "" && !isNaN(memoNumber) && memoNumber > 0;
+    const isMemoNegativeNumber = pickupText !== "" && !isNaN(memoNumber) && memoNumber < 0;
 
     if (originalQty > 0) {
       rows.push({
@@ -181,6 +214,61 @@ function convertCurrentReceiptExcelRowsSplitV3(rawData) {
         H: isExchangePickup ? exchangePickupLabel : pickupOnOriginalRow ? pickupLabel : normalLabel,
         I: originalFVal,
         originalF: originalFVal,
+      });
+    } else if (originalQty < 0) {
+      rows.push({
+        A: supplierPrefix,
+        B: supplierSuffix,
+        C: normalCostFormula,
+        D: color,
+        E: size,
+        F: String(originalQty),
+        G: date,
+        H: normalLabel,
+        I: originalFVal,
+        originalF: originalFVal,
+      });
+      rows.push({
+        A: supplierPrefix,
+        B: "매입차감",
+        C: String(originalQty),
+        D: "매입차감",
+        E: "매입차감",
+        F: "매입차감",
+        G: date,
+        H: "매입차감",
+        I: "",
+        originalF: "",
+      });
+    }
+
+    if (isMemoPositiveNumber) {
+      rows.push({
+        A: supplierPrefix,
+        B: "부가세",
+        C: pickupText,
+        D: "부가세",
+        E: "부가세",
+        F: "부가세",
+        G: date,
+        H: normalLabel,
+        I: "",
+        originalF: "",
+      });
+    }
+
+    if (isMemoNegativeNumber) {
+      rows.push({
+        A: supplierPrefix,
+        B: "매입차감",
+        C: pickupText,
+        D: "매입차감",
+        E: "매입차감",
+        F: "매입차감",
+        G: date,
+        H: "매입차감",
+        I: "",
+        originalF: "",
       });
     }
 
@@ -198,10 +286,6 @@ function convertCurrentReceiptExcelRowsSplitV3(rawData) {
         originalF: originalFVal,
       });
     }
-  }
-
-  if (rows.length > 0) {
-    rows.pop();
   }
 
   return rows;
@@ -251,6 +335,9 @@ export default function NoyeKimPage() {
   const [kdgText, setKdgText] = useState("");
   const [kdgRows, setKdgRows] = useState([]);
   const [kdgMissing, setKdgMissing] = useState(0);
+  const [kdgLastSheetSeq, setKdgLastSheetSeq] = useState(null);
+  const [kdgEzadminLoading, setKdgEzadminLoading] = useState(false);
+  const [kdgBarcodePrintLoading, setKdgBarcodePrintLoading] = useState(false);
   const [baseStatus, setBaseStatus] = useState(null);
   const [baseFile, setBaseFile] = useState(null);
   const [showBaseEditor, setShowBaseEditor] = useState(false);
@@ -277,6 +364,7 @@ export default function NoyeKimPage() {
   const [excelSlipFile, setExcelSlipFile] = useState(null);
   const [excelSlipRows, setExcelSlipRows] = useState([]);
   const [excelSlipOutput, setExcelSlipOutput] = useState("");
+  const [savingJanggi, setSavingJanggi] = useState(false);
   const [slipVoucherList, setSlipVoucherList] = useState([]);
   const [showSlipVoucherModal, setShowSlipVoucherModal] = useState(false);
   const [selectedSlipSheets, setSelectedSlipSheets] = useState([]);
@@ -564,6 +652,63 @@ export default function NoyeKimPage() {
       setMessage(err.message || "XLS 다운로드 실패");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleKdgCreateEzadminSheet = async () => {
+    if (!kdgRows.length) { setMessage("변환된 행이 없습니다."); return; }
+    setKdgEzadminLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/noye-kimsungil/kdg/create-ezadmin-sheet`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ rows: kdgRows }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) { openEzadminModal(handleKdgCreateEzadminSheet); return; }
+      if (!res.ok || !data?.ok) throw new Error(data?.error || data?.detail || "전표 생성 실패");
+      setKdgLastSheetSeq(data.sheet_seq);
+      setMessage(`KDG 입고전표 생성 완료 (${data.uploaded_count ?? 0}건) - 전표번호: ${data.sheet_seq}`);
+    } catch (err) {
+      setMessage(err.message || "전표 생성 실패");
+    } finally {
+      setKdgEzadminLoading(false);
+    }
+  };
+
+  const handleKdgBarcodePrint = async () => {
+    if (!kdgLastSheetSeq || !kdgRows.length) return;
+    setKdgBarcodePrintLoading(true);
+    try {
+      const products = kdgRows
+        .filter((r) => r["원베_B"])
+        .flatMap((r) => {
+          const qty = Number(r["B(옵션번호)"]) || 1;
+          return Array.from({ length: qty }, () => ({
+            code: r["원베_B"],
+            name: r["A(변환품명)"] || "",
+            option: "",
+            qty: 1,
+          }));
+        });
+      const res = await fetch(`${API}/returns/onebe/barcode-print`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ sheet_seq: kdgLastSheetSeq, products }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) { openEzadminModal(handleKdgBarcodePrint); return; }
+      if (!data?.ok) { setMessage(`바코드 출력 오류: ${data?.error || "알 수 없는 오류"}`); return; }
+      const win = window.open("", "_blank", "width=900,height=700");
+      win.document.write(data.html);
+      win.document.close();
+      win.focus();
+      setTimeout(() => win.print(), 800);
+    } catch (err) {
+      setMessage(`바코드 출력 오류: ${err.message}`);
+    } finally {
+      setKdgBarcodePrintLoading(false);
     }
   };
 
@@ -1067,15 +1212,16 @@ export default function NoyeKimPage() {
         const workbook = XLSX.read(arrayBuffer, { type: "array" });
         const sheet = getFirstDataSheet(workbook);
         const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-        const rows = convertCurrentReceiptExcelRowsSplitV3(rawData);
+        const rawRows = convertCurrentReceiptExcelRowsSplitV3(rawData);
 
-        if (!rows.length) {
+        if (!rawRows.length) {
           setExcelSlipRows([]);
           setExcelSlipOutput("");
           setMessage("변환 가능한 행을 찾지 못했습니다.");
           return;
         }
 
+        const rows = await fillCostPrices(rawRows, getAuthHeaders());
         setExcelSlipRows(rows);
         setExcelSlipOutput(rowsToTsv(rows));
 
@@ -1133,8 +1279,9 @@ export default function NoyeKimPage() {
       const workbook = XLSX.read(arrayBuffer, { type: "array" });
       const sheet = getFirstDataSheet(workbook);
       const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-      const rows = convertCurrentReceiptExcelRowsSplitV3(rawData);
-      if (!rows.length) { setMessage("변환 가능한 행을 찾지 못했습니다."); return; }
+      const rawRows = convertCurrentReceiptExcelRowsSplitV3(rawData);
+      if (!rawRows.length) { setMessage("변환 가능한 행을 찾지 못했습니다."); return; }
+      const rows = await fillCostPrices(rawRows, getAuthHeaders());
       setExcelSlipRows(rows);
       setExcelSlipOutput(rowsToTsv(rows));
       setMessage(`EZAdmin 입고전표 변환 완료: ${rows.length}건 (${selectedSlipSheets.length}개 전표)`);
@@ -1160,6 +1307,49 @@ export default function NoyeKimPage() {
       setMessage(err.message || "\uacb0\uacfc \ubcf5\uc0ac\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const saveJanggiRows = async () => {
+    if (!excelSlipRows.length) {
+      setMessage("저장할 변환 결과가 없습니다.");
+      return;
+    }
+    setSavingJanggi(true);
+    setMessage("");
+    try {
+      // 거래처합산: (날짜, 거래처)별 가격 합산
+      const sumMap = {};
+      for (const r of excelSlipRows) {
+        const key = `${r.G}|${r.A}`;
+        const price = parseFloat(r.C) || 0;
+        sumMap[key] = (sumMap[key] || 0) + price;
+      }
+      const payload = excelSlipRows.map((r) => ({
+        거래처: r.A,
+        거래처상품명: r.B,
+        가격: r.C,
+        옵션: r.D,
+        사이즈: r.E,
+        개수: r.F,
+        날짜: r.G,
+        미송체크: r.H,
+        상품코드: r.I,
+        메모: "",
+        거래처합산: String(sumMap[`${r.G}|${r.A}`] || ""),
+      }));
+      const res = await fetch(`${API}/wonbe/janggi/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ rows: payload }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "DB 저장 실패");
+      setMessage(`날짜별장끼정리 DB 저장 완료: ${data.saved}건`);
+    } catch (err) {
+      setMessage(err.message || "DB 저장에 실패했습니다.");
+    } finally {
+      setSavingJanggi(false);
     }
   };
 
@@ -2488,6 +2678,23 @@ export default function NoyeKimPage() {
               <button className={styles.secondaryBtn} onClick={downloadKdgXls} disabled={loading}>
                 <ArrowDownToLine size={13} />XLS 저장(A=원베,B=옵션)
               </button>
+              <button
+                className={styles.secondaryBtn}
+                onClick={handleKdgCreateEzadminSheet}
+                disabled={loading || kdgEzadminLoading || !kdgRows.length}
+              >
+                <ArrowDownToLine size={13} />
+                {kdgEzadminLoading ? "전표 생성 중..." : "이지어드민 입고전표 생성"}
+              </button>
+              <button
+                className={styles.secondaryBtn}
+                onClick={handleKdgBarcodePrint}
+                disabled={loading || kdgBarcodePrintLoading || !kdgLastSheetSeq || !kdgRows.length}
+                title={kdgLastSheetSeq ? `전표 ${kdgLastSheetSeq} 바코드 출력` : "전표 생성 후 활성화"}
+              >
+                <Zap size={13} />
+                {kdgBarcodePrintLoading ? "출력 중..." : `바코드 출력${kdgLastSheetSeq ? ` (${kdgLastSheetSeq})` : ""}`}
+              </button>
               <button className={styles.secondaryBtn} onClick={copyKdgDate} disabled={loading}>
                 <Clipboard size={13} />날짜별 복사
               </button>
@@ -2816,6 +3023,9 @@ export default function NoyeKimPage() {
             <div className={styles.uploadRow}>
               <button className={styles.secondaryBtn} onClick={copyExcelSlipResult} disabled={loading || !excelSlipOutput}>
                 <Clipboard size={13} />결과 복사
+              </button>
+              <button className={styles.primaryBtn} onClick={saveJanggiRows} disabled={savingJanggi || !excelSlipRows.length}>
+                <ArrowDownToLine size={13} />{savingJanggi ? "저장 중..." : "DB저장"}
               </button>
             </div>
           </section>

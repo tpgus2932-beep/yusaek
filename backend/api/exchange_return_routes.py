@@ -731,16 +731,25 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
             ezadmin_ok = True
 
         # 에이블리 교환접수 승인
+        def _map_exchange_item(item: dict) -> dict:
+            return {
+                "exchange_item_sno":        item.get("exchange_item_sno") or item.get("sno"),
+                "exchange_goods_option_sno": (
+                    item.get("exchange_goods_option_sno")
+                    or (item.get("exchange_goods_option") or {}).get("sno")
+                ),
+            }
+
         approve_body = {"exchanges": [
             {
                 "sno": ex["exchange_sno"],
                 "reason_code": ex["reason_code"],
-                "detail_reason": ex["detail_reason"],
-                "exchange_items": ex["exchange_items"],
+                "exchange_items": [_map_exchange_item(i) for i in ex["exchange_items"]],
                 "return_delivery": ex["return_delivery"],
                 "exchange_delivery": ex["exchange_delivery"],
             }
             for ex in exchanges
+            if ex.get("reason_code") != 2
         ]}
         async with httpx.AsyncClient(timeout=30.0) as client:
             approve_res = await client.post(

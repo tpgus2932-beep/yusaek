@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw, TrendingUp, Package, Archive } from "lucide-react";
+import { RefreshCw, TrendingUp, Package, Archive, Zap } from "lucide-react";
 import styles from "./TestTabs.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
 export default function HapbaePreMatch() {
   const [rows, setRows] = useState([]);
   const [stockRows, setStockRows] = useState([]);
+  const [todayBulkRows, setTodayBulkRows] = useState([]);
   const [checkedRows, setCheckedRows] = useState({});
   const [stats, setStats] = useState(null);
   const [loaded, setLoaded] = useState(false);
@@ -24,16 +25,21 @@ export default function HapbaePreMatch() {
     );
   }, [searchQuery]);
 
+  const todayBulkKeySet = useMemo(() => {
+    const set = new Set();
+    todayBulkRows.forEach((row) => {
+      set.add(`${row.productName}::${row.optionName}`);
+    });
+    return set;
+  }, [todayBulkRows]);
+
   const highIncomingRows = useMemo(
-    () => filterRows(rows.filter((row) => (Number(row.incomingQty) || 0) >= 10)),
-    [filterRows, rows]
+    () => filterRows(rows.filter((row) => todayBulkKeySet.has(`${row.productName}::${row.optionName}`))),
+    [filterRows, rows, todayBulkKeySet]
   );
   const normalIncomingRows = useMemo(
-    () => filterRows(rows.filter((row) => {
-      const incomingQty = Number(row.incomingQty) || 0;
-      return incomingQty > 0 && incomingQty < 10;
-    })),
-    [filterRows, rows]
+    () => filterRows(rows.filter((row) => !todayBulkKeySet.has(`${row.productName}::${row.optionName}`))),
+    [filterRows, rows, todayBulkKeySet]
   );
   const noIncomingRows = useMemo(
     () => {
@@ -79,6 +85,7 @@ export default function HapbaePreMatch() {
       }
       setRows(data.rows || []);
       setStockRows(data.stock_rows || []);
+      setTodayBulkRows(data.today_bulk_rows || []);
       setStats(data.stats || null);
       setLoaded(!!data.loaded);
       setIncomingLoaded(!!data.incoming_loaded);
@@ -273,7 +280,7 @@ export default function HapbaePreMatch() {
           <div className={styles.sectionHeader}>
             <div className={styles.sectionTitle}>
               <TrendingUp size={15} />
-              입고 10개 이상
+              TODAY 대량 포함
             </div>
             <div className={styles.sectionMeta}>
               <span>{highIncomingRows.length}건</span>
@@ -288,7 +295,7 @@ export default function HapbaePreMatch() {
           <div className={styles.sectionHeader}>
             <div className={styles.sectionTitle}>
               <Package size={15} />
-              입고 10개 미만
+              TODAY 대량 미포함
             </div>
             <div className={styles.sectionMeta}>
               <span>{normalIncomingRows.length}건</span>
@@ -312,6 +319,65 @@ export default function HapbaePreMatch() {
             </div>
           </div>
           {renderTable(noIncomingRows, "stock")}
+        </section>
+
+        <section className={`${styles.section} ${styles.sectionHigh}`}>
+          <div className={styles.sectionHeader}>
+            <div className={styles.sectionTitle}>
+              <Zap size={15} />
+              TODAY 대량
+            </div>
+            <div className={styles.sectionMeta}>
+              <span>{todayBulkRows.length}건</span>
+              <span>입고 {todayBulkRows.reduce((s, r) => s + (Number(r.incomingQty) || 0), 0)}</span>
+              <span>체크 {checkedCount(todayBulkRows, "today")}</span>
+            </div>
+          </div>
+          <div className={styles.tableWrap}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>확인</th>
+                  <th>상품명</th>
+                  <th>옵션명</th>
+                  <th>연속건수</th>
+                  <th>입고수량</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortCheckedRowsToBottom(
+                  [...todayBulkRows].sort((a, b) =>
+                    (a.productName || "").localeCompare(b.productName || "", "ko")
+                  ),
+                  "today"
+                ).map((row) => {
+                  const rowKey = getRowKey(row, "today");
+                  const isChecked = !!checkedRows[rowKey];
+                  return (
+                    <tr key={rowKey} className={isChecked ? styles.checkedRow : ""}>
+                      <td>
+                        <label className={styles.checkLabel}>
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => toggleRowChecked(row, "today")}
+                          />
+                          <span>체크</span>
+                        </label>
+                      </td>
+                      <td>{row.productName}</td>
+                      <td>{row.optionName}</td>
+                      <td>{row.runLen}</td>
+                      <td>{row.incomingQty ?? 0}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {!todayBulkRows.length && (
+              <div className={styles.empty}>조건에 맞는 데이터가 없습니다.</div>
+            )}
+          </div>
         </section>
       </div>
     </div>
