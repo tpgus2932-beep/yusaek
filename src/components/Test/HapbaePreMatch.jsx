@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw, TrendingUp, Package, Archive, Zap } from "lucide-react";
+import { RefreshCw, TrendingUp, Package, Archive, Zap, Download, ChevronDown, ChevronRight, Star, X } from "lucide-react";
 import styles from "./TestTabs.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
@@ -7,6 +7,13 @@ export default function HapbaePreMatch() {
   const [rows, setRows] = useState([]);
   const [stockRows, setStockRows] = useState([]);
   const [todayBulkRows, setTodayBulkRows] = useState([]);
+  const [stockBulkRows, setStockBulkRows] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("hapbae_stock_bulk_rows") || "[]"); } catch { return []; }
+  });
+  const [stockBulkFetchedAt, setStockBulkFetchedAt] = useState(() => {
+    try { return localStorage.getItem("hapbae_stock_bulk_fetched_at") || ""; } catch { return ""; }
+  });
+  const [stockBulkLoading, setStockBulkLoading] = useState(false);
   const [checkedRows, setCheckedRows] = useState({});
   const [stats, setStats] = useState(null);
   const [loaded, setLoaded] = useState(false);
@@ -14,6 +21,22 @@ export default function HapbaePreMatch() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [expandedSections, setExpandedSections] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("hapbae_expanded_sections") || "{}"); } catch { return {}; }
+  });
+  const [registeredProducts, setRegisteredProducts] = useState([]);
+  const [registeredMatches, setRegisteredMatches] = useState([]);
+  const [productSearch, setProductSearch] = useState("");
+  const [productResults, setProductResults] = useState([]);
+  const [productSearchLoading, setProductSearchLoading] = useState(false);
+
+  const isExpanded = (key) => !!expandedSections[key];
+  const toggleSection = (key) =>
+    setExpandedSections((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      localStorage.setItem("hapbae_expanded_sections", JSON.stringify(next));
+      return next;
+    });
 
   const filterRows = useCallback((targetRows) => {
     const query = searchQuery.trim().toLowerCase();
@@ -38,7 +61,9 @@ export default function HapbaePreMatch() {
     [filterRows, rows, todayBulkKeySet]
   );
   const normalIncomingRows = useMemo(
-    () => filterRows(rows.filter((row) => !todayBulkKeySet.has(`${row.productName}::${row.optionName}`))),
+    () => filterRows(rows.filter((row) =>
+      !todayBulkKeySet.has(`${row.productName}::${row.optionName}`) && (Number(row.incomingQty) || 0) > 0
+    )),
     [filterRows, rows, todayBulkKeySet]
   );
   const noIncomingRows = useMemo(
@@ -86,6 +111,7 @@ export default function HapbaePreMatch() {
       setRows(data.rows || []);
       setStockRows(data.stock_rows || []);
       setTodayBulkRows(data.today_bulk_rows || []);
+      setRegisteredMatches(data.registered_rows || []);
       setStats(data.stats || null);
       setLoaded(!!data.loaded);
       setIncomingLoaded(!!data.incoming_loaded);
@@ -108,9 +134,100 @@ export default function HapbaePreMatch() {
     }
   };
 
+  const loadStockBulk = async () => {
+    setStockBulkLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/barcode/stock-bulk-fetch`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "재고대량 불러오기 실패");
+      if (data.need_session) { setMessage("이지어드민 세션이 없습니다. 설정에서 PHPSESSID를 입력하세요."); return; }
+      setStockBulkRows(data.rows || []);
+      localStorage.setItem("hapbae_stock_bulk_rows", JSON.stringify(data.rows || []));
+      const fetchedAt = new Date().toISOString();
+      setStockBulkFetchedAt(fetchedAt);
+      localStorage.setItem("hapbae_stock_bulk_fetched_at", fetchedAt);
+      setMessage(`재고대량 조회 완료: 10개 이상 ${(data.rows || []).length}건 (전체 주문 ${data.total ?? 0}건)`);
+    } catch (err) {
+      setMessage(err.message || "재고대량 불러오기 실패");
+    } finally {
+      setStockBulkLoading(false);
+    }
+  };
+
+  const loadRegisteredProducts = async () => {
+    try {
+      const res = await fetch(`${API}/barcode/hapbae-pre-match/registered`, { headers: getAuthHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(data.registered)) setRegisteredProducts(data.registered);
+    } catch {
+      /* silent - registration list is non-critical */
+    }
+  };
+
+  const registerProduct = async (wonbeRow) => {
+    const code = String(wonbeRow.상품코드 || "").trim();
+    if (!code) return;
+    const label = [wonbeRow.거래처, wonbeRow.상품명합 || wonbeRow.거래처상품명].filter(Boolean).join(" / ");
+    try {
+      const res = await fetch(`${API}/barcode/hapbae-pre-match/registered`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ code, label }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "등록 실패");
+      setRegisteredProducts(data.registered || []);
+      setProductSearch("");
+      setProductResults([]);
+      loadRows();
+    } catch (err) {
+      setMessage(err.message || "등록 실패");
+    }
+  };
+
+  const unregisterProduct = async (code) => {
+    try {
+      const res = await fetch(`${API}/barcode/hapbae-pre-match/registered`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ code }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "등록 해제 실패");
+      setRegisteredProducts(data.registered || []);
+      loadRows();
+    } catch (err) {
+      setMessage(err.message || "등록 해제 실패");
+    }
+  };
+
   useEffect(() => {
     loadRows();
+    loadRegisteredProducts();
   }, []);
+
+  useEffect(() => {
+    const q = productSearch.trim();
+    if (!q) { setProductResults([]); return; }
+    const timer = setTimeout(async () => {
+      setProductSearchLoading(true);
+      try {
+        const params = new URLSearchParams({ q, limit: 20 });
+        const res = await fetch(`${API}/wonbe/search?${params}`, { headers: getAuthHeaders() });
+        const data = await res.json().catch(() => ({}));
+        setProductResults(data.rows || []);
+      } catch {
+        setProductResults([]);
+      } finally {
+        setProductSearchLoading(false);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [productSearch]);
 
   const toggleRowChecked = async (row, sectionKey) => {
     const key = getRowKey(row, sectionKey);
@@ -277,37 +394,51 @@ export default function HapbaePreMatch() {
 
       <div className={styles.sections}>
         <section className={`${styles.section} ${styles.sectionHigh}`}>
-          <div className={styles.sectionHeader}>
+          <div
+            className={styles.sectionHeader}
+            onClick={() => toggleSection("high")}
+            style={{ cursor: "pointer" }}
+          >
             <div className={styles.sectionTitle}>
               <TrendingUp size={15} />
-              TODAY 대량 포함
+              대량합포
             </div>
             <div className={styles.sectionMeta}>
               <span>{highIncomingRows.length}건</span>
               <span>수량 {sumOrderQty(highIncomingRows)}</span>
               <span>체크 {checkedCount(highIncomingRows, "high")}</span>
+              {isExpanded("high") ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             </div>
           </div>
-          {renderTable(highIncomingRows, "high")}
+          {isExpanded("high") && renderTable(highIncomingRows, "high")}
         </section>
 
         <section className={`${styles.section} ${styles.sectionNormal}`}>
-          <div className={styles.sectionHeader}>
+          <div
+            className={styles.sectionHeader}
+            onClick={() => toggleSection("normal")}
+            style={{ cursor: "pointer" }}
+          >
             <div className={styles.sectionTitle}>
               <Package size={15} />
-              TODAY 대량 미포함
+              짤합포
             </div>
             <div className={styles.sectionMeta}>
               <span>{normalIncomingRows.length}건</span>
               <span>수량 {sumOrderQty(normalIncomingRows)}</span>
               <span>체크 {checkedCount(normalIncomingRows, "normal")}</span>
+              {isExpanded("normal") ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             </div>
           </div>
-          {renderTable(normalIncomingRows, "normal")}
+          {isExpanded("normal") && renderTable(normalIncomingRows, "normal")}
         </section>
 
         <section className={`${styles.section} ${styles.sectionStock}`}>
-          <div className={styles.sectionHeader}>
+          <div
+            className={styles.sectionHeader}
+            onClick={() => toggleSection("stock")}
+            style={{ cursor: "pointer" }}
+          >
             <div className={styles.sectionTitle}>
               <Archive size={15} />
               입고 없음
@@ -316,13 +447,96 @@ export default function HapbaePreMatch() {
               <span>{noIncomingRows.length}건</span>
               <span>수량 {sumOrderQty(noIncomingRows)}</span>
               <span>체크 {checkedCount(noIncomingRows, "stock")}</span>
+              {isExpanded("stock") ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             </div>
           </div>
-          {renderTable(noIncomingRows, "stock")}
+          {isExpanded("stock") && renderTable(noIncomingRows, "stock")}
+        </section>
+
+        <section className={`${styles.section} ${styles.sectionStock}`}>
+          <div
+            className={styles.sectionHeader}
+            onClick={() => toggleSection("stockbulk")}
+            style={{ cursor: "pointer" }}
+          >
+            <div className={styles.sectionTitle}>
+              <Archive size={15} />
+              재고대량
+              <button
+                type="button"
+                className={styles.refreshBtn}
+                onClick={(e) => { e.stopPropagation(); loadStockBulk(); }}
+                disabled={stockBulkLoading}
+                style={{ marginLeft: "0.5rem", fontSize: "0.75rem", padding: "0.2rem 0.55rem" }}
+              >
+                <Download size={12} className={stockBulkLoading ? styles.spinning : undefined} />
+                {stockBulkLoading ? "불러오는 중..." : "불러오기"}
+              </button>
+              {stockBulkFetchedAt && (
+                <span style={{ marginLeft: "0.5rem", fontSize: "0.75rem", fontWeight: 400, color: "var(--text-muted)" }}>
+                  마지막 조회: {new Date(stockBulkFetchedAt).toLocaleString("ko-KR", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                </span>
+              )}
+            </div>
+            <div className={styles.sectionMeta}>
+              <span>{stockBulkRows.length}건</span>
+              <span>체크 {checkedCount(stockBulkRows.map((r) => ({ productName: r.productName, optionName: r.optionName })), "stockbulk")}</span>
+              {isExpanded("stockbulk") ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+            </div>
+          </div>
+          {isExpanded("stockbulk") && (
+          <div className={styles.tableWrap}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>확인</th>
+                  <th>상품코드</th>
+                  <th>상품명</th>
+                  <th>옵션명</th>
+                  <th>수량</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortCheckedRowsToBottom(
+                  stockBulkRows.map((r) => ({ ...r, productName: r.productName, optionName: r.optionName })),
+                  "stockbulk"
+                ).map((row) => {
+                  const rowKey = getRowKey(row, "stockbulk");
+                  const isChecked = !!checkedRows[rowKey];
+                  return (
+                    <tr key={rowKey} className={isChecked ? styles.checkedRow : ""}>
+                      <td>
+                        <label className={styles.checkLabel}>
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => toggleRowChecked(row, "stockbulk")}
+                          />
+                          <span>체크</span>
+                        </label>
+                      </td>
+                      <td style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>{row.code}</td>
+                      <td>{row.productName}</td>
+                      <td>{row.optionName}</td>
+                      <td style={{ fontWeight: 700, color: "#1d4ed8" }}>{row.qty}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {!stockBulkRows.length && !stockBulkLoading && (
+              <div className={styles.empty}>불러오기 버튼을 눌러 오늘 재고대량 주문을 조회하세요 (10개 이상 제품만 표시)</div>
+            )}
+          </div>
+          )}
         </section>
 
         <section className={`${styles.section} ${styles.sectionHigh}`}>
-          <div className={styles.sectionHeader}>
+          <div
+            className={styles.sectionHeader}
+            onClick={() => toggleSection("today")}
+            style={{ cursor: "pointer" }}
+          >
             <div className={styles.sectionTitle}>
               <Zap size={15} />
               TODAY 대량
@@ -331,8 +545,10 @@ export default function HapbaePreMatch() {
               <span>{todayBulkRows.length}건</span>
               <span>입고 {todayBulkRows.reduce((s, r) => s + (Number(r.incomingQty) || 0), 0)}</span>
               <span>체크 {checkedCount(todayBulkRows, "today")}</span>
+              {isExpanded("today") ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             </div>
           </div>
+          {isExpanded("today") && (
           <div className={styles.tableWrap}>
             <table className={styles.table}>
               <thead>
@@ -378,6 +594,98 @@ export default function HapbaePreMatch() {
               <div className={styles.empty}>조건에 맞는 데이터가 없습니다.</div>
             )}
           </div>
+          )}
+        </section>
+
+        <section className={`${styles.section} ${styles.sectionNormal}`}>
+          <div
+            className={styles.sectionHeader}
+            onClick={() => toggleSection("registered")}
+            style={{ cursor: "pointer" }}
+          >
+            <div className={styles.sectionTitle}>
+              <Star size={15} />
+              등록상품 매칭
+            </div>
+            <div className={styles.sectionMeta}>
+              <span>매칭 {registeredMatches.length}건</span>
+              <span>등록 {registeredProducts.length}개</span>
+              {isExpanded("registered") ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+            </div>
+          </div>
+          {isExpanded("registered") && (
+            <div style={{ padding: "0.75rem 1rem" }}>
+              <div style={{ position: "relative", maxWidth: "360px" }}>
+                <input
+                  className={styles.searchInput}
+                  value={productSearch}
+                  onChange={(e) => setProductSearch(e.target.value)}
+                  placeholder="상품코드/상품명/거래처 검색"
+                  style={{ width: "100%" }}
+                />
+                {productSearch.trim() && (
+                  <div
+                    style={{
+                      position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10,
+                      background: "var(--surface, #fff)", border: "1px solid var(--border, #e5e7eb)",
+                      borderRadius: "6px", boxShadow: "0 6px 16px rgba(0,0,0,0.12)",
+                      maxHeight: "260px", overflowY: "auto", marginTop: "0.25rem",
+                    }}
+                  >
+                    {productSearchLoading ? (
+                      <div style={{ padding: "0.6rem", fontSize: "0.8rem", color: "var(--text-muted)" }}>검색 중...</div>
+                    ) : productResults.length === 0 ? (
+                      <div style={{ padding: "0.6rem", fontSize: "0.8rem", color: "var(--text-muted)" }}>검색 결과가 없습니다.</div>
+                    ) : (
+                      productResults.map((row, i) => (
+                        <div
+                          key={i}
+                          onClick={() => registerProduct(row)}
+                          style={{ padding: "0.5rem 0.6rem", cursor: "pointer", fontSize: "0.8rem", borderBottom: "1px solid var(--border, #f0f0f0)" }}
+                          onMouseEnter={(e) => e.currentTarget.style.background = "#f5f3ff"}
+                          onMouseLeave={(e) => e.currentTarget.style.background = ""}
+                        >
+                          <strong>{row["거래처합"] ?? row["상품코드"] ?? ""}</strong>
+                          <span style={{ marginLeft: "0.4rem", color: "var(--text-muted)" }}>{row["상품명합"] ?? ""}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", marginTop: "0.75rem" }}>
+                {registeredProducts.map((item) => (
+                  <span
+                    key={item.code}
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: "0.3rem",
+                      padding: "0.2rem 0.5rem", borderRadius: "999px",
+                      background: "var(--bg-card, #f3f4f6)", border: "1px solid var(--border, #e5e7eb)",
+                      fontSize: "0.78rem",
+                    }}
+                  >
+                    {item.label || item.code}
+                    <button
+                      type="button"
+                      onClick={() => unregisterProduct(item.code)}
+                      style={{ background: "none", border: "none", cursor: "pointer", padding: 0, lineHeight: 1, color: "var(--text-muted)" }}
+                      title="등록 해제"
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+                {!registeredProducts.length && (
+                  <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>등록된 상품이 없습니다.</span>
+                )}
+              </div>
+
+              <div style={{ marginTop: "0.75rem" }}>
+                {renderTable(registeredMatches, "registered")}
+              </div>
+            </div>
+          )}
         </section>
       </div>
     </div>
