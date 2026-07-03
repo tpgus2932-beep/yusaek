@@ -134,6 +134,25 @@ def build_barcode_router(
         set_setting(hapbae_registered_products_key, json.dumps(clean, ensure_ascii=False))
         return clean
 
+    def _lookup_wonbe_labels(codes: set[str]) -> dict[str, str]:
+        if not codes:
+            return {}
+        conn = _get_wonbe_db()
+        try:
+            rows = conn.execute("SELECT 상품코드, 거래처, 상품명합 FROM wonbe").fetchall()
+            lookup: dict[str, str] = {}
+            for row in rows:
+                raw_code = str(row["상품코드"] or "").strip()
+                normalized = normalize_to_yusas(raw_code) or raw_code
+                if normalized in codes and normalized not in lookup:
+                    label = " / ".join(
+                        p for p in [str(row["거래처"] or "").strip(), str(row["상품명합"] or "").strip()] if p
+                    )
+                    lookup[normalized] = label
+            return lookup
+        finally:
+            conn.close()
+
     def _extract_hapbae_pre_match_rows(path: Path) -> list[dict]:
         wb, ws = load_excel_any(path)
         try:
@@ -1100,6 +1119,44 @@ def build_barcode_router(
             raise HTTPException(status_code=400, detail="code required")
         current = [item for item in _get_registered_products() if item["code"] != code]
         return {"ok": True, "registered": _set_registered_products(current)}
+
+    @router.post("/barcode/hapbae-pre-match/registered/bulk")
+    def bulk_add_hapbae_registered_products(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        raw_codes = payload.get("codes")
+        if not isinstance(raw_codes, list):
+            raise HTTPException(status_code=400, detail="codes must be a list")
+
+        normalized_codes = []
+        seen = set()
+        for raw in raw_codes:
+            raw_str = str(raw or "").strip()
+            if not raw_str:
+                continue
+            code = normalize_to_yusas(raw_str) or raw_str
+            if code in seen:
+                continue
+            seen.add(code)
+            normalized_codes.append(code)
+        if not normalized_codes:
+            raise HTTPException(status_code=400, detail="no valid codes")
+
+        labels = _lookup_wonbe_labels(set(normalized_codes))
+        current = _get_registered_products()
+        by_code = {item["code"]: item for item in current}
+        added = 0
+        for code in normalized_codes:
+            label = labels.get(code, code)
+            if code in by_code:
+                by_code[code] = {"code": code, "label": label}
+            else:
+                by_code[code] = {"code": code, "label": label}
+                added += 1
+        return {
+            "ok": True,
+            "registered": _set_registered_products(list(by_code.values())),
+            "added": added,
+            "total_input": len(normalized_codes),
+        }
 
     @router.post("/barcode/scan/invoice")
     def scan_invoice(payload: dict = Body(...), user: str = Depends(get_current_user)):
