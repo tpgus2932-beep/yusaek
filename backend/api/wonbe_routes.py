@@ -26,14 +26,42 @@ _TOP90_BASE = "https://top90.sosolution.net"
 _TOP90_EMAIL = "values0208@naver.com"
 _TOP90_PASSWORD = "!Glqgkqdldi1126"
 
+_ABLY_BASE = "https://api.a-bly.com"
+_ABLY_EMAIL = "eostm1997@naver.com"
+_ABLY_PASSWORD = "!Glqgkqdldi1126"
+
+
+def _parse_ably_datetime(value) -> datetime | None:
+    s = str(value or "").strip()
+    if not s:
+        return None
+    s = s.replace("T", " ")
+    if s.endswith("Z"):
+        s = s[:-1]
+    s = re.sub(r"[+-]\d{2}:?\d{2}$", "", s).strip()
+    s = s[:19]
+    if len(s) == 10:
+        s = s + " 00:00:00"
+    try:
+        return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
 WONBE_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스유.db")
 WONBE_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스유.xlsx")
 JANGGI_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\날짜별장끼정리.db")
+INGODAEGI_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\입고대기.xlsx")
 
 COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호"]
 EDITABLE = {"상품명합", "거래처합", "원가", "거래처주소"}
 
+INGODAEGI_COLUMNS = ["상품코드", "입고수량"]
+ABLY_STOCK_COLUMNS = ["옵션번호", "수량"]
+
 JANGGI_COLUMNS = ["거래처", "거래처상품명", "가격", "옵션", "사이즈", "개수", "날짜", "미송체크", "상품코드", "메모", "거래처합산"]
+
+ACCOUNT_COLS = ["A", "B", "C", "D", "E", "F"]
+ICHAE_COLS = ["날짜", "A", "B", "C", "D", "E", "F", "G", "H", "상태", "생성일시"]
 
 
 def _get_wonbe_db() -> sqlite3.Connection:
@@ -80,11 +108,128 @@ def _init_kdg_table(conn: sqlite3.Connection):
     conn.commit()
 
 
+def _init_ingodaegi_table(conn: sqlite3.Connection):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS 입고대기 (
+            상품코드  TEXT PRIMARY KEY,
+            입고수량  TEXT NOT NULL DEFAULT 'ZERO'
+        )
+    """)
+    conn.commit()
+
+
+def _sync_ingodaegi_from_wonbe(conn: sqlite3.Connection) -> int:
+    _init_wonbe_table(conn)
+    _init_ingodaegi_table(conn)
+    rows = conn.execute(
+        """SELECT 상품코드 FROM wonbe
+           WHERE TRIM(상품코드) != ''
+             AND 상품코드 NOT IN (SELECT 상품코드 FROM 입고대기)"""
+    ).fetchall()
+    new_codes = [(r["상품코드"],) for r in rows]
+    if new_codes:
+        conn.executemany(
+            "INSERT OR IGNORE INTO 입고대기 (상품코드, 입고수량) VALUES (?, 'ZERO')",
+            new_codes,
+        )
+        conn.commit()
+    return len(new_codes)
+
+
+def _init_ably_stock_table(conn: sqlite3.Connection):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS 에이블리재고변경 (
+            옵션번호  TEXT PRIMARY KEY,
+            수량      TEXT NOT NULL DEFAULT '0'
+        )
+    """)
+    conn.commit()
+
+
+def _sync_ably_stock_from_wonbe(conn: sqlite3.Connection) -> int:
+    _init_wonbe_table(conn)
+    _init_ably_stock_table(conn)
+    rows = conn.execute(
+        """SELECT 옵션번호 FROM wonbe
+           WHERE TRIM(옵션번호) != ''
+             AND 옵션번호 NOT IN (SELECT 옵션번호 FROM 에이블리재고변경)"""
+    ).fetchall()
+    new_options = [(r["옵션번호"],) for r in rows]
+    if new_options:
+        conn.executemany(
+            "INSERT OR IGNORE INTO 에이블리재고변경 (옵션번호, 수량) VALUES (?, '0')",
+            new_options,
+        )
+        conn.commit()
+    return len(new_options)
+
+
 def _get_janggi_db() -> sqlite3.Connection:
     JANGGI_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(JANGGI_DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _init_account_table(conn: sqlite3.Connection):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS 거래처계좌데이터 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            A TEXT NOT NULL DEFAULT '',
+            B TEXT NOT NULL DEFAULT '',
+            C TEXT NOT NULL DEFAULT '',
+            D TEXT NOT NULL DEFAULT '',
+            E TEXT NOT NULL DEFAULT '',
+            F TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_account_A ON 거래처계좌데이터(A)")
+    conn.commit()
+
+
+def _init_ichae_table(conn: sqlite3.Connection):
+    # 구 스키마(G열 또는 상품코드 컬럼 포함) 감지 시 재생성
+    try:
+        existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(이체파일)").fetchall()]
+        if existing_cols and ("G" in existing_cols or "상품코드" in existing_cols):
+            conn.execute("DROP TABLE 이체파일")
+            conn.commit()
+    except Exception:
+        pass
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS 이체파일 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            날짜 TEXT NOT NULL DEFAULT '',
+            A TEXT NOT NULL DEFAULT '',
+            B TEXT NOT NULL DEFAULT '',
+            C REAL NOT NULL DEFAULT 0,
+            D TEXT NOT NULL DEFAULT '',
+            E TEXT NOT NULL DEFAULT '주식회사 유색',
+            F TEXT NOT NULL DEFAULT '',
+            상태 TEXT NOT NULL DEFAULT '',
+            생성일시 TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ichae_날짜 ON 이체파일(날짜)")
+    conn.commit()
+
+
+def _parse_amount_janggi(value) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    raw = str(value).strip()
+    if not raw:
+        return 0.0
+    normalized = re.sub(r"[,원\s]", "", raw)
+    m = re.search(r"[+-]?\d+(?:\.\d+)?", normalized)
+    if not m:
+        return 0.0
+    try:
+        return float(m.group(0))
+    except Exception:
+        return 0.0
 
 
 def _init_janggi_table(conn: sqlite3.Connection):
@@ -112,6 +257,10 @@ def _init_janggi_table(conn: sqlite3.Connection):
             value TEXT NOT NULL
         )
     """)
+    try:
+        conn.execute("ALTER TABLE 날짜별장끼정리 ADD COLUMN 일괄이체 TEXT NOT NULL DEFAULT ''")
+    except Exception:
+        pass
     conn.commit()
 
 
@@ -218,6 +367,240 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
         finally:
             conn.close()
 
+    # ── 입고대기 CRUD ─────────────────────────────────────────────
+
+    @router.post("/ingodaegi/init-from-default")
+    def ingodaegi_init_from_default(user: str = Depends(get_current_user)):
+        if not INGODAEGI_XLSX_PATH.exists():
+            raise HTTPException(status_code=404, detail=f"파일 없음: {INGODAEGI_XLSX_PATH}")
+        try:
+            wb = openpyxl.load_workbook(str(INGODAEGI_XLSX_PATH), read_only=True, data_only=True)
+            ws = wb.active
+            rows_iter = ws.iter_rows(values_only=True)
+            next(rows_iter, None)  # 헤더 스킵
+            data_rows = []
+            for row in rows_iter:
+                code = str(row[0]).strip() if row and row[0] is not None else ""
+                if not code:
+                    continue
+                qty = str(row[1]).strip() if len(row) > 1 and row[1] is not None else "ZERO"
+                data_rows.append((code, qty or "ZERO"))
+            wb.close()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"파일 읽기 오류: {e}")
+
+        conn = _get_wonbe_db()
+        try:
+            _init_ingodaegi_table(conn)
+            conn.execute("DELETE FROM 입고대기")
+            conn.executemany(
+                "INSERT OR REPLACE INTO 입고대기 (상품코드, 입고수량) VALUES (?, ?)",
+                data_rows,
+            )
+            conn.commit()
+            return {"ok": True, "count": len(data_rows)}
+        finally:
+            conn.close()
+
+    @router.post("/ingodaegi/sync-from-wonbe")
+    def ingodaegi_sync_from_wonbe(user: str = Depends(get_current_user)):
+        conn = _get_wonbe_db()
+        try:
+            added = _sync_ingodaegi_from_wonbe(conn)
+            return {"ok": True, "added": added}
+        finally:
+            conn.close()
+
+    @router.get("/ingodaegi/search")
+    def ingodaegi_search(
+        q: str = "",
+        offset: int = 0,
+        limit: int = 50,
+        user: str = Depends(get_current_user),
+    ):
+        conn = _get_wonbe_db()
+        try:
+            _init_ingodaegi_table(conn)
+            q = q.strip()
+            if not q:
+                rows = conn.execute(
+                    "SELECT * FROM 입고대기 ORDER BY 상품코드 LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ).fetchall()
+                total = conn.execute("SELECT COUNT(*) FROM 입고대기").fetchone()[0]
+            else:
+                like = f"%{q}%"
+                rows = conn.execute(
+                    "SELECT * FROM 입고대기 WHERE 상품코드 LIKE ? ORDER BY 상품코드 LIMIT ? OFFSET ?",
+                    (like, limit, offset),
+                ).fetchall()
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM 입고대기 WHERE 상품코드 LIKE ?", (like,)
+                ).fetchone()[0]
+            return {
+                "ok": True,
+                "rows": [dict(r) for r in rows],
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+            }
+        finally:
+            conn.close()
+
+    @router.post("/ingodaegi/append")
+    def ingodaegi_append(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        text = str(payload.get("text") or "")
+        codes = []
+        for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+            first_cell = line.split("\t", 1)[0].strip()
+            if first_cell:
+                codes.append(first_cell)
+        if not codes:
+            raise HTTPException(status_code=400, detail="추가할 상품코드가 없습니다.")
+
+        conn = _get_wonbe_db()
+        try:
+            _init_ingodaegi_table(conn)
+            before = conn.execute("SELECT COUNT(*) FROM 입고대기").fetchone()[0]
+            conn.executemany(
+                "INSERT OR IGNORE INTO 입고대기 (상품코드, 입고수량) VALUES (?, 'ZERO')",
+                [(c,) for c in codes],
+            )
+            conn.commit()
+            after = conn.execute("SELECT COUNT(*) FROM 입고대기").fetchone()[0]
+            return {"ok": True, "requested": len(codes), "inserted": after - before}
+        finally:
+            conn.close()
+
+    @router.delete("/ingodaegi/row")
+    def ingodaegi_delete_row(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        code = str(payload.get("상품코드") or "").strip()
+        if not code:
+            raise HTTPException(status_code=400, detail="상품코드 필요")
+        conn = _get_wonbe_db()
+        try:
+            _init_ingodaegi_table(conn)
+            cur = conn.execute("DELETE FROM 입고대기 WHERE 상품코드 = ?", (code,))
+            conn.commit()
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="해당 상품코드 없음")
+            return {"ok": True, "deleted": cur.rowcount}
+        finally:
+            conn.close()
+
+    @router.get("/ingodaegi/export")
+    def ingodaegi_export(user: str = Depends(get_current_user)):
+        conn = _get_wonbe_db()
+        try:
+            _init_ingodaegi_table(conn)
+            rows = conn.execute("SELECT * FROM 입고대기 ORDER BY 상품코드").fetchall()
+        finally:
+            conn.close()
+
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("Sheet1")
+        for ci, h in enumerate(INGODAEGI_COLUMNS):
+            sheet.write(0, ci, h)
+        for ri, row in enumerate(rows, start=1):
+            for ci, col in enumerate(INGODAEGI_COLUMNS):
+                sheet.write(ri, ci, row[col] or "")
+
+        buf = io.BytesIO()
+        book.save(buf)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/vnd.ms-excel",
+            headers={"Content-Disposition": _content_disposition("입고대기.xls")},
+        )
+
+    # ── 에이블리재고변경 CRUD ─────────────────────────────────────
+
+    @router.post("/ably-stock/sync-from-wonbe")
+    def ably_stock_sync_from_wonbe(user: str = Depends(get_current_user)):
+        conn = _get_wonbe_db()
+        try:
+            added = _sync_ably_stock_from_wonbe(conn)
+            return {"ok": True, "added": added}
+        finally:
+            conn.close()
+
+    @router.get("/ably-stock/search")
+    def ably_stock_search(
+        q: str = "",
+        offset: int = 0,
+        limit: int = 50,
+        user: str = Depends(get_current_user),
+    ):
+        conn = _get_wonbe_db()
+        try:
+            _init_ably_stock_table(conn)
+            q = q.strip()
+            if not q:
+                rows = conn.execute(
+                    "SELECT * FROM 에이블리재고변경 ORDER BY 옵션번호 LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ).fetchall()
+                total = conn.execute("SELECT COUNT(*) FROM 에이블리재고변경").fetchone()[0]
+            else:
+                like = f"%{q}%"
+                rows = conn.execute(
+                    "SELECT * FROM 에이블리재고변경 WHERE 옵션번호 LIKE ? ORDER BY 옵션번호 LIMIT ? OFFSET ?",
+                    (like, limit, offset),
+                ).fetchall()
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM 에이블리재고변경 WHERE 옵션번호 LIKE ?", (like,)
+                ).fetchone()[0]
+            return {
+                "ok": True,
+                "rows": [dict(r) for r in rows],
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+            }
+        finally:
+            conn.close()
+
+    @router.delete("/ably-stock/row")
+    def ably_stock_delete_row(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        code = str(payload.get("옵션번호") or "").strip()
+        if not code:
+            raise HTTPException(status_code=400, detail="옵션번호 필요")
+        conn = _get_wonbe_db()
+        try:
+            _init_ably_stock_table(conn)
+            cur = conn.execute("DELETE FROM 에이블리재고변경 WHERE 옵션번호 = ?", (code,))
+            conn.commit()
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="해당 옵션번호 없음")
+            return {"ok": True, "deleted": cur.rowcount}
+        finally:
+            conn.close()
+
+    @router.get("/ably-stock/export")
+    def ably_stock_export(user: str = Depends(get_current_user)):
+        conn = _get_wonbe_db()
+        try:
+            _init_ably_stock_table(conn)
+            rows = conn.execute("SELECT * FROM 에이블리재고변경 ORDER BY 옵션번호").fetchall()
+        finally:
+            conn.close()
+
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("Sheet1")
+        for ci, h in enumerate(ABLY_STOCK_COLUMNS):
+            sheet.write(0, ci, h)
+        for ri, row in enumerate(rows, start=1):
+            for ci, col in enumerate(ABLY_STOCK_COLUMNS):
+                sheet.write(ri, ci, row[col] or "")
+
+        buf = io.BytesIO()
+        book.save(buf)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/vnd.ms-excel",
+            headers={"Content-Disposition": _content_disposition("에이블리재고변경.xls")},
+        )
+
     @router.get("/search")
     def wonbe_search(
         q: str = "",
@@ -239,15 +622,15 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
                 like = f"%{q}%"
                 rows = conn.execute(
                     """SELECT * FROM wonbe
-                       WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ?
+                       WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?
                        ORDER BY CASE WHEN 상품코드 = ? THEN 0
                                      WHEN 상품코드 LIKE ? THEN 1 ELSE 2 END, 상품코드
                        LIMIT ? OFFSET ?""",
-                    (like, like, like, q, f"{q}%", limit, offset),
+                    (like, like, like, like, q, f"{q}%", limit, offset),
                 ).fetchall()
                 total = conn.execute(
-                    "SELECT COUNT(*) FROM wonbe WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ?",
-                    (like, like, like),
+                    "SELECT COUNT(*) FROM wonbe WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?",
+                    (like, like, like, like),
                 ).fetchone()[0]
             return {
                 "ok": True,
@@ -287,13 +670,16 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
         finally:
             conn.close()
 
-    @router.post("/bulk-update-cost")
-    def wonbe_bulk_update_cost(
+    @router.post("/bulk-update")
+    def wonbe_bulk_update(
         payload: dict = Body(...),
         user: str = Depends(get_current_user),
     ):
         q = str(payload.get("q") or "").strip()
-        cost = str(payload.get("원가") or "").strip()
+        col = str(payload.get("col") or "").strip()
+        value = str(payload.get("value") or "").strip()
+        if col not in EDITABLE:
+            raise HTTPException(status_code=400, detail=f"수정 불가 컬럼: {col}")
 
         conn = _get_wonbe_db()
         try:
@@ -301,11 +687,11 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             if q:
                 like = f"%{q}%"
                 cur = conn.execute(
-                    "UPDATE wonbe SET 원가 = ? WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ?",
-                    (cost, like, like, like),
+                    f"UPDATE wonbe SET {col} = ? WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?",
+                    (value, like, like, like, like),
                 )
             else:
-                cur = conn.execute("UPDATE wonbe SET 원가 = ?", (cost,))
+                cur = conn.execute(f"UPDATE wonbe SET {col} = ?", (value,))
             conn.commit()
             return {"ok": True, "count": cur.rowcount}
         finally:
@@ -506,6 +892,159 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
         finally:
             conn.close()
 
+    @router.post("/freshness-check")
+    async def wonbe_freshness_check(user: str = Depends(get_current_user)):
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.post(
+                f"{_ABLY_BASE}/seller/login/",
+                json={"email": _ABLY_EMAIL, "password": _ABLY_PASSWORD},
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": "https://seller-admin.a-bly.com",
+                    "Referer": "https://seller-admin.a-bly.com/",
+                    "User-Agent": "Mozilla/5.0",
+                },
+            )
+            if not res.is_success:
+                raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
+        token = res.json().get("token")
+        if not token:
+            raise HTTPException(status_code=502, detail="에이블리 로그인 실패: 토큰 없음")
+
+        ably_headers = {
+            "Authorization": f"JWT {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": "https://seller-admin.a-bly.com",
+            "Referer": "https://seller-admin.a-bly.com/",
+            "User-Agent": "Mozilla/5.0",
+        }
+
+        latest_dt: datetime | None = None
+        checked_goods = 0
+        checked_pages = 0
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                for page in range(1, 3):
+                    res = await client.post(
+                        f"{_ABLY_BASE}/seller/goods/search/",
+                        headers=ably_headers,
+                        json={"page": page, "per_page": 30},
+                    )
+                    res.raise_for_status()
+                    data = res.json()
+                    goods = data.get("goods", [])
+                    checked_pages += 1
+                    if not goods:
+                        break
+                    for g in goods:
+                        checked_goods += 1
+                        dt = _parse_ably_datetime(g.get("created_at"))
+                        if dt and (latest_dt is None or dt > latest_dt):
+                            latest_dt = dt
+                    if page >= data.get("max_page_number", 1):
+                        break
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"상품 목록 조회 실패: {exc}")
+
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            row = conn.execute("SELECT value FROM wonbe_meta WHERE key = 'last_sync_at'").fetchone()
+            last_sync_at_str = row["value"] if row else None
+
+            last_sync_dt = None
+            if last_sync_at_str:
+                try:
+                    last_sync_dt = datetime.strptime(last_sync_at_str, "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    last_sync_dt = None
+
+            if latest_dt is None:
+                status = "blue"
+            elif last_sync_dt is None or last_sync_dt < latest_dt:
+                status = "red"
+            else:
+                status = "blue"
+
+            ingodaegi_added = _sync_ingodaegi_from_wonbe(conn)
+            ablystock_added = _sync_ably_stock_from_wonbe(conn)
+
+            checked_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            latest_created_at = latest_dt.strftime("%Y-%m-%d %H:%M:%S") if latest_dt else None
+            meta_values = {
+                "freshness_status": status,
+                "freshness_checked_at": checked_at,
+                "freshness_latest_created_at": latest_created_at or "",
+                "freshness_checked_goods": str(checked_goods),
+                "freshness_checked_pages": str(checked_pages),
+                "freshness_ingodaegi_added": str(ingodaegi_added),
+                "freshness_ablystock_added": str(ablystock_added),
+            }
+            conn.executemany(
+                "INSERT OR REPLACE INTO wonbe_meta (key, value) VALUES (?, ?)",
+                list(meta_values.items()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        return {
+            "ok": True,
+            "status": status,
+            "latest_created_at": latest_created_at,
+            "last_sync_at": last_sync_at_str,
+            "checked_goods": checked_goods,
+            "checked_pages": checked_pages,
+            "checked_at": checked_at,
+            "ingodaegi_added": ingodaegi_added,
+            "ablystock_added": ablystock_added,
+        }
+
+    @router.get("/freshness-status")
+    def wonbe_freshness_status(user: str = Depends(get_current_user)):
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            keys = [
+                "freshness_status",
+                "freshness_checked_at",
+                "freshness_latest_created_at",
+                "freshness_checked_goods",
+                "freshness_checked_pages",
+                "freshness_ingodaegi_added",
+                "freshness_ablystock_added",
+                "last_sync_at",
+            ]
+            placeholders = ", ".join("?" for _ in keys)
+            rows = conn.execute(
+                f"SELECT key, value FROM wonbe_meta WHERE key IN ({placeholders})",
+                keys,
+            ).fetchall()
+            meta = {r["key"]: r["value"] for r in rows}
+        finally:
+            conn.close()
+
+        def _int_or_zero(v):
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return 0
+
+        return {
+            "ok": True,
+            "status": meta.get("freshness_status"),
+            "latest_created_at": meta.get("freshness_latest_created_at") or None,
+            "last_sync_at": meta.get("last_sync_at"),
+            "checked_goods": _int_or_zero(meta.get("freshness_checked_goods")),
+            "checked_pages": _int_or_zero(meta.get("freshness_checked_pages")),
+            "checked_at": meta.get("freshness_checked_at"),
+            "ingodaegi_added": _int_or_zero(meta.get("freshness_ingodaegi_added")),
+            "ablystock_added": _int_or_zero(meta.get("freshness_ablystock_added")),
+        }
+
     @router.post("/janggi/save")
     def janggi_save(
         payload: dict = Body(...),
@@ -546,6 +1085,8 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
     def janggi_search(
         q: str = "",
         date: str = "",
+        misong_filter: str = "",
+        ilgwal_only: str = "",
         offset: int = 0,
         limit: int = 50,
         user: str = Depends(get_current_user),
@@ -555,6 +1096,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             _init_janggi_table(conn)
             q = q.strip()
             date = date.strip()
+            misong_filter = misong_filter.strip()
             order = "ORDER BY 날짜 DESC, 거래처 DESC"
 
             conditions = []
@@ -566,6 +1108,12 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
                 like = f"%{q}%"
                 conditions.append("(거래처 LIKE ? OR 거래처상품명 LIKE ? OR 상품코드 LIKE ?)")
                 params.extend([like, like, like])
+            if misong_filter == "미송":
+                conditions.append("(미송체크 LIKE '%미송%' AND 미송체크 NOT LIKE '%픽업%')")
+            elif misong_filter == "미송픽업":
+                conditions.append("(미송체크 LIKE '%미송픽업%' OR (미송체크 LIKE '%미송%' AND 미송체크 LIKE '%픽업%'))")
+            if ilgwal_only == "Y":
+                conditions.append("일괄이체 = 'Y'")
 
             where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
@@ -608,8 +1156,29 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             conn.commit()
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="해당 id 없음")
-            row = conn.execute("SELECT * FROM 날짜별장끼정리 WHERE id = ?", (row_id,)).fetchone()
-            return {"ok": True, "row": dict(row)}
+            row = dict(conn.execute("SELECT * FROM 날짜별장끼정리 WHERE id = ?", (row_id,)).fetchone())
+
+            recalc_rows: list[dict] = []
+            if col == "가격":
+                거래처 = row.get("거래처") or ""
+                날짜 = row.get("날짜") or ""
+                if 거래처 and 날짜:
+                    group = conn.execute(
+                        "SELECT id, 가격 FROM 날짜별장끼정리 WHERE 거래처 = ? AND 날짜 = ?",
+                        (거래처, 날짜),
+                    ).fetchall()
+                    total = sum(_parse_amount_janggi(r["가격"]) for r in group)
+                    total_str = str(int(total)) if total == int(total) else str(total)
+                    ids = [r["id"] for r in group]
+                    conn.execute(
+                        f"UPDATE 날짜별장끼정리 SET 거래처합산 = ? WHERE 거래처 = ? AND 날짜 = ?",
+                        (total_str, 거래처, 날짜),
+                    )
+                    conn.commit()
+                    row["거래처합산"] = total_str
+                    recalc_rows = [{"id": rid, "거래처합산": total_str} for rid in ids if rid != row_id]
+
+            return {"ok": True, "row": row, "recalc_rows": recalc_rows}
         finally:
             conn.close()
 
@@ -627,8 +1196,27 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
                 values,
             )
             conn.commit()
-            row = conn.execute("SELECT * FROM 날짜별장끼정리 WHERE id = ?", (cur.lastrowid,)).fetchone()
-            return {"ok": True, "row": dict(row)}
+            row = dict(conn.execute("SELECT * FROM 날짜별장끼정리 WHERE id = ?", (cur.lastrowid,)).fetchone())
+
+            recalc_rows: list[dict] = []
+            거래처 = row.get("거래처") or ""
+            날짜 = row.get("날짜") or ""
+            if 거래처 and 날짜:
+                group = conn.execute(
+                    "SELECT id, 가격 FROM 날짜별장끼정리 WHERE 거래처 = ? AND 날짜 = ?",
+                    (거래처, 날짜),
+                ).fetchall()
+                total = sum(_parse_amount_janggi(r["가격"]) for r in group)
+                total_str = str(int(total)) if total == int(total) else str(total)
+                conn.execute(
+                    "UPDATE 날짜별장끼정리 SET 거래처합산 = ? WHERE 거래처 = ? AND 날짜 = ?",
+                    (total_str, 거래처, 날짜),
+                )
+                conn.commit()
+                row["거래처합산"] = total_str
+                recalc_rows = [{"id": r["id"], "거래처합산": total_str} for r in group if r["id"] != cur.lastrowid]
+
+            return {"ok": True, "row": row, "recalc_rows": recalc_rows}
         finally:
             conn.close()
 
@@ -708,19 +1296,25 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             ).fetchone()["d"]
             if not latest:
                 return {"ok": True, "date": None, "rows": []}
-            rows = conn.execute(
-                """SELECT 거래처,
-                          SUM(CASE WHEN CAST(가격 AS REAL) > 0 THEN CAST(가격 AS REAL) ELSE 0 END) AS 합산
+            raw_rows = conn.execute(
+                """SELECT 거래처, 가격
                    FROM 날짜별장끼정리
-                   WHERE 날짜 = ? AND 거래처 != ''
-                   GROUP BY 거래처
-                   ORDER BY 거래처 DESC""",
+                   WHERE 날짜 = ? AND 거래처 != ''""",
                 (latest,),
             ).fetchall()
+            totals: dict[str, float] = {}
+            for r in raw_rows:
+                supplier = r["거래처"]
+                totals[supplier] = totals.get(supplier, 0.0) + _parse_amount_janggi(r["가격"])
+            rows = sorted(
+                ({"거래처": k, "합산": v} for k, v in totals.items()),
+                key=lambda x: x["거래처"],
+                reverse=True,
+            )
             return {
                 "ok": True,
                 "date": latest,
-                "rows": [{"거래처": r["거래처"], "합산": r["합산"]} for r in rows],
+                "rows": rows,
             }
         finally:
             conn.close()
@@ -787,5 +1381,345 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             raise
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"TOP90 조회 실패: {exc}")
+
+    # ── 거래처계좌데이터 CRUD ─────────────────────────────────────
+
+    @router.get("/account/rows")
+    def account_get_rows(user: str = Depends(get_current_user)):
+        conn = _get_janggi_db()
+        try:
+            _init_account_table(conn)
+            rows = conn.execute("SELECT * FROM 거래처계좌데이터 ORDER BY id").fetchall()
+            return {"ok": True, "rows": [dict(r) for r in rows]}
+        finally:
+            conn.close()
+
+    @router.post("/account/save-all")
+    def account_save_all(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        raw_rows = payload.get("rows")
+        if not isinstance(raw_rows, list):
+            raise HTTPException(status_code=400, detail="rows 형식 오류")
+        conn = _get_janggi_db()
+        try:
+            _init_account_table(conn)
+            conn.execute("DELETE FROM 거래처계좌데이터")
+            data = []
+            for r in raw_rows:
+                if not isinstance(r, dict):
+                    continue
+                data.append(tuple(str(r.get(c) or "").strip() for c in ACCOUNT_COLS))
+            if data:
+                conn.executemany(
+                    "INSERT INTO 거래처계좌데이터 (A, B, C, D, E, F) VALUES (?, ?, ?, ?, ?, ?)",
+                    data,
+                )
+            conn.commit()
+            rows = conn.execute("SELECT * FROM 거래처계좌데이터 ORDER BY id").fetchall()
+            return {"ok": True, "saved_count": len(data), "rows": [dict(r) for r in rows]}
+        finally:
+            conn.close()
+
+    @router.post("/account/row")
+    def account_add_row(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        conn = _get_janggi_db()
+        try:
+            _init_account_table(conn)
+            cur = conn.execute(
+                "INSERT INTO 거래처계좌데이터 (A, B, C, D, E, F) VALUES (?, ?, ?, ?, ?, ?)",
+                tuple(str(payload.get(c) or "").strip() for c in ACCOUNT_COLS),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM 거래처계좌데이터 WHERE id = ?", (cur.lastrowid,)).fetchone()
+            return {"ok": True, "row": dict(row)}
+        finally:
+            conn.close()
+
+    @router.patch("/account/row")
+    def account_update_row(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        row_id = payload.get("id")
+        col = str(payload.get("col") or "").strip().upper()
+        value = str(payload.get("value") or "").strip()
+        if row_id is None or col not in ACCOUNT_COLS:
+            raise HTTPException(status_code=400, detail="id와 유효한 col 필요")
+        conn = _get_janggi_db()
+        try:
+            _init_account_table(conn)
+            cur = conn.execute(
+                f"UPDATE 거래처계좌데이터 SET {col} = ? WHERE id = ?",
+                (value, row_id),
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="해당 id 없음")
+            row = conn.execute("SELECT * FROM 거래처계좌데이터 WHERE id = ?", (row_id,)).fetchone()
+            return {"ok": True, "row": dict(row)}
+        finally:
+            conn.close()
+
+    @router.delete("/account/row")
+    def account_delete_row(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        row_id = payload.get("id")
+        if row_id is None:
+            raise HTTPException(status_code=400, detail="id 필요")
+        conn = _get_janggi_db()
+        try:
+            _init_account_table(conn)
+            cur = conn.execute("DELETE FROM 거래처계좌데이터 WHERE id = ?", (row_id,))
+            conn.commit()
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="해당 id 없음")
+            return {"ok": True, "deleted": cur.rowcount}
+        finally:
+            conn.close()
+
+    @router.post("/account/import-default-xlsx")
+    def account_import_default_xlsx(user: str = Depends(get_current_user)):
+        default_path = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\거래처계좌데이터.xlsx")
+        if not default_path.exists():
+            raise HTTPException(status_code=404, detail=f"파일 없음: {default_path}")
+        try:
+            import pandas as _pd
+            df = _pd.read_excel(default_path, header=None, dtype=object)
+            xlsx_rows = df.fillna("").values.tolist()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"파일 읽기 오류: {exc}")
+        conn = _get_janggi_db()
+        try:
+            _init_account_table(conn)
+            conn.execute("DELETE FROM 거래처계좌데이터")
+            data = []
+            for row in xlsx_rows:
+                padded = list(row[:6]) + [""] * max(0, 6 - len(list(row[:6])))
+                vals = tuple(str(v or "").strip() for v in padded[:6])
+                if any(vals):
+                    data.append(vals)
+            if data:
+                conn.executemany(
+                    "INSERT INTO 거래처계좌데이터 (A, B, C, D, E, F) VALUES (?, ?, ?, ?, ?, ?)",
+                    data,
+                )
+            conn.commit()
+            return {"ok": True, "imported_count": len(data)}
+        finally:
+            conn.close()
+
+    # ── 이체파일 조회/삭제 ────────────────────────────────────────
+
+    @router.get("/ichae/dates")
+    def ichae_dates(user: str = Depends(get_current_user)):
+        conn = _get_janggi_db()
+        try:
+            _init_ichae_table(conn)
+            rows = conn.execute(
+                "SELECT DISTINCT 날짜 FROM 이체파일 ORDER BY 날짜 DESC LIMIT 60"
+            ).fetchall()
+            return {"ok": True, "dates": [r["날짜"] for r in rows]}
+        finally:
+            conn.close()
+
+    @router.get("/ichae/search")
+    def ichae_search(
+        date: str = "",
+        offset: int = 0,
+        limit: int = 300,
+        user: str = Depends(get_current_user),
+    ):
+        conn = _get_janggi_db()
+        try:
+            _init_ichae_table(conn)
+            date = date.strip()
+            if date:
+                rows = conn.execute(
+                    "SELECT * FROM 이체파일 WHERE 날짜 = ? ORDER BY 상태 ASC, D ASC LIMIT ? OFFSET ?",
+                    (date, limit, offset),
+                ).fetchall()
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM 이체파일 WHERE 날짜 = ?", (date,)
+                ).fetchone()[0]
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM 이체파일 ORDER BY 날짜 DESC, 상태 ASC, D ASC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ).fetchall()
+                total = conn.execute("SELECT COUNT(*) FROM 이체파일").fetchone()[0]
+            return {"ok": True, "rows": [dict(r) for r in rows], "total": total}
+        finally:
+            conn.close()
+
+    @router.patch("/ichae/row")
+    def ichae_update_row(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        row_id = payload.get("id")
+        col = str(payload.get("col") or "").strip().upper()
+        value = str(payload.get("value") or "")
+        if row_id is None or col not in ("E", "F"):
+            raise HTTPException(status_code=400, detail="id와 E 또는 F 컬럼만 수정 가능합니다.")
+        conn = _get_janggi_db()
+        try:
+            _init_ichae_table(conn)
+            cur = conn.execute(
+                f"UPDATE 이체파일 SET {col} = ? WHERE id = ?", (value, row_id)
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="해당 id 없음")
+            row = conn.execute("SELECT * FROM 이체파일 WHERE id = ?", (row_id,)).fetchone()
+            return {"ok": True, "row": dict(row)}
+        finally:
+            conn.close()
+
+    @router.delete("/ichae/by-date")
+    def ichae_delete_by_date(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        date_str = str(payload.get("날짜") or "").strip()
+        if not date_str:
+            raise HTTPException(status_code=400, detail="날짜 필요")
+        conn = _get_janggi_db()
+        try:
+            _init_ichae_table(conn)
+            cur = conn.execute("DELETE FROM 이체파일 WHERE 날짜 = ?", (date_str,))
+            conn.commit()
+            return {"ok": True, "deleted": cur.rowcount}
+        finally:
+            conn.close()
+
+    # ── 일괄이체목록 마킹 ────────────────────────────────────────
+
+    @router.post("/janggi/bulk-ichae-mark")
+    def bulk_ichae_mark(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        date_str = str(payload.get("날짜") or "").strip()
+        if not date_str:
+            raise HTTPException(status_code=400, detail="날짜 필요")
+        q = str(payload.get("q") or "").strip()
+        misong_filter = str(payload.get("misong_filter") or "").strip()
+        conn = _get_janggi_db()
+        try:
+            _init_janggi_table(conn)
+            conditions = ["날짜 = ?"]
+            params: list = [date_str]
+            if q:
+                like = f"%{q}%"
+                conditions.append("(거래처 LIKE ? OR 거래처상품명 LIKE ? OR 상품코드 LIKE ?)")
+                params.extend([like, like, like])
+            if misong_filter == "미송":
+                conditions.append("(미송체크 LIKE '%미송%' AND 미송체크 NOT LIKE '%픽업%')")
+            elif misong_filter == "미송픽업":
+                conditions.append("(미송체크 LIKE '%미송픽업%' OR (미송체크 LIKE '%미송%' AND 미송체크 LIKE '%픽업%'))")
+            where = f"WHERE {' AND '.join(conditions)}"
+            cur = conn.execute(f"UPDATE 날짜별장끼정리 SET 일괄이체 = 'Y' {where}", params)
+            conn.commit()
+            return {"ok": True, "marked": cur.rowcount}
+        finally:
+            conn.close()
+
+    @router.delete("/janggi/bulk-ichae-mark")
+    def bulk_ichae_clear(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        date_str = str(payload.get("날짜") or "").strip()
+        row_id = payload.get("id")
+        conn = _get_janggi_db()
+        try:
+            _init_janggi_table(conn)
+            if row_id is not None:
+                cur = conn.execute(
+                    "UPDATE 날짜별장끼정리 SET 일괄이체 = '' WHERE id = ?",
+                    (row_id,)
+                )
+            elif date_str:
+                cur = conn.execute(
+                    "UPDATE 날짜별장끼정리 SET 일괄이체 = '' WHERE 날짜 = ? AND 일괄이체 = 'Y'",
+                    (date_str,)
+                )
+            else:
+                raise HTTPException(status_code=400, detail="날짜 또는 id 필요")
+            conn.commit()
+            return {"ok": True, "cleared": cur.rowcount}
+        finally:
+            conn.close()
+
+    # ── 이체파일 전환 ─────────────────────────────────────────────
+
+    @router.post("/janggi/to-ichae")
+    def janggi_to_ichae(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        date_str = str(payload.get("날짜") or "").strip()
+        if not date_str:
+            raise HTTPException(status_code=400, detail="날짜 필요")
+        conn = _get_janggi_db()
+        try:
+            _init_janggi_table(conn)
+            _init_account_table(conn)
+            _init_ichae_table(conn)
+
+            include_bulk = bool(payload.get("include_bulk", False))
+            if include_bulk:
+                janggi_rows = conn.execute(
+                    "SELECT * FROM 날짜별장끼정리 WHERE 날짜 = ?", (date_str,)
+                ).fetchall()
+            else:
+                janggi_rows = conn.execute(
+                    "SELECT * FROM 날짜별장끼정리 WHERE 날짜 = ? AND (일괄이체 IS NULL OR 일괄이체 != 'Y')",
+                    (date_str,)
+                ).fetchall()
+            if not janggi_rows:
+                raise HTTPException(status_code=404, detail=f"{date_str} 날짜의 데이터가 없습니다.")
+
+            # 거래처별 가격 합산 (SUMIF)
+            supplier_totals: dict[str, float] = {}
+            for row in janggi_rows:
+                supplier = str(row["거래처"] or "").strip()
+                if not supplier:
+                    continue
+                supplier_totals[supplier] = supplier_totals.get(supplier, 0.0) + _parse_amount_janggi(row["가격"])
+
+            # 거래처계좌데이터 로드
+            account_rows = conn.execute("SELECT * FROM 거래처계좌데이터 ORDER BY id").fetchall()
+            account_map: dict[str, dict] = {}
+            for ar in account_rows:
+                key = str(ar["A"] or "").strip()
+                if key and key not in account_map:
+                    account_map[key] = dict(ar)
+
+            # 거래처 유니크 행 생성
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            result_rows = []
+            for supplier in sorted(supplier_totals.keys()):
+                total = supplier_totals[supplier]
+                ar = account_map.get(supplier)
+                if ar:
+                    result_rows.append((
+                        date_str,
+                        ar.get("B", ""),   # A: 은행코드
+                        ar.get("C", ""),   # B: 계좌번호
+                        total,             # C: 입금금액
+                        ar.get("A", ""),   # D: 거래처명
+                        "주식회사 유색",    # E: 거래처가 보는 메모 (기본값)
+                        "",                # F: 우리가 보는 메모
+                        "매칭",
+                        now_str,
+                    ))
+                else:
+                    result_rows.append((
+                        date_str, "", "", total, supplier,
+                        "주식회사 유색", "",
+                        "미등록", now_str,
+                    ))
+
+            # 해당 날짜 교체
+            conn.execute("DELETE FROM 이체파일 WHERE 날짜 = ?", (date_str,))
+            conn.executemany(
+                """INSERT INTO 이체파일 (날짜, A, B, C, D, E, F, 상태, 생성일시)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                result_rows,
+            )
+            conn.commit()
+
+            matched = sum(1 for r in result_rows if r[7] == "매칭")
+            return {
+                "ok": True,
+                "날짜": date_str,
+                "총거래처": len(supplier_totals),
+                "매칭": matched,
+                "미등록": len(result_rows) - matched,
+                "저장행수": len(result_rows),
+            }
+        finally:
+            conn.close()
 
     return router
