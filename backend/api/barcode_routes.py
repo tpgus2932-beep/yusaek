@@ -909,6 +909,7 @@ def build_barcode_router(
                 "incoming_loaded": bool(get_shared_incoming_counts()),
                 "rows": [],
                 "stock_rows": [],
+                "registered_rows": [],
                 "stats": {"totalRows": 0, "targetRows": 0, "duplicateRows": 0, "incomingRows": 0, "stockRows": 0},
             }
 
@@ -1022,6 +1023,25 @@ def build_barcode_router(
             key=lambda r: (-r["orderCount"], _normalize_text(r.get("productName")), _normalize_text(r.get("optionName"))),
         )
 
+        registered_rows = []
+        for item in _get_registered_products():
+            code = item.get("code") or ""
+            if not code:
+                continue
+            matches = [row for row in source_rows if (row.get("code") or "") == code]
+            order_qty = sum(to_int(row.get("orderQty"), default=0) for row in matches)
+            incoming_qty = int(incoming_counts.get(code, 0) or 0)
+            if order_qty <= 0 or incoming_qty <= 0:
+                continue
+            sample = matches[0]
+            registered_rows.append({
+                "code": code,
+                "productName": sample.get("productName", ""),
+                "optionName": sample.get("optionName", ""),
+                "orderQty": min(order_qty, incoming_qty),
+                "incomingQty": incoming_qty,
+            })
+
         return {
             "ok": True,
             "loaded": True,
@@ -1029,6 +1049,7 @@ def build_barcode_router(
             "rows": grouped_rows,
             "stock_rows": grouped_stock_rows,
             "today_bulk_rows": today_bulk_rows,
+            "registered_rows": registered_rows,
             "stats": {
                 "totalRows": len(source_rows),
                 "targetRows": len(target_rows),
