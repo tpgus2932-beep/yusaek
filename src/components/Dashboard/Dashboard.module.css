@@ -253,6 +253,69 @@
   margin-bottom: 1.25rem;
 }
 
+.freshnessCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.freshnessItems {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.freshnessInfo {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.freshnessCheckedAt {
+  font-size: 0.78rem;
+  color: var(--d-text-3);
+  margin-top: 0.1rem;
+}
+
+.freshnessDot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--d-border-strong);
+  box-shadow: 0 0 0 4px transparent;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.freshnessDotRed {
+  background: #ef4444;
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.15);
+}
+
+.freshnessDotBlue {
+  background: #3b82f6;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15);
+}
+
+.freshnessText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.82rem;
+  color: var(--d-text-2);
+}
+
+.freshnessTextTitle {
+  font-size: 0.9rem;
+  font-weight: 650;
+  color: var(--d-text-1);
+}
+
 .statTitle {
   color: var(--d-text-3);
   font-size: 0.72rem;

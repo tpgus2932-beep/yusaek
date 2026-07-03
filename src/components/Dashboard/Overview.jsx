@@ -36,6 +36,9 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
     const [loadingResolved, setLoadingResolved] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState('');
+    const [freshnessChecking, setFreshnessChecking] = useState(false);
+    const [freshnessResult, setFreshnessResult] = useState(null);
+    const [freshnessError, setFreshnessError] = useState('');
     const [sentFilter, setSentFilter] = useState('all');
     const [previewImage, setPreviewImage] = useState(null);
     const [previewScale, setPreviewScale] = useState(1);
@@ -334,11 +337,46 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
         }
     };
 
+    const handleFreshnessCheck = async () => {
+        setFreshnessChecking(true);
+        setFreshnessError('');
+        try {
+            const res = await fetch(`${LOCAL_API_BASE}/wonbe/freshness-check`, {
+                method: 'POST',
+                headers: authHeaders,
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.ok) throw new Error(data?.detail || '최신화 확인 실패');
+            setFreshnessResult(data);
+        } catch (err) {
+            setFreshnessError(err.message || '최신화 확인 실패');
+        } finally {
+            setFreshnessChecking(false);
+        }
+    };
+
+    const fetchFreshnessStatus = async () => {
+        try {
+            const res = await fetch(`${LOCAL_API_BASE}/wonbe/freshness-status`, {
+                headers: authHeaders,
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.ok && data.status) {
+                setFreshnessResult(data);
+            }
+        } catch {
+            // 네트워크 오류 시 조용히 무시 — "아직 확인하지 않았습니다" 상태 유지
+        }
+    };
+
     useEffect(() => {
         fetchUsers();
         fetchResolved();
         fetchTodos();
         fetchTodayTodos();
+        fetchFreshnessStatus();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -1371,11 +1409,78 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
         document.body.style.userSelect = 'none';
     };
 
+    const freshnessDotClassName = `${styles.freshnessDot} ${
+        freshnessResult?.status === 'red' ? styles.freshnessDotRed
+            : freshnessResult?.status === 'blue' ? styles.freshnessDotBlue
+                : ''
+    }`;
 
     return (
         <section className={styles.dashboard}>
             <div className={styles.headerRow}>
                 <h1 className={styles.title}>대시보드</h1>
+            </div>
+
+            <div className={styles.card}>
+                <div className={styles.cardTitle}>DB 업데이트 관리</div>
+                <div className={styles.freshnessCard}>
+                    <div className={styles.freshnessItems}>
+                        <div className={styles.freshnessInfo}>
+                            <span className={freshnessDotClassName} />
+                            <div className={styles.freshnessText}>
+                                <span className={styles.freshnessTextTitle}>원가베이스유</span>
+                                <span>
+                                    {!freshnessResult && !freshnessError && '아직 확인하지 않았습니다.'}
+                                    {freshnessResult?.status === 'red' && '재수집이 필요합니다.'}
+                                    {freshnessResult?.status === 'blue' && '최신 상태입니다.'}
+                                    {freshnessError && freshnessError}
+                                    {freshnessResult && (
+                                        <>
+                                            {' · 에이블리 최신 등록일 '}{freshnessResult.latest_created_at || '-'}
+                                            {' · 마지막 동기화 '}{freshnessResult.last_sync_at || '없음'}
+                                            {' ('}상품 {freshnessResult.checked_goods}건 / {freshnessResult.checked_pages}페이지 확인)
+                                        </>
+                                    )}
+                                </span>
+                            </div>
+                        </div>
+                        <div className={styles.freshnessInfo}>
+                            <span className={freshnessDotClassName} />
+                            <div className={styles.freshnessText}>
+                                <span className={styles.freshnessTextTitle}>입고대기</span>
+                                <span>
+                                    {freshnessResult
+                                        ? `신규 ${freshnessResult.ingodaegi_added ?? 0}건 추가됨`
+                                        : '아직 확인하지 않았습니다.'}
+                                </span>
+                            </div>
+                        </div>
+                        <div className={styles.freshnessInfo}>
+                            <span className={freshnessDotClassName} />
+                            <div className={styles.freshnessText}>
+                                <span className={styles.freshnessTextTitle}>에이블리재고변경</span>
+                                <span>
+                                    {freshnessResult
+                                        ? `신규 ${freshnessResult.ablystock_added ?? 0}건 추가됨`
+                                        : '아직 확인하지 않았습니다.'}
+                                </span>
+                            </div>
+                        </div>
+                        {freshnessResult?.checked_at && (
+                            <div className={styles.freshnessCheckedAt}>
+                                마지막 최신화 확인 {freshnessResult.checked_at}
+                            </div>
+                        )}
+                    </div>
+                    <button
+                        type="button"
+                        className={styles.primaryBtn}
+                        onClick={handleFreshnessCheck}
+                        disabled={freshnessChecking}
+                    >
+                        {freshnessChecking ? '확인 중...' : '최신화 확인'}
+                    </button>
+                </div>
             </div>
 
             <div

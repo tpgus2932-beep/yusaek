@@ -52,6 +52,7 @@ from api.attendance_routes import build_attendance_router
 from api.guidebook_routes import build_guidebook_router
 from api.amood_settlement_routes import build_amood_settlement_router
 from api.ably_settlement_routes import build_ably_settlement_router
+from api.wonbe_routes import build_wonbe_router, JANGGI_DB_PATH as _JANGGI_DB_PATH
 from services.easyadmin_product import _content_disposition, _process_easyadmin_product_upload
 from services.returns_utils import (
     ReturnState,
@@ -134,6 +135,7 @@ COST_BASE_REQUIRED_COLS = COST_BASE_MATCH_COL + 1
 SHARED_INCOMING_COUNTS: dict[str, int] = {}
 SHARED_DEFECT_COUNTS: dict[str, int] = {}
 SHARED_KIMSUNGIL_COUNTS: dict[str, int] = {}
+SHARED_AMOOD_EZADMIN_FILE: dict = {}
 _KIMSUNGIL_LOADED: bool = False
 SHARED_BARCODE_DATA: dict = {
     "loaded": False,
@@ -174,10 +176,82 @@ def _get_return_state(user: str) -> ReturnState:
     return state
 
 
+def _init_amood_ezadmin_file_table(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS amood_ezadmin_file (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            file_name TEXT NOT NULL,
+            file_blob BLOB NOT NULL,
+            saved_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+
+
+def _set_shared_amood_ezadmin_file(info: dict | None):
+    SHARED_AMOOD_EZADMIN_FILE.clear()
+    conn = _get_shared_db()
+    try:
+        _init_amood_ezadmin_file_table(conn)
+        if info and info.get("file2_path"):
+            file_name = info.get("file2_name") or ""
+            saved_at = datetime.now(timezone.utc).isoformat()
+            try:
+                file_bytes = Path(info["file2_path"]).read_bytes()
+            except Exception:
+                file_bytes = None
+            if file_bytes is not None:
+                conn.execute(
+                    "INSERT OR REPLACE INTO amood_ezadmin_file (id, file_name, file_blob, saved_at) VALUES (1, ?, ?, ?)",
+                    (file_name, file_bytes, saved_at),
+                )
+                conn.commit()
+            SHARED_AMOOD_EZADMIN_FILE.update({
+                "file2_path": info["file2_path"],
+                "file2_name": file_name,
+                "saved_at": saved_at,
+            })
+        else:
+            conn.execute("DELETE FROM amood_ezadmin_file WHERE id = 1")
+            conn.commit()
+    finally:
+        conn.close()
+    for state in AMOOD_STATES.values():
+        state.file2_path = SHARED_AMOOD_EZADMIN_FILE.get("file2_path")
+        state.file2_name = SHARED_AMOOD_EZADMIN_FILE.get("file2_name")
+        state.ezadmin_saved_at = SHARED_AMOOD_EZADMIN_FILE.get("saved_at")
+        state.wb2 = None
+        state.ws2 = None
+
+
+def _restore_amood_ezadmin_file_from_db():
+    conn = _get_shared_db()
+    try:
+        _init_amood_ezadmin_file_table(conn)
+        row = conn.execute(
+            "SELECT file_name, file_blob, saved_at FROM amood_ezadmin_file WHERE id = 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row or row["file_blob"] is None:
+        return
+    tmp_path = Path(tempfile.gettempdir()) / f"amood_excel2_ezadmin_restored_{uuid.uuid4().hex}.xlsx"
+    tmp_path.write_bytes(row["file_blob"])
+    SHARED_AMOOD_EZADMIN_FILE.update({
+        "file2_path": tmp_path,
+        "file2_name": row["file_name"],
+        "saved_at": row["saved_at"],
+    })
+
+
 def _get_amood_state(user: str) -> AmoodState:
     state = AMOOD_STATES.get(user)
     if not state:
         state = AmoodState()
+        if SHARED_AMOOD_EZADMIN_FILE:
+            state.file2_path = SHARED_AMOOD_EZADMIN_FILE.get("file2_path")
+            state.file2_name = SHARED_AMOOD_EZADMIN_FILE.get("file2_name")
+            state.ezadmin_saved_at = SHARED_AMOOD_EZADMIN_FILE.get("saved_at")
         AMOOD_STATES[user] = state
     return state
 
@@ -497,6 +571,13 @@ TOKEN_EXPIRE_MINUTES = 60 * 24
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 
+def _get_janggi_db():
+    _JANGGI_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(_JANGGI_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def _get_db():
     """일반 DB: Render 배포 환경에서만 Turso, 로컬은 항상 SQLite (빠름)."""
     if _IS_RENDER and _USE_TURSO:
@@ -515,6 +596,9 @@ def _get_shared_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+_restore_amood_ezadmin_file_from_db()
 
 
 def _init_db():
@@ -894,6 +978,21 @@ def _init_client_schedule_db():
 
 
 _init_client_schedule_db()
+
+
+def _ensure_client_schedule_column(column: str, ddl: str):
+    conn = _get_shared_db()
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(client_schedule_db)").fetchall()]
+    if column not in cols:
+        conn.execute(ddl)
+        conn.commit()
+    conn.close()
+
+
+_ensure_client_schedule_column(
+    "row_i",
+    "ALTER TABLE client_schedule_db ADD COLUMN row_i TEXT NOT NULL DEFAULT ''",
+)
 
 
 def _init_client_schedule_excluded():
@@ -1297,6 +1396,7 @@ app.include_router(
         get_shared_incoming_counts=_get_shared_incoming_counts,
         set_shared_incoming_counts=_set_shared_incoming_counts,
         get_shared_defect_counts=_get_shared_defect_counts,
+        set_shared_amood_ezadmin_file=_set_shared_amood_ezadmin_file,
     )
 )
 app.include_router(
@@ -1354,6 +1454,7 @@ app.include_router(
         get_current_user=_get_current_user,
         get_setting=_get_setting,
         set_setting=_set_setting,
+        get_janggi_db=_get_janggi_db,
     )
 )
 app.include_router(
@@ -1516,6 +1617,14 @@ app.include_router(
     build_ably_settlement_router(
         get_current_user=_get_current_user,
         get_db=_get_db,
+    )
+)
+
+
+app.include_router(
+    build_wonbe_router(
+        get_current_user=_get_current_user,
+        get_setting=_get_setting,
     )
 )
 
