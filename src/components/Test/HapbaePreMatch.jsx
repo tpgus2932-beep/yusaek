@@ -56,6 +56,11 @@ export default function HapbaePreMatch() {
     return set;
   }, [todayBulkRows]);
 
+  const registeredCodeSet = useMemo(
+    () => new Set(registeredProducts.map((item) => item.code)),
+    [registeredProducts]
+  );
+
   const highIncomingRows = useMemo(
     () => filterRows(rows.filter((row) => todayBulkKeySet.has(`${row.productName}::${row.optionName}`))),
     [filterRows, rows, todayBulkKeySet]
@@ -637,24 +642,39 @@ export default function HapbaePreMatch() {
                     ) : productResults.length === 0 ? (
                       <div style={{ padding: "0.6rem", fontSize: "0.8rem", color: "var(--text-muted)" }}>검색 결과가 없습니다.</div>
                     ) : (
-                      productResults.map((row, i) => (
-                        <div
-                          key={i}
-                          onClick={() => registerProduct(row)}
-                          style={{ padding: "0.5rem 0.6rem", cursor: "pointer", fontSize: "0.8rem", borderBottom: "1px solid var(--border, #f0f0f0)" }}
-                          onMouseEnter={(e) => e.currentTarget.style.background = "#f5f3ff"}
-                          onMouseLeave={(e) => e.currentTarget.style.background = ""}
-                        >
-                          <strong>{row["거래처합"] ?? row["상품코드"] ?? ""}</strong>
-                          <span style={{ marginLeft: "0.4rem", color: "var(--text-muted)" }}>{row["상품명합"] ?? ""}</span>
-                        </div>
-                      ))
+                      productResults.map((row, i) => {
+                        const isRegistered = registeredCodeSet.has(String(row["상품코드"] || "").trim());
+                        return (
+                          <div
+                            key={i}
+                            onClick={isRegistered ? undefined : () => registerProduct(row)}
+                            style={{
+                              display: "flex", alignItems: "center", justifyContent: "space-between",
+                              padding: "0.5rem 0.6rem", cursor: isRegistered ? "default" : "pointer",
+                              fontSize: "0.8rem", borderBottom: "1px solid var(--border, #f0f0f0)",
+                              opacity: isRegistered ? 0.55 : 1,
+                            }}
+                            onMouseEnter={(e) => { if (!isRegistered) e.currentTarget.style.background = "#f5f3ff"; }}
+                            onMouseLeave={(e) => e.currentTarget.style.background = ""}
+                          >
+                            <span>
+                              <strong>{row["거래처합"] ?? row["상품코드"] ?? ""}</strong>
+                              <span style={{ marginLeft: "0.4rem", color: "var(--text-muted)" }}>{row["상품명합"] ?? ""}</span>
+                            </span>
+                            {isRegistered && (
+                              <span style={{ fontSize: "0.7rem", fontWeight: 600, color: "#7c3aed", whiteSpace: "nowrap", marginLeft: "0.5rem" }}>
+                                등록됨
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })
                     )}
                   </div>
                 )}
               </div>
 
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", marginTop: "0.75rem" }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", marginTop: "0.75rem", maxHeight: "120px", overflowY: "auto", padding: "0.15rem" }}>
                 {registeredProducts.map((item) => (
                   <span
                     key={item.code}
