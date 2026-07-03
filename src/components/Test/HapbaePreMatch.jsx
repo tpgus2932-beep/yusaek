@@ -29,6 +29,9 @@ export default function HapbaePreMatch() {
   const [productSearch, setProductSearch] = useState("");
   const [productResults, setProductResults] = useState([]);
   const [productSearchLoading, setProductSearchLoading] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkInput, setBulkInput] = useState("");
+  const [bulkLoading, setBulkLoading] = useState(false);
 
   const isExpanded = (key) => !!expandedSections[key];
   const toggleSection = (key) =>
@@ -207,6 +210,33 @@ export default function HapbaePreMatch() {
       loadRows();
     } catch (err) {
       setMessage(err.message || "등록 해제 실패");
+    }
+  };
+
+  const submitBulkRegister = async () => {
+    const codes = bulkInput
+      .split(/\r?\n/)
+      .map((line) => line.split("\t")[0]?.trim())
+      .filter(Boolean);
+    if (!codes.length) return;
+    setBulkLoading(true);
+    try {
+      const res = await fetch(`${API}/barcode/hapbae-pre-match/registered/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ codes }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "일괄등록 실패");
+      setRegisteredProducts(data.registered || []);
+      setMessage(`일괄등록 완료: ${data.added}개 추가 (입력 ${data.total_input}건)`);
+      setBulkInput("");
+      setBulkOpen(false);
+      loadRows();
+    } catch (err) {
+      setMessage(err.message || "일괄등록 실패");
+    } finally {
+      setBulkLoading(false);
     }
   };
 
@@ -670,6 +700,37 @@ export default function HapbaePreMatch() {
                         );
                       })
                     )}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ marginTop: "0.6rem" }}>
+                <button
+                  type="button"
+                  onClick={() => setBulkOpen((v) => !v)}
+                  style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "0.78rem", color: "#7c3aed", fontWeight: 600 }}
+                >
+                  일괄등록(엑셀 붙여넣기) {bulkOpen ? "▲" : "▼"}
+                </button>
+                {bulkOpen && (
+                  <div style={{ marginTop: "0.4rem", maxWidth: "420px" }}>
+                    <textarea
+                      value={bulkInput}
+                      onChange={(e) => setBulkInput(e.target.value)}
+                      placeholder="상품코드를 한 줄에 하나씩 붙여넣으세요 (엑셀에서 여러 열을 복사해도 첫 열만 사용됩니다)"
+                      rows={4}
+                      style={{ width: "100%", fontSize: "0.8rem", padding: "0.4rem", border: "1px solid var(--border, #d1d5db)", borderRadius: "6px", resize: "vertical", fontFamily: "inherit" }}
+                    />
+                    <div style={{ marginTop: "0.35rem" }}>
+                      <button
+                        type="button"
+                        className={styles.refreshBtn}
+                        onClick={submitBulkRegister}
+                        disabled={bulkLoading || !bulkInput.trim()}
+                      >
+                        {bulkLoading ? "등록 중..." : "일괄등록"}
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
