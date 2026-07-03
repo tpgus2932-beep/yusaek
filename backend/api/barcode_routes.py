@@ -52,6 +52,7 @@ def build_barcode_router(
     _DEFECT_BASE_HEADERS = ["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]
     hapbae_target_shop = "에이블리(유색)"
     hapbae_checked_rows_key = "test_hapbae_checked_rows"
+    hapbae_registered_products_key = "test_hapbae_registered_products"
 
     def _normalize_text(value) -> str:
         return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -98,6 +99,40 @@ def build_barcode_router(
 
     def _clear_hapbae_checked_rows():
         return _set_hapbae_checked_rows({})
+
+    def _get_registered_products() -> list[dict]:
+        raw = get_setting(hapbae_registered_products_key) or "[]"
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = []
+        if not isinstance(parsed, list):
+            return []
+        clean = []
+        seen_codes = set()
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("code") or "").strip()
+            label = str(item.get("label") or "").strip()
+            if not code or code in seen_codes:
+                continue
+            seen_codes.add(code)
+            clean.append({"code": code, "label": label})
+        return clean
+
+    def _set_registered_products(items: list[dict]) -> list[dict]:
+        clean = []
+        seen_codes = set()
+        for item in items:
+            code = str(item.get("code") or "").strip()
+            label = str(item.get("label") or "").strip()
+            if not code or code in seen_codes:
+                continue
+            seen_codes.add(code)
+            clean.append({"code": code, "label": label})
+        set_setting(hapbae_registered_products_key, json.dumps(clean, ensure_ascii=False))
+        return clean
 
     def _extract_hapbae_pre_match_rows(path: Path) -> list[dict]:
         wb, ws = load_excel_any(path)
@@ -1021,6 +1056,29 @@ def build_barcode_router(
         else:
             checked_rows.pop(key, None)
         return {"ok": True, "checked_rows": _set_hapbae_checked_rows(checked_rows)}
+
+    @router.get("/barcode/hapbae-pre-match/registered")
+    def get_hapbae_registered_products(user: str = Depends(get_current_user)):
+        return {"ok": True, "registered": _get_registered_products()}
+
+    @router.post("/barcode/hapbae-pre-match/registered")
+    def add_hapbae_registered_product(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        raw_code = str(payload.get("code") or "").strip()
+        if not raw_code:
+            raise HTTPException(status_code=400, detail="code required")
+        code = normalize_to_yusas(raw_code) or raw_code
+        label = str(payload.get("label") or "").strip()
+        current = [item for item in _get_registered_products() if item["code"] != code]
+        current.append({"code": code, "label": label})
+        return {"ok": True, "registered": _set_registered_products(current)}
+
+    @router.delete("/barcode/hapbae-pre-match/registered")
+    def remove_hapbae_registered_product(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        code = str(payload.get("code") or "").strip()
+        if not code:
+            raise HTTPException(status_code=400, detail="code required")
+        current = [item for item in _get_registered_products() if item["code"] != code]
+        return {"ok": True, "registered": _set_registered_products(current)}
 
     @router.post("/barcode/scan/invoice")
     def scan_invoice(payload: dict = Body(...), user: str = Depends(get_current_user)):
