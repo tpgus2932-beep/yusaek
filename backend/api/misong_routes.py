@@ -1,22 +1,20 @@
 from urllib.parse import quote
 import io
+import re
 import warnings
-from pathlib import Path
 
 import httpx
-import openpyxl
 import xlwt
 from fastapi import APIRouter, Depends, HTTPException, Body
 from fastapi.responses import Response
 from datetime import datetime, timezone
-from api.amood_hapbae import SHARED_COST_BASE_PATH
+from api.wonbe_routes import _get_wonbe_db, _init_ingodaegi_table
 
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
-WAITING_BASE_PATH = SHARED_COST_BASE_PATH
 _EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
-_INGODAEGI_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\입고대기.xlsx")
+_STOCK_IN_STANDBY_RE = re.compile(r"org_value='([^']*)'")
 
 
 def build_misong_router(*, get_current_user, get_db, get_setting):
@@ -145,6 +143,22 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
             value = int(value)
         return " ".join(str(value or "").split()).strip()
 
+    def _misong_qty_by_code() -> dict:
+        conn = get_db()
+        try:
+            _init(conn)
+            rows = conn.execute(
+                "SELECT original_f, SUM(F) AS qty FROM misong_items "
+                "WHERE TRIM(original_f) != '' GROUP BY original_f"
+            ).fetchall()
+            return {
+                _normalize_code(r["original_f"]): int(r["qty"] or 0)
+                for r in rows
+                if _normalize_code(r["original_f"])
+            }
+        finally:
+            conn.close()
+
     def _normalize_match_text(value) -> str:
         return " ".join(str(value or "").split()).strip().casefold()
 
@@ -160,25 +174,23 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
         code = _normalize_code(product_code)
         if not code:
             return None
-        if not WAITING_BASE_PATH.exists():
-            raise HTTPException(404, "원가베이스유 파일을 찾을 수 없습니다.")
-
-        wb = openpyxl.load_workbook(WAITING_BASE_PATH, data_only=True, read_only=True)
+        conn = _get_wonbe_db()
         try:
-            ws = wb.worksheets[0]
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                row_code = _normalize_code(row[0] if len(row) > 0 else "")
-                if row_code == code:
-                    return {
-                        "A": str(row[5] if len(row) > 5 and row[5] is not None else "").strip(),
-                        "B": str(row[6] if len(row) > 6 and row[6] is not None else "").strip(),
-                        "D": str(row[2] if len(row) > 2 and row[2] is not None else "").strip(),
-                        "E": str(row[3] if len(row) > 3 and row[3] is not None else "").strip(),
-                        "originalF": row_code,
-                    }
+            row = conn.execute(
+                "SELECT 거래처, 거래처상품명, 색상, 사이즈 FROM wonbe WHERE 상품코드 = ?",
+                (code,),
+            ).fetchone()
+            if row:
+                return {
+                    "A": str(row["거래처"] or "").strip(),
+                    "B": str(row["거래처상품명"] or "").strip(),
+                    "D": str(row["색상"] or "").strip(),
+                    "E": str(row["사이즈"] or "").strip(),
+                    "originalF": code,
+                }
+            return None
         finally:
-            wb.close()
-        return None
+            conn.close()
 
     def _match_waiting_base_product_code(product_name: str, color: str, size: str) -> str | None:
         name_key = _normalize_match_text(product_name)
@@ -186,30 +198,16 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
         size_key = _normalize_match_text(size)
         if not name_key:
             return None
-        if not WAITING_BASE_PATH.exists():
-            raise HTTPException(404, "원가베이스유 파일을 찾을 수 없습니다.")
-
-        wb = openpyxl.load_workbook(WAITING_BASE_PATH, data_only=True, read_only=True)
+        conn = _get_wonbe_db()
         try:
-            ws = wb.worksheets[0]
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                base_name = _normalize_match_text(row[6] if len(row) > 6 else "")
-                base_color = _normalize_match_text(row[2] if len(row) > 2 else "")
-                base_size = _normalize_match_text(row[3] if len(row) > 3 else "")
-                if base_name == name_key and base_color == color_key and base_size == size_key:
-                    code = _normalize_code(row[0] if len(row) > 0 else "")
-                    if code:
-                        return code
+            row = conn.execute(
+                """SELECT 상품코드 FROM wonbe
+                   WHERE lower(거래처상품명) = ? AND lower(색상) = ? AND lower(사이즈) = ?""",
+                (name_key, color_key, size_key),
+            ).fetchone()
+            return _normalize_code(row["상품코드"]) if row else None
         finally:
-            wb.close()
-        return None
-
-    def _get_waiting_base_sheet1(wb):
-        if "Sheet2" in wb.sheetnames:
-            return wb["Sheet2"]
-        if len(wb.worksheets) >= 2:
-            return wb.worksheets[1]
-        raise HTTPException(400, "원가베이스유 Sheet2를 찾을 수 없습니다.")
+            conn.close()
 
     def _item_row_to_dict(row):
         keys = row.keys()
@@ -329,7 +327,7 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
             if product_code:
                 matched = _lookup_waiting_base_product(product_code)
                 if matched is None and not all(payload.get(k) for k in ("A", "B", "D", "E")):
-                    raise HTTPException(404, f"원가베이스유 Sheet1에서 상품코드 {product_code}를 찾을 수 없습니다.")
+                    raise HTTPException(404, f"DB에서 상품코드 {product_code}를 찾을 수 없습니다.")
                 if matched:
                     for key in ("A", "B", "D", "E", "originalF"):
                         if not str(payload.get(key, "") or "").strip():
@@ -482,36 +480,38 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
         q = q.strip()
         if not q:
             return {"results": []}
-        if not WAITING_BASE_PATH.exists():
-            raise HTTPException(404, "원가베이스유 파일을 찾을 수 없습니다.")
-        query = q.lower()
-        wb = openpyxl.load_workbook(WAITING_BASE_PATH, data_only=True, read_only=True)
+        conn = _get_wonbe_db()
         try:
-            ws = wb.worksheets[0]
-            results = []
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                g_val = str(row[6] if len(row) > 6 and row[6] is not None else "").strip()
-                if query in g_val.lower():
-                    results.append({
-                        "A": str(row[5] if len(row) > 5 and row[5] is not None else "").strip(),
-                        "B": g_val,
-                        "D": str(row[2] if len(row) > 2 and row[2] is not None else "").strip(),
-                        "E": str(row[3] if len(row) > 3 and row[3] is not None else "").strip(),
-                        "originalF": str(row[0] if row[0] is not None else "").strip(),
-                    })
-                    if len(results) >= 30:
-                        break
+            rows = conn.execute(
+                """SELECT 거래처, 거래처상품명, 색상, 사이즈, 상품코드
+                   FROM wonbe WHERE lower(거래처상품명) LIKE ? LIMIT 30""",
+                (f"%{q.lower()}%",),
+            ).fetchall()
+            return {
+                "results": [
+                    {
+                        "A": str(r["거래처"] or "").strip(),
+                        "B": str(r["거래처상품명"] or "").strip(),
+                        "D": str(r["색상"] or "").strip(),
+                        "E": str(r["사이즈"] or "").strip(),
+                        "originalF": str(r["상품코드"] or "").strip(),
+                    }
+                    for r in rows
+                ]
+            }
         finally:
-            wb.close()
-        return {"results": results}
+            conn.close()
 
     @router.get("/waiting-base/download")
     def download_waiting_base(user: str = Depends(get_current_user)):
-        if not WAITING_BASE_PATH.exists():
-            raise HTTPException(
-                status_code=404,
-                detail=f"원가베이스유 파일을 찾을 수 없습니다: {WAITING_BASE_PATH}",
-            )
+        wonbe_conn = _get_wonbe_db()
+        try:
+            _init_ingodaegi_table(wonbe_conn)
+            base_rows = wonbe_conn.execute("SELECT 상품코드, 입고수량 FROM 입고대기 ORDER BY 상품코드").fetchall()
+        finally:
+            wonbe_conn.close()
+        if not base_rows:
+            raise HTTPException(status_code=404, detail="입고대기 테이블에 데이터가 없습니다.")
 
         conn = get_db()
         try:
@@ -532,35 +532,21 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
         finally:
             conn.close()
 
-        try:
-            wb = openpyxl.load_workbook(WAITING_BASE_PATH)
-            ws = _get_waiting_base_sheet1(wb)
-        except Exception as exc:
-            if isinstance(exc, HTTPException):
-                raise
-            raise HTTPException(
-                status_code=500,
-                detail=f"원가베이스유 Sheet2를 읽지 못했습니다: {exc}",
-            ) from exc
+        matched_codes = {r["상품코드"] for r in base_rows}
 
-        # Sheet2에 존재하는 코드 수집
-        matched_codes = set()
         buf = io.BytesIO()
         out_wb = xlwt.Workbook()
-        out_ws = out_wb.add_sheet(ws.title[:31] or "Sheet1")
-        for row_idx in range(1, ws.max_row + 1):
-            code = _normalize_code(ws.cell(row=row_idx, column=1).value)
-            if code and row_idx > 1:
-                matched_codes.add(code)
-            for col_idx in range(1, ws.max_column + 1):
-                value = ws.cell(row=row_idx, column=col_idx).value
-                if col_idx == 2:
-                    value = "작업수량" if row_idx == 1 and code not in qty_by_code else qty_by_code.get(code, "ZERO")
-                out_ws.write(row_idx - 1, col_idx - 1, "" if value is None else value)
+        out_ws = out_wb.add_sheet("Sheet1")
+        out_ws.write(0, 0, "상품코드")
+        out_ws.write(0, 1, "작업수량")
+        for ri, r in enumerate(base_rows, start=1):
+            code = r["상품코드"]
+            out_ws.write(ri, 0, code)
+            out_ws.write(ri, 1, qty_by_code.get(code, "ZERO"))
         out_wb.save(buf)
         buf.seek(0)
 
-        # 미매칭: misong에는 있지만 Sheet2에 코드가 없는 항목
+        # 미매칭: misong에는 있지만 입고대기 테이블에 코드가 없는 항목
         unmatched = [code for code in qty_by_code if code not in matched_codes]
         unmatched_count = len(unmatched)
         # 헤더에 미매칭 코드 목록 전달 (쉼표 구분, 최대 500자)
@@ -580,42 +566,24 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
 
     @router.post("/waiting-base/append")
     def append_waiting_base(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        if not WAITING_BASE_PATH.exists():
-            raise HTTPException(
-                status_code=404,
-                detail=f"원가베이스유 파일을 찾을 수 없습니다: {WAITING_BASE_PATH}",
-            )
-
         values = _parse_tsv_first_column(payload.get("text", ""))
         if not values:
             raise HTTPException(status_code=400, detail="추가할 A열 데이터가 없습니다.")
 
+        conn = _get_wonbe_db()
         try:
-            wb = openpyxl.load_workbook(WAITING_BASE_PATH)
-            ws = _get_waiting_base_sheet1(wb)
-        except Exception as exc:
-            if isinstance(exc, HTTPException):
-                raise
-            raise HTTPException(
-                status_code=500,
-                detail=f"원가베이스유 Sheet2를 읽지 못했습니다: {exc}",
-            ) from exc
+            _init_ingodaegi_table(conn)
+            before = conn.execute("SELECT COUNT(*) FROM 입고대기").fetchone()[0]
+            conn.executemany(
+                "INSERT OR IGNORE INTO 입고대기 (상품코드, 입고수량) VALUES (?, 'ZERO')",
+                [(v,) for v in values],
+            )
+            conn.commit()
+            after = conn.execute("SELECT COUNT(*) FROM 입고대기").fetchone()[0]
+        finally:
+            conn.close()
 
-        start_row = ws.max_row + 1
-        for offset, value in enumerate(values):
-            row_idx = start_row + offset
-            ws.cell(row=row_idx, column=1).value = value
-            ws.cell(row=row_idx, column=2).value = "ZERO"
-
-        try:
-            wb.save(WAITING_BASE_PATH)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=f"원가베이스유 Sheet2 저장 실패: {exc}",
-            ) from exc
-
-        return {"ok": True, "appended": len(values), "start_row": start_row}
+        return {"ok": True, "appended": after - before, "requested": len(values)}
 
     # ── 엑셀 변환 결과 일괄 처리 (미송/미송픽업) ─────────────────────────────
     @router.post("/items/process-rows")
@@ -1209,50 +1177,33 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
         if not phpsessid:
             return {"ok": False, "need_session": True}
 
-        conn = get_db()
-        try:
-            _init(conn)
-            rows = conn.execute(
-                "SELECT original_f, SUM(F) AS qty FROM misong_items "
-                "WHERE TRIM(original_f) != '' GROUP BY original_f"
-            ).fetchall()
-            qty_by_code = {
-                _normalize_code(r["original_f"]): int(r["qty"] or 0)
-                for r in rows
-                if _normalize_code(r["original_f"])
-            }
-        finally:
-            conn.close()
+        qty_by_code = _misong_qty_by_code()
 
         if not qty_by_code:
             return {"ok": False, "error": "미송목록이 비어 있습니다."}
 
-        if not _INGODAEGI_PATH.exists():
-            return {"ok": False, "error": f"입고대기.xlsx 파일을 찾을 수 없습니다: {_INGODAEGI_PATH}"}
-
-        wb_in = openpyxl.load_workbook(_INGODAEGI_PATH)
-        ws_in = wb_in.active
+        wonbe_conn = _get_wonbe_db()
+        try:
+            _init_ingodaegi_table(wonbe_conn)
+            base_rows = wonbe_conn.execute("SELECT 상품코드, 입고수량 FROM 입고대기 ORDER BY 상품코드").fetchall()
+        finally:
+            wonbe_conn.close()
+        if not base_rows:
+            return {"ok": False, "error": "입고대기 테이블에 데이터가 없습니다."}
 
         out_wb = xlwt.Workbook()
         out_ws = out_wb.add_sheet("Sheet1")
-        for col_idx in range(1, ws_in.max_column + 1):
-            out_ws.write(0, col_idx - 1, ws_in.cell(row=1, column=col_idx).value or "")
+        out_ws.write(0, 0, "상품코드")
+        out_ws.write(0, 1, "입고수량")
 
         matched_count = 0
-        out_row = 1
-        for row_idx in range(2, ws_in.max_row + 1):
-            code = _normalize_code(ws_in.cell(row=row_idx, column=1).value)
-            for col_idx in range(1, ws_in.max_column + 1):
-                cell_val = ws_in.cell(row=row_idx, column=col_idx).value
-                if col_idx == 2 and code and code in qty_by_code:
-                    cell_val = qty_by_code[code]
-                out_ws.write(out_row, col_idx - 1, "" if cell_val is None else cell_val)
-            out_row += 1
-            if code and code in qty_by_code:
+        for ri, r in enumerate(base_rows, start=1):
+            code = r["상품코드"]
+            cell_val = qty_by_code.get(code, r["입고수량"])
+            out_ws.write(ri, 0, code)
+            out_ws.write(ri, 1, cell_val)
+            if code in qty_by_code:
                 matched_count += 1
-
-        if out_row == 1:
-            return {"ok": False, "error": "입고대기.xlsx에 데이터가 없습니다."}
 
         buf = io.BytesIO()
         out_wb.save(buf)
@@ -1268,7 +1219,7 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
         ts_ms = str(int(datetime.now().timestamp() * 1000))
 
         try:
-            async with httpx.AsyncClient(timeout=300.0, verify=False, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=600.0, verify=False, follow_redirects=True) as client:
                 upload_r = await client.post(
                     base_url,
                     data={"template": "I200", "action": "upload_new"},
@@ -1308,5 +1259,107 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
         return {"ok": True, "count": matched_count, "apply_response": apply_data}
+
+    # ── 입고대기 체크 (EZAdmin I100 재고 목록 대조) ─────────────────────────────
+    @router.post("/waiting-base/check-ezadmin")
+    async def waiting_base_check_ezadmin(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        misong_qty_by_code = _misong_qty_by_code()
+        if not misong_qty_by_code:
+            return {"ok": False, "error": "미송목록이 비어 있습니다."}
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        par = (
+            "auto_search=&search_all_product=&multi_supply_group=&multi_supply=&str_supply_code=0"
+            "&tags_string=&product_tag_include_type=1&query_type=name&query_str=&stock_type=2"
+            "&stock_start=1&stock_end=&notrans_day=&notrans_cnt=&notrans_status=0&stock_status=0"
+            f"&start_date={today}&start_hour=00%3A00%3A00&end_date={today}&end_hour=23%3A59%3A59"
+            "&date_period_sel=0&work_type=stockin&work_start=&work_end=&inout_type=0&product_date="
+            f"&start_date2={today}&end_date2={today}&date_period_sel2=0&products_sort=1&category=0"
+            "&except_soldout=0&temp_soldout=0&location=0"
+        )
+
+        cookies = {"PHPSESSID": phpsessid}
+        ez_headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://ga80.ezadmin.co.kr/template40.htm?template=I100",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        base_url = f"{_EZADMIN_BASE}/function.htm"
+
+        ezadmin_qty_by_code: dict[str, int] = {}
+        try:
+            async with httpx.AsyncClient(timeout=600.0, verify=False, follow_redirects=True) as client:
+                page = 1
+                while True:
+                    ts_ms = str(int(datetime.now().timestamp() * 1000))
+                    resp = await client.post(
+                        base_url,
+                        data={
+                            "_search": "false", "nd": ts_ms, "rows": "5000", "page": str(page),
+                            "sidx": "", "sord": "asc", "template": "I100", "action": "search",
+                            "page_code": "I100", "par": par,
+                        },
+                        cookies=cookies, headers=ez_headers,
+                    )
+                    if resp.status_code >= 400:
+                        return {"ok": False, "error": f"EZAdmin 조회 실패 (HTTP {resp.status_code})"}
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        return {"ok": False, "need_session": True}
+
+                    for row in data.get("rows") or []:
+                        cell = row.get("cell") or {}
+                        code = _normalize_code(cell.get("key"))
+                        if not code:
+                            continue
+                        match = _STOCK_IN_STANDBY_RE.search(str(cell.get("stock_in_standby") or ""))
+                        qty = int(match.group(1)) if match and match.group(1).strip().isdigit() else 0
+                        if qty > 0:
+                            ezadmin_qty_by_code[code] = qty
+
+                    total_pages = int(data.get("total") or 1)
+                    if page >= total_pages or page >= 20:
+                        break
+                    page += 1
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        all_codes = sorted(set(misong_qty_by_code) | set(ezadmin_qty_by_code))
+        mismatches = []
+        for code in all_codes:
+            misong_qty = misong_qty_by_code.get(code)
+            ez_qty = ezadmin_qty_by_code.get(code)
+            if misong_qty is not None and ez_qty is not None:
+                if misong_qty != ez_qty:
+                    mismatches.append({
+                        "code": code, "misongQty": misong_qty, "ezadminQty": ez_qty,
+                        "reason": "qty_mismatch",
+                    })
+            elif misong_qty is not None:
+                mismatches.append({
+                    "code": code, "misongQty": misong_qty, "ezadminQty": None,
+                    "reason": "code_not_found_in_ezadmin",
+                })
+            else:
+                mismatches.append({
+                    "code": code, "misongQty": None, "ezadminQty": ez_qty,
+                    "reason": "not_in_misong",
+                })
+
+        return {
+            "ok": True,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "misong_code_count": len(misong_qty_by_code),
+            "ezadmin_code_count": len(ezadmin_qty_by_code),
+            "mismatches": mismatches,
+        }
 
     return router
