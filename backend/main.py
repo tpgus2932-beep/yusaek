@@ -32,6 +32,14 @@ import xlwt
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 from api.amood_hapbae import router as amood_hapbae_router, SHARED_COST_BASE_PATH
+from api.wonbe_routes import (
+    build_wonbe_router,
+    JANGGI_DB_PATH as _JANGGI_DB_PATH,
+    WONBE_DB_PATH,
+    load_wonbe_cost_base_df,
+    save_wonbe_cost_base_df,
+    load_wonbe_cost_base_map,
+)
 from api.jeju_hapbae import router as jeju_hapbae_router
 from api.auth_admin_routes import build_auth_admin_router
 from api.collab_routes import build_collab_router
@@ -52,7 +60,6 @@ from api.attendance_routes import build_attendance_router
 from api.guidebook_routes import build_guidebook_router
 from api.amood_settlement_routes import build_amood_settlement_router
 from api.ably_settlement_routes import build_ably_settlement_router
-from api.wonbe_routes import build_wonbe_router, JANGGI_DB_PATH as _JANGGI_DB_PATH
 from services.easyadmin_product import _content_disposition, _process_easyadmin_product_upload
 from services.returns_utils import (
     ReturnState,
@@ -128,7 +135,6 @@ AMOOD_ALLOWED_EXCEL1 = {".xlsx", ".xlsm"}
 AMOOD_ALLOWED_EXCEL2 = {".xlsx", ".xls", ".xlsm", ".htm", ".html"}
 RETURN_STATES: dict[str, "ReturnState"] = {}
 AMOOD_STATES: dict[str, "AmoodState"] = {}
-RETURN_COST_BASE_CACHE: dict[str, object] = {"df": None, "mtime": None, "path": None}
 COST_BASE_CODE_COL = 0
 COST_BASE_MATCH_COL = 8
 COST_BASE_REQUIRED_COLS = COST_BASE_MATCH_COL + 1
@@ -171,7 +177,7 @@ def _set_shared_barcode_data(data: dict):
 def _get_return_state(user: str) -> ReturnState:
     state = RETURN_STATES.get(user)
     if not state:
-        state = ReturnState(SHARED_COST_BASE_PATH)
+        state = ReturnState(WONBE_DB_PATH)
         RETURN_STATES[user] = state
     return state
 
@@ -303,54 +309,15 @@ def _set_shared_kimsungil_counts(counts: dict[str, int] | None):
 
 
 def _load_return_cost_base(state: ReturnState):
-    path = state.cost_base_path
-    if not path.exists():
-        raise FileNotFoundError(f"원가베이스 파일을 찾지 못했습니다: {path}")
-    cost_df = pd.read_excel(path, dtype=str)
-    if cost_df.shape[1] < COST_BASE_REQUIRED_COLS:
-        raise ValueError("원가베이스는 최소 A~I열이 필요합니다.")
-    amap: dict[str, str] = {}
-    for _, r in cost_df.iterrows():
-        key_raw = r.iloc[COST_BASE_MATCH_COL] if len(r) > COST_BASE_MATCH_COL else ""
-        val_raw = r.iloc[COST_BASE_CODE_COL] if len(r) > COST_BASE_CODE_COL else ""
-        key = _normalize_key("" if pd.isna(key_raw) else str(key_raw))
-        val = "" if pd.isna(val_raw) else str(val_raw).strip()
-        if key and key not in amap:
-            amap[key] = val
-    state.cost_map = amap
+    state.cost_map = load_wonbe_cost_base_map()
 
 
 def _load_cost_base_df():
-    path = SHARED_COST_BASE_PATH
-    if not path.exists():
-        raise FileNotFoundError(f"원가베이스 파일을 찾지 못했습니다: {path}")
-    mtime = path.stat().st_mtime
-    cached_path = RETURN_COST_BASE_CACHE.get("path")
-    cached_mtime = RETURN_COST_BASE_CACHE.get("mtime")
-    if RETURN_COST_BASE_CACHE.get("df") is not None and cached_path == str(path) and cached_mtime == mtime:
-        return RETURN_COST_BASE_CACHE["df"]
-    df = _read_return_excel_with_header(path, header=0)
-    if df.shape[0] == 0:
-        df_raw = _read_return_excel_with_header(path, header=None)
-        if df_raw.shape[0] >= 2:
-            new_cols = df_raw.iloc[0].fillna("").astype(str).tolist()
-            df_raw = df_raw.iloc[1:].reset_index(drop=True)
-            df_raw.columns = new_cols
-            df = df_raw
-    RETURN_COST_BASE_CACHE["df"] = df
-    RETURN_COST_BASE_CACHE["mtime"] = mtime
-    RETURN_COST_BASE_CACHE["path"] = str(path)
-    return df
+    return load_wonbe_cost_base_df()
 
 
 def _save_cost_base_df(df: pd.DataFrame):
-    path = SHARED_COST_BASE_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False)
-    RETURN_COST_BASE_CACHE["df"] = df
-    RETURN_COST_BASE_CACHE["mtime"] = path.stat().st_mtime
-    RETURN_COST_BASE_CACHE["path"] = str(path)
+    save_wonbe_cost_base_df(df)
 
 
 DB_PATH = Path(os.environ.get("APP_DB_PATH") or BASE_DIR / "app.db")
@@ -1425,7 +1392,6 @@ app.include_router(
         normalize_key=_normalize_key,
         content_disposition=_content_disposition,
         return_allowed_exts=RETURN_ALLOWED_EXTS,
-        return_cost_base_path=SHARED_COST_BASE_PATH,
     )
 )
 app.include_router(
