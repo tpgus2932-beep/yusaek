@@ -9,6 +9,7 @@ function TodayStockCheckCard() {
   const [message, setMessage] = useState("");
   const [result, setResult] = useState(null);
   const [showRaw, setShowRaw] = useState(false);
+  const [rawUnexpected, setRawUnexpected] = useState(null);
   const { openModal } = useEzadminSession();
 
   const run = async () => {
@@ -40,8 +41,15 @@ function TodayStockCheckCard() {
         setMessage("이지어드민 세션이 없습니다. 설정 후 다시 시도해주세요.");
         return;
       }
+      if (stockData.unexpected_response) {
+        setResult(null);
+        setMessage("예상과 다른 응답을 받았습니다 (세션 문제 아님) — 아래 원본을 확인해주세요.");
+        setRawUnexpected(stockData.raw);
+        return;
+      }
       if (!stockRes.ok || !stockData.ok) throw new Error(stockData?.detail || "재고체크 조회 실패");
 
+      setRawUnexpected(null);
       setResult(stockData);
       setMessage(
         `조회 완료: 재고 전체 ${stockData.total_rows}건 중 입고파일과 일치 ${stockData.matched.length}건 (입고코드 ${stockData.incoming_codes}개)`
@@ -68,6 +76,10 @@ function TodayStockCheckCard() {
       </p>
 
       {message && <div className={styles.message}>{message}</div>}
+
+      {rawUnexpected && (
+        <pre className={styles.rawBlock}>{JSON.stringify(rawUnexpected, null, 2)}</pre>
+      )}
 
       {result && (
         <>

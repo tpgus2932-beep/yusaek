@@ -53,15 +53,18 @@ def build_inventory_dashboard_router(
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"이지어드민 연결 실패: {exc}")
 
+        raw_text = r.text
         try:
             obj = r.json()
         except Exception:
-            return {"ok": False, "need_session": True}
+            # 세션이 만료되면 JSON이 아니라 로그인 HTML 페이지가 내려온다 — 이 경우만 진짜 need_session.
+            return {"ok": False, "need_session": True, "raw_preview": raw_text[:1000]}
 
         if not isinstance(obj, dict) or "rows" not in obj:
-            # 세션 만료(HTML 로그인 페이지) 또는 예상과 다른 응답 형태
-            # 실 사용 중 필드명 확인용으로 원본 응답 일부를 함께 반환한다.
-            return {"ok": False, "need_session": True, "raw_preview": str(obj)[:1000]}
+            # JSON은 정상 수신했지만 rows가 없는 경우 — 세션 문제가 아니라
+            # add_option 액션이 검색조건만 등록하고 그리드 데이터는 별도 응답에 담겨 있을 가능성이 높다.
+            # 세션 재입력을 유도하지 않고, 실제 받은 응답을 그대로 보여준다.
+            return {"ok": False, "unexpected_response": True, "raw": obj}
 
         incoming_counts = get_shared_incoming_counts() or {}
 
