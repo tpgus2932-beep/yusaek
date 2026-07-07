@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 import httpx
@@ -7,6 +8,15 @@ from fastapi import APIRouter, Depends, HTTPException
 
 _EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html(value) -> str:
+    """EZAdmin 그리드 셀은 종종 값이 <a onclick=...><span>123</span></a> 형태의
+    HTML로 내려온다 (예: 재고수량 클릭 시 상세 팝업을 여는 링크). 태그를 걷어내고
+    표시용 텍스트만 남긴다."""
+    return _HTML_TAG_RE.sub("", str(value or "")).strip()
 
 
 def build_inventory_dashboard_router(
@@ -86,8 +96,10 @@ def build_inventory_dashboard_router(
                 continue
             matched.append({
                 "code": code,
-                "productName": cell.get("product_name") or "",
-                "stockQty": cell.get("stock") or cell.get("stock_qty") or cell.get("cur_stock") or "",
+                "productName": _strip_html(cell.get("product_name")),
+                "stockQty": _strip_html(
+                    cell.get("stock") or cell.get("stock_qty") or cell.get("stock_n") or cell.get("cur_stock")
+                ),
                 "incomingQty": incoming_counts.get(code, 0),
                 "raw": cell,
             })
