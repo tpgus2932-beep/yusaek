@@ -44,6 +44,7 @@ from api.jeju_hapbae import router as jeju_hapbae_router
 from api.auth_admin_routes import build_auth_admin_router
 from api.collab_routes import build_collab_router
 from api.barcode_routes import build_barcode_router
+from api.inventory_dashboard_routes import build_inventory_dashboard_router
 from api.amood_routes import build_amood_router
 from api.returns_routes import build_returns_router
 from api.order_routes import build_order_router
@@ -1264,6 +1265,14 @@ app.include_router(
         set_shared_barcode_data=_set_shared_barcode_data,
         get_setting=_get_setting,
         set_setting=_set_setting,
+    )
+)
+app.include_router(
+    build_inventory_dashboard_router(
+        get_current_user=_get_current_user,
+        get_setting=_get_setting,
+        normalize_to_yusas=normalize_to_yusas,
+        get_shared_incoming_counts=_get_shared_incoming_counts,
     )
 )
 

@@ -24,6 +24,8 @@ import AttendanceAdminPage from './components/Attendance/AttendanceAdminPage';
 import TestTabs from './components/Test/TestTabs';
 import GuidebookPage from './components/Guidebook/GuidebookPage';
 import AmoodSettlement from './components/AmoodSettlement/AmoodSettlement';
+import DBManagerLayout from './components/DBManager/DBManagerLayout';
+import InventoryDashboardPage from './components/InventoryDashboard/InventoryDashboardPage';
 import { COLLAB_API_BASE } from './lib/api';
 
 
@@ -41,6 +43,7 @@ const App = () => {
   const isAttendanceAdminRoute = pathname === '/attendance-admin';
   const isGuidebookRoute = pathname === '/guidebook';
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'dashboard');
+  const [topMode, setTopMode] = useState('home'); // 'home' | 'db-manager' | 'inventory-dashboard'
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [token, setToken] = useState(localStorage.getItem('token'));
   const [authChecked, setAuthChecked] = useState(() => !localStorage.getItem('token'));
@@ -247,49 +250,61 @@ const App = () => {
   return (
     <EzadminSessionProvider>
     <div className={styles.appContainer}>
-      <Sidebar
-        activeTab={visibleActiveTab}
-        setActiveTab={setActiveTab}
-        isDarkMode={isDarkMode}
-        toggleTheme={toggleTheme}
-        isAdmin={isAdmin}
-        hiddenTabs={effectiveHiddenTabs}
-        onLogout={handleLogout}
-      />
+      {topMode === 'home' && (
+        <Sidebar
+          activeTab={visibleActiveTab}
+          setActiveTab={setActiveTab}
+          isDarkMode={isDarkMode}
+          toggleTheme={toggleTheme}
+          isAdmin={isAdmin}
+          hiddenTabs={effectiveHiddenTabs}
+          onLogout={handleLogout}
+        />
+      )}
 
       <main className={styles.mainContent}>
         <Header
           onLogout={handleLogout}
           displayName={displayName}
+          topMode={topMode}
+          setTopMode={setTopMode}
           onProfileUpdate={(name) => {
             setDisplayName(name);
             localStorage.setItem('displayName', name);
           }}
         />
 
-        {visibleActiveTab === 'dashboard' && !effectiveHiddenTabs.includes('dashboard') && <Overview currentUser={username} currentUserPhone={phoneNumber} />}
-        {visibleActiveTab === 'barcode' && !effectiveHiddenTabs.includes('barcode') && (
-          <BarcodeTabs
-            onOpenTestTab={() => setActiveTab('test')}
-            onTransferAmoodHapbae={handleAmoodHapbaeTransfer}
-          />
-        )}
-        {visibleActiveTab === 'returns' && !effectiveHiddenTabs.includes('returns') && <ReturnsPage />}
-        {visibleActiveTab === 'barcode-product-upload' && !effectiveHiddenTabs.includes('barcode-product-upload') && <ProductUploadPage />}
-        {visibleActiveTab === 'shared-files' && !effectiveHiddenTabs.includes('shared-files') && <SharedFilesPage />}
-        {visibleActiveTab === 'noye-kimsungil' && !effectiveHiddenTabs.includes('noye-kimsungil') && <NoyeKimPage />}
-        {visibleActiveTab === 'client-schedule' && !effectiveHiddenTabs.includes('client-schedule') && <ClientSchedulePage />}
-        {visibleActiveTab === 'sms' && !effectiveHiddenTabs.includes('sms') && <SMSPage />}
-        {visibleActiveTab === 'collaboration-menu' && !effectiveHiddenTabs.includes('collaboration-menu') && <CollaborationMenuPage />}
-        {visibleActiveTab === 'hapbae-management' && !effectiveHiddenTabs.includes('hapbae-management') && (
-          <HapbaeManagementTabs transferredAmoodFile={amoodHapbaeTransfer} />
-        )}
-        {visibleActiveTab === 'test' && !effectiveHiddenTabs.includes('test') && <TestTabs />}
-        {visibleActiveTab === 'order' && isAdmin && !effectiveHiddenTabs.includes('order') && <OrderPage />}
-        {visibleActiveTab === 'admin' && isAdmin && !effectiveHiddenTabs.includes('admin') && <AdminUsers currentUser={username} />}
-        {visibleActiveTab === 'margin-calc' && !effectiveHiddenTabs.includes('margin-calc') && <AmoodSettlement />}
-        {visibleActiveTab === 'settings' && (
-          <SettingsPage hiddenTabs={hiddenTabs} setHiddenTabs={setHiddenTabs} isAdmin={isAdmin} />
+        {topMode === 'db-manager' && <DBManagerLayout />}
+
+        {topMode === 'inventory-dashboard' && <InventoryDashboardPage />}
+
+        {topMode === 'home' && (
+          <>
+            {visibleActiveTab === 'dashboard' && !effectiveHiddenTabs.includes('dashboard') && <Overview currentUser={username} currentUserPhone={phoneNumber} />}
+            {visibleActiveTab === 'barcode' && !effectiveHiddenTabs.includes('barcode') && (
+              <BarcodeTabs
+                onOpenTestTab={() => setActiveTab('test')}
+                onTransferAmoodHapbae={handleAmoodHapbaeTransfer}
+              />
+            )}
+            {visibleActiveTab === 'returns' && !effectiveHiddenTabs.includes('returns') && <ReturnsPage />}
+            {visibleActiveTab === 'barcode-product-upload' && !effectiveHiddenTabs.includes('barcode-product-upload') && <ProductUploadPage />}
+            {visibleActiveTab === 'shared-files' && !effectiveHiddenTabs.includes('shared-files') && <SharedFilesPage />}
+            {visibleActiveTab === 'noye-kimsungil' && !effectiveHiddenTabs.includes('noye-kimsungil') && <NoyeKimPage />}
+            {visibleActiveTab === 'client-schedule' && !effectiveHiddenTabs.includes('client-schedule') && <ClientSchedulePage />}
+            {visibleActiveTab === 'sms' && !effectiveHiddenTabs.includes('sms') && <SMSPage />}
+            {visibleActiveTab === 'collaboration-menu' && !effectiveHiddenTabs.includes('collaboration-menu') && <CollaborationMenuPage />}
+            {visibleActiveTab === 'hapbae-management' && !effectiveHiddenTabs.includes('hapbae-management') && (
+              <HapbaeManagementTabs transferredAmoodFile={amoodHapbaeTransfer} />
+            )}
+            {visibleActiveTab === 'test' && !effectiveHiddenTabs.includes('test') && <TestTabs />}
+            {visibleActiveTab === 'order' && isAdmin && !effectiveHiddenTabs.includes('order') && <OrderPage />}
+            {visibleActiveTab === 'admin' && isAdmin && !effectiveHiddenTabs.includes('admin') && <AdminUsers currentUser={username} />}
+            {visibleActiveTab === 'margin-calc' && !effectiveHiddenTabs.includes('margin-calc') && <AmoodSettlement />}
+            {visibleActiveTab === 'settings' && (
+              <SettingsPage hiddenTabs={hiddenTabs} setHiddenTabs={setHiddenTabs} isAdmin={isAdmin} />
+            )}
+          </>
         )}
 
         {!KNOWN_TABS.includes(visibleActiveTab) && (

@@ -1,9 +1,9 @@
-import { Bell, Key } from 'lucide-react';
+import { Bell, DatabaseZap, Key, Warehouse } from 'lucide-react';
 import { useState } from 'react';
 import styles from './Header.module.css';
 import { COLLAB_API_BASE, LOCAL_API_BASE, getAuthHeaders } from '../../lib/api';
 
-const Header = ({ onLogout, displayName, onProfileUpdate }) => {
+const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode }) => {
     const initials = displayName ? displayName.slice(0, 2) : 'JD';
     const [showProfile, setShowProfile] = useState(false);
     const [nameInput, setNameInput] = useState(displayName || '');
@@ -99,10 +99,37 @@ const Header = ({ onLogout, displayName, onProfileUpdate }) => {
 
     return (
         <header className={styles.header}>
-            <button type="button" className={styles.ezadminBtn} onClick={openEzadmin}>
-                <Key size={15} />
-                EZAdmin 설정
-            </button>
+            <div className={styles.leftSection}>
+                <button type="button" className={styles.ezadminBtn} onClick={openEzadmin}>
+                    <Key size={15} />
+                    EZAdmin 설정
+                </button>
+                <div className={styles.topNav}>
+                    <button
+                        type="button"
+                        className={`${styles.topNavItem} ${topMode === 'home' ? styles.topNavItemActive : ''}`}
+                        onClick={() => setTopMode?.('home')}
+                    >
+                        홈
+                    </button>
+                    <button
+                        type="button"
+                        className={`${styles.topNavItem} ${topMode === 'db-manager' ? styles.topNavItemActive : ''}`}
+                        onClick={() => setTopMode?.('db-manager')}
+                    >
+                        <DatabaseZap size={14} />
+                        DB관리
+                    </button>
+                    <button
+                        type="button"
+                        className={`${styles.topNavItem} ${topMode === 'inventory-dashboard' ? styles.topNavItemActive : ''}`}
+                        onClick={() => setTopMode?.('inventory-dashboard')}
+                    >
+                        <Warehouse size={14} />
+                        재고대시보드
+                    </button>
+                </div>
+            </div>
 
             <div className={styles.profileSection}>
                 <a
