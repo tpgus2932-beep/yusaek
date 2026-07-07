@@ -14,6 +14,8 @@ from zipfile import BadZipFile
 from openpyxl import load_workbook, Workbook
 import xlwt
 
+from services.top90_client import execute_main_orders, Top90Error
+
 _EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
 
@@ -709,5 +711,38 @@ def build_order_router(
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
         return {"ok": True, "count": len(items), "items": items}
+
+    # ── 메인발주 실행 (top90 발주 등록) ──────────────────────────────────────────
+    @router.post("/order/main-order/execute")
+    async def main_order_execute(payload: dict = Body(...), admin: str = Depends(require_admin)):
+        items = payload.get("items") or []
+        groups: dict[str, list[str]] = {}
+
+        for item in items:
+            qty = _to_int(item.get("requestQty"), 0)
+            if qty <= 0:
+                continue
+            supply_product_name = str(item.get("supplyProductName") or "").strip()
+            if not supply_product_name:
+                continue
+            parts = supply_product_name.split(" ", 1)
+            store_name = parts[0]
+            rest = parts[1].strip() if len(parts) > 1 else ""
+            options = str(item.get("options") or "").strip()
+            pname_parts = [p for p in [rest, options, str(qty)] if p]
+            pname = " ".join(pname_parts)
+            groups.setdefault(store_name, []).append(pname)
+
+        if not groups:
+            return {"ok": False, "error": "발주할 항목이 없습니다 (요청수량이 0보다 큰 항목이 없음)."}
+
+        try:
+            result = await execute_main_orders(groups)
+        except Top90Error as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        return {"ok": True, **result}
 
     return router

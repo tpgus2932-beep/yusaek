@@ -55,6 +55,44 @@ export default function OrderPage() {
     );
   };
 
+  const [mainOrderExecuting, setMainOrderExecuting] = useState(false);
+  const [mainOrderExecResult, setMainOrderExecResult] = useState(null);
+
+  const executeMainOrders = async () => {
+    const targetCount = mainOrderItems.filter((item) => Number(item.requestQty) > 0).length;
+    if (targetCount === 0) {
+      setMainOrderMessage("요청수량이 0보다 큰 항목이 없습니다.");
+      return;
+    }
+    if (!window.confirm(`요청수량이 있는 ${targetCount}건을 top90에 발주 등록합니다.\n\n계속하시겠습니까?`)) {
+      return;
+    }
+
+    setMainOrderExecuting(true);
+    setMainOrderExecResult(null);
+    setMainOrderMessage("");
+    try {
+      const res = await fetch(`${API}/order/main-order/execute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ items: mainOrderItems }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!data?.ok) {
+        setMainOrderMessage(data?.error || "발주 실행 실패");
+        return;
+      }
+      setMainOrderExecResult(data);
+      setMainOrderMessage(
+        `발주 완료: 성공 ${data.success?.length ?? 0}개 매장 / 실패 ${data.failed?.length ?? 0}개 매장`
+      );
+    } catch (err) {
+      setMainOrderMessage(err.message || "발주 실행 실패");
+    } finally {
+      setMainOrderExecuting(false);
+    }
+  };
+
   const parseKDGFColumn = (fValue) => {
     const cleaned = String(fValue || "").replace(/[[\]]/g, "").trim();
     const parts = cleaned.split("-");
@@ -514,10 +552,41 @@ export default function OrderPage() {
             <button className={styles.primaryBtn} onClick={fetchMainOrderList} disabled={mainOrderLoading}>
               {mainOrderLoading ? "조회 중..." : "새로고침"}
             </button>
+            <button
+              className={styles.secondaryBtn}
+              onClick={executeMainOrders}
+              disabled={mainOrderExecuting || mainOrderItems.length === 0}
+            >
+              {mainOrderExecuting ? "발주 실행 중..." : "발주 실행"}
+            </button>
           </div>
           {mainOrderMessage && (
             <div className={styles.statusMsg}>
               <strong>{mainOrderMessage}</strong>
+            </div>
+          )}
+          {mainOrderExecResult && (
+            <div className={styles.statusMsg}>
+              {mainOrderExecResult.success.length > 0 && (
+                <div>
+                  <strong>발주 성공:</strong>
+                  <ul>
+                    {mainOrderExecResult.success.map((s, i) => (
+                      <li key={i}>{s.store_name} — {s.count}건</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {mainOrderExecResult.failed.length > 0 && (
+                <div>
+                  <strong>발주 실패 (수동 확인 필요):</strong>
+                  <ul>
+                    {mainOrderExecResult.failed.map((f, i) => (
+                      <li key={i}>{f.store_name} — {f.reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
           {mainOrderItems.length === 0 ? (
