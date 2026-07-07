@@ -1,10 +1,12 @@
 from pathlib import Path
+from datetime import datetime, timedelta
 import tempfile
 import io
 import re
 import urllib.parse
 import uuid
 
+import httpx
 import pandas as pd
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
@@ -12,12 +14,16 @@ from zipfile import BadZipFile
 from openpyxl import load_workbook, Workbook
 import xlwt
 
+_EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
+_EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+
 
 def build_order_router(
     *,
     require_admin,
     get_db,
     order_cost_base_path: Path,
+    get_setting,
 ):
     router = APIRouter()
     COST_BASE_CODE_COL = 0
@@ -39,6 +45,19 @@ def build_order_router(
             return int(float(x))
         except Exception:
             return default
+
+    def _ez_val(html_str):
+        s = str(html_str or "")
+        # <input ... value='X' ...> → X
+        m = re.search(r"<input[^>]+\bvalue=['\"]([^'\"]*)['\"]", s, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        # <a ...>TEXT</a> → TEXT
+        m = re.search(r">([^<]+)</a>", s)
+        if m:
+            return m.group(1).strip()
+        # 태그 없으면 그대로
+        return re.sub(r"<[^>]+>", "", s).strip()
 
     def _content_disposition(filename: str) -> str:
         safe_name = (filename or "download.xlsx").replace('"', "")
@@ -611,5 +630,84 @@ def build_order_router(
             include_col3=True,
             admin=admin,
         )
+
+    # ── 메인발주 목록 (EZAdmin IO30 미출고/부족 상품 조회) ───────────────────────
+    @router.post("/order/main-order/list")
+    async def main_order_list(admin: str = Depends(require_admin)):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        today = datetime.now()
+        start = (today - timedelta(days=90)).strftime("%Y-%m-%d")
+        end = today.strftime("%Y-%m-%d")
+
+        par = (
+            "template=IO30&action=&page_code=IO00&search=1&now_page=&is_sort=&"
+            "_sort=supply_options&sort_order=1&product_qty_list=&bill_seq=&"
+            "offset_top=&work_no=&location_str=&date_type=collect_date&"
+            f"start_date={start}&start_hour=00%3A00%3A00&"
+            f"end_date={end}&end_hour=23%3A59%3A59&"
+            "date_period_sel=9&multi_shop_group=&multi_shop=&str_shop_code=0&"
+            "multi_supply_group=&multi_supply=&str_supply_code=0&"
+            "supply_name_search=&brand=&supply_options=&tags_string=&"
+            "product_tag_include_type=1&product_id=&name=&options=&"
+            "search_keyword_type=origin&search_keyword=&enable_stock_type=2&"
+            "order_status=3&except_soldout=1&sel_reserve_qty=none&"
+            "sel_return_qty=none&sel_lack_qty=none&sel_req_qty=none&category=0"
+        )
+
+        cookies = {"PHPSESSID": phpsessid}
+        ez_headers = {
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": "https://ga80.ezadmin.co.kr/template40.htm?template=IO30",
+        }
+        base_url = f"{_EZADMIN_BASE}/function.htm"
+
+        items = []
+        try:
+            async with httpx.AsyncClient(timeout=60.0, verify=False, follow_redirects=True) as client:
+                page = 1
+                while True:
+                    nd = str(int(datetime.now().timestamp() * 1000))
+                    resp = await client.post(
+                        base_url,
+                        data={
+                            "_search": "false", "nd": nd, "rows": "1000", "page": str(page),
+                            "sidx": "", "sord": "asc", "template": "IO30", "action": "search_IO30",
+                            "par": par,
+                        },
+                        cookies=cookies, headers=ez_headers,
+                    )
+                    if resp.status_code >= 400:
+                        return {"ok": False, "error": f"EZAdmin 조회 실패 (HTTP {resp.status_code})"}
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        return {"ok": False, "need_session": True}
+                    if "rows" not in data:
+                        return {"ok": False, "need_session": True}
+
+                    for row in data.get("rows") or []:
+                        cell = row.get("cell", row)
+                        items.append({
+                            "code": _ez_val(cell.get("product_id")),
+                            "name": _ez_val(cell.get("product_name")),
+                            "options": _ez_val(cell.get("options")),
+                            "supplyProductName": _ez_val(cell.get("supply_product_name")),
+                            "stock": _to_int(_ez_val(cell.get("stock"))),
+                            "notYetDeliv": _to_int(_ez_val(cell.get("not_yet_deliv"))),
+                            "lackQty": _to_int(_ez_val(cell.get("lack_qty"))),
+                            "requestQty": _to_int(_ez_val(cell.get("request_qty"))),
+                        })
+
+                    total_pages = int(data.get("total") or 1)
+                    if page >= total_pages or page >= 20:
+                        break
+                    page += 1
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        return {"ok": True, "count": len(items), "items": items}
 
     return router

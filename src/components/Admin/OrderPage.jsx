@@ -2,11 +2,51 @@ import React, { useRef, useState } from "react";
 import styles from "../Barcode/BarcodePage.module.css";
 import * as XLSX from "xlsx";
 import XLSXStyle from "xlsx-js-style";
+import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
+import { useEzadminSession } from "../../lib/EzadminSessionContext";
 
 export default function OrderPage() {
+  const [activeTab, setActiveTab] = useState("standard");
   const [lizardFile, setLizardFile] = useState(null);
   const [lizardMessage, setLizardMessage] = useState("");
   const lizardFileInputRef = useRef(null);
+
+  const { openModal: openEzadminModal } = useEzadminSession();
+  const [mainOrderItems, setMainOrderItems] = useState([]);
+  const [mainOrderLoading, setMainOrderLoading] = useState(false);
+  const [mainOrderMessage, setMainOrderMessage] = useState("");
+
+  const fetchMainOrderList = async () => {
+    try {
+      setMainOrderLoading(true);
+      setMainOrderMessage("");
+      const res = await fetch(`${API}/order/main-order/list`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) {
+        openEzadminModal(fetchMainOrderList);
+        return;
+      }
+      if (!data?.ok) {
+        setMainOrderMessage(data?.error || "메인발주 목록 조회 실패");
+        return;
+      }
+      setMainOrderItems(data.items || []);
+      setMainOrderMessage(`조회 완료: ${data.count ?? 0}건`);
+    } catch (err) {
+      setMainOrderMessage(err.message || "메인발주 목록 조회 실패");
+    } finally {
+      setMainOrderLoading(false);
+    }
+  };
+
+  const updateMainOrderRequestQty = (code, value) => {
+    setMainOrderItems((prev) =>
+      prev.map((item) => (item.code === code ? { ...item, requestQty: value } : item))
+    );
+  };
 
   const parseKDGFColumn = (fValue) => {
     const cleaned = String(fValue || "").replace(/[[\]]/g, "").trim();
@@ -382,64 +422,140 @@ export default function OrderPage() {
       <div className={styles.pageHeader}>
         <div>
           <h2 className={styles.title}>발주</h2>
-          <p className={styles.subtitle}>기성발주 가공</p>
+          <p className={styles.subtitle}>기성발주 가공 · 메인발주</p>
         </div>
       </div>
 
-      <section className={styles.card}>
-        <div className={styles.cardHeader}>
-          <h3 className={styles.cardTitle}>기성발주 가공</h3>
-        </div>
-        <div className={styles.uploadRow}>
-          <label className={styles.fileInput}>
-            <input
-              ref={lizardFileInputRef}
-              type="file"
-              accept=".xls,.xlsx,.xlsm"
-              onChange={(e) => {
-                setLizardFile(e.target.files?.[0] ?? null);
-                setLizardMessage("");
-              }}
-            />
-            {lizardFile ? lizardFile.name : "원본 파일 선택"}
-          </label>
-          {lizardFile && (
-            <button
-              className={styles.secondaryBtn}
-              onClick={() => {
-                setLizardFile(null);
-                setLizardMessage("");
-                if (lizardFileInputRef.current) lizardFileInputRef.current.value = "";
-              }}
-            >
-              원본파일 초기화
-            </button>
-          )}
-          <button className={styles.primaryBtn} onClick={handleLizardStandardOrder}>
-            리자드스탠다드 발주
-          </button>
-          <button className={styles.secondaryBtn} onClick={handleKDGOrder}>
-            케이디지 발주
-          </button>
-          <button className={styles.secondaryBtn} onClick={handleRemindOrder}>
-            리마인드 발주
-          </button>
-          <button className={styles.secondaryBtn} onClick={handleEggYolkOrder}>
-            계란속노른자 발주
-          </button>
-          <button className={styles.secondaryBtn} onClick={handleDomaeKimOrder}>
-            도매킴 발주
-          </button>
-        </div>
-        <div className={styles.statusMsg}>
-          <strong>처리 기준:</strong> B열 첫 번째 띄어쓰기 왼쪽 거래처명 기준으로 각 발주 양식을 생성합니다.
-        </div>
-        {lizardMessage && (
-          <div className={styles.statusMsg}>
-            <strong>{lizardMessage}</strong>
+      <div className={styles.tabRow}>
+        <button
+          className={`${styles.tabBtn} ${activeTab === "standard" ? styles.tabActive : ""}`}
+          onClick={() => setActiveTab("standard")}
+        >
+          기성발주 가공
+        </button>
+        <button
+          className={`${styles.tabBtn} ${activeTab === "main-order" ? styles.tabActive : ""}`}
+          onClick={() => setActiveTab("main-order")}
+        >
+          메인발주
+        </button>
+      </div>
+
+      {activeTab === "standard" && (
+        <section className={styles.card}>
+          <div className={styles.cardHeader}>
+            <h3 className={styles.cardTitle}>기성발주 가공</h3>
           </div>
-        )}
-      </section>
+          <div className={styles.uploadRow}>
+            <label className={styles.fileInput}>
+              <input
+                ref={lizardFileInputRef}
+                type="file"
+                accept=".xls,.xlsx,.xlsm"
+                onChange={(e) => {
+                  setLizardFile(e.target.files?.[0] ?? null);
+                  setLizardMessage("");
+                }}
+              />
+              {lizardFile ? lizardFile.name : "원본 파일 선택"}
+            </label>
+            {lizardFile && (
+              <button
+                className={styles.secondaryBtn}
+                onClick={() => {
+                  setLizardFile(null);
+                  setLizardMessage("");
+                  if (lizardFileInputRef.current) lizardFileInputRef.current.value = "";
+                }}
+              >
+                원본파일 초기화
+              </button>
+            )}
+            <button className={styles.primaryBtn} onClick={handleLizardStandardOrder}>
+              리자드스탠다드 발주
+            </button>
+            <button className={styles.secondaryBtn} onClick={handleKDGOrder}>
+              케이디지 발주
+            </button>
+            <button className={styles.secondaryBtn} onClick={handleRemindOrder}>
+              리마인드 발주
+            </button>
+            <button className={styles.secondaryBtn} onClick={handleEggYolkOrder}>
+              계란속노른자 발주
+            </button>
+            <button className={styles.secondaryBtn} onClick={handleDomaeKimOrder}>
+              도매킴 발주
+            </button>
+          </div>
+          <div className={styles.statusMsg}>
+            <strong>처리 기준:</strong> B열 첫 번째 띄어쓰기 왼쪽 거래처명 기준으로 각 발주 양식을 생성합니다.
+          </div>
+          {lizardMessage && (
+            <div className={styles.statusMsg}>
+              <strong>{lizardMessage}</strong>
+            </div>
+          )}
+        </section>
+      )}
+
+      {activeTab === "main-order" && (
+        <section className={styles.card}>
+          <div className={styles.cardHeader}>
+            <h3 className={styles.cardTitle}>메인발주 ({mainOrderItems.length}건)</h3>
+          </div>
+          <div className={styles.uploadRow}>
+            <button className={styles.primaryBtn} onClick={fetchMainOrderList} disabled={mainOrderLoading}>
+              {mainOrderLoading ? "조회 중..." : "새로고침"}
+            </button>
+          </div>
+          {mainOrderMessage && (
+            <div className={styles.statusMsg}>
+              <strong>{mainOrderMessage}</strong>
+            </div>
+          )}
+          {mainOrderItems.length === 0 ? (
+            <div className={styles.statusMsg}>새로고침을 눌러 미배송/부족 상품 목록을 불러오세요.</div>
+          ) : (
+            <div className={`${styles.tableWrap} ${styles.registeredTableWrap}`}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th>상품코드</th>
+                    <th>상품명</th>
+                    <th>옵션</th>
+                    <th>공급처상품명</th>
+                    <th>재고</th>
+                    <th>미배송수량</th>
+                    <th>부족수량</th>
+                    <th>요청수량</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mainOrderItems.map((item) => (
+                    <tr key={item.code}>
+                      <td>{item.code}</td>
+                      <td>{item.name}</td>
+                      <td>{item.options}</td>
+                      <td>{item.supplyProductName}</td>
+                      <td>{item.stock}</td>
+                      <td>{item.notYetDeliv}</td>
+                      <td>{item.lackQty}</td>
+                      <td>
+                        <input
+                          type="number"
+                          value={item.requestQty}
+                          onChange={(e) => updateMainOrderRequestQty(item.code, e.target.value)}
+                          style={{ width: "70px", padding: "0.3rem 0.4rem" }}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
 }

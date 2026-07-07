@@ -483,8 +483,8 @@ openwin2(
   "popup35.htm?template=IM25&seq=" + SHEET_SEQ,
   "add_product_file",
   "650",
-  "350"
-);
+  "350" b    
+)
 ```
 
 **팝업 URL:** `https://ga80.ezadmin.co.kr/popup35.htm?template=IM25&seq={전표번호}`  
@@ -583,7 +583,7 @@ page=1
 sidx=
 sord=asc
 ```
-**사용처:** `barcode_routes.py` (오출내리기)
+**사용처:** `barcode_routes.py` (오출내리기), `order_routes.py` (메인발주 목록 조회)
 
 ---
 

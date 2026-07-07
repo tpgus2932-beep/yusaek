@@ -1399,6 +1399,7 @@ app.include_router(
         require_admin=_require_admin,
         get_db=_get_db,
         order_cost_base_path=SHARED_COST_BASE_PATH,
+        get_setting=_get_setting,
     )
 )
 app.include_router(
@@ -1518,15 +1519,6 @@ _init_sms_history()
 
 def _init_amood_settlement():
     conn = _get_db()
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS amood_product_costs (
-            product_name TEXT PRIMARY KEY,
-            cost_price INTEGER NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS amood_order_cache (
