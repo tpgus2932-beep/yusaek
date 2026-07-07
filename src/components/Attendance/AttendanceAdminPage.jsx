@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import styles from './AttendanceAdminPage.module.css';
 import { COLLAB_API_BASE } from '../../lib/api';
+import ScheduleTab from './ScheduleTab';
 
 const todayStr = () => {
   const d = new Date();
@@ -536,6 +537,12 @@ export default function AttendanceAdminPage() {
           >
             💰 급여명세서
           </button>
+          <button
+            className={`${styles.tabBtn} ${tab === 'schedule' ? styles.tabActive : ''}`}
+            onClick={() => setTab('schedule')}
+          >
+            📅 스케줄관리
+          </button>
         </div>
 
         {/* ── 직원 관리 탭 ── */}
@@ -894,6 +901,8 @@ export default function AttendanceAdminPage() {
             )}
           </>
         )}
+        {/* ── 스케줄관리 탭 ── */}
+        {tab === 'schedule' && <ScheduleTab pin={pin} members={members} />}
       </div>
 
       {/* 시간 수정 모달 */}
