@@ -372,15 +372,15 @@ Replace with:
 
         conn = get_db()
         now = _now_kst().isoformat()
-        conn.executemany(
-            "INSERT INTO attendance_schedule_fixed_rules "
-            "(member_id, weekday, start_time, end_time, effective_from, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [
-                (body.memberId, item.weekday, item.startTime, item.endTime, body.effectiveFrom, item.status, now)
-                for item in body.rules
-            ],
-        )
+        # get_db()는 Turso 설정 시 _TursoHTTPConn을 반환하는데 executemany가 없으므로 execute를 반복 호출한다
+        # (실행 중 발견: _TursoHTTPConn.execute만 존재, executemany 없음 → AttributeError).
+        for item in body.rules:
+            conn.execute(
+                "INSERT INTO attendance_schedule_fixed_rules "
+                "(member_id, weekday, start_time, end_time, effective_from, status, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (body.memberId, item.weekday, item.startTime, item.endTime, body.effectiveFrom, item.status, now),
+            )
         conn.commit()
         rows = conn.execute(
             "SELECT id, member_id, weekday, start_time, end_time, effective_from, status "

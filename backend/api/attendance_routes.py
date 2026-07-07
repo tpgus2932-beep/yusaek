@@ -424,4 +424,54 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             "memos": [_memo_row_to_dict(r) for r in memo_rows],
         }
 
+    def _hours_between(start: str, end: str) -> float:
+        sh, sm = (int(x) for x in start.split(":"))
+        eh, em = (int(x) for x in end.split(":"))
+        return (eh + em / 60) - (sh + sm / 60)
+
+    class ScheduleFixedRuleItem(BaseModel):
+        weekday: int
+        startTime: str
+        endTime: str
+        status: str
+
+    class ScheduleFixedRulesBulkCreate(BaseModel):
+        pin: str
+        memberId: int
+        effectiveFrom: str
+        rules: list[ScheduleFixedRuleItem]
+
+    @router.post("/schedule/fixed-rules/bulk")
+    def add_schedule_fixed_rules_bulk(body: ScheduleFixedRulesBulkCreate):
+        _check_pin(body.pin)
+        if not body.rules:
+            raise HTTPException(status_code=400, detail="rules가 비어있습니다.")
+        for item in body.rules:
+            if item.status == "scheduled" and _hours_between(item.startTime, item.endTime) <= 0:
+                raise HTTPException(status_code=400, detail="종료 시간은 시작 시간보다 늦어야 합니다.")
+        total_hours = sum(
+            _hours_between(item.startTime, item.endTime)
+            for item in body.rules if item.status == "scheduled"
+        )
+        if total_hours > 15:
+            raise HTTPException(status_code=400, detail="직원별 주 15시간을 초과할 수 없습니다.")
+
+        conn = get_db()
+        now = _now_kst().isoformat()
+        # get_db()는 Turso 설정 시 _TursoHTTPConn을 반환하는데 executemany가 없으므로 execute를 반복 호출한다.
+        for item in body.rules:
+            conn.execute(
+                "INSERT INTO attendance_schedule_fixed_rules "
+                "(member_id, weekday, start_time, end_time, effective_from, status, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (body.memberId, item.weekday, item.startTime, item.endTime, body.effectiveFrom, item.status, now),
+            )
+        conn.commit()
+        rows = conn.execute(
+            "SELECT id, member_id, weekday, start_time, end_time, effective_from, status "
+            "FROM attendance_schedule_fixed_rules ORDER BY effective_from ASC, id ASC"
+        ).fetchall()
+        conn.close()
+        return {"ok": True, "fixedRules": [_fixed_rule_row_to_dict(r) for r in rows]}
+
     return router
