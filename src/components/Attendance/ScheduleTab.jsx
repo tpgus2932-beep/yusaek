@@ -327,9 +327,11 @@ export default function ScheduleTab({ pin, members }) {
       return;
     }
     const totalHours = WEEKDAYS.reduce((total, weekday) => {
-      const t = getFixedTimeForWeekday(memberId, weekday, effectiveFrom);
-      const start = weekday === selectedFixedTimeWeekday ? fixedTimeStart : t.startTime;
-      const end = weekday === selectedFixedTimeWeekday ? fixedTimeEnd : t.endTime;
+      const day = weekDays.find((d) => d.weekday === weekday);
+      const rule = day ? getFixedRule(memberId, weekday, day.date) : null;
+      if (!rule) return total; // 고정 근무가 없는 요일은 시간 검증에서 제외
+      const start = weekday === selectedFixedTimeWeekday ? fixedTimeStart : rule.startTime;
+      const end = weekday === selectedFixedTimeWeekday ? fixedTimeEnd : rule.endTime;
       return total + getHours(start, end);
     }, 0);
     if (totalHours > 15) {
