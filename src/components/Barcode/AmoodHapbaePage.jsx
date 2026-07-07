@@ -1,7 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import styles from "./BarcodePage.module.css";
-import TsvAppendModal from "../Common/TsvAppendModal";
-import { appendTsvToCostBase } from "../../lib/costBase";
 
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
@@ -19,22 +17,10 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
   const [includeCol4, setIncludeCol4] = useState(true);
   const [loadingConflicts, setLoadingConflicts] = useState(false);
   const [loadingExport, setLoadingExport] = useState(false);
-  const [loadingCostBase, setLoadingCostBase] = useState(false);
   const [loadingEzadmin, setLoadingEzadmin] = useState(false);
   const [ezadminMsg, setEzadminMsg] = useState("");
   const [ezadminLog, setEzadminLog] = useState([]);
   const [message, setMessage] = useState("");
-  const [costMessage, setCostMessage] = useState("");
-  const [costBase, setCostBase] = useState(null);
-  const [showCostEditor, setShowCostEditor] = useState(false);
-  const [costColumns, setCostColumns] = useState([]);
-  const [costRows, setCostRows] = useState([]);
-  const [costTotal, setCostTotal] = useState(0);
-  const [costOffset, setCostOffset] = useState(0);
-  const [costQuery, setCostQuery] = useState("");
-  const [costEdits, setCostEdits] = useState({});
-  const [showTsvAppendModal, setShowTsvAppendModal] = useState(false);
-  const costLimit = 50;
   const [sheetName, setSheetName] = useState("");
   const [conflicts, setConflicts] = useState([]);
   const [selectedC, setSelectedC] = useState("");
@@ -52,35 +38,6 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
     setFile(transferredFile.file);
     setMessage(`합배송 파일 전달됨: ${transferredFile.file.name}`);
   }, [transferredFile]);
-
-  const fetchCostBaseStatus = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/amood-hapbae/cost-base/status`, { headers: getAuthHeaders() });
-      if (handleUnauthorized(res)) return;
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return;
-      setCostBase(data.status || null);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  const fetchCostPreview = async (offset = 0, query = costQuery) => {
-    const q = (query || "").trim();
-    const res = await fetch(
-      `${API}/amood-hapbae/cost-base/preview?offset=${offset}&limit=${costLimit}&q=${encodeURIComponent(q)}`,
-      { headers: getAuthHeaders() }
-    );
-    if (handleUnauthorized(res)) return;
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data?.detail || "원가베이스 미리보기 실패");
-    setCostColumns(data.columns || []);
-    setCostRows(data.rows || []);
-    setCostTotal(data.total || 0);
-    setCostOffset(offset);
-    setCostEdits({});
-    setCostBase(data.status || costBase);
-  };
 
   const buildFormData = () => {
     const formData = new FormData();
@@ -137,13 +94,12 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
   };
 
   React.useEffect(() => {
-    fetchCostBaseStatus();
     fetchEzadminLog();
     fetch(`${API}/amood-hapbae/last-file/info`, { headers: getAuthHeaders() })
       .then((r) => r.json())
       .then((d) => { if (d.file) setLastFileInfo(d.file); })
       .catch(() => {});
-  }, [fetchCostBaseStatus, fetchEzadminLog]);
+  }, [fetchEzadminLog]);
 
   const handleFindConflicts = async () => {
     if (!file && !lastFileInfo) {
@@ -238,138 +194,6 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
     }
   };
 
-  const getDownloadFilenameWithFallback = (res, fallback) => {
-    const disposition = res.headers.get("content-disposition") || "";
-    const match = disposition.match(/filename\*?=(?:UTF-8''|"?)([^";]+)/i);
-    if (match?.[1]) {
-      return decodeURIComponent(match[1].replace(/"/g, ""));
-    }
-    return fallback;
-  };
-
-  const handleCostBaseReload = async () => {
-    setLoadingCostBase(true);
-    setCostMessage("");
-    try {
-      const res = await fetch(`${API}/amood-hapbae/cost-base/reload`, {
-        method: "POST",
-        headers: getAuthHeaders(),
-      });
-      if (handleUnauthorized(res)) return;
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "원가베이스 로드 실패");
-      setCostBase(data.status || null);
-      setCostMessage("원가베이스 로드 완료");
-    } catch (err) {
-      setCostMessage(err.message || "원가베이스 로드 실패");
-    } finally {
-      setLoadingCostBase(false);
-    }
-  };
-
-  const handleCostBaseDownload = async () => {
-    try {
-      const res = await fetch(`${API}/amood-hapbae/cost-base/download`, { headers: getAuthHeaders() });
-      if (handleUnauthorized(res)) return;
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data?.detail || "다운로드 실패");
-      }
-      const blob = await res.blob();
-      const filename = getDownloadFilenameWithFallback(res, "아무드합배_원가베이스.xlsx");
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      setCostMessage(err.message || "다운로드 실패");
-    }
-  };
-
-  const openCostEditor = async () => {
-    setShowCostEditor(true);
-    try {
-      await fetchCostPreview(0, "");
-    } catch (err) {
-      setCostMessage(err.message || "원가베이스 미리보기 실패");
-    }
-  };
-
-  const handleCostBaseAppendTsv = async ({ text, skipHeader }) => {
-    setLoadingCostBase(true);
-    setCostMessage("");
-    try {
-      const data = await appendTsvToCostBase({
-        apiBase: API,
-        endpoint: "/amood-hapbae/cost-base/append-tsv",
-        text,
-        headers: getAuthHeaders(),
-        skipHeader,
-      });
-      setCostBase(data.status || null);
-      if (showCostEditor) {
-        const nextTotal = Number(data?.total || 0);
-        const nextOffset = costQuery.trim()
-          ? 0
-          : Math.max(0, Math.floor(Math.max(nextTotal - 1, 0) / costLimit) * costLimit);
-        await fetchCostPreview(nextOffset, costQuery.trim() ? costQuery : "");
-      }
-      setCostMessage(`원가베이스 데이터 추가 완료 (${data?.appended || 0}건)`);
-      return true;
-    } catch (err) {
-      setCostMessage(err.message || "원가베이스 데이터 추가 실패");
-      return false;
-    } finally {
-      setLoadingCostBase(false);
-    }
-  };
-
-  const handleCostCellChange = (rowIndex, colIndex, value) => {
-    setCostRows((prev) =>
-      prev.map((row) =>
-        row.row_index === rowIndex
-          ? { ...row, values: row.values.map((v, i) => (i === colIndex ? value : v)) }
-          : row
-      )
-    );
-    setCostEdits((prev) => {
-      const key = `${rowIndex}:${colIndex}`;
-      return { ...prev, [key]: { row_index: rowIndex, column: colIndex, value } };
-    });
-  };
-
-  const handleCostCellCommit = async () => {
-    const edits = Object.values(costEdits);
-    if (!edits.length) {
-      setCostMessage("변경된 내용이 없습니다.");
-      return;
-    }
-    try {
-      const res = await fetch(`${API}/amood-hapbae/cost-base/edit-batch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ edits }),
-      });
-      if (handleUnauthorized(res)) return;
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "원가베이스 수정 실패");
-      setCostBase(data.status || costBase);
-      setCostEdits({});
-      setCostMessage("원가베이스 변경 적용 완료");
-    } catch (err) {
-      setCostMessage(err.message || "원가베이스 수정 실패");
-      try {
-        await fetchCostPreview(costOffset, costQuery);
-      } catch {
-        // ignore
-      }
-    }
-  };
-
   return (
     <div className={styles.page}>
       <div className={styles.pageHeader}>
@@ -383,7 +207,7 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
       {/* 엑셀 처리 */}
       <section className={styles.card}>
         <div className={styles.cardHeader}>
-          <h3 className={styles.cardTitle}>① 엑셀 처리</h3>
+          <h3 className={styles.cardTitle}>엑셀 처리</h3>
         </div>
         <div className={styles.uploadRow}>
           <label className={styles.fileInput} style={{ flex: 1, justifyContent: "flex-start" }}>
@@ -508,43 +332,6 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
         )}
       </section>
 
-      {/* 원가베이스 관리 */}
-      <section className={styles.card}>
-        <div className={styles.cardHeader}>
-          <h3 className={styles.cardTitle}>② 원가베이스 관리</h3>
-          {costBase?.mtime && (
-            <span className={styles.pill}>수정: {costBase.mtime}</span>
-          )}
-        </div>
-        <div className={styles.uploadRow}>
-          <button type="button" className={styles.secondaryBtn} onClick={handleCostBaseReload} disabled={loadingCostBase}>
-            새로 로드
-          </button>
-          <button type="button" className={styles.secondaryBtn} onClick={handleCostBaseDownload}>
-            다운로드
-          </button>
-          <button type="button" className={styles.secondaryBtn} onClick={() => setShowTsvAppendModal(true)}>
-            원가베이스 데이터 추가
-          </button>
-          <button type="button" className={styles.secondaryBtn} onClick={openCostEditor}>
-            편집
-          </button>
-        </div>
-        {costBase?.path && (
-          <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", paddingLeft: "0.1rem" }}>
-            경로: {costBase.path}
-          </div>
-        )}
-        {costMessage && (
-          <div className={styles.statusMsg} style={{
-            borderColor: costMessage.includes("실패") ? "rgba(220,53,69,0.4)" : "rgba(34,197,94,0.4)",
-            backgroundColor: costMessage.includes("실패") ? "rgba(220,53,69,0.07)" : "rgba(34,197,94,0.07)",
-          }}>
-            <strong>{costMessage}</strong>
-          </div>
-        )}
-      </section>
-
       {/* 불일치 C값 목록 */}
       <section className={styles.card}>
         <div className={styles.cardHeader}>
@@ -625,97 +412,6 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
           </div>
         )}
       </section>
-
-      {showCostEditor && (
-        <div className={styles.modalOverlay} onClick={() => setShowCostEditor(false)}>
-          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
-            <div className={styles.modalHeader}>
-              <h3 className={styles.modalTitle}>원가베이스 편집</h3>
-              <div className={styles.modalActions}>
-                <input
-                  className={styles.searchInput}
-                  value={costQuery}
-                  onChange={(e) => setCostQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") fetchCostPreview(0, costQuery).catch(() => {});
-                  }}
-                  placeholder="검색어 입력"
-                />
-                <button className={styles.secondaryBtn} onClick={() => fetchCostPreview(0, costQuery).catch(() => {})}>
-                  검색
-                </button>
-                <button className={styles.secondaryBtn} onClick={() => fetchCostPreview(costOffset, costQuery).catch(() => {})}>
-                  새로고침
-                </button>
-                <button className={styles.primaryBtn} onClick={handleCostCellCommit}>
-                  변경 적용
-                </button>
-                <button className={styles.secondaryBtn} onClick={() => setShowCostEditor(false)}>
-                  닫기
-                </button>
-              </div>
-            </div>
-            <div className={styles.tableWrap}>
-              <table className={styles.table}>
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    {costColumns.map((col) => (
-                      <th key={col}>{col}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {costRows.map((row) => (
-                    <tr key={row.row_index}>
-                      <td>{row.row_index + 1}</td>
-                      {row.values.map((val, idx) => (
-                        <td key={`${row.row_index}-${idx}`}>
-                          <input
-                            className={styles.cellInput}
-                            value={val ?? ""}
-                            onChange={(e) => handleCostCellChange(row.row_index, idx, e.target.value)}
-                          />
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {!costRows.length && <div className={styles.empty}>표시할 데이터가 없습니다.</div>}
-            </div>
-            <div className={styles.uploadRow}>
-              <button
-                className={styles.secondaryBtn}
-                onClick={() => fetchCostPreview(Math.max(0, costOffset - costLimit), costQuery).catch(() => {})}
-                disabled={costOffset === 0}
-              >
-                이전
-              </button>
-              <button
-                className={styles.secondaryBtn}
-                onClick={() =>
-                  fetchCostPreview(Math.min(costOffset + costLimit, Math.max(costTotal - costLimit, 0)), costQuery).catch(() => {})
-                }
-                disabled={costOffset + costLimit >= costTotal}
-              >
-                다음
-              </button>
-              <span className={styles.metaLabel}>
-                {costTotal ? `${costOffset + 1}-${Math.min(costOffset + costLimit, costTotal)} / ${costTotal}` : "0"}
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
-      <TsvAppendModal
-        open={showTsvAppendModal}
-        title="원가베이스 데이터 추가"
-        styles={styles}
-        loading={loadingCostBase}
-        onClose={() => setShowTsvAppendModal(false)}
-        onSubmit={handleCostBaseAppendTsv}
-      />
     </div>
   );
 }
