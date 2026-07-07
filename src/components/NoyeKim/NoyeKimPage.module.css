@@ -1126,6 +1126,33 @@
   animation: alertItemIn 0.15s ease both;
 }
 
+.misongCheckHeader {
+  display: grid;
+  grid-template-columns: 100px minmax(140px, 1.2fr) 80px 70px 82px 96px 70px 100px;
+  gap: 0.5rem;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.misongCheckEntry {
+  display: grid;
+  grid-template-columns: 100px minmax(140px, 1.2fr) 80px 70px 82px 96px 70px 100px;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  font-size: 0.82rem;
+  margin-bottom: 0.4rem;
+  animation: alertItemIn 0.15s ease both;
+}
+
 .misongSearchName {
   min-width: 0;
   overflow: hidden;

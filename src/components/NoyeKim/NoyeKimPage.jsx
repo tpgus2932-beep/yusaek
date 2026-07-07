@@ -2791,19 +2791,37 @@ export default function NoyeKimPage() {
                       <div style={{ fontSize: "0.85rem", fontWeight: 700, marginBottom: "0.5rem" }}>
                         ⚠️ 불일치 {misongCheckResult.mismatches.length}건
                       </div>
-                      <ul className={styles.misongAlertList}>
-                        {misongCheckResult.mismatches.map((m) => (
-                          <li key={m.code} className={styles.misongAlertItem}>
-                            <span className={getMisongCheckBadgeClass(m.reason, styles)}>
-                              {getMisongCheckReasonLabel(m.reason)}
-                            </span>
-                            <span className={styles.misongAlertCode}>{m.code}</span>
-                            <span className={styles.misongAlertDetail}>
-                              미송 {m.misongQty ?? "-"} / EZAdmin {m.ezadminQty ?? "-"}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
+                      <div className={styles.misongCheckHeader}>
+                        <span>상품코드</span>
+                        <span>상품명</span>
+                        <span>색상</span>
+                        <span>사이즈</span>
+                        <span>미송수량</span>
+                        <span>EZAdmin수량</span>
+                        <span>차이</span>
+                        <span>상태</span>
+                      </div>
+                      {misongCheckResult.mismatches.map((m) => (
+                        <div key={m.code} className={styles.misongCheckEntry}>
+                          <span className={styles.misongAlertCode}>{m.code}</span>
+                          <span className={styles.misongSearchName}>{m.name || "-"}</span>
+                          <span className={styles.misongSearchName}>{m.color || "-"}</span>
+                          <span className={styles.misongSearchName}>{m.size || "-"}</span>
+                          <span>{m.misongQty ?? "-"}</span>
+                          <span>{m.ezadminQty ?? "-"}</span>
+                          <span
+                            style={{
+                              fontWeight: 700,
+                              color: m.diff == null ? "var(--text-muted)" : m.diff < 0 ? "#b91c1c" : "#1d4ed8",
+                            }}
+                          >
+                            {m.diff == null ? "-" : m.diff > 0 ? `+${m.diff}` : m.diff}
+                          </span>
+                          <span className={getMisongCheckBadgeClass(m.reason, styles)}>
+                            {getMisongCheckReasonLabel(m.reason)}
+                          </span>
+                        </div>
+                      ))}
                     </>
                   )}
                 </div>

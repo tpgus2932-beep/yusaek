@@ -15,6 +15,7 @@ warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 _EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
 _STOCK_IN_STANDBY_RE = re.compile(r"org_value='([^']*)'")
+_EZ_OPTION_BRACKET_RE = re.compile(r"^\[(.+)\]$")
 
 
 def build_misong_router(*, get_current_user, get_db, get_setting):
@@ -158,6 +159,38 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
             }
         finally:
             conn.close()
+
+    def _misong_details_by_code() -> dict:
+        conn = get_db()
+        try:
+            _init(conn)
+            rows = conn.execute(
+                "SELECT original_f, SUM(F) AS qty, MAX(B) AS name, MAX(D) AS color, MAX(E) AS size "
+                "FROM misong_items WHERE TRIM(original_f) != '' GROUP BY original_f"
+            ).fetchall()
+            result = {}
+            for r in rows:
+                code = _normalize_code(r["original_f"])
+                if not code:
+                    continue
+                result[code] = {
+                    "qty": int(r["qty"] or 0),
+                    "name": r["name"] or "",
+                    "color": r["color"] or "",
+                    "size": r["size"] or "",
+                }
+            return result
+        finally:
+            conn.close()
+
+    def _parse_ezadmin_option(option_text) -> tuple:
+        text = str(option_text or "").strip()
+        bracket_match = _EZ_OPTION_BRACKET_RE.match(text)
+        inner = bracket_match.group(1) if bracket_match else text
+        parts = inner.split("-")
+        color = parts[0].strip() if parts and parts[0].strip() else ""
+        size = "-".join(parts[1:]).strip() if len(parts) > 1 else ""
+        return color, size
 
     def _normalize_match_text(value) -> str:
         return " ".join(str(value or "").split()).strip().casefold()
@@ -1270,8 +1303,8 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
         if not phpsessid:
             return {"ok": False, "need_session": True}
 
-        misong_qty_by_code = _misong_qty_by_code()
-        if not misong_qty_by_code:
+        misong_by_code = _misong_details_by_code()
+        if not misong_by_code:
             return {"ok": False, "error": "미송목록이 비어 있습니다."}
 
         today = datetime.now().strftime("%Y-%m-%d")
@@ -1293,7 +1326,7 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
         }
         base_url = f"{_EZADMIN_BASE}/function.htm"
 
-        ezadmin_qty_by_code: dict[str, int] = {}
+        ezadmin_by_code: dict[str, dict] = {}
         try:
             async with httpx.AsyncClient(timeout=600.0, verify=False, follow_redirects=True) as client:
                 page = 1
@@ -1323,7 +1356,13 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
                         match = _STOCK_IN_STANDBY_RE.search(str(cell.get("stock_in_standby") or ""))
                         qty = int(match.group(1)) if match and match.group(1).strip().isdigit() else 0
                         if qty > 0:
-                            ezadmin_qty_by_code[code] = qty
+                            color, size = _parse_ezadmin_option(cell.get("options"))
+                            ezadmin_by_code[code] = {
+                                "qty": qty,
+                                "name": str(cell.get("product_name") or ""),
+                                "color": color,
+                                "size": size,
+                            }
 
                     total_pages = int(data.get("total") or 1)
                     if page >= total_pages or page >= 20:
@@ -1332,33 +1371,37 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-        all_codes = sorted(set(misong_qty_by_code) | set(ezadmin_qty_by_code))
+        all_codes = sorted(set(misong_by_code) | set(ezadmin_by_code))
         mismatches = []
         for code in all_codes:
-            misong_qty = misong_qty_by_code.get(code)
-            ez_qty = ezadmin_qty_by_code.get(code)
+            misong = misong_by_code.get(code)
+            ez = ezadmin_by_code.get(code)
+            misong_qty = misong["qty"] if misong else None
+            ez_qty = ez["qty"] if ez else None
+            display = misong or ez or {}
+            entry_base = {
+                "code": code,
+                "name": display.get("name", ""),
+                "color": display.get("color", ""),
+                "size": display.get("size", ""),
+                "misongQty": misong_qty,
+                "ezadminQty": ez_qty,
+            }
             if misong_qty is not None and ez_qty is not None:
                 if misong_qty != ez_qty:
                     mismatches.append({
-                        "code": code, "misongQty": misong_qty, "ezadminQty": ez_qty,
-                        "reason": "qty_mismatch",
+                        **entry_base, "diff": ez_qty - misong_qty, "reason": "qty_mismatch",
                     })
             elif misong_qty is not None:
-                mismatches.append({
-                    "code": code, "misongQty": misong_qty, "ezadminQty": None,
-                    "reason": "code_not_found_in_ezadmin",
-                })
+                mismatches.append({**entry_base, "diff": None, "reason": "code_not_found_in_ezadmin"})
             else:
-                mismatches.append({
-                    "code": code, "misongQty": None, "ezadminQty": ez_qty,
-                    "reason": "not_in_misong",
-                })
+                mismatches.append({**entry_base, "diff": None, "reason": "not_in_misong"})
 
         return {
             "ok": True,
             "checked_at": datetime.now(timezone.utc).isoformat(),
-            "misong_code_count": len(misong_qty_by_code),
-            "ezadmin_code_count": len(ezadmin_qty_by_code),
+            "misong_code_count": len(misong_by_code),
+            "ezadmin_code_count": len(ezadmin_by_code),
             "mismatches": mismatches,
         }
 
