@@ -5,6 +5,13 @@ import XLSXStyle from "xlsx-js-style";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
 
+const stickyThStyle = {
+  position: "sticky",
+  top: 0,
+  background: "var(--bg-secondary)",
+  zIndex: 1,
+};
+
 export default function OrderPage() {
   const [activeTab, setActiveTab] = useState("standard");
   const [lizardFile, setLizardFile] = useState(null);
@@ -516,18 +523,18 @@ export default function OrderPage() {
           {mainOrderItems.length === 0 ? (
             <div className={styles.statusMsg}>새로고침을 눌러 미배송/부족 상품 목록을 불러오세요.</div>
           ) : (
-            <div className={styles.tableWrap} style={{ maxHeight: "75vh", overflowY: "auto" }}>
+            <div className={styles.tableWrap} style={{ maxHeight: "85vh", overflowY: "auto" }}>
               <table className={styles.table}>
                 <thead>
                   <tr>
-                    <th>상품코드</th>
-                    <th>상품명</th>
-                    <th>옵션</th>
-                    <th>공급처상품명</th>
-                    <th>재고</th>
-                    <th>미배송수량</th>
-                    <th>부족수량</th>
-                    <th>요청수량</th>
+                    <th style={stickyThStyle}>상품코드</th>
+                    <th style={stickyThStyle}>상품명</th>
+                    <th style={stickyThStyle}>옵션</th>
+                    <th style={stickyThStyle}>공급처상품명</th>
+                    <th style={stickyThStyle}>재고</th>
+                    <th style={stickyThStyle}>미배송수량</th>
+                    <th style={stickyThStyle}>부족수량</th>
+                    <th style={stickyThStyle}>요청수량</th>
                   </tr>
                 </thead>
                 <tbody>
