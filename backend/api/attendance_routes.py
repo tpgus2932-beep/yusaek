@@ -36,6 +36,56 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_att_rec_date ON attendance_records(date)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance_schedule_fixed_rules (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                member_id      INTEGER NOT NULL,
+                weekday        INTEGER NOT NULL,
+                start_time     TEXT NOT NULL,
+                end_time       TEXT NOT NULL,
+                effective_from TEXT NOT NULL,
+                status         TEXT NOT NULL,
+                created_at     TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sched_fixed_member ON attendance_schedule_fixed_rules(member_id)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance_schedule_overrides (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                member_id  INTEGER NOT NULL,
+                date       TEXT NOT NULL,
+                weekday    INTEGER NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time   TEXT NOT NULL,
+                status     TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(member_id, date)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sched_override_member ON attendance_schedule_overrides(member_id)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance_schedule_memos (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                member_id  INTEGER NOT NULL,
+                date       TEXT NOT NULL,
+                content    TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(member_id, date)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sched_memo_member ON attendance_schedule_memos(member_id)"
+        )
         conn.commit()
         conn.close()
 
@@ -150,6 +200,9 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         _check_pin(body.pin)
         conn = get_db()
         conn.execute("DELETE FROM attendance_members WHERE id = ?", (member_id,))
+        conn.execute("DELETE FROM attendance_schedule_fixed_rules WHERE member_id = ?", (member_id,))
+        conn.execute("DELETE FROM attendance_schedule_overrides WHERE member_id = ?", (member_id,))
+        conn.execute("DELETE FROM attendance_schedule_memos WHERE member_id = ?", (member_id,))
         conn.commit()
         conn.close()
         return {"ok": True}
