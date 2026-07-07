@@ -516,7 +516,7 @@ export default function OrderPage() {
           {mainOrderItems.length === 0 ? (
             <div className={styles.statusMsg}>새로고침을 눌러 미배송/부족 상품 목록을 불러오세요.</div>
           ) : (
-            <div className={`${styles.tableWrap} ${styles.registeredTableWrap}`}>
+            <div className={styles.tableWrap} style={{ maxHeight: "75vh", overflowY: "auto" }}>
               <table className={styles.table}>
                 <thead>
                   <tr>
