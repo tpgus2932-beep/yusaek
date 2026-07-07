@@ -5,7 +5,7 @@ import { getDownloadFilename } from "../../lib/download";
 import { appendTsvToCostBase } from "../../lib/costBase";
 import {
   AlertTriangle, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, Calendar, Clock, Clipboard, FileSpreadsheet,
-  Package, Pencil, Plus, Printer, RefreshCw, Search, Shuffle, Table2, Trash2, X, Zap,
+  MessageSquare, Package, Pencil, Plus, Printer, RefreshCw, Search, Shuffle, Table2, Trash2, X, Zap,
 } from "lucide-react";
 
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
@@ -158,6 +158,61 @@ async function fillCostPrices(rows, authHeaders) {
   });
 }
 
+// 거래처별 상품금액(매입차감·부가세 제외 합계)을 초과하는 매입차감 음수를
+// 상품금액 크기로 제한하고, 남는 차액을 해당 행의 메모에 기록한다.
+function applyPurchaseDeductionCap(rows) {
+  const productAmountByVendor = {};
+  for (const r of rows) {
+    if (r.B === "매입차감" || r.B === "부가세") continue;
+    productAmountByVendor[r.A] = (productAmountByVendor[r.A] || 0) + parseNumber(r.C);
+  }
+  const remainingBudgetByVendor = { ...productAmountByVendor };
+  return rows.map((r) => {
+    if (r.B !== "매입차감") return r;
+    const requested = Math.abs(parseNumber(r.C));
+    const budget = Math.max(0, remainingBudgetByVendor[r.A] || 0);
+    if (requested > budget) {
+      const leftover = requested - budget;
+      remainingBudgetByVendor[r.A] = 0;
+      return { ...r, C: String(-budget), memo: `매입금액 ${leftover}원 남음` };
+    }
+    remainingBudgetByVendor[r.A] = budget - requested;
+    return r;
+  });
+}
+
+// 등록된 거래처(A열)의 상품금액(매입차감 제외 합계) * 0.1 을 부가세 행으로 추가한다.
+function applyVendorVat(rows, vatVendors) {
+  const vendorSet = new Set((vatVendors || []).map((v) => String(v).trim()).filter(Boolean));
+  if (!vendorSet.size) return rows;
+
+  const date = formatLocalDate();
+  const normalLabel = "ㅇ";
+  const productAmountByVendor = {};
+  for (const r of rows) {
+    if (r.B === "매입차감" || r.B === "부가세") continue;
+    if (!vendorSet.has(r.A)) continue;
+    productAmountByVendor[r.A] = (productAmountByVendor[r.A] || 0) + parseNumber(r.C);
+  }
+
+  const vatRows = Object.entries(productAmountByVendor)
+    .filter(([, amount]) => amount > 0)
+    .map(([vendor, amount]) => ({
+      A: vendor,
+      B: "부가세",
+      C: String(Math.round(amount * 0.1)),
+      D: "부가세",
+      E: "부가세",
+      F: "부가세",
+      G: date,
+      H: normalLabel,
+      I: "",
+      originalF: "",
+    }));
+
+  return [...rows, ...vatRows];
+}
+
 function getFirstDataSheet(workbook) {
   for (const sheetName of workbook.SheetNames || []) {
     const sheet = workbook.Sheets[sheetName];
@@ -199,7 +254,6 @@ function convertCurrentReceiptExcelRowsSplitV3(rawData) {
     const isPickup = hasPickupMarker(pickupText);
     const pickupOnOriginalRow = isPickup && requestQty <= 0;
     const memoNumber = Number(pickupText);
-    const isMemoPositiveNumber = pickupText !== "" && !isNaN(memoNumber) && memoNumber > 0;
     const isMemoNegativeNumber = pickupText !== "" && !isNaN(memoNumber) && memoNumber < 0;
 
     if (originalQty > 0) {
@@ -237,21 +291,6 @@ function convertCurrentReceiptExcelRowsSplitV3(rawData) {
         F: "매입차감",
         G: date,
         H: "매입차감",
-        I: "",
-        originalF: "",
-      });
-    }
-
-    if (isMemoPositiveNumber) {
-      rows.push({
-        A: supplierPrefix,
-        B: "부가세",
-        C: pickupText,
-        D: "부가세",
-        E: "부가세",
-        F: "부가세",
-        G: date,
-        H: normalLabel,
         I: "",
         originalF: "",
       });
@@ -369,6 +408,8 @@ export default function NoyeKimPage() {
   const [showSlipVoucherModal, setShowSlipVoucherModal] = useState(false);
   const [selectedSlipSheets, setSelectedSlipSheets] = useState([]);
   const [loadingSlipVoucherList, setLoadingSlipVoucherList] = useState(false);
+  const [vatVendors, setVatVendors] = useState([]);
+  const [vatVendorInput, setVatVendorInput] = useState("");
 
   const [misongItems, setMisongItems] = useState([]);
   const [misongAlerts, setMisongAlerts] = useState([]);
@@ -392,10 +433,16 @@ export default function NoyeKimPage() {
   const [misongDisappearedItems, setMisongDisappearedItems] = useState([]);
   const [misongDisappearedLoading, setMisongDisappearedLoading] = useState(false);
   const [misongQtyEdit, setMisongQtyEdit] = useState({ id: null, value: "" });
+  const [misongMemos, setMisongMemos] = useState({});
+  const [misongDraftMemos, setMisongDraftMemos] = useState({});
+  const [misongExpandedMemos, setMisongExpandedMemos] = useState(new Set());
   const [waitingBaseAppendOpen, setWaitingBaseAppendOpen] = useState(false);
   const [waitingBaseAppendText, setWaitingBaseAppendText] = useState("");
   const [ingodaegiLoading, setIngodaegiLoading] = useState(false);
   const [ingodaegiMsg, setIngodaegiMsg] = useState("");
+  const [misongCheckLoading, setMisongCheckLoading] = useState(false);
+  const [misongCheckOpen, setMisongCheckOpen] = useState(false);
+  const [misongCheckResult, setMisongCheckResult] = useState(null);
 
   // 불량출력
   const [bulyangFile, setBulyangFile] = useState(null);
@@ -439,6 +486,84 @@ export default function NoyeKimPage() {
       } catch { /* 조용히 실패 */ }
     })();
   }, []);
+
+  useEffect(() => {
+    fetch(`${API}/noye-kimsungil/vat-vendors`, { headers: getAuthHeaders() })
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (d?.ok) setVatVendors(d.vendors || []); })
+      .catch(() => {});
+  }, []);
+
+  const saveVatVendors = async (nextVendors) => {
+    setVatVendors(nextVendors);
+    try {
+      const res = await fetch(`${API}/noye-kimsungil/vat-vendors`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ vendors: nextVendors }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data?.ok) setVatVendors(data.vendors || nextVendors);
+    } catch { /* 조용히 실패 */ }
+  };
+
+  const addVatVendor = () => {
+    const name = vatVendorInput.trim();
+    if (!name || vatVendors.includes(name)) { setVatVendorInput(""); return; }
+    setVatVendorInput("");
+    saveVatVendors([...vatVendors, name].sort());
+  };
+
+  const removeVatVendor = (name) => {
+    setMisongConfirm({
+      message: `부가세 거래처 "${name}"을(를) 정말 삭제하시겠습니까?`,
+      onConfirm: () => {
+        setMisongConfirm(null);
+        saveVatVendors(vatVendors.filter((v) => v !== name));
+      },
+    });
+  };
+
+  useEffect(() => {
+    fetch(`${API}/return-shipping/memos`, { headers: getAuthHeaders() })
+      .then((r) => r.ok ? r.json() : null)
+      .then((serverMemos) => {
+        if (!serverMemos) return;
+        const stripped = {};
+        Object.entries(serverMemos).forEach(([k, v]) => {
+          if (k.startsWith("noye_misong:")) stripped[k.slice(12)] = typeof v === "object" ? v : { memo: v, updated_at: null };
+        });
+        setMisongMemos((prev) => ({ ...prev, ...stripped }));
+      })
+      .catch(() => {});
+  }, []);
+
+  const saveMisongMemo = (key) => {
+    const val = (misongDraftMemos[key] ?? misongMemos[key]?.memo ?? "").trim();
+    const now = new Date().toISOString();
+    setMisongMemos((prev) => {
+      if (!val) { const next = { ...prev }; delete next[key]; return next; }
+      return { ...prev, [key]: { memo: val, updated_at: now } };
+    });
+    fetch(`${API}/return-shipping/memo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      body: JSON.stringify({ invoice_no: `noye_misong:${key}`, memo: val }),
+    }).catch(() => {});
+  };
+
+  const toggleMisongMemo = (key) => {
+    setMisongExpandedMemos((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+        setMisongDraftMemos((d) => ({ ...d, [key]: misongMemos[key]?.memo || "" }));
+      }
+      return next;
+    });
+  };
 
   const missingCodeAlerts = useMemo(
     () => misongAlerts.filter((alert) => alert.type === "missing_code"),
@@ -1221,7 +1346,7 @@ export default function NoyeKimPage() {
           return;
         }
 
-        const rows = await fillCostPrices(rawRows, getAuthHeaders());
+        const rows = applyPurchaseDeductionCap(applyVendorVat(await fillCostPrices(rawRows, getAuthHeaders()), vatVendors));
         setExcelSlipRows(rows);
         setExcelSlipOutput(rowsToTsv(rows));
 
@@ -1281,7 +1406,7 @@ export default function NoyeKimPage() {
       const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
       const rawRows = convertCurrentReceiptExcelRowsSplitV3(rawData);
       if (!rawRows.length) { setMessage("변환 가능한 행을 찾지 못했습니다."); return; }
-      const rows = await fillCostPrices(rawRows, getAuthHeaders());
+      const rows = applyPurchaseDeductionCap(applyVendorVat(await fillCostPrices(rawRows, getAuthHeaders()), vatVendors));
       setExcelSlipRows(rows);
       setExcelSlipOutput(rowsToTsv(rows));
       setMessage(`EZAdmin 입고전표 변환 완료: ${rows.length}건 (${selectedSlipSheets.length}개 전표)`);
@@ -1335,7 +1460,7 @@ export default function NoyeKimPage() {
         날짜: r.G,
         미송체크: r.H,
         상품코드: r.I,
-        메모: "",
+        메모: r.memo || "",
         거래처합산: String(sumMap[`${r.G}|${r.A}`] || ""),
       }));
       const res = await fetch(`${API}/wonbe/janggi/save`, {
@@ -1645,12 +1770,12 @@ export default function NoyeKimPage() {
         body: JSON.stringify({ text }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "원가베이스유 Sheet2 추가 실패");
+      if (!res.ok) throw new Error(data?.detail || "입고대기 추가 실패");
       setWaitingBaseAppendText("");
       setWaitingBaseAppendOpen(false);
-      setMessage(`원가베이스유 Sheet2 ${data.appended || 0}행 추가 완료`);
+      setMessage(`입고대기 ${data.appended || 0}행 추가 완료`);
     } catch (err) {
-      setMessage(err.message || "원가베이스유 Sheet2 추가 실패");
+      setMessage(err.message || "입고대기 추가 실패");
     } finally {
       setLoading(false);
     }
@@ -1807,6 +1932,32 @@ export default function NoyeKimPage() {
     } catch (err) {
       setIngodaegiMsg(`입고대기설정 실패: ${err.message || ""}`);
     } finally { setIngodaegiLoading(false); }
+  };
+
+  const handleMisongCheckEzadmin = async () => {
+    try {
+      setMisongCheckLoading(true);
+      const res = await fetch(`${API}/noye-kimsungil/misong/waiting-base/check-ezadmin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) {
+        openEzadminModal(handleMisongCheckEzadmin);
+        return;
+      }
+      if (!data?.ok) {
+        setMessage(data?.error || "입고대기 체크 실패");
+        return;
+      }
+      setMisongCheckResult(data);
+      setMisongCheckOpen(true);
+    } catch (err) {
+      setMessage(err.message || "입고대기 체크 실패");
+    } finally {
+      setMisongCheckLoading(false);
+    }
   };
 
   const setLayout = (key, val) => setBulyangLayout((prev) => ({ ...prev, [key]: val }));
@@ -2189,6 +2340,13 @@ export default function NoyeKimPage() {
                 </button>
                 <button
                   className={styles.secondaryBtn}
+                  onClick={handleMisongCheckEzadmin}
+                  disabled={misongCheckLoading || misongItems.length === 0}
+                >
+                  <Search size={13} />{misongCheckLoading ? "확인 중..." : "입고대기 체크"}
+                </button>
+                <button
+                  className={styles.secondaryBtn}
                   onClick={clearMisongItems}
                   disabled={misongItems.length === 0}
                 >
@@ -2235,11 +2393,12 @@ export default function NoyeKimPage() {
                           </th>
                         ))}
                         <th></th>
+                        <th></th>
                       </tr>
                     </thead>
                     <tbody>
                       {sortedMisongItems.map((item) => (
-                        <tr key={item.id}>
+                        <React.Fragment key={item.id}><tr>
                           <td>{item.A}</td>
                           <td>{item.B}</td>
                           <td>{item.D}</td>
@@ -2300,7 +2459,67 @@ export default function NoyeKimPage() {
                               </button>
                             </div>
                           </td>
+                          <td style={{ textAlign: "center", padding: "0 4px" }}>
+                            {(() => {
+                              const key = String(item.id);
+                              const memoObj = misongMemos[key];
+                              const hasMemo = !!memoObj?.memo;
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleMisongMemo(key)}
+                                  title={hasMemo ? memoObj.memo : "메모 추가"}
+                                  style={{
+                                    background: "none", border: "none", cursor: "pointer", padding: "2px",
+                                    color: hasMemo ? "var(--accent-blue, #3b82f6)" : "var(--text-muted)",
+                                    opacity: hasMemo ? 1 : 0.45, display: "flex", alignItems: "center",
+                                  }}
+                                >
+                                  <MessageSquare size={13} fill={hasMemo ? "currentColor" : "none"} />
+                                </button>
+                              );
+                            })()}
+                          </td>
                         </tr>
+                        {misongExpandedMemos.has(String(item.id)) && (
+                          <tr style={{ background: "var(--bg-secondary)" }}>
+                            <td colSpan={9} style={{ padding: "0.5rem 1rem 0.75rem 2.5rem" }}>
+                              <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.3rem", display: "flex", gap: "1rem" }}>
+                                <span>메모 — {item.B}</span>
+                                {misongMemos[String(item.id)]?.updated_at && (
+                                  <span style={{ color: "var(--text-muted)", opacity: 0.7 }}>
+                                    {new Date(misongMemos[String(item.id)].updated_at).toLocaleString("ko-KR", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start", maxWidth: "620px" }}>
+                                <textarea
+                                  value={misongDraftMemos[String(item.id)] ?? ""}
+                                  onChange={(e) => setMisongDraftMemos((d) => ({ ...d, [String(item.id)]: e.target.value }))}
+                                  placeholder="메모를 입력하세요..."
+                                  rows={2}
+                                  style={{
+                                    flex: 1, fontSize: "0.85rem", padding: "0.4rem 0.6rem",
+                                    border: "1px solid var(--border-color)", borderRadius: "var(--radius-sm)",
+                                    background: "var(--bg-primary)", color: "var(--text-primary)",
+                                    resize: "vertical", outline: "none", lineHeight: 1.5,
+                                  }}
+                                  onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) saveMisongMemo(String(item.id)); }}
+                                  autoFocus
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => saveMisongMemo(String(item.id))}
+                                  className={styles.secondaryBtn}
+                                  style={{ whiteSpace: "nowrap", alignSelf: "flex-end" }}
+                                >
+                                  저장
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                        </React.Fragment>
                       ))}
                     </tbody>
                   </table>
@@ -3009,6 +3228,42 @@ export default function NoyeKimPage() {
           <section className={styles.card}>
             <div className={styles.cardHeader}>
               <div className={styles.cardTitleRow}>
+                <div className={`${styles.cardIcon} ${styles.cardIconSlate}`}><Table2 size={15} /></div>
+                <h3 className={styles.cardTitle}>부가세 거래처</h3>
+              </div>
+              <span className={styles.pill}>{vatVendors.length}개</span>
+            </div>
+            <div className={styles.statusMsg}>
+              여기에 등록된 거래처(A열)는 변환 시 매입차감을 제외한 상품금액 합계 * 0.1을 부가세 행으로 자동 추가합니다.
+            </div>
+            <div className={styles.uploadRow}>
+              <input
+                className={styles.misongFormInput}
+                type="text"
+                value={vatVendorInput}
+                onChange={(e) => setVatVendorInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") addVatVendor(); }}
+                placeholder="거래처명 입력 (A열과 동일하게)"
+              />
+              <button className={styles.primaryBtn} onClick={addVatVendor} disabled={!vatVendorInput.trim()}>
+                <Plus size={14} />등록
+              </button>
+            </div>
+            {vatVendors.length > 0 && (
+              <div className={styles.uploadRow} style={{ flexWrap: "wrap" }}>
+                {vatVendors.map((vendor) => (
+                  <span key={vendor} className={styles.pill} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    {vendor}
+                    <X size={12} style={{ cursor: "pointer" }} onClick={() => removeVatVendor(vendor)} />
+                  </span>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className={styles.card}>
+            <div className={styles.cardHeader}>
+              <div className={styles.cardTitleRow}>
                 <div className={`${styles.cardIcon} ${styles.cardIconSlate}`}><Clipboard size={15} /></div>
                 <h3 className={styles.cardTitle}>TSV</h3>
               </div>
@@ -3051,6 +3306,7 @@ export default function NoyeKimPage() {
                       <th>G</th>
                       <th>H</th>
                       <th>I</th>
+                      <th>메모</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -3065,6 +3321,7 @@ export default function NoyeKimPage() {
                         <td>{row.G}</td>
                         <td>{row.H}</td>
                         <td>{row.I}</td>
+                        <td>{row.memo || ""}</td>
                       </tr>
                     ))}
                   </tbody>
