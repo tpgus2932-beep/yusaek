@@ -86,6 +86,11 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sched_memo_member ON attendance_schedule_memos(member_id)"
         )
+        member_cols = [r["name"] for r in conn.execute("PRAGMA table_info(attendance_members)").fetchall()]
+        if "include_in_schedule" not in member_cols:
+            conn.execute(
+                "ALTER TABLE attendance_members ADD COLUMN include_in_schedule INTEGER NOT NULL DEFAULT 1"
+            )
         conn.commit()
         conn.close()
 
@@ -137,6 +142,10 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
     class MemberDelete(BaseModel):
         pin: str
 
+    class MemberScheduleVisibility(BaseModel):
+        pin: str
+        includeInSchedule: bool
+
     class RecordCreate(BaseModel):
         member_name: str
         type: str  # "출근" | "퇴근"
@@ -168,10 +177,26 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
     def list_members():
         conn = get_db()
         rows = conn.execute(
-            "SELECT id, name FROM attendance_members ORDER BY name"
+            "SELECT id, name, include_in_schedule FROM attendance_members ORDER BY name"
         ).fetchall()
         conn.close()
-        return [{"id": r["id"], "name": r["name"]} for r in rows]
+        return [
+            {"id": r["id"], "name": r["name"], "includeInSchedule": bool(r["include_in_schedule"])}
+            for r in rows
+        ]
+
+    # ── 근무표 포함 여부 변경 (PIN 필요) ─────────────────
+    @router.patch("/members/{member_id}/schedule-visibility")
+    def set_member_schedule_visibility(member_id: int, body: MemberScheduleVisibility):
+        _check_pin(body.pin)
+        conn = get_db()
+        conn.execute(
+            "UPDATE attendance_members SET include_in_schedule = ? WHERE id = ?",
+            (1 if body.includeInSchedule else 0, member_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True}
 
     # ── 직원 추가 (PIN 필요) ────────────────────────────
     @router.post("/members")

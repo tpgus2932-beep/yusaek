@@ -179,6 +179,15 @@ export default function AttendanceAdminPage() {
     loadMembers();
   };
 
+  const toggleScheduleVisibility = async (id, includeInSchedule) => {
+    await fetch(`${COLLAB_API_BASE}/attendance/members/${id}/schedule-visibility`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin, includeInSchedule }),
+    });
+    loadMembers();
+  };
+
   const openMemberEdit = (member) => {
     setEditingMember(member);
     setMemberEditName(member.name);
@@ -567,6 +576,14 @@ export default function AttendanceAdminPage() {
               {members.map((m) => (
                 <li key={m.id} className={styles.memberItem}>
                   <span className={styles.memberName}>{m.name}</span>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.78rem', color: '#64748b', whiteSpace: 'nowrap' }}>
+                    <input
+                      type="checkbox"
+                      checked={m.includeInSchedule}
+                      onChange={() => toggleScheduleVisibility(m.id, !m.includeInSchedule)}
+                    />
+                    근무표 포함
+                  </label>
                   <button className={styles.editMemberBtn} onClick={() => openMemberEdit(m)}>
                     수정
                   </button>
@@ -902,7 +919,9 @@ export default function AttendanceAdminPage() {
           </>
         )}
         {/* ── 스케줄관리 탭 ── */}
-        {tab === 'schedule' && <ScheduleTab pin={pin} members={members} />}
+        {tab === 'schedule' && (
+          <ScheduleTab pin={pin} members={members.filter((m) => m.includeInSchedule)} />
+        )}
       </div>
 
       {/* 시간 수정 모달 */}
