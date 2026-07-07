@@ -26,7 +26,6 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
   const [message, setMessage] = useState("");
   const [costMessage, setCostMessage] = useState("");
   const [costBase, setCostBase] = useState(null);
-  const [costBaseFile, setCostBaseFile] = useState(null);
   const [showCostEditor, setShowCostEditor] = useState(false);
   const [costColumns, setCostColumns] = useState([]);
   const [costRows, setCostRows] = useState([]);
@@ -263,34 +262,6 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
       setCostMessage("원가베이스 로드 완료");
     } catch (err) {
       setCostMessage(err.message || "원가베이스 로드 실패");
-    } finally {
-      setLoadingCostBase(false);
-    }
-  };
-
-  const handleCostBaseUpload = async () => {
-    if (!costBaseFile) {
-      setCostMessage("원가베이스 파일을 선택하세요.");
-      return;
-    }
-    setLoadingCostBase(true);
-    setCostMessage("");
-    try {
-      const formData = new FormData();
-      formData.append("file", costBaseFile);
-      const res = await fetch(`${API}/amood-hapbae/cost-base/upload`, {
-        method: "POST",
-        headers: getAuthHeaders(),
-        body: formData,
-      });
-      if (handleUnauthorized(res)) return;
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "원가베이스 업로드 실패");
-      setCostBase(data.status || null);
-      setCostMessage("원가베이스 업로드 완료");
-      setCostBaseFile(null);
-    } catch (err) {
-      setCostMessage(err.message || "원가베이스 업로드 실패");
     } finally {
       setLoadingCostBase(false);
     }
@@ -546,13 +517,6 @@ export default function AmoodHapbaePage({ headerExtra = null, transferredFile = 
           )}
         </div>
         <div className={styles.uploadRow}>
-          <label className={styles.fileInput} style={{ flex: 1, justifyContent: "flex-start" }}>
-            <input type="file" accept=".xls,.xlsx,.xlsm" onChange={(e) => setCostBaseFile(e.target.files?.[0] ?? null)} />
-            {costBaseFile ? costBaseFile.name : "원가베이스 파일 선택"}
-          </label>
-          <button type="button" className={styles.primaryBtn} onClick={handleCostBaseUpload} disabled={loadingCostBase}>
-            {loadingCostBase ? "업로드 중..." : "업로드"}
-          </button>
           <button type="button" className={styles.secondaryBtn} onClick={handleCostBaseReload} disabled={loadingCostBase}>
             새로 로드
           </button>
