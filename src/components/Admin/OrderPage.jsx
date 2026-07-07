@@ -22,6 +22,7 @@ export default function OrderPage() {
   const [mainOrderItems, setMainOrderItems] = useState([]);
   const [mainOrderLoading, setMainOrderLoading] = useState(false);
   const [mainOrderMessage, setMainOrderMessage] = useState("");
+  const [mainOrderSelected, setMainOrderSelected] = useState(new Set());
 
   const fetchMainOrderList = async () => {
     try {
@@ -41,6 +42,7 @@ export default function OrderPage() {
         return;
       }
       setMainOrderItems(data.items || []);
+      setMainOrderSelected(new Set());
       setMainOrderMessage(`조회 완료: ${data.count ?? 0}건`);
     } catch (err) {
       setMainOrderMessage(err.message || "메인발주 목록 조회 실패");
@@ -55,16 +57,36 @@ export default function OrderPage() {
     );
   };
 
+  const toggleMainOrderSelected = (code) => {
+    setMainOrderSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) {
+        next.delete(code);
+      } else {
+        next.add(code);
+      }
+      return next;
+    });
+  };
+
+  const toggleMainOrderSelectAll = () => {
+    setMainOrderSelected((prev) =>
+      prev.size === mainOrderItems.length ? new Set() : new Set(mainOrderItems.map((item) => item.code))
+    );
+  };
+
   const [mainOrderExecuting, setMainOrderExecuting] = useState(false);
   const [mainOrderExecResult, setMainOrderExecResult] = useState(null);
 
   const executeMainOrders = async () => {
-    const targetCount = mainOrderItems.filter((item) => Number(item.requestQty) > 0).length;
-    if (targetCount === 0) {
-      setMainOrderMessage("요청수량이 0보다 큰 항목이 없습니다.");
+    const targetItems = mainOrderItems.filter(
+      (item) => mainOrderSelected.has(item.code) && Number(item.requestQty) > 0
+    );
+    if (targetItems.length === 0) {
+      setMainOrderMessage("체크되고 요청수량이 0보다 큰 항목이 없습니다.");
       return;
     }
-    if (!window.confirm(`요청수량이 있는 ${targetCount}건을 top90에 발주 등록합니다.\n\n계속하시겠습니까?`)) {
+    if (!window.confirm(`체크된 ${targetItems.length}건을 top90에 발주 등록합니다.\n\n계속하시겠습니까?`)) {
       return;
     }
 
@@ -75,7 +97,7 @@ export default function OrderPage() {
       const res = await fetch(`${API}/order/main-order/execute`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ items: mainOrderItems }),
+        body: JSON.stringify({ items: targetItems }),
       });
       const data = await res.json().catch(() => ({}));
       if (!data?.ok) {
@@ -546,7 +568,9 @@ export default function OrderPage() {
       {activeTab === "main-order" && (
         <section className={styles.card}>
           <div className={styles.cardHeader}>
-            <h3 className={styles.cardTitle}>메인발주 ({mainOrderItems.length}건)</h3>
+            <h3 className={styles.cardTitle}>
+              메인발주 ({mainOrderItems.length}건 중 {mainOrderSelected.size}건 선택)
+            </h3>
           </div>
           <div className={styles.uploadRow}>
             <button className={styles.primaryBtn} onClick={fetchMainOrderList} disabled={mainOrderLoading}>
@@ -555,9 +579,9 @@ export default function OrderPage() {
             <button
               className={styles.secondaryBtn}
               onClick={executeMainOrders}
-              disabled={mainOrderExecuting || mainOrderItems.length === 0}
+              disabled={mainOrderExecuting || mainOrderSelected.size === 0}
             >
-              {mainOrderExecuting ? "발주 실행 중..." : "발주 실행"}
+              {mainOrderExecuting ? "발주 실행 중..." : `선택 항목 발주 실행 (${mainOrderSelected.size}건)`}
             </button>
           </div>
           {mainOrderMessage && (
@@ -596,6 +620,13 @@ export default function OrderPage() {
               <table className={styles.table}>
                 <thead>
                   <tr>
+                    <th style={stickyThStyle}>
+                      <input
+                        type="checkbox"
+                        checked={mainOrderItems.length > 0 && mainOrderSelected.size === mainOrderItems.length}
+                        onChange={toggleMainOrderSelectAll}
+                      />
+                    </th>
                     <th style={stickyThStyle}>상품코드</th>
                     <th style={stickyThStyle}>상품명</th>
                     <th style={stickyThStyle}>옵션</th>
@@ -609,6 +640,13 @@ export default function OrderPage() {
                 <tbody>
                   {mainOrderItems.map((item) => (
                     <tr key={item.code}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={mainOrderSelected.has(item.code)}
+                          onChange={() => toggleMainOrderSelected(item.code)}
+                        />
+                      </td>
                       <td>{item.code}</td>
                       <td>{item.name}</td>
                       <td>{item.options}</td>
