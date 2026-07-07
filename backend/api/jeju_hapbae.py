@@ -17,11 +17,11 @@ from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
 from api.amood_hapbae import (
-    SHARED_COST_BASE_PATH,
     _ah_load_base_cost_map,
     _ah_normalize,
     _content_disposition,
 )
+from api.wonbe_routes import WONBE_DB_PATH
 from services.pastelco_utils import pastelco_login
 
 _ABLY_ORDER_ITEMS_URL = "https://api.a-bly.com/seller/order_items/"
@@ -325,13 +325,13 @@ async def jeju_hapbae_unmatched(file: UploadFile = File(...)):
     try:
         rows = _jeju_process(tmp_path)
         cost_map: dict = {}
-        if SHARED_COST_BASE_PATH.exists():
+        if WONBE_DB_PATH.exists():
             try:
-                cost_map = _ah_load_base_cost_map(SHARED_COST_BASE_PATH)
+                cost_map = _ah_load_base_cost_map()
             except Exception:
                 cost_map = {}
         unmatched = _jeju_find_unmatched(rows, cost_map)
-        return {"ok": True, "unmatched": unmatched, "cost_base_exists": SHARED_COST_BASE_PATH.exists()}
+        return {"ok": True, "unmatched": unmatched, "cost_base_exists": WONBE_DB_PATH.exists()}
     except HTTPException:
         raise
     except Exception as e:
@@ -380,9 +380,9 @@ async def jeju_hapbae_export(
             raise HTTPException(status_code=400, detail="C열 중복이면서 Q열에 '제주'가 포함된 데이터가 없어 가공할 항목이 없습니다.")
 
         cost_map: dict = {}
-        if SHARED_COST_BASE_PATH.exists():
+        if WONBE_DB_PATH.exists():
             try:
-                cost_map = _ah_load_base_cost_map(SHARED_COST_BASE_PATH)
+                cost_map = _ah_load_base_cost_map()
             except Exception:
                 cost_map = {}
 
@@ -530,9 +530,9 @@ async def jeju_hapbae_export_from_ably(payload: dict = Body(default={})):
         raise HTTPException(status_code=400, detail="합배송 건 중 제주 주소가 없습니다.")
 
     cost_map: dict = {}
-    if SHARED_COST_BASE_PATH.exists():
+    if WONBE_DB_PATH.exists():
         try:
-            cost_map = _ah_load_base_cost_map(SHARED_COST_BASE_PATH)
+            cost_map = _ah_load_base_cost_map()
         except Exception:
             cost_map = {}
 
@@ -676,9 +676,9 @@ async def _jeju_send_rows_to_ezadmin(rows: list[tuple[str, str]], direction: str
         raise HTTPException(status_code=400, detail="처리할 제주합배 데이터가 없습니다.")
 
     cost_map: dict = {}
-    if SHARED_COST_BASE_PATH.exists():
+    if WONBE_DB_PATH.exists():
         try:
-            cost_map = _ah_load_base_cost_map(SHARED_COST_BASE_PATH)
+            cost_map = _ah_load_base_cost_map()
         except Exception:
             pass
 
