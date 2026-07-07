@@ -585,4 +585,54 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.close()
         return {"ok": True, "overrides": [_override_row_to_dict(r) for r in rows]}
 
+    class ScheduleMemoUpsert(BaseModel):
+        pin: str
+        memberId: int
+        date: str
+        content: str
+
+    class ScheduleMemoDelete(BaseModel):
+        pin: str
+        memberId: int
+        date: str
+
+    @router.post("/schedule/memos")
+    def upsert_schedule_memo(body: ScheduleMemoUpsert):
+        _check_pin(body.pin)
+        conn = get_db()
+        content = body.content.strip()
+        if content:
+            conn.execute(
+                "INSERT INTO attendance_schedule_memos (member_id, date, content, created_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(member_id, date) DO UPDATE SET content = excluded.content",
+                (body.memberId, body.date, content, _now_kst().isoformat()),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM attendance_schedule_memos WHERE member_id = ? AND date = ?",
+                (body.memberId, body.date),
+            )
+        conn.commit()
+        rows = conn.execute(
+            "SELECT id, member_id, date, content FROM attendance_schedule_memos ORDER BY date ASC"
+        ).fetchall()
+        conn.close()
+        return {"ok": True, "memos": [_memo_row_to_dict(r) for r in rows]}
+
+    @router.delete("/schedule/memos")
+    def delete_schedule_memo(body: ScheduleMemoDelete):
+        _check_pin(body.pin)
+        conn = get_db()
+        conn.execute(
+            "DELETE FROM attendance_schedule_memos WHERE member_id = ? AND date = ?",
+            (body.memberId, body.date),
+        )
+        conn.commit()
+        rows = conn.execute(
+            "SELECT id, member_id, date, content FROM attendance_schedule_memos ORDER BY date ASC"
+        ).fetchall()
+        conn.close()
+        return {"ok": True, "memos": [_memo_row_to_dict(r) for r in rows]}
+
     return router
