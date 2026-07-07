@@ -68,7 +68,6 @@ def build_returns_router(
     normalize_key,
     content_disposition,
     return_allowed_exts,
-    return_cost_base_path,
 ):
     router = APIRouter()
     COST_BASE_CODE_COL = 0
@@ -764,43 +763,19 @@ def build_returns_router(
             raise HTTPException(status_code=400, detail=f"원가베이스 로드 실패: {e}")
         return {"ok": True, "cost_count": len(state.cost_map), "status": return_status(state)}
 
-    @router.post("/returns/cost-base/upload")
-    def returns_cost_base_upload(
-        file: UploadFile = File(...),
-        admin: str = Depends(require_admin),
-    ):
-        ext = Path(file.filename or "").suffix.lower()
-        if ext not in return_allowed_exts:
-            raise HTTPException(status_code=400, detail="xls/xlsx/xlsm만 업로드 가능")
-
-        return_cost_base_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = Path(tempfile.gettempdir()) / f"returns_cost_base_{uuid.uuid4().hex}{ext}"
-        with tmp_path.open("wb") as out:
-            shutil.copyfileobj(file.file, out)
-
-        try:
-            df = read_return_excel(tmp_path)
-            if df.shape[1] < COST_BASE_REQUIRED_COLS:
-                raise HTTPException(status_code=400, detail="원가베이스는 최소 A~I열이 필요합니다.")
-            shutil.move(str(tmp_path), str(return_cost_base_path))
-        finally:
-            try:
-                tmp_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-
-        state = get_return_state(admin)
-        state.cost_base_path = return_cost_base_path
-        load_return_cost_base(state)
-
-        return {"ok": True, "status": return_status(state)}
-
     @router.get("/returns/cost-base/download")
     def returns_cost_base_download(admin: str = Depends(require_admin)):
-        path = return_cost_base_path
-        if not path.exists():
-            raise HTTPException(status_code=404, detail="원가베이스 파일이 없습니다.")
-        return FileResponse(path, filename=path.name)
+        df = load_cost_base_df()
+        if df.empty:
+            raise HTTPException(status_code=404, detail="원가베이스 데이터가 없습니다.")
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": content_disposition("원가베이스유.xlsx")},
+        )
 
     @router.get("/returns/cost-base/preview")
     def returns_cost_base_preview(
@@ -830,7 +805,7 @@ def build_returns_router(
             df_filtered = df
 
         total = len(df_filtered)
-        col_names = ["A열 상품코드", "I열 상품명 색상 사이즈"]
+        col_names = ["상품코드", "상품명합"]
         end = min(offset + limit, total)
         rows = []
         for i in range(offset, end):
@@ -916,8 +891,8 @@ def build_returns_router(
     def returns_cost_base_add_row(payload: dict = Body(...), admin: str = Depends(require_admin)):
         name = str(payload.get("name") or "").strip()
         code = str(payload.get("code") or "").strip()
-        if not name and not code:
-            raise HTTPException(status_code=400, detail="A열 또는 I열 값을 입력하세요.")
+        if not code:
+            raise HTTPException(status_code=400, detail="A열 상품코드는 필수입니다. (상품코드 없는 행은 추가할 수 없습니다)")
 
         try:
             df = load_cost_base_df().copy()
@@ -944,7 +919,6 @@ def build_returns_router(
             raise HTTPException(status_code=500, detail=f"원가베이스 저장 실패: {e}")
 
         state = get_return_state(admin)
-        state.cost_base_path = return_cost_base_path
         load_return_cost_base(state)
         return {"ok": True, "status": return_status(state), "row_added": {"name": name, "code": code}}
 
@@ -988,7 +962,6 @@ def build_returns_router(
             raise HTTPException(status_code=500, detail=f"원가베이스 저장 실패: {e}")
 
         state = get_return_state(admin)
-        state.cost_base_path = return_cost_base_path
         load_return_cost_base(state)
         return {"ok": True, "appended": len(new_rows)}
 
@@ -1893,6 +1866,38 @@ def build_returns_router(
             r2.raise_for_status()
 
         return {"ok": True, "cancel_sno": cancel_sno_int, "item_sno": item_sno}
+
+    @router.post("/returns/ably-confirm-by-item-sno")
+    async def returns_ably_confirm_by_item_sno(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        item_sno_str = str(payload.get("item_sno") or "").strip()
+        if not item_sno_str:
+            raise HTTPException(status_code=400, detail="item_sno를 입력하세요.")
+        try:
+            item_sno_int = int(item_sno_str)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="item_sno는 숫자여야 합니다.")
+
+        token = await _ably_login()
+        hdrs_json = {
+            "Authorization": f"JWT {token}",
+            "Content-Type": "application/json",
+            "Origin": "https://my.a-bly.com",
+            "Referer": "https://my.a-bly.com/",
+            "User-Agent": "Mozilla/5.0",
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.put(
+                f"{ABLY_BASE}/seller/order_items/request_confirm/",
+                headers=hdrs_json,
+                json={"sno_list": [item_sno_int]},
+            )
+            r.raise_for_status()
+
+        return {"ok": True, "item_sno": item_sno_int}
 
     async def _llogis_login() -> str:
         async with httpx.AsyncClient(verify=False, timeout=15.0) as c:
