@@ -474,4 +474,115 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.close()
         return {"ok": True, "fixedRules": [_fixed_rule_row_to_dict(r) for r in rows]}
 
+    def _member_week_hours(conn, member_id: int, date_str: str, pending: dict | None = None) -> float:
+        """date_str가 속한 월~금 주간의 예정 근무시간 합계.
+        pending이 있으면 그 날짜의 override는 DB 값 대신 pending 값으로 계산한다
+        (저장 전 검증용 — 공휴일은 고려하지 않는다, Global Constraints 참고)."""
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+        monday = d - timedelta(days=d.weekday())
+        week_dates = [(monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(5)]
+
+        placeholders = ",".join("?" * len(week_dates))
+        existing_overrides = {
+            r["date"]: r
+            for r in conn.execute(
+                f"SELECT date, start_time, end_time, status FROM attendance_schedule_overrides "
+                f"WHERE member_id = ? AND date IN ({placeholders})",
+                (member_id, *week_dates),
+            ).fetchall()
+        }
+        fixed_rules = conn.execute(
+            "SELECT weekday, start_time, end_time, effective_from, status "
+            "FROM attendance_schedule_fixed_rules WHERE member_id = ? "
+            "ORDER BY effective_from DESC, id DESC",
+            (member_id,),
+        ).fetchall()
+
+        def fixed_for(weekday, on_date):
+            for r in fixed_rules:
+                if r["weekday"] == weekday and r["status"] == "scheduled" and r["effective_from"] <= on_date:
+                    return r
+            return None
+
+        total = 0.0
+        for i, wd_date in enumerate(week_dates):
+            weekday = i + 1
+            if pending and pending["date"] == wd_date:
+                if pending["status"] == "scheduled":
+                    total += _hours_between(pending["start_time"], pending["end_time"])
+                continue
+            override = existing_overrides.get(wd_date)
+            if override:
+                if override["status"] == "scheduled":
+                    total += _hours_between(override["start_time"], override["end_time"])
+                continue
+            rule = fixed_for(weekday, wd_date)
+            if rule:
+                total += _hours_between(rule["start_time"], rule["end_time"])
+        return total
+
+    class ScheduleOverrideUpsert(BaseModel):
+        pin: str
+        memberId: int
+        weekday: int
+        date: str
+        startTime: str
+        endTime: str
+        status: str
+
+    class ScheduleOverrideDelete(BaseModel):
+        pin: str
+        memberId: int
+        date: str
+
+    @router.post("/schedule/overrides")
+    def upsert_schedule_override(body: ScheduleOverrideUpsert):
+        _check_pin(body.pin)
+        if body.status == "scheduled" and _hours_between(body.startTime, body.endTime) <= 0:
+            raise HTTPException(status_code=400, detail="종료 시간은 시작 시간보다 늦어야 합니다.")
+
+        conn = get_db()
+        if body.status == "scheduled":
+            pending = {
+                "date": body.date, "status": body.status,
+                "start_time": body.startTime, "end_time": body.endTime,
+            }
+            total_hours = _member_week_hours(conn, body.memberId, body.date, pending)
+            if total_hours > 15:
+                conn.close()
+                raise HTTPException(status_code=400, detail="직원별 주 15시간을 초과할 수 없습니다.")
+
+        conn.execute(
+            "INSERT INTO attendance_schedule_overrides "
+            "(member_id, weekday, date, start_time, end_time, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(member_id, date) DO UPDATE SET "
+            "weekday = excluded.weekday, start_time = excluded.start_time, "
+            "end_time = excluded.end_time, status = excluded.status",
+            (body.memberId, body.weekday, body.date, body.startTime, body.endTime, body.status, _now_kst().isoformat()),
+        )
+        conn.commit()
+        rows = conn.execute(
+            "SELECT id, member_id, weekday, date, start_time, end_time, status "
+            "FROM attendance_schedule_overrides ORDER BY date ASC"
+        ).fetchall()
+        conn.close()
+        return {"ok": True, "overrides": [_override_row_to_dict(r) for r in rows]}
+
+    @router.delete("/schedule/overrides")
+    def delete_schedule_override(body: ScheduleOverrideDelete):
+        _check_pin(body.pin)
+        conn = get_db()
+        conn.execute(
+            "DELETE FROM attendance_schedule_overrides WHERE member_id = ? AND date = ?",
+            (body.memberId, body.date),
+        )
+        conn.commit()
+        rows = conn.execute(
+            "SELECT id, member_id, weekday, date, start_time, end_time, status "
+            "FROM attendance_schedule_overrides ORDER BY date ASC"
+        ).fetchall()
+        conn.close()
+        return {"ok": True, "overrides": [_override_row_to_dict(r) for r in rows]}
+
     return router
