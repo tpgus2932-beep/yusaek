@@ -25,6 +25,7 @@ def build_inventory_dashboard_router(
             return {"ok": False, "need_session": True}
 
         today = datetime.now().strftime("%Y-%m-%d")
+        nd = str(int(datetime.now().timestamp() * 1000))
         par = (
             "auto_search=&search_all_product=&multi_supply_group=&multi_supply=&str_supply_code=0"
             "&tags_string=&product_tag_include_type=1&query_type=name&query_str="
@@ -37,18 +38,25 @@ def build_inventory_dashboard_router(
 
         cookies = {"PHPSESSID": phpsessid}
         try:
+            # template=I100&action=search 는 이 저장소의 backend/api/wonbe_routes.py
+            # (wonbe_sync_ezadmin, 동일한 par 구조로 재고 조회) 에서 이미 검증된 호출 형태다.
+            # jqGrid 파라미터(_search/nd/rows/page/sidx/sord)와 Referer 헤더가 없으면
+            # 세션이 유효해도 EZAdmin이 JSON 대신 로그인 페이지를 반환한다.
             async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
                 r = await client.post(
                     f"{_EZADMIN_BASE}/function.htm",
                     data={
-                        "template": "BX00",
-                        "action": "add_option",
+                        "_search": "false", "nd": nd,
+                        "rows": "9999", "page": "1", "sidx": "", "sord": "asc",
+                        "template": "I100", "action": "search", "page_code": "I100",
                         "par": par,
-                        "page_code": "I100",
-                        "is_auto": "1",
                     },
                     cookies=cookies,
-                    headers={"X-Requested-With": "XMLHttpRequest"},
+                    headers={
+                        "User-Agent": "Mozilla/5.0",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": f"{_EZADMIN_BASE}/template40.htm?template=I100",
+                    },
                 )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"이지어드민 연결 실패: {exc}")
@@ -71,20 +79,15 @@ def build_inventory_dashboard_router(
         matched = []
         for row in obj.get("rows", []):
             cell = row.get("cell", {}) or {}
-            raw_code = (
-                cell.get("key")
-                or cell.get("product_id")
-                or cell.get("code")
-                or cell.get("product_code")
-                or ""
-            )
+            # "key"는 backend/api/wonbe_routes.py의 동일 I100/search 호출에서 이미 확인된 상품코드 필드.
+            raw_code = cell.get("key") or cell.get("product_id") or cell.get("code") or ""
             code = normalize_to_yusas(raw_code) or str(raw_code).strip()
             if not code or code not in incoming_counts:
                 continue
             matched.append({
                 "code": code,
-                "productName": cell.get("product_name") or cell.get("name") or "",
-                "stockQty": cell.get("stock") or cell.get("stock_qty") or cell.get("cnt") or "",
+                "productName": cell.get("product_name") or "",
+                "stockQty": cell.get("stock") or cell.get("stock_qty") or cell.get("cur_stock") or "",
                 "incomingQty": incoming_counts.get(code, 0),
                 "raw": cell,
             })
