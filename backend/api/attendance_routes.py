@@ -383,4 +383,45 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         set_setting(ATTENDANCE_ADMIN_PIN_KEY, hash_pin(new_pin))
         return {"ok": True}
 
+    # ── 스케줄관리 ──────────────────────────────────────
+
+    def _fixed_rule_row_to_dict(r):
+        return {
+            "id": r["id"], "memberId": r["member_id"], "weekday": r["weekday"],
+            "startTime": r["start_time"], "endTime": r["end_time"],
+            "effectiveFrom": r["effective_from"], "status": r["status"],
+        }
+
+    def _override_row_to_dict(r):
+        return {
+            "id": r["id"], "memberId": r["member_id"], "weekday": r["weekday"],
+            "date": r["date"], "startTime": r["start_time"], "endTime": r["end_time"],
+            "status": r["status"],
+        }
+
+    def _memo_row_to_dict(r):
+        return {"id": r["id"], "memberId": r["member_id"], "date": r["date"], "content": r["content"]}
+
+    @router.get("/schedule")
+    def get_schedule(pin: str = ""):
+        _check_pin(pin)
+        conn = get_db()
+        fixed_rows = conn.execute(
+            "SELECT id, member_id, weekday, start_time, end_time, effective_from, status "
+            "FROM attendance_schedule_fixed_rules ORDER BY effective_from ASC, id ASC"
+        ).fetchall()
+        override_rows = conn.execute(
+            "SELECT id, member_id, weekday, date, start_time, end_time, status "
+            "FROM attendance_schedule_overrides ORDER BY date ASC"
+        ).fetchall()
+        memo_rows = conn.execute(
+            "SELECT id, member_id, date, content FROM attendance_schedule_memos ORDER BY date ASC"
+        ).fetchall()
+        conn.close()
+        return {
+            "fixedRules": [_fixed_rule_row_to_dict(r) for r in fixed_rows],
+            "overrides": [_override_row_to_dict(r) for r in override_rows],
+            "memos": [_memo_row_to_dict(r) for r in memo_rows],
+        }
+
     return router
