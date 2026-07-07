@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 import openpyxl
+import pandas as pd
 import xlwt
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response
@@ -96,6 +97,82 @@ def _init_wonbe_table(conn: sqlite3.Connection):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_wonbe_상품명합 ON wonbe(상품명합)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_wonbe_거래처합 ON wonbe(거래처합)")
     conn.commit()
+
+
+COST_BASE_CODE_COL = 0
+COST_BASE_MATCH_COL = 8
+
+
+def _normalize_cost_base_key(value) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def load_wonbe_cost_base_df() -> pd.DataFrame:
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute(
+            f"SELECT {', '.join(COLUMNS)} FROM wonbe ORDER BY rowid ASC"
+        ).fetchall()
+    finally:
+        conn.close()
+    return pd.DataFrame([dict(r) for r in rows], columns=COLUMNS)
+
+
+def save_wonbe_cost_base_df(df: pd.DataFrame) -> int:
+    """상품코드 기준 upsert. wonbe 테이블을 절대 비우지 않는다.
+    상품코드가 빈 행은 PRIMARY KEY 충돌(빈 문자열끼리 덮어씀)을 피하기 위해 스킵하고,
+    스킵된 행 수를 반환한다."""
+    df = df.reindex(columns=COLUMNS, fill_value="").fillna("")
+    codes = df[COLUMNS[COST_BASE_CODE_COL]].astype(str).str.strip()
+    skipped = int((codes == "").sum())
+    df = df[codes != ""]
+    rows = [tuple(r) for r in df[COLUMNS].itertuples(index=False, name=None)]
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        if rows:
+            conn.executemany(
+                f"INSERT OR REPLACE INTO wonbe ({', '.join(COLUMNS)}) VALUES ({', '.join(['?'] * len(COLUMNS))})",
+                rows,
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    return skipped
+
+
+def load_wonbe_cost_base_map() -> dict[str, str]:
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute("SELECT 상품코드, 상품명합 FROM wonbe").fetchall()
+    finally:
+        conn.close()
+    cost_map: dict[str, str] = {}
+    for r in rows:
+        key = _normalize_cost_base_key(r["상품명합"])
+        if not key or key in cost_map:
+            continue
+        cost_map[key] = r["상품코드"]
+    return cost_map
+
+
+def wonbe_cost_base_status() -> dict:
+    exists = WONBE_DB_PATH.exists()
+    mtime = None
+    if exists:
+        try:
+            mtime = datetime.fromtimestamp(WONBE_DB_PATH.stat().st_mtime).isoformat()
+        except Exception:
+            mtime = None
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        count = conn.execute("SELECT COUNT(*) FROM wonbe").fetchone()[0]
+    finally:
+        conn.close()
+    return {"path": str(WONBE_DB_PATH), "exists": exists, "mtime": mtime, "rows": count}
 
 
 def _init_kdg_table(conn: sqlite3.Connection):
