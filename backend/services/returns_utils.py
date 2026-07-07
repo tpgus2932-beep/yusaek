@@ -79,7 +79,7 @@ def _normalize_key(s: str) -> str:
         return ""
     s = str(s)
     s = re.sub(r"\s+", " ", s).strip()
-    return s.lower()
+    return s.casefold()
 
 
 def _reason_type(k_value: str) -> str:
