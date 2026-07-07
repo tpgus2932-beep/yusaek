@@ -100,6 +100,22 @@ function getMisongAlertBadgeClass(type, styles) {
   return styles.misongBadgeNotFound;
 }
 
+const MISONG_CHECK_REASON_LABELS = {
+  qty_mismatch: "수량불일치",
+  code_not_found_in_ezadmin: "코드매칭안됨",
+  not_in_misong: "미송없음",
+};
+
+function getMisongCheckReasonLabel(reason) {
+  return MISONG_CHECK_REASON_LABELS[reason] || "알림";
+}
+
+function getMisongCheckBadgeClass(reason, styles) {
+  if (reason === "qty_mismatch") return styles.misongBadgeNegative;
+  if (reason === "code_not_found_in_ezadmin") return styles.misongBadgeMissing;
+  return styles.misongBadgeNotFound;
+}
+
 function extractProductName(supplierProductName) {
   const cleaned = String(supplierProductName || "").trim();
   const [head = "", ...rest] = cleaned.split(/\s+/);
@@ -2743,6 +2759,51 @@ export default function NoyeKimPage() {
                           </span>
                         </div>
                       ))}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {misongCheckOpen && misongCheckResult && (
+            <div className={styles.modalOverlay} onClick={() => setMisongCheckOpen(false)}>
+              <div className={`${styles.modal} ${styles.wideModal}`} onClick={(e) => e.stopPropagation()}>
+                <div className={styles.modalHeader}>
+                  <span className={styles.modalTitle}>입고대기 체크 결과</span>
+                  <div className={styles.modalActions}>
+                    <button className={styles.secondaryBtn} onClick={handleMisongCheckEzadmin} disabled={misongCheckLoading}>
+                      <RefreshCw size={13} />다시 확인
+                    </button>
+                    <button className={styles.secondaryBtn} onClick={() => setMisongCheckOpen(false)}>
+                      <X size={13} />닫기
+                    </button>
+                  </div>
+                </div>
+                <div className={styles.misongLogBody}>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-muted)", marginBottom: "0.5rem" }}>
+                    미송 {misongCheckResult.misong_code_count}건 / EZAdmin 입고대기 {misongCheckResult.ezadmin_code_count}건 확인
+                  </div>
+                  {misongCheckResult.mismatches.length === 0 ? (
+                    <div className={styles.empty}>✅ 전체 일치</div>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: "0.85rem", fontWeight: 700, marginBottom: "0.5rem" }}>
+                        ⚠️ 불일치 {misongCheckResult.mismatches.length}건
+                      </div>
+                      <ul className={styles.misongAlertList}>
+                        {misongCheckResult.mismatches.map((m) => (
+                          <li key={m.code} className={styles.misongAlertItem}>
+                            <span className={getMisongCheckBadgeClass(m.reason, styles)}>
+                              {getMisongCheckReasonLabel(m.reason)}
+                            </span>
+                            <span className={styles.misongAlertCode}>{m.code}</span>
+                            <span className={styles.misongAlertDetail}>
+                              미송 {m.misongQty ?? "-"} / EZAdmin {m.ezadminQty ?? "-"}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
                     </>
                   )}
                 </div>
