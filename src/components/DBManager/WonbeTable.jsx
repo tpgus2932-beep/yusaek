@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, RefreshCw, Upload, FileSpreadsheet, RefreshCcw, PencilLine } from "lucide-react";
+import { Download, RefreshCw, Upload, RefreshCcw, PencilLine, Check, X } from "lucide-react";
 import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
@@ -19,11 +19,17 @@ export default function WonbeTable() {
   const todayStr = new Date().toISOString().slice(0, 10);
   const [syncStartDate, setSyncStartDate] = useState(todayStr);
   const [syncEndDate, setSyncEndDate] = useState(todayStr);
-  const [lastSync, setLastSync] = useState(null); // { at, count, fetched }
+  const [lastSync, setLastSync] = useState(null);
   const [editing, setEditing] = useState(null); // { code, col, value }
   const inputRef = useRef(null);
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
+
+  // 헤더 일괄수정
+  const [bulkEditCol, setBulkEditCol] = useState(null);
+  const [bulkEditValue, setBulkEditValue] = useState("");
+  const [bulkEditLoading, setBulkEditLoading] = useState(false);
+  const bulkEditRef = useRef(null);
 
   const handleSort = (col) => {
     if (sortCol === col) {
@@ -44,10 +50,6 @@ export default function WonbeTable() {
       return sortDir === "asc" ? cmp : -cmp;
     });
   }, [rows, sortCol, sortDir]);
-  const [showBulkCost, setShowBulkCost] = useState(false);
-  const [bulkCostValue, setBulkCostValue] = useState("");
-  const [bulkCostLoading, setBulkCostLoading] = useState(false);
-  const bulkCostRef = useRef(null);
 
   const fetchRows = useCallback(async (q, off) => {
     setLoading(true);
@@ -72,7 +74,7 @@ export default function WonbeTable() {
       .then((r) => r.json())
       .then((d) => {
         if (d.ok && d.last_sync_at) {
-          setLastSync({ at: d.last_sync_at, count: d.last_sync_count, fetched: d.last_sync_fetched });
+          setLastSync({ at: d.last_sync_at, count: String(d.last_sync_count), fetched: String(d.last_sync_fetched) });
         }
       })
       .catch(() => {});
@@ -116,6 +118,40 @@ export default function WonbeTable() {
     if (e.key === "Escape") setEditing(null);
   };
 
+  const openBulkEdit = (col) => {
+    setBulkEditCol(col);
+    setBulkEditValue("");
+    setTimeout(() => bulkEditRef.current?.focus(), 0);
+  };
+
+  const closeBulkEdit = () => {
+    setBulkEditCol(null);
+    setBulkEditValue("");
+  };
+
+  const handleBulkEdit = async () => {
+    const label = query ? `"${query}" 검색 결과 ${total.toLocaleString()}건` : `전체 ${total.toLocaleString()}건`;
+    if (!window.confirm(`${label}의 [${bulkEditCol}]을(를) "${bulkEditValue}"로 일괄 수정합니다.\n진행하시겠습니까?`)) return;
+    setBulkEditLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/bulk-update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ q: query, col: bulkEditCol, value: bulkEditValue }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "일괄수정 실패");
+      setMessage(`[${bulkEditCol}] 일괄수정 완료: ${data.count}건`);
+      closeBulkEdit();
+      await fetchRows(query, offset);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setBulkEditLoading(false);
+    }
+  };
+
   const handleImportFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -133,29 +169,6 @@ export default function WonbeTable() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "임포트 실패");
       setMessage(`임포트 완료: ${data.count}행`);
-      setOffset(0);
-      setQuery("");
-      setInputQuery("");
-      await fetchRows("", 0);
-    } catch (err) {
-      setMessage(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleInitDefault = async () => {
-    if (!window.confirm("서버의 원가베이스유.xlsx 파일로 DB를 초기화합니다. 기존 데이터는 모두 덮어씌워집니다.")) return;
-    setLoading(true);
-    setMessage("");
-    try {
-      const res = await fetch(`${API}/wonbe/init-from-default`, {
-        method: "POST",
-        headers: getAuthHeaders(),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) throw new Error(data?.detail || "초기화 실패");
-      setMessage(`초기화 완료: ${data.count}행`);
       setOffset(0);
       setQuery("");
       setInputQuery("");
@@ -194,47 +207,17 @@ export default function WonbeTable() {
     }
   };
 
-  const handleBulkUpdateCost = async () => {
-    const cost = bulkCostValue.trim();
-    if (cost === "") { setMessage("원가 값을 입력해주세요."); return; }
-    const label = query ? `"${query}" 검색 결과 ${total.toLocaleString()}건` : `전체 ${total.toLocaleString()}건`;
-    if (!window.confirm(`${label}의 원가를 "${cost}"로 일괄 수정합니다.\n\n진행하시겠습니까?`)) return;
-    setBulkCostLoading(true);
-    setMessage("");
-    try {
-      const res = await fetch(`${API}/wonbe/bulk-update-cost`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ q: query, 원가: cost }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) throw new Error(data?.detail || "일괄수정 실패");
-      setMessage(`원가 일괄수정 완료: ${data.count}건`);
-      setShowBulkCost(false);
-      setBulkCostValue("");
-      await fetchRows(query, offset);
-    } catch (err) {
-      setMessage(err.message);
-    } finally {
-      setBulkCostLoading(false);
-    }
-  };
-
   const handleExport = () => {
     const url = `${API}/wonbe/export`;
-    const a = document.createElement("a");
-    a.href = url;
-    const headers = getAuthHeaders();
-    fetch(url, { headers })
+    fetch(url, { headers: getAuthHeaders() })
       .then((res) => res.blob())
       .then((blob) => {
-        const href = URL.createObjectURL(blob);
-        a.href = href;
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
         a.download = "원가베이스유.xls";
         document.body.appendChild(a);
         a.click();
         a.remove();
-        URL.revokeObjectURL(href);
       })
       .catch(() => setMessage("엑셀 다운로드 실패"));
   };
@@ -247,7 +230,7 @@ export default function WonbeTable() {
       <div className={styles.header}>
         <div>
           <div className={styles.title}>원가베이스유</div>
-          <div className={styles.subtitle}>상품코드 · 상품명합 · 거래처합 검색 / 상품명합, 거래처합, 원가 수정</div>
+          <div className={styles.subtitle}>상품코드 · 상품명합 · 거래처합 · 거래처 검색 / 헤더 ✎ 버튼으로 일괄수정</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
           {lastSync && (
@@ -265,7 +248,7 @@ export default function WonbeTable() {
             className={styles.searchInput}
             value={inputQuery}
             onChange={(e) => setInputQuery(e.target.value)}
-            placeholder="상품코드 / 상품명합 / 거래처합"
+            placeholder="상품코드 / 상품명합 / 거래처합 / 거래처"
           />
           <button className={`${styles.btn} ${styles.btnPrimary}`} type="submit" disabled={loading}>
             검색
@@ -276,28 +259,13 @@ export default function WonbeTable() {
         </button>
         <div className={styles.syncDateGroup}>
           <span className={styles.syncDateLabel}>등록일</span>
-          <input
-            type="date"
-            className={styles.syncDateInput}
-            value={syncStartDate}
-            onChange={(e) => setSyncStartDate(e.target.value)}
-            disabled={syncing}
-          />
+          <input type="date" className={styles.syncDateInput} value={syncStartDate} onChange={(e) => setSyncStartDate(e.target.value)} disabled={syncing} />
           <span className={styles.syncDateSep}>~</span>
-          <input
-            type="date"
-            className={styles.syncDateInput}
-            value={syncEndDate}
-            onChange={(e) => setSyncEndDate(e.target.value)}
-            disabled={syncing}
-          />
+          <input type="date" className={styles.syncDateInput} value={syncEndDate} onChange={(e) => setSyncEndDate(e.target.value)} disabled={syncing} />
           <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncEzadmin} disabled={loading || syncing}>
             <RefreshCcw size={13} />{syncing ? "동기화 중..." : "이지어드민 동기화"}
           </button>
         </div>
-        <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={handleInitDefault} disabled={loading}>
-          <FileSpreadsheet size={13} />기본파일로 초기화
-        </button>
         <label className={styles.fileLabel}>
           <input type="file" accept=".xlsx,.xls,.xlsm" onChange={handleImportFile} disabled={loading} />
           <Upload size={13} />xlsx 임포트
@@ -305,34 +273,6 @@ export default function WonbeTable() {
         <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={handleExport} disabled={loading}>
           <Download size={13} />xls 내보내기
         </button>
-        <button
-          className={`${styles.btn} ${styles.btnSecondary}`}
-          onClick={() => { setShowBulkCost((v) => !v); setBulkCostValue(""); setTimeout(() => bulkCostRef.current?.focus(), 0); }}
-          disabled={loading || bulkCostLoading}
-        >
-          <PencilLine size={13} />원가 일괄수정
-        </button>
-        {showBulkCost && (
-          <div className={styles.syncDateGroup}>
-            <span className={styles.syncDateLabel}>새 원가</span>
-            <input
-              ref={bulkCostRef}
-              className={styles.syncDateInput}
-              style={{ width: "90px" }}
-              value={bulkCostValue}
-              onChange={(e) => setBulkCostValue(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleBulkUpdateCost(); if (e.key === "Escape") setShowBulkCost(false); }}
-              placeholder="예: 15000"
-              disabled={bulkCostLoading}
-            />
-            <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleBulkUpdateCost} disabled={bulkCostLoading}>
-              {bulkCostLoading ? "수정 중..." : "적용"}
-            </button>
-            <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setShowBulkCost(false)} disabled={bulkCostLoading}>
-              취소
-            </button>
-          </div>
-        )}
       </div>
 
       {message && <div className={styles.message}>{message}</div>}
@@ -341,11 +281,61 @@ export default function WonbeTable() {
         <table className={styles.table}>
           <thead>
             <tr>
-              {ALL_COLS.map((col) => (
-                <th key={col} className={styles.sortableHeader} onClick={() => handleSort(col)}>
-                  {col}{EDITABLE_COLS.includes(col) ? " ✎" : ""}{sortCol === col ? <span className={styles.sortIcon}>{sortDir === "asc" ? "▲" : "▼"}</span> : ""}
-                </th>
-              ))}
+              {ALL_COLS.map((col) => {
+                const isEditable = EDITABLE_COLS.includes(col);
+                const isBulkActive = bulkEditCol === col;
+                return (
+                  <th key={col} className={styles.sortableHeader} style={{ verticalAlign: "top" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.25rem", whiteSpace: "nowrap" }} onClick={() => handleSort(col)}>
+                      {col}{isEditable ? " ✎" : ""}
+                      {sortCol === col && <span className={styles.sortIcon}>{sortDir === "asc" ? "▲" : "▼"}</span>}
+                      {isEditable && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); isBulkActive ? closeBulkEdit() : openBulkEdit(col); }}
+                          title={`${col} 일괄수정`}
+                          style={{ background: isBulkActive ? "#7c3aed" : "none", color: isBulkActive ? "#fff" : "#7c3aed", border: `1px solid #7c3aed`, borderRadius: "3px", padding: "1px 4px", cursor: "pointer", lineHeight: 1, flexShrink: 0 }}
+                        >
+                          <PencilLine size={10} />
+                        </button>
+                      )}
+                    </div>
+                    {isBulkActive && (
+                      <div style={{ display: "flex", gap: "2px", marginTop: "4px" }} onClick={(e) => e.stopPropagation()}>
+                        <input
+                          ref={bulkEditRef}
+                          value={bulkEditValue}
+                          onChange={(e) => setBulkEditValue(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") handleBulkEdit(); if (e.key === "Escape") closeBulkEdit(); }}
+                          placeholder="새 값"
+                          style={{ width: "80px", fontSize: "0.72rem", padding: "2px 4px", border: "1px solid #d1d5db", borderRadius: "3px" }}
+                          disabled={bulkEditLoading}
+                        />
+                        <button
+                          onClick={handleBulkEdit}
+                          disabled={bulkEditLoading}
+                          style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: "3px", padding: "2px 5px", cursor: "pointer", lineHeight: 1 }}
+                          title="적용"
+                        >
+                          <Check size={10} />
+                        </button>
+                        <button
+                          onClick={closeBulkEdit}
+                          disabled={bulkEditLoading}
+                          style={{ background: "none", color: "#6b7280", border: "1px solid #d1d5db", borderRadius: "3px", padding: "2px 5px", cursor: "pointer", lineHeight: 1 }}
+                          title="취소"
+                        >
+                          <X size={10} />
+                        </button>
+                      </div>
+                    )}
+                    {isBulkActive && query && (
+                      <div style={{ fontSize: "0.65rem", color: "#7c3aed", marginTop: "2px", whiteSpace: "nowrap" }}>
+                        검색결과 {total.toLocaleString()}건만 수정
+                      </div>
+                    )}
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
@@ -391,17 +381,9 @@ export default function WonbeTable() {
 
       {totalPages > 1 && (
         <div className={styles.pagination}>
-          <button
-            className={`${styles.btn} ${styles.btnSecondary}`}
-            onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-            disabled={offset === 0 || loading}
-          >이전</button>
+          <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))} disabled={offset === 0 || loading}>이전</button>
           <span>{currentPage} / {totalPages}</span>
-          <button
-            className={`${styles.btn} ${styles.btnSecondary}`}
-            onClick={() => setOffset(offset + PAGE_SIZE)}
-            disabled={currentPage >= totalPages || loading}
-          >다음</button>
+          <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setOffset(offset + PAGE_SIZE)} disabled={currentPage >= totalPages || loading}>다음</button>
         </div>
       )}
     </>
