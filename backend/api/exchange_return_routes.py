@@ -17,9 +17,9 @@ LLOGIS_BASE = "https://pid.alps.llogis.com:18210"
 ABLY_EMAIL = "eostm1997@naver.com"
 ABLY_PASSWORD = "!Glqgkqdldi1126"
 
-LLOGIS_PRINCIPAL = "331595"
-LLOGIS_CREDENTIAL = "plan123!"
-LLOGIS_EMP_NO = "331595"
+LLOGIS_PRINCIPAL = "348867"
+LLOGIS_CREDENTIAL = "1q2w3e4r5t"
+LLOGIS_EMP_NO = "348867"
 
 LLOGIS_COURIER_SNO = 5  # 롯데택배
 
@@ -631,12 +631,20 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         if not exchanges:
             return {"ok": False, "error": "처리할 교환요청이 없습니다"}
 
+        # reason_code=2(상품 하자, 판매자 부담)는 교환요청에서 자동으로 넘기지 않음
+        # → 회수신청(EZAdmin 등록)과 문자 발송도 함께 제외
+        seller_fault_count = sum(1 for ex in exchanges if ex.get("reason_code") == 2)
+        pickup_exchanges = [ex for ex in exchanges if ex.get("reason_code") != 2]
+
+        if not pickup_exchanges:
+            return {"ok": False, "error": "처리할 교환요청이 없습니다 (전체가 판매자 부담 사유로 제외됨)"}
+
         # 원송장 조회 + 수신자 정보 수집
         invoices = []
         sms_recipients: list[dict] = []
         seen_tels: set[str] = set()
         async with httpx.AsyncClient(timeout=30.0) as client:
-            for ex in exchanges:
+            for ex in pickup_exchanges:
                 sno = ex.get("order_item_sno")
                 if not sno:
                     continue
@@ -748,8 +756,7 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                 "return_delivery": ex["return_delivery"],
                 "exchange_delivery": ex["exchange_delivery"],
             }
-            for ex in exchanges
-            if ex.get("reason_code") != 2
+            for ex in pickup_exchanges
         ]}
         async with httpx.AsyncClient(timeout=30.0) as client:
             approve_res = await client.post(
@@ -797,6 +804,7 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         return {
             "ok": True,
             "exchange_count": len(exchanges),
+            "seller_fault_excluded": seller_fault_count,
             "invoice_count": len(invoices),
             "ezadmin_ok": ezadmin_ok,
             "approve_status": approve_status,

@@ -526,6 +526,19 @@
   white-space: nowrap;
 }
 
+.sortableHeader {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sortableHeader:hover {
+  color: var(--text-primary);
+}
+
+.sortArrow {
+  font-size: 0.7rem;
+}
+
 .table tbody td {
   padding: 7px 10px;
   border-bottom: 1px solid var(--border-color);
@@ -554,6 +567,13 @@
   border-color: var(--cs-green);
 }
 
+.cellTextarea {
+  white-space: pre-wrap;
+  resize: vertical;
+  min-height: 32px;
+  line-height: 1.4;
+}
+
 .colGuide {
   min-width: 220px;
   max-width: 300px;
@@ -561,6 +581,25 @@
   line-height: 1.5;
   font-size: 0.78rem;
 }
+
+.cellSaveBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--cs-green);
+  background: var(--cs-green-bg);
+  color: var(--cs-green-text);
+  font: inherit;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cellSaveBtn:hover { opacity: 0.85; }
+.cellSaveBtn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .empty {
   padding: 32px;

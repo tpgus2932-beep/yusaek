@@ -145,6 +145,21 @@ const toEnglishKey = (text) => {
   return out.toUpperCase();
 };
 
+const formatSavedAt = (value) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("ko-KR", {
+    hour12: false,
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
+
 export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = null, onTransferAmoodHapbae = null }) {
   const [file2, setFile2] = useState(null);
   const [loadingApi, setLoadingApi] = useState(false);
@@ -175,6 +190,9 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
   const [easyadminBCopyMessage, setEasyadminBCopyMessage] = useState("");
   const [hblLoading, setHblLoading] = useState(false);
   const [hblResult, setHblResult] = useState(null);
+  const [loadingEzadmin, setLoadingEzadmin] = useState(false);
+  const [mgmtNumbers, setMgmtNumbers] = useState([]);
+  const [packLoading, setPackLoading] = useState(false);
 
   const refreshStatus = async () => {
     try {
@@ -337,6 +355,55 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
     }
   };
 
+  const loadFromEzadmin = async () => {
+    setLoadingEzadmin(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/amood/load-from-ezadmin`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "이지어드민 불러오기 실패");
+      setMessage(`이지어드민 ${data.count ?? 0}행 불러옴`);
+      if (data.management_numbers?.length) {
+        setMgmtNumbers(data.management_numbers);
+        setEasyadminBPreviewText(data.management_numbers.join(", "));
+        setEasyadminBCopyMessage("");
+        setEasyadminBPreviewOpen(true);
+      }
+      await refreshStatus();
+    } catch (err) {
+      setMessage(err.message || "이지어드민 불러오기 실패");
+    } finally {
+      setLoadingEzadmin(false);
+    }
+  };
+
+  const createHapbaePack = async () => {
+    if (mgmtNumbers.length < 2) {
+      setMessage("합포할 관리번호가 2개 이상 필요합니다.");
+      return;
+    }
+    setPackLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/amood/hapbae-pack`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ management_numbers: mgmtNumbers }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "합포만들기 실패");
+      if (data.ok === false) throw new Error(JSON.stringify(data.result) || "합포만들기 실패");
+      setMessage(`합포만들기 완료 (seq: ${data.seq})`);
+    } catch (err) {
+      setMessage(err.message || "합포만들기 실패");
+    } finally {
+      setPackLoading(false);
+    }
+  };
+
   const uploadExcel2 = async () => {
     if (!file2) {
       setMessage("이지어드민 엑셀을 선택해 주세요.");
@@ -355,7 +422,12 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "이지어드민 엑셀 업로드 실패");
       setMessage("이지어드민 엑셀 업로드 완료");
-      await showEasyadminBPreview(file2);
+      const bText = await extractEasyadminColumnBText(file2);
+      const nums = bText.split(",").map((s) => s.trim()).filter(Boolean);
+      setMgmtNumbers(nums);
+      setEasyadminBPreviewText(bText);
+      setEasyadminBCopyMessage("");
+      setEasyadminBPreviewOpen(true);
       await refreshStatus();
     } catch (err) {
       setMessage(err.message || "이지어드민 엑셀 업로드 실패");
@@ -487,8 +559,48 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
     }
   };
 
-  const renderItemLabel = (item) =>
-    [item.name, item.option].filter(Boolean).join(" ").trim() || "(상품명 없음)";
+  const renderItemLabel = (item) => {
+    const name = (item.name || "").trim();
+    const opt = (item.option || "").trim();
+    if (!name && !opt) return "(상품명 없음)";
+
+    // 합배송: 이지어드민이 " / "로 옵션을 합친 경우 이름도 분리해서 페어링
+    if (opt.includes(" / ")) {
+      const optParts = opt.split(" / ").map((s) => s.trim()).filter(Boolean);
+      const nameParts = name.includes("/")
+        ? name.split("/").map((s) => s.trim()).filter(Boolean)
+        : name.split(" ").filter(Boolean);
+      if (nameParts.length === optParts.length) {
+        return nameParts.map((n, i) => `${n} ${optParts[i]}`).join(" / ");
+      }
+    }
+
+    // 합배송: pd.read_html이 <br>을 \n으로 변환한 경우 - 줄바꿈 기준으로 이름·옵션 분리 후 페어링
+    const nameLines = name.split("\n").map((s) => s.trim()).filter(Boolean);
+    const optLines = opt.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (nameLines.length > 1 || optLines.length > 1) {
+      if (nameLines.length === optLines.length) {
+        return nameLines.map((n, i) => `${n} ${optLines[i]}`).join(" / ");
+      }
+      if (optLines.length > 1) {
+        return [nameLines.join(" / "), optLines.join(" / ")].filter(Boolean).join(" ").trim() || "(상품명 없음)";
+      }
+      return [nameLines.join(" / "), opt].filter(Boolean).join(" ").trim() || "(상품명 없음)";
+    }
+
+    // 합배송: 옵션이 [X] [Y] [Z] 형태로 공백 구분된 경우 (이지어드민 일부 케이스)
+    const bracketParts = opt.match(/\[[^\]]+\]/g);
+    if (bracketParts && bracketParts.length > 1) {
+      return [name, bracketParts.join(" / ")].filter(Boolean).join(" ").trim() || "(상품명 없음)";
+    }
+
+    // 이지어드민 합배송: J열(option)이 이미 "상품명 [옵션]" 형태로 이름을 포함한 경우 중복 방지
+    if (name && opt.startsWith(name)) {
+      return opt.trim() || "(상품명 없음)";
+    }
+
+    return [name, opt].filter(Boolean).join(" ").trim() || "(상품명 없음)";
+  };
 
   const exportShipping = async () => {
     setProcessing(true);
@@ -719,6 +831,21 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
                 )}
               </div>
               <div className={styles.uploadRow}>
+                <button
+                  type="button"
+                  className={styles.primaryBtn}
+                  onClick={loadFromEzadmin}
+                  disabled={loadingEzadmin || loading}
+                >
+                  {loadingEzadmin ? "불러오는 중..." : "API로 불러오기"}
+                </button>
+                {status?.ezadmin_saved_at && (
+                  <span style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
+                    저장 일시: {formatSavedAt(status.ezadmin_saved_at)}
+                  </span>
+                )}
+              </div>
+              <div className={styles.uploadRow}>
                 <label className={styles.fileInput} style={{ flex: 1, justifyContent: "flex-start" }}>
                   <input
                     key={`file2-${fileInputKey}`}
@@ -726,12 +853,27 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
                     accept=".xlsx,.xls,.xlsm,.htm,.html"
                     onChange={(e) => setFile2(e.target.files?.[0] ?? null)}
                   />
-                  {file2 ? file2.name : "파일 선택"}
+                  {file2 ? file2.name : "파일 선택 (직접 업로드)"}
                 </label>
                 <button type="button" className={styles.primaryBtn} onClick={uploadExcel2} disabled={loading}>
                   업로드
                 </button>
               </div>
+              {mgmtNumbers.length >= 2 && (
+                <div className={styles.uploadRow}>
+                  <button
+                    type="button"
+                    className={styles.primaryBtn}
+                    onClick={createHapbaePack}
+                    disabled={packLoading}
+                  >
+                    {packLoading ? "합포 중..." : "합포만들기"}
+                  </button>
+                  <span style={{ fontSize: "0.82rem", color: "var(--text-muted)" }}>
+                    seq: {mgmtNumbers[0]} / pack_seq: {mgmtNumbers.slice(1).join(", ")}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         </section>

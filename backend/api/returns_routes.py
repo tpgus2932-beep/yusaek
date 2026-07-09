@@ -18,8 +18,8 @@ from fastapi.responses import FileResponse
 
 LLOGIS_LOGIN_URL  = "https://partner.alps.llogis.com/auth/login"
 LLOGIS_PID_BASE   = "https://pid.alps.llogis.com:18210"
-LLOGIS_PRINCIPAL  = "331595"
-LLOGIS_CREDENTIAL = "plan123!"
+LLOGIS_PRINCIPAL  = "348867"
+LLOGIS_CREDENTIAL = "1q2w3e4r5t"
 
 ABLY_BASE     = "https://api.a-bly.com"
 ABLY_EMAIL    = "eostm1997@naver.com"
@@ -1920,7 +1920,7 @@ def build_returns_router(
         token = await _llogis_login()
         filter_obj = {
             "srchPickYmd": "", "srchPickYmdStrt": date_fr, "srchPickYmdEnd": date_to,
-            "cboSrchCustSctCd": "10", "srchCustCd": "331595", "srchCustNm": "바브",
+            "cboSrchCustSctCd": "10", "srchCustCd": "348867", "srchCustNm": "바브",
             "cboSrchWkSctCd": "02", "jobCustCd": "", "tabIdx": "", "rowCount": "",
             "dispCount": "", "pickYmd": "", "colNm": "", "ustRtgSctCd": "",
             "fstmIstrYmd": "", "srchHdqrCd": "", "srchHdqrNm": "", "srchBrnCd": "",

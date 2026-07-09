@@ -200,6 +200,7 @@ def aggregate_by_product(
     for row in csv_rows:
         oid = row["order_id"]
         settlement = row["settlement_krw"]
+        payment = row.get("payment_krw", settlement)
         detail = order_details.get(oid)
 
         if detail is None:
@@ -215,26 +216,30 @@ def aggregate_by_product(
                 "order_count": 0,
                 "total_quantity": 0,
                 "total_settlement_krw": 0,
+                "total_payment_krw": 0,
                 "orders": [],
             }
         buckets[name]["order_count"] += 1
         buckets[name]["total_quantity"] += quantity
         buckets[name]["total_settlement_krw"] += settlement
+        buckets[name]["total_payment_krw"] += payment
         buckets[name]["orders"].append({
             "order_id": oid,
             "quantity": quantity,
             "settlement_krw": settlement,
+            "payment_krw": payment,
         })
 
     items = []
     total_settlement = 0
+    total_payment = 0
     total_cost = 0
     total_extra = 0
     total_margin = 0
     unmatched_count = 0
 
     for name, bucket in sorted(buckets.items()):
-        cost_price = cost_map.get(name)
+        cost_price = cost_map.get(name.strip().casefold())
         matched = cost_price is not None
 
         # 정산금액이 원가보다 낮은 주문(환불·취소 등) 제외
@@ -248,6 +253,7 @@ def aggregate_by_product(
 
         qty = sum(o["quantity"] for o in valid_orders)
         settlement = sum(o["settlement_krw"] for o in valid_orders)
+        payment = sum(o.get("payment_krw", o["settlement_krw"]) for o in valid_orders)
 
         if matched:
             item_cost = cost_price * qty
@@ -255,12 +261,14 @@ def aggregate_by_product(
             item_extra = per_item_cost * qty
             item_margin = settlement - item_cost - item_vat - item_extra
             margin_rate = round(item_margin / settlement * 100, 1) if settlement else 0.0
+            payment_margin_rate = round(item_margin / payment * 100, 1) if payment else 0.0
         else:
             item_cost = None
             item_vat = None
             item_extra = per_item_cost * qty
             item_margin = None
             margin_rate = None
+            payment_margin_rate = None
             unmatched_count += 1
 
         items.append({
@@ -268,6 +276,7 @@ def aggregate_by_product(
             "order_count": len(valid_orders),
             "total_quantity": qty,
             "total_settlement_krw": settlement,
+            "total_payment_krw": payment,
             "cost_price": cost_price,
             "total_cost": item_cost,
             "total_vat": item_vat,
@@ -275,23 +284,25 @@ def aggregate_by_product(
             "total_extra_cost": item_extra,
             "total_margin": item_margin,
             "margin_rate": margin_rate,
+            "payment_margin_rate": payment_margin_rate,
             "matched": matched,
             "orders": sorted(valid_orders, key=lambda o: o["order_id"]),
         })
 
         total_settlement += settlement
+        total_payment += payment
         if matched:
             total_cost += item_cost
             total_extra += item_extra
             total_margin += item_margin
 
-    matched_settlement = sum(
-        it["total_settlement_krw"] for it in items if it["matched"]
-    )
+    matched_settlement = sum(it["total_settlement_krw"] for it in items if it["matched"])
+    matched_payment = sum(it["total_payment_krw"] for it in items if it["matched"])
     overall_margin_rate = (
-        round(total_margin / matched_settlement * 100, 1)
-        if matched_settlement
-        else 0.0
+        round(total_margin / matched_settlement * 100, 1) if matched_settlement else 0.0
+    )
+    overall_payment_margin_rate = (
+        round(total_margin / matched_payment * 100, 1) if matched_payment else 0.0
     )
 
     summary = {
@@ -299,10 +310,12 @@ def aggregate_by_product(
         "total_products": len(items),
         "unmatched_count": unmatched_count,
         "total_settlement_krw": total_settlement,
+        "total_payment_krw": total_payment,
         "total_cost": total_cost,
         "total_extra_cost": total_extra,
         "total_margin": total_margin,
         "overall_margin_rate": overall_margin_rate,
+        "overall_payment_margin_rate": overall_payment_margin_rate,
     }
 
     return items, summary
@@ -404,7 +417,7 @@ def aggregate_realtime_by_product(
     unmatched_count = 0
 
     for name, bucket in sorted(buckets.items()):
-        cost_price = cost_map.get(name)
+        cost_price = cost_map.get(name.strip().casefold())
         matched = cost_price is not None
         qty = bucket["total_quantity"]
         settlement = bucket["total_settlement_krw"]

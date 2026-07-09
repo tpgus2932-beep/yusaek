@@ -60,7 +60,7 @@ export default function ReturnShippingTest() {
         if (!serverMemos) return;
         const stripped = {};
         Object.entries(serverMemos).forEach(([k, v]) => {
-          if (k.startsWith("rship:")) stripped[k.slice(6)] = v;
+          if (k.startsWith("rship:")) stripped[k.slice(6)] = typeof v === "object" ? v.memo ?? "" : v;
         });
         setMemos((prev) => ({ ...prev, ...stripped }));
       })

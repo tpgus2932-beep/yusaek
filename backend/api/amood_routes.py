@@ -1,11 +1,17 @@
 import io
+import os
+import re
 import shutil
+import sqlite3
 import tempfile
 import traceback
 import uuid
 from collections import Counter
+from datetime import datetime, timedelta
+from io import StringIO
 from pathlib import Path
 
+import httpx
 import pandas as pd
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
@@ -17,6 +23,57 @@ from services.pastelco_utils import (
     pastelco_login,
     pastelco_today_kst,
 )
+
+_AMOOD_EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
+_AMOOD_EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+_AMOOD_DB_PATH = Path(os.environ.get("APP_DB_PATH") or Path(__file__).resolve().parent.parent / "app.db")
+
+_EZADMIN_COL_ORDER = [
+    "상태", "관리번호", "발주일", "판매처", "주문번호",
+    "수령자", "주소", "상품코드", "상품명", "옵션",
+    "수량", "택배사", "송장번호",
+]
+
+_BR_SEP = "\x01"
+
+
+def _expand_combined_rows(df: "pd.DataFrame", sep: str = _BR_SEP) -> "pd.DataFrame":
+    """합배송으로 <br> 구분된 셀을 개별 행으로 분리한다."""
+    new_rows = []
+    for _, row in df.iterrows():
+        max_n = 1
+        for val in row:
+            if isinstance(val, str) and sep in val:
+                max_n = max(max_n, len([p for p in val.split(sep) if p.strip()]))
+        if max_n <= 1:
+            new_rows.append(row.to_dict())
+            continue
+        for i in range(max_n):
+            new_row = {}
+            for col in df.columns:
+                val = row[col]
+                if isinstance(val, str) and sep in val:
+                    parts = [p.strip() for p in val.split(sep) if p.strip()]
+                    new_row[col] = parts[i] if i < len(parts) else (parts[-1] if parts else "")
+                else:
+                    new_row[col] = val
+            new_rows.append(new_row)
+    if not new_rows:
+        return df.iloc[0:0].copy()
+    return pd.DataFrame(new_rows, columns=df.columns).reset_index(drop=True)
+
+
+def _amood_get_ezadmin_phpsessid() -> str:
+    try:
+        conn = sqlite3.connect(str(_AMOOD_DB_PATH))
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = ?",
+            (_AMOOD_EZADMIN_SESSION_KEY,),
+        ).fetchone()
+        conn.close()
+        return (row[0] if row else "") or ""
+    except Exception:
+        return ""
 
 
 def build_amood_router(
@@ -51,6 +108,7 @@ def build_amood_router(
     get_shared_incoming_counts,
     set_shared_incoming_counts,
     get_shared_defect_counts,
+    set_shared_amood_ezadmin_file,
 ):
     router = APIRouter()
 
@@ -151,6 +209,7 @@ def build_amood_router(
                     path.unlink(missing_ok=True)
                 except Exception:
                     pass
+        set_shared_amood_ezadmin_file(None)
         state.file1_path = None
         state.file2_path = None
         state.file1_name = None
@@ -255,6 +314,199 @@ def build_amood_router(
         state.pending_items = []
         state.waiting_for_items = False
         return {"ok": True, "status": amood_status(state)}
+
+    @router.post("/amood/load-from-ezadmin")
+    async def amood_load_from_ezadmin(
+        start_date: str = None,
+        end_date: str = None,
+        user: str = Depends(get_current_user),
+    ):
+        phpsessid = _amood_get_ezadmin_phpsessid()
+        if not phpsessid:
+            raise HTTPException(status_code=400, detail="이지어드민 세션(PHPSESSID)이 없습니다.")
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        if not end_date:
+            end_date = today
+        if not start_date:
+            start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+
+        ez_headers = {
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Origin": _AMOOD_EZADMIN_BASE,
+            "Referer": f"{_AMOOD_EZADMIN_BASE}/template35.htm?template=S700",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        cookies = {"PHPSESSID": phpsessid}
+        par = (
+            f"cs=0&status=1&type=0&dateType=0"
+            f"&start_date2={start_date}&start_hour2=00"
+            f"&end_date2={end_date}&end_hour2=23"
+            f"&date_period_sel2=9"
+            f"&search_product_type=name&txt_search_product="
+            f"&tag_string=&priorityDeliv=0"
+            f"&multi_shop_group=&multi_shop=&str_shop_code=10080&shop_group=0"
+            f"&partCount=&price_type=part&part_deliv_price="
+            f"&orderReserve=1&multi_supply_group=&multi_supply=&str_supply_code=0"
+            f"&s_group_id=&part_deliv_cnt=&check_expect_date=&user_area="
+            f"&labels_string=&include_type=1&is_download=0"
+            f"&orderType=1&agencyTemplate=20004&check_address=2"
+            f"&teamf_transType=tonight&kakaoT_type=0&deliv_today_type=0&hanjin_deliv_type=GN"
+        )
+        form_data = {
+            "template": "S700",
+            "action": "get_success_order",
+            "_search": "false",
+            "nd": str(int(datetime.now().timestamp() * 1000)),
+            "rows": "999999",
+            "page": "1",
+            "sidx": "",
+            "sord": "asc",
+            "readonly": "T",
+            "par": par,
+        }
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            res = await client.post(
+                f"{_AMOOD_EZADMIN_BASE}/function.htm",
+                headers=ez_headers,
+                cookies=cookies,
+                data=form_data,
+            )
+
+        try:
+            result = res.json()
+        except Exception:
+            raise HTTPException(status_code=502, detail="이지어드민 응답 파싱 실패 (세션 만료?)")
+
+        api_rows = result.get("rows", [])
+        if not api_rows:
+            raise HTTPException(status_code=400, detail="불러온 데이터가 없습니다.")
+
+        # [코드]상품명-[옵션] N개 형태 파싱
+        _product_re = re.compile(r'\[([A-Z]\d+)\](.*?)(?:-\[([^\]]*)\])?\s+(\d+)개')
+
+        expanded_rows: list[dict] = []
+        seen_seq: list[str] = []
+        seen_seq_set: set[str] = set()
+
+        for order in api_rows:
+            cell = order.get("cell", {})
+            seq = str(cell.get("seq", "")).strip()
+            status = str(cell.get("status", "")).strip()
+            collect_date = str(cell.get("collect_date", "")).strip()
+            shop_name = str(cell.get("shop_name", "")).strip()
+            order_id = str(cell.get("order_id", "")).strip()
+            recv_name = str(cell.get("recv_name", "")).strip()
+            recv_address = str(cell.get("recv_address", "")).strip()
+            products_str = str(cell.get("products", "")).strip()
+
+            if seq and seq not in seen_seq_set:
+                seen_seq_set.add(seq)
+                seen_seq.append(seq)
+
+            for m in _product_re.finditer(products_str):
+                barcode = m.group(1).strip()
+                name = m.group(2).strip().rstrip("-").strip()
+                option = m.group(3).strip() if m.group(3) else ""
+                qty = int(m.group(4))
+                expanded_rows.append({
+                    "상태": status,
+                    "관리번호": seq,
+                    "발주일": collect_date,
+                    "판매처": shop_name,
+                    "주문번호": order_id,
+                    "수령자": recv_name,
+                    "주소": recv_address,
+                    "상품코드": barcode,
+                    "상품명": name,
+                    "옵션": option,
+                    "수량": qty,
+                    "택배사": "",
+                    "송장번호": "",
+                })
+
+        if not expanded_rows:
+            raise HTTPException(status_code=400, detail="상품 데이터를 파싱할 수 없습니다.")
+
+        wb = Workbook()
+        ws = wb.active
+        for col_idx, header in enumerate(_EZADMIN_COL_ORDER, 1):
+            ws.cell(1, col_idx).value = header
+        for row_idx, row_data in enumerate(expanded_rows, 2):
+            for col_idx, col_name in enumerate(_EZADMIN_COL_ORDER, 1):
+                val = row_data.get(col_name)
+                if val is not None:
+                    ws.cell(row_idx, col_idx).value = val
+
+        tmp_path = Path(tempfile.gettempdir()) / f"amood_excel2_ezadmin_{uuid.uuid4().hex}.xlsx"
+        wb.save(tmp_path)
+
+        set_shared_amood_ezadmin_file({
+            "file2_path": tmp_path,
+            "file2_name": f"이지어드민_{start_date}_{end_date}.xlsx",
+        })
+        state = get_amood_state(user)
+
+        return {
+            "ok": True,
+            "count": len(expanded_rows),
+            "management_numbers": seen_seq,
+            "status": amood_status(state),
+        }
+
+    @router.post("/amood/hapbae-pack")
+    async def amood_hapbae_pack(
+        body: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        management_numbers = [str(n).strip() for n in body.get("management_numbers", []) if str(n).strip()]
+        if len(management_numbers) < 2:
+            raise HTTPException(status_code=400, detail="합포할 번호가 2개 이상 필요합니다.")
+
+        phpsessid = _amood_get_ezadmin_phpsessid()
+        if not phpsessid:
+            raise HTTPException(status_code=400, detail="이지어드민 세션(PHPSESSID)이 없습니다.")
+
+        seq = management_numbers[0]
+        pack_seq = ",".join(management_numbers[1:])
+
+        ez_headers = {
+            "Accept": "*/*",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Origin": _AMOOD_EZADMIN_BASE,
+            "Referer": f"{_AMOOD_EZADMIN_BASE}/template35.htm?template=E900",
+            "User-Agent": "Mozilla/5.0",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        cookies = {"PHPSESSID": phpsessid}
+        form_data = {
+            "template": "E900",
+            "action": "add_pack",
+            "seq": seq,
+            "pack_seq": pack_seq,
+            "cs_type": "",
+            "content": "",
+            "timeFlag": "0",
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            res = await client.post(
+                f"{_AMOOD_EZADMIN_BASE}/function.htm",
+                headers=ez_headers,
+                cookies=cookies,
+                data=form_data,
+            )
+
+        try:
+            result = res.json()
+        except Exception:
+            result = {"raw": res.text[:500]}
+
+        ok = result.get("result") not in ("0", "false", False, 0) if isinstance(result, dict) else True
+        return {"ok": ok, "seq": seq, "pack_seq": pack_seq, "result": result}
 
     @router.post("/amood/preprocess")
     def amood_preprocess(user: str = Depends(get_current_user)):
@@ -429,20 +681,31 @@ def build_amood_router(
         pending: list[dict] = []
         for order_key in order_keys:
             rows2 = amood_collect_rows_by_value(state.ws2, AMOOD_COL2_ORDER_KEY, order_key, start_row=2)
+            last_name = None
             for r in rows2:
-                qty = amood_to_int_qty(amood_ws_cell(state.ws2, AMOOD_COL2_QTY, r).value)
+                qty_raw = amood_ws_cell(state.ws2, AMOOD_COL2_QTY, r).value
+                qty = amood_to_int_qty(qty_raw)
                 bc = amood_ws_cell(state.ws2, AMOOD_COL2_BARCODE, r).value
                 bc = str(bc).strip() if bc is not None else ""
-                name = amood_ws_cell(state.ws2, AMOOD_COL2_NAME, r).value
+                name_raw = amood_ws_cell(state.ws2, AMOOD_COL2_NAME, r).value
+                name_str = str(name_raw).strip() if name_raw is not None else ""
+                # 합배송: 이름이 비어있으면(병합셀) 이전 행 이름으로 채움
+                if not name_str and last_name:
+                    name_str = last_name
+                elif name_str:
+                    last_name = name_str
                 option = amood_ws_cell(state.ws2, AMOOD_COL2_OPTION, r).value
+                # 합배송: qty 셀이 None(병합셀)이고 바코드가 있으면 1로 설정
+                if qty_raw is None and bc:
+                    qty = 1
                 disp = amood_ws_cell(state.ws2, AMOOD_COL2_OUTPUT, r).value
                 if disp is None or str(disp).strip() == "":
-                    disp = amood_build_output_text(name, option, qty)
+                    disp = amood_build_output_text(name_str, option, qty)
                 pending.append(
                     {
                         "row": r,
                         "barcode": bc,
-                        "name": str(name).strip() if name is not None else "",
+                        "name": name_str,
                         "option": str(option).strip() if option is not None else "",
                         "display": str(disp).strip() if disp is not None else "",
                         "remaining": qty if qty > 0 else 0,

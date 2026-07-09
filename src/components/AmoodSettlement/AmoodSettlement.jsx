@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Database, Download, Plus, Save, Trash2, Upload } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { ChevronDown, ChevronRight, Database, Download, Save } from 'lucide-react';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import styles from './AmoodSettlement.module.css';
 
@@ -29,10 +29,17 @@ const SORT_COLS = [
   { key: 'margin_rate',         label: '마진율',     num: true  },
 ];
 
-function ResultTable({ items }) {
+const PAYMENT_SORT_COLS = [
+  { key: 'total_payment_krw',   label: '결제금액',   num: true  },
+  { key: 'payment_margin_rate', label: '결제마진율', num: true  },
+];
+
+function ResultTable({ items, showPaymentCols = false }) {
   const [expanded, setExpanded] = useState({});
   const [sortKey, setSortKey] = useState(null);
   const [sortAsc, setSortAsc] = useState(true);
+
+  const allCols = showPaymentCols ? [...SORT_COLS, ...PAYMENT_SORT_COLS] : SORT_COLS;
 
   const toggle = (name) => setExpanded((prev) => ({ ...prev, [name]: !prev[name] }));
 
@@ -46,7 +53,7 @@ function ResultTable({ items }) {
     return [...items].sort((a, b) => {
       const av = a[sortKey] ?? (typeof a[sortKey] === 'number' ? -Infinity : '');
       const bv = b[sortKey] ?? (typeof b[sortKey] === 'number' ? -Infinity : '');
-      const col = SORT_COLS.find((c) => c.key === sortKey);
+      const col = allCols.find((c) => c.key === sortKey);
       let cmp;
       if (col?.num) {
         cmp = (av === null || av === undefined ? -Infinity : av) -
@@ -56,12 +63,14 @@ function ResultTable({ items }) {
       }
       return sortAsc ? cmp : -cmp;
     });
-  }, [items, sortKey, sortAsc]);
+  }, [items, sortKey, sortAsc, allCols]);
 
   const sortIcon = (key) => {
     if (sortKey !== key) return <span className={styles.sortNeutral}>↕</span>;
     return <span className={styles.sortActive}>{sortAsc ? '↑' : '↓'}</span>;
   };
+
+  const extraColSpan = showPaymentCols ? 7 : 5;
 
   return (
     <div className={styles.tableWrapper}>
@@ -69,7 +78,7 @@ function ResultTable({ items }) {
         <thead>
           <tr>
             <th style={{ width: 28 }} />
-            {SORT_COLS.map((col) => (
+            {allCols.map((col) => (
               <th
                 key={col.key}
                 className={styles.sortable}
@@ -104,6 +113,14 @@ function ResultTable({ items }) {
                   <td className={`${styles.num} ${item.margin_rate != null ? (item.margin_rate >= 0 ? styles.positive : styles.negative) : ''}`}>
                     {fmtRate(item.margin_rate)}
                   </td>
+                  {showPaymentCols && (
+                    <>
+                      <td className={styles.num}>{fmt(item.total_payment_krw)}</td>
+                      <td className={`${styles.num} ${item.payment_margin_rate != null ? (item.payment_margin_rate >= 0 ? styles.positive : styles.negative) : ''}`}>
+                        {fmtRate(item.payment_margin_rate)}
+                      </td>
+                    </>
+                  )}
                 </tr>
                 {isOpen && (item.orders || []).map((o) => (
                   <tr key={o.order_id} className={styles.orderRow}>
@@ -114,7 +131,8 @@ function ResultTable({ items }) {
                     <td className={styles.num}>{o.quantity}개</td>
                     <td />
                     <td className={styles.num}>{fmt(o.settlement_krw)}</td>
-                    <td colSpan={5} />
+                    {showPaymentCols && <td className={styles.num}>{fmt(o.payment_krw)}</td>}
+                    <td colSpan={extraColSpan} />
                   </tr>
                 ))}
               </React.Fragment>
@@ -438,6 +456,10 @@ function AblySettlementView() {
               <span className={styles.cardValue}>{result.summary.total_orders?.toLocaleString()}</span>
             </div>
             <div className={styles.card}>
+              <span className={styles.cardLabel}>총 결제금액</span>
+              <span className={styles.cardValue}>{fmt(result.summary.total_payment_krw)}</span>
+            </div>
+            <div className={styles.card}>
               <span className={styles.cardLabel}>총 정산금액</span>
               <span className={styles.cardValue}>{fmt(result.summary.total_settlement_krw)}</span>
             </div>
@@ -452,9 +474,15 @@ function AblySettlementView() {
               </span>
             </div>
             <div className={styles.card}>
-              <span className={styles.cardLabel}>전체 마진율</span>
+              <span className={styles.cardLabel}>마진율 (정산기준)</span>
               <span className={`${styles.cardValue} ${result.summary.overall_margin_rate >= 0 ? styles.positive : styles.negative}`}>
                 {fmtRate(result.summary.overall_margin_rate)}
+              </span>
+            </div>
+            <div className={styles.card}>
+              <span className={styles.cardLabel}>마진율 (결제기준)</span>
+              <span className={`${styles.cardValue} ${result.summary.overall_payment_margin_rate >= 0 ? styles.positive : styles.negative}`}>
+                {fmtRate(result.summary.overall_payment_margin_rate)}
               </span>
             </div>
             {result.summary.unmatched_count > 0 && (
@@ -464,184 +492,8 @@ function AblySettlementView() {
               </div>
             )}
           </div>
-          <ResultTable items={result.items} />
+          <ResultTable items={result.items} showPaymentCols />
         </>
-      )}
-    </div>
-  );
-}
-
-// ─── 원가 DB 탭 ──────────────────────────────────────────────────────────────
-
-function CostDB() {
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [newName, setNewName] = useState('');
-  const [newCost, setNewCost] = useState('');
-  const [editId, setEditId] = useState(null);
-  const [editCost, setEditCost] = useState('');
-  const [msg, setMsg] = useState('');
-  const [importing, setImporting] = useState(false);
-  const fileRef = useRef(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`${API}/amood-settlement/cost-db`, { headers: getAuthHeaders() });
-      if (handleUnauthorized(res)) return;
-      const data = await res.json();
-      if (data.ok) setItems(data.items);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
-  const showMsg = (m) => { setMsg(m); setTimeout(() => setMsg(''), 3000); };
-
-  const handleAdd = async () => {
-    if (!newName.trim() || !newCost) return;
-    const res = await fetch(`${API}/amood-settlement/cost-db/upsert`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body: JSON.stringify({ product_name: newName.trim(), cost_price: parseInt(newCost, 10) }),
-    });
-    if (handleUnauthorized(res)) return;
-    const data = await res.json();
-    if (data.ok) { setNewName(''); setNewCost(''); showMsg('저장됨'); load(); }
-  };
-
-  const handleSaveEdit = async (name) => {
-    const res = await fetch(`${API}/amood-settlement/cost-db/upsert`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body: JSON.stringify({ product_name: name, cost_price: parseInt(editCost, 10) }),
-    });
-    if (handleUnauthorized(res)) return;
-    const data = await res.json();
-    if (data.ok) { setEditId(null); showMsg('수정됨'); load(); }
-  };
-
-  const handleDelete = async (name) => {
-    if (!confirm(`"${name}" 삭제하시겠습니까?`)) return;
-    const res = await fetch(`${API}/amood-settlement/cost-db/${encodeURIComponent(name)}`, {
-      method: 'DELETE',
-      headers: getAuthHeaders(),
-    });
-    if (handleUnauthorized(res)) return;
-    const data = await res.json();
-    if (data.ok) { showMsg('삭제됨'); load(); }
-  };
-
-  const handleImport = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setImporting(true);
-    const form = new FormData();
-    form.append('file', file);
-    try {
-      const res = await fetch(`${API}/amood-settlement/cost-db/import`, {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: form,
-      });
-      if (handleUnauthorized(res)) return;
-      const data = await res.json();
-      if (data.ok) { showMsg(`임포트 완료: ${data.imported}개 저장, ${data.skipped}개 스킵`); load(); }
-      else showMsg(data.detail || '임포트 실패');
-    } finally {
-      setImporting(false);
-      e.target.value = '';
-    }
-  };
-
-  return (
-    <div className={styles.tabContent}>
-      <div className={styles.toolBar}>
-        <button className={styles.primaryBtn} onClick={() => fileRef.current?.click()} disabled={importing}>
-          <Upload size={16} />
-          {importing ? '임포트 중...' : 'Excel 임포트 (A열:상품명, B열:원가)'}
-        </button>
-        <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleImport} />
-        {msg && <span className={styles.msgBadge}>{msg}</span>}
-      </div>
-
-      <div className={styles.addRow}>
-        <input
-          className={styles.addInput}
-          type="text"
-          placeholder="상품명"
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
-        />
-        <input
-          className={styles.addCostInput}
-          type="number"
-          placeholder="원가 (원)"
-          value={newCost}
-          onChange={(e) => setNewCost(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
-        />
-        <button className={styles.iconBtn} onClick={handleAdd} title="추가">
-          <Plus size={16} />
-        </button>
-      </div>
-
-      {loading ? (
-        <div className={styles.loadingBox}><div className={styles.spinner} /></div>
-      ) : (
-        <div className={styles.tableWrapper}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th>상품명</th>
-                <th>원가</th>
-                <th>수정일</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.length === 0 && (
-                <tr><td colSpan={4} className={styles.empty}>등록된 원가가 없습니다. Excel로 임포트하거나 직접 추가하세요.</td></tr>
-              )}
-              {items.map((item) => (
-                <tr key={item.product_name}>
-                  <td className={styles.productName}>{item.product_name}</td>
-                  <td className={styles.num}>
-                    {editId === item.product_name ? (
-                      <input
-                        className={styles.inlineInput}
-                        type="number"
-                        value={editCost}
-                        onChange={(e) => setEditCost(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') handleSaveEdit(item.product_name); }}
-                        autoFocus
-                      />
-                    ) : (
-                      fmt(item.cost_price)
-                    )}
-                  </td>
-                  <td className={styles.dateCell}>{item.updated_at?.slice(0, 10)}</td>
-                  <td className={styles.actions}>
-                    {editId === item.product_name ? (
-                      <>
-                        <button className={styles.iconBtn} onClick={() => handleSaveEdit(item.product_name)} title="저장"><Save size={14} /></button>
-                        <button className={styles.iconBtn} onClick={() => setEditId(null)} title="취소">✕</button>
-                      </>
-                    ) : (
-                      <>
-                        <button className={styles.iconBtn} onClick={() => { setEditId(item.product_name); setEditCost(String(item.cost_price)); }} title="수정">✎</button>
-                        <button className={styles.iconBtn + ' ' + styles.danger} onClick={() => handleDelete(item.product_name)} title="삭제"><Trash2 size={14} /></button>
-                      </>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
       )}
     </div>
   );
@@ -835,7 +687,6 @@ const TABS = [
   { id: 'settlement', label: '아무드 정산 조회' },
   { id: 'ably', label: '에이블리 정산 조회' },
   { id: 'realtime-amood', label: '실시간 아무드' },
-  { id: 'costdb', label: '원가 DB' },
   { id: 'settings', label: '설정' },
 ];
 
@@ -865,7 +716,6 @@ export default function AmoodSettlement() {
       <div style={{ display: activeTab === 'settlement' ? 'block' : 'none' }}><SettlementView /></div>
       <div style={{ display: activeTab === 'ably' ? 'block' : 'none' }}><AblySettlementView /></div>
       <div style={{ display: activeTab === 'realtime-amood' ? 'block' : 'none' }}><RealtimeAmoodView /></div>
-      <div style={{ display: activeTab === 'costdb' ? 'block' : 'none' }}><CostDB /></div>
       <div style={{ display: activeTab === 'settings' ? 'block' : 'none' }}><SettingsTab onSaved={() => {}} /></div>
     </div>
   );

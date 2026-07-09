@@ -158,6 +158,26 @@ def load_wonbe_cost_base_map() -> dict[str, str]:
     return cost_map
 
 
+def load_wonbe_product_cost_map() -> dict[str, int]:
+    """상품명합 → 원가(int) 매핑. 마진계산(아무드/에이블리 정산) 등에서 원가 조회용."""
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute("SELECT 상품명합, 원가 FROM wonbe").fetchall()
+    finally:
+        conn.close()
+    cost_map: dict[str, int] = {}
+    for r in rows:
+        key = _normalize_cost_base_key(r["상품명합"])
+        if not key or key in cost_map:
+            continue
+        try:
+            cost_map[key] = int(float(r["원가"]))
+        except (TypeError, ValueError):
+            continue
+    return cost_map
+
+
 def wonbe_cost_base_status() -> dict:
     exists = WONBE_DB_PATH.exists()
     mtime = None
@@ -1189,6 +1209,8 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
                 conditions.append("(미송체크 LIKE '%미송%' AND 미송체크 NOT LIKE '%픽업%')")
             elif misong_filter == "미송픽업":
                 conditions.append("(미송체크 LIKE '%미송픽업%' OR (미송체크 LIKE '%미송%' AND 미송체크 LIKE '%픽업%'))")
+            elif misong_filter == "매입차감":
+                conditions.append("미송체크 LIKE '%매입차감%'")
             if ilgwal_only == "Y":
                 conditions.append("일괄이체 = 'Y'")
 
@@ -1680,6 +1702,8 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
                 conditions.append("(미송체크 LIKE '%미송%' AND 미송체크 NOT LIKE '%픽업%')")
             elif misong_filter == "미송픽업":
                 conditions.append("(미송체크 LIKE '%미송픽업%' OR (미송체크 LIKE '%미송%' AND 미송체크 LIKE '%픽업%'))")
+            elif misong_filter == "매입차감":
+                conditions.append("미송체크 LIKE '%매입차감%'")
             where = f"WHERE {' AND '.join(conditions)}"
             cur = conn.execute(f"UPDATE 날짜별장끼정리 SET 일괄이체 = 'Y' {where}", params)
             conn.commit()

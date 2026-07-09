@@ -4,6 +4,7 @@ from datetime import date
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
+from api.wonbe_routes import load_wonbe_product_cost_map
 from services.ably_settlement_utils import (
     fetch_ably_history_list,
     fetch_ably_order_details_batch,
@@ -136,15 +137,8 @@ def build_ably_settlement_router(*, get_current_user, get_db):
             finally:
                 conn.close()
 
-        # 원가 DB (아무드와 공유)
-        conn = get_db()
-        try:
-            cost_rows = conn.execute(
-                "SELECT product_name, cost_price FROM amood_product_costs"
-            ).fetchall()
-            cost_map = {r["product_name"]: r["cost_price"] for r in cost_rows}
-        finally:
-            conn.close()
+        # 원가 DB (DB관리 원가베이스유 참조, 아무드 정산과 공유)
+        cost_map = load_wonbe_product_cost_map()
 
         # per_item_cost (아무드 설정 공유)
         conn = get_db()

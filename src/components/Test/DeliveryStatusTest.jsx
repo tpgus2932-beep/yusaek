@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-import { RefreshCw, Search, MessageSquare } from "lucide-react";
+import React, { useState, useEffect, useRef } from "react";
+import { RefreshCw, Search, MessageSquare, Upload } from "lucide-react";
 import styles from "./TestTabs.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
@@ -19,7 +19,7 @@ function formatSentDate(raw) {
 
 const LS = {
   get: (k, fb) => { try { const v = localStorage.getItem(k); return v != null ? JSON.parse(v) : fb; } catch { return fb; } },
-  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore storage errors */ } },
 };
 
 export default function DeliveryStatusTest() {
@@ -34,6 +34,8 @@ export default function DeliveryStatusTest() {
   const [singleInvNo, setSingleInvNo] = useState(() => LS.get("dstat_singleInv", ""));
   const [singleResult, setSingleResult] = useState(() => LS.get("dstat_singleResult", null));
   const [singleLoading, setSingleLoading] = useState(false);
+  const [excelLoading, setExcelLoading] = useState(false);
+  const excelInputRef = useRef(null);
 
   useEffect(() => { LS.set("dstat_items", items); }, [items]);
   useEffect(() => { LS.set("dstat_llogis", llogisResults); }, [llogisResults]);
@@ -48,12 +50,16 @@ export default function DeliveryStatusTest() {
       .then((r) => r.ok ? r.json() : null)
       .then((serverMemos) => {
         if (!serverMemos) return;
+        const stripped = {};
+        Object.entries(serverMemos).forEach(([k, v]) => {
+          stripped[k] = typeof v === "object" ? v.memo ?? "" : v;
+        });
         // 서버 메모와 로컬 메모 병합 (서버 우선, 로컬에만 있는 것도 유지)
         setMemos((prev) => {
-          const merged = { ...prev, ...serverMemos };
+          const merged = { ...prev, ...stripped };
           // 서버에 없는 로컬 메모는 서버로 동기화
           for (const [inv, memo] of Object.entries(prev)) {
-            if (!serverMemos[inv] && memo) {
+            if (!stripped[inv] && memo) {
               fetch(`${API}/return-shipping/memo`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", ...getAuthHeaders() },
@@ -178,6 +184,46 @@ export default function DeliveryStatusTest() {
     }
   };
 
+  const handleExcelLookup = async (file) => {
+    if (!file) return;
+    setExcelLoading(true);
+    setMessage("엑셀 G열 송장번호 조회 중...");
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`${API}/return-shipping/llogis-stuck-from-excel`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: formData,
+      });
+      const blob = await res.blob();
+      if (!res.ok) {
+        let detail = "엑셀 조회 실패";
+        try {
+          const data = JSON.parse(await blob.text());
+          detail = data?.detail || detail;
+        } catch { /* ignore non-json error responses */ }
+        throw new Error(detail);
+      }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${file.name.replace(/\.[^.]+$/, "")}_안움직이는송장.xls`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      const total = res.headers.get("X-Total-Invoices") || "0";
+      const stuck = res.headers.get("X-Stuck-Invoices") || "0";
+      setMessage(`엑셀 조회 완료: ${total}건 중 안움직이는 송장 ${stuck}건`);
+    } catch (err) {
+      setMessage(err.message || "엑셀 조회 실패");
+    } finally {
+      setExcelLoading(false);
+      if (excelInputRef.current) excelInputRef.current.value = "";
+    }
+  };
+
   const toggleMemo = (inv) => {
     setExpandedMemos((prev) => {
       const next = new Set(prev);
@@ -220,6 +266,22 @@ export default function DeliveryStatusTest() {
           >
             <Search size={13} className={llogisLoading ? styles.spinning : undefined} />
             llogis 전체조회
+          </button>
+          <input
+            ref={excelInputRef}
+            type="file"
+            accept=".xlsx,.xlsm,.xls"
+            style={{ display: "none" }}
+            onChange={(e) => handleExcelLookup(e.target.files?.[0] || null)}
+          />
+          <button
+            className={styles.refreshBtn}
+            onClick={() => excelInputRef.current?.click()}
+            disabled={excelLoading}
+            type="button"
+          >
+            <Upload size={13} className={excelLoading ? styles.spinning : undefined} />
+            {excelLoading ? "엑셀 조회 중..." : "엑셀로 조회"}
           </button>
         </div>
       </header>

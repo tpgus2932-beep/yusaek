@@ -7,11 +7,13 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
 import xlwt
+from openpyxl import load_workbook
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile
 
 ABLY_BASE = "https://api.a-bly.com"
 LLOGIS_LOGIN_URL = "https://partner.alps.llogis.com/auth/login"
@@ -20,9 +22,9 @@ LLOGIS_BASE = "https://pid.alps.llogis.com:18210"
 ABLY_EMAIL = "eostm1997@naver.com"
 ABLY_PASSWORD = "!Glqgkqdldi1126"
 
-LLOGIS_PRINCIPAL = "331595"
-LLOGIS_CREDENTIAL = "plan123!"
-LLOGIS_EMP_NO = "331595"
+LLOGIS_PRINCIPAL = "348867"
+LLOGIS_CREDENTIAL = "1q2w3e4r5t"
+LLOGIS_EMP_NO = "348867"
 
 _EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
@@ -138,6 +140,105 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
             res = await client.get(url, params=params, headers=headers)
             res.raise_for_status()
         return res.json()
+
+    def _content_disposition(filename: str) -> str:
+        fallback = filename.encode("ascii", "ignore").decode() or "download.xls"
+        quoted = "".join(f"%{b:02X}" for b in filename.encode("utf-8"))
+        return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quoted}"
+
+    def _clean_invoice(value) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip()
+        if not text or text.lower() == "nan":
+            return ""
+        if text.endswith(".0") and text[:-2].isdigit():
+            text = text[:-2]
+        return re.sub(r"\D", "", text)
+
+    def _read_column_g_invoices(file_bytes: bytes, filename: str) -> list[dict]:
+        ext = Path(filename or "").suffix.lower()
+        rows: list[dict] = []
+        if ext in {".xlsx", ".xlsm"}:
+            wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+            ws = wb.active
+            try:
+                for row_no, row in enumerate(ws.iter_rows(min_col=7, max_col=7, values_only=True), start=1):
+                    invoice = _clean_invoice(row[0] if row else "")
+                    if invoice:
+                        rows.append({"row_no": row_no, "invoice_no": invoice})
+            finally:
+                wb.close()
+            return rows
+
+        if ext == ".xls":
+            try:
+                import pandas as pd
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=".xls 파일 처리를 위해 pandas/xlrd 설치가 필요합니다.") from exc
+            df = pd.read_excel(io.BytesIO(file_bytes), header=None, dtype=str)
+            if df.shape[1] < 7:
+                raise HTTPException(status_code=400, detail="엑셀 파일에 G열이 없습니다.")
+            for idx, value in enumerate(df.iloc[:, 6].tolist(), start=1):
+                invoice = _clean_invoice(value)
+                if invoice:
+                    rows.append({"row_no": idx, "invoice_no": invoice})
+            return rows
+
+        raise HTTPException(status_code=400, detail="xlsx/xlsm/xls 파일만 업로드 가능합니다.")
+
+    def _build_stuck_invoice_xls(rows: list[dict]) -> bytes:
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("stuck_invoices")
+        headers = ["원본행", "송장번호", "배송상태", "위치", "최종스캔일", "사유"]
+        for col, header in enumerate(headers):
+            sheet.write(0, col, header)
+        for row_idx, row in enumerate(rows, start=1):
+            sheet.write(row_idx, 0, row.get("row_no", ""))
+            sheet.write(row_idx, 1, row.get("invoice_no", ""))
+            sheet.write(row_idx, 2, row.get("status", ""))
+            sheet.write(row_idx, 3, row.get("location", ""))
+            sheet.write(row_idx, 4, row.get("scan_date", ""))
+            sheet.write(row_idx, 5, row.get("reason", ""))
+        buf = io.BytesIO()
+        book.save(buf)
+        return buf.getvalue()
+
+    def _is_stuck_llogis_result(data: dict) -> tuple[bool, dict]:
+        inv_info_list = data.get("invInfoList") or []
+        mvm_list = data.get("mvmList") or []
+        if not inv_info_list:
+            return True, {
+                "status": "-",
+                "location": "-",
+                "scan_date": "-",
+                "reason": "llogis에서 송장을 찾을 수 없음",
+            }
+        if not mvm_list:
+            return True, {
+                "status": "이동이력 없음",
+                "location": "-",
+                "scan_date": "-",
+                "reason": "이동이력 없음",
+            }
+
+        latest = mvm_list[-1]
+        status = latest.get("paclStatNm") or "-"
+        location = latest.get("scanBrshNm") or "-"
+        scan_date = latest.get("rgstYmd") or "-"
+        if status == "운송장등록":
+            return True, {
+                "status": status,
+                "location": location,
+                "scan_date": scan_date,
+                "reason": "운송장등록 이후 이동 없음",
+            }
+        return False, {
+            "status": status,
+            "location": location,
+            "scan_date": scan_date,
+            "reason": "",
+        }
 
     @router.get("/ably-returns")
     async def get_ably_returns(
@@ -270,6 +371,59 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                 }
 
         return {"results": results}
+
+    @router.post("/llogis-stuck-from-excel")
+    async def llogis_stuck_from_excel(
+        file: UploadFile = File(...),
+        user=Depends(get_current_user),
+    ):
+        name = file.filename or "delivery_status.xlsx"
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="업로드된 파일이 비어 있습니다.")
+
+        invoice_rows = _read_column_g_invoices(content, name)
+        if not invoice_rows:
+            raise HTTPException(status_code=400, detail="G열에서 송장번호를 찾지 못했습니다.")
+
+        seen = set()
+        deduped = []
+        for row in invoice_rows:
+            inv = row["invoice_no"]
+            if inv in seen:
+                continue
+            seen.add(inv)
+            deduped.append(row)
+
+        token = await _llogis_login()
+        stuck_rows = []
+        for row in deduped:
+            inv_no = row["invoice_no"]
+            try:
+                data = await _llogis_query(inv_no, token)
+                is_stuck, info = _is_stuck_llogis_result(data)
+                if is_stuck:
+                    stuck_rows.append({**row, **info})
+            except Exception as exc:
+                stuck_rows.append({
+                    **row,
+                    "status": "-",
+                    "location": "-",
+                    "scan_date": "-",
+                    "reason": f"조회 실패: {str(exc)[:120]}",
+                })
+
+        xls_bytes = _build_stuck_invoice_xls(stuck_rows)
+        filename = f"{Path(name).stem}_안움직이는송장.xls"
+        return Response(
+            content=xls_bytes,
+            media_type="application/vnd.ms-excel",
+            headers={
+                "Content-Disposition": _content_disposition(filename),
+                "X-Total-Invoices": str(len(deduped)),
+                "X-Stuck-Invoices": str(len(stuck_rows)),
+            },
+        )
 
     @router.post("/llogis-check-by-origin")
     async def check_llogis_by_origin(
@@ -450,9 +604,9 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
     @router.get("/memos")
     async def get_memos(user=Depends(get_current_user)):
         conn = get_db()
-        rows = conn.execute("SELECT invoice_no, memo FROM delivery_memos").fetchall()
+        rows = conn.execute("SELECT invoice_no, memo, updated_at FROM delivery_memos").fetchall()
         conn.close()
-        return {row["invoice_no"]: row["memo"] for row in rows}
+        return {row["invoice_no"]: {"memo": row["memo"], "updated_at": row["updated_at"]} for row in rows}
 
     @router.post("/memo")
     async def upsert_memo(payload: dict = Body(...), user=Depends(get_current_user)):
@@ -619,9 +773,9 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                 "receiver_tel2": "25466058",
                 "receiver_mobile1": "010",
                 "receiver_mobile2": "25466058",
-                "receiver_zip1": "120",
-                "receiver_zip2": "10",
-                "receiver_address": "경기 남양주시 진접읍 장현리 51-1 롯데오성대리점 (유색)",
+                "receiver_zip1": "122",
+                "receiver_zip2": "47",
+                "receiver_address": "경기 남양주시 진건읍 진관로303번길 9-1 (배양리) JH대리점",
                 "trans_who": "04",
                 "trans_due_date": today_str,
                 "timeFlag": time_flag,

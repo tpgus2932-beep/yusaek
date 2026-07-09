@@ -205,7 +205,8 @@ export default function ExchangeReturnTest() {
       if (data.need_session) {
         openEzadminModal(processExchangePickup);
       } else if (data.ok) {
-        setMessage(`완료 — 교환 ${data.exchange_count}건, 송장 ${data.invoice_count}건 회수등록, 에이블리 승인 완료`);
+        const excludedNote = data.seller_fault_excluded > 0 ? ` (판매자 부담 ${data.seller_fault_excluded}건 제외)` : "";
+        setMessage(`완료 — 교환 ${data.exchange_count}건${excludedNote}, 송장 ${data.invoice_count}건 회수등록, 에이블리 승인 완료`);
       } else {
         setMessage(`오류: ${data.error || "알 수 없는 오류"}`);
       }

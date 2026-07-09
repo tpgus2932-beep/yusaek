@@ -9,8 +9,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 TRB_BASE = "https://trb.alps.llogis.com:18230"
 LLOGIS_LOGIN_URL = "https://partner.alps.llogis.com/auth/login"
-LLOGIS_PRINCIPAL = "331595"
-LLOGIS_CREDENTIAL = "plan123!"
+LLOGIS_PRINCIPAL = "348867"
+LLOGIS_CREDENTIAL = "1q2w3e4r5t"
 
 
 def build_accident_cargo_router(*, get_current_user, get_db):

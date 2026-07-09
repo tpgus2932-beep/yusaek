@@ -76,6 +76,9 @@ const ReturnsPage = () => {
     const [singleCancelSno, setSingleCancelSno] = useState('');
     const [singleRefundLoading, setSingleRefundLoading] = useState(false);
     const [singleRefundResult, setSingleRefundResult] = useState(null);
+    const [singleItemSno, setSingleItemSno] = useState('');
+    const [singleItemLoading, setSingleItemLoading] = useState(false);
+    const [singleItemResult, setSingleItemResult] = useState(null);
     const [excelRefundLoading, setExcelRefundLoading] = useState(false);
     const [excelRefundResults, setExcelRefundResults] = useState(null);
     const searchTimer = useRef(null);
@@ -322,6 +325,27 @@ const ReturnsPage = () => {
             setSingleRefundResult({ ok: false, error: err.message });
         } finally {
             setSingleRefundLoading(false);
+        }
+    };
+
+    const handleSingleItemConfirm = async () => {
+        const sno = singleItemSno.trim();
+        if (!sno) return;
+        setSingleItemLoading(true);
+        setSingleItemResult(null);
+        try {
+            const res = await fetch(`${API}/returns/ably-confirm-by-item-sno`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ item_sno: sno }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '처리 실패');
+            setSingleItemResult({ ok: true, ...data });
+        } catch (err) {
+            setSingleItemResult({ ok: false, error: err.message });
+        } finally {
+            setSingleItemLoading(false);
         }
     };
 
@@ -1305,6 +1329,33 @@ const ReturnsPage = () => {
                 <section className={pageStyles.card}>
                     <div className={pageStyles.cardHeader}>
                         <h3 className={pageStyles.cardTitle}>에이블리 반품 넘기기</h3>
+                    </div>
+
+                    {/* item_sno 직접 확정 */}
+                    <div className={pageStyles.uploadRow} style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem', marginBottom: '0.5rem' }}>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>item_sno 직접 입력</span>
+                        <input
+                            className={pageStyles.searchInput}
+                            style={{ width: '180px' }}
+                            value={singleItemSno}
+                            onChange={(e) => { setSingleItemSno(e.target.value); setSingleItemResult(null); }}
+                            onKeyDown={(e) => e.key === 'Enter' && handleSingleItemConfirm()}
+                            placeholder="item_sno 입력"
+                        />
+                        <button
+                            className={pageStyles.primaryBtn}
+                            onClick={handleSingleItemConfirm}
+                            disabled={singleItemLoading || !singleItemSno.trim()}
+                        >
+                            {singleItemLoading ? '처리 중...' : '반품 확정'}
+                        </button>
+                        {singleItemResult && (
+                            <span style={{ fontSize: '0.82rem', color: singleItemResult.ok ? '#22c55e' : '#ef4444' }}>
+                                {singleItemResult.ok
+                                    ? `✓ 성공 (item_sno:${singleItemResult.item_sno})`
+                                    : `✗ ${singleItemResult.error}`}
+                            </span>
+                        )}
                     </div>
 
                     {/* 단건 테스트 */}

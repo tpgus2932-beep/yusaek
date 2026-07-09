@@ -78,6 +78,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [ochuulResult, setOchuulResult] = useState(null);
   const [ezadminLoading, setEzadminLoading] = useState(false);
   const [ezadminMsg, setEzadminMsg] = useState("");
+  const [ezadminOrdersLoading, setEzadminOrdersLoading] = useState(false);
+  const [ezadminOrdersMsg, setEzadminOrdersMsg] = useState("");
   const [defectEzadminLoading, setDefectEzadminLoading] = useState(false);
   const [defectEzadminMsg, setDefectEzadminMsg] = useState("");
   const { openModal: openEzadminModal } = useEzadminSession();
@@ -200,6 +202,37 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       const msg = `EZAdmin 불러오기 실패: ${err.message || ""}`.trim();
       setIncomingMsg(msg); pushLog(msg);
     } finally { setEzadminLoading(false); setEzadminMsg(""); }
+  };
+
+  const handleUploadFromEzadminOrders = async () => {
+    try {
+      setEzadminOrdersLoading(true); setEzadminOrdersMsg("EZAdmin에서 주문 불러오는 중...");
+      setUploadMsg(""); setCount(null); setCodesTotal(null);
+      const res = await fetch(`${API}/barcode/upload-from-ezadmin-orders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({}),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) {
+        setEzadminOrdersMsg("");
+        openEzadminModal(handleUploadFromEzadminOrders);
+        return;
+      }
+      if (!res.ok || !data?.ok) {
+        const msg = data?.error || data?.detail || "EZAdmin 주문 불러오기 실패";
+        setEzadminOrdersMsg(msg);
+        return;
+      }
+      setEzadminOrdersMsg(`완료 (${data.date} · 송장 ${data.invoices} · 코드 ${data.codes_total})`);
+      setCount(data.invoices ?? null); setCodesTotal(data.codes_total ?? null);
+      setCurrentInvoice(null); setInvoiceDone(false);
+      setItems([]); setDefectRecentCodes([]); setScanText("");
+      setTimeout(() => scanRef.current?.focus(), 50);
+    } catch (err) {
+      setEzadminOrdersMsg(`실패: ${err.message || ""}`.trim());
+    } finally { setEzadminOrdersLoading(false); }
   };
 
   const handleDefectExportToEzadmin = async () => {
@@ -602,6 +635,34 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     }
   };
 
+  const handleOrdersXlsDownload = async () => {
+    try {
+      const res = await fetch(`${API}/barcode/orders/export-xls`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      if (!res.ok) {
+        let message = "주문 목록 다운로드 실패";
+        try { const data = await res.json(); message = data?.detail || message; }
+        catch { const text = await res.text(); if (text) message = text; }
+        throw new Error(message);
+      }
+      const blob = await res.blob();
+      const fallback = `extended_orders_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}.xls`;
+      const filename = getDownloadFilename(res, fallback);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      pushLog(`확장주문검색 목록 다운로드 완료: ${filename}`);
+    } catch (err) {
+      alert(err.message || "주문 목록 다운로드 실패");
+      pushLog(`확장주문검색 목록 다운로드 실패: ${err.message || ""}`.trim());
+    }
+  };
+
   const handleCompletedXlsDownload = async () => {
     try {
       const res = await fetch(`${API}/barcode/completed/export-xls`, { headers: getAuthHeaders() });
@@ -739,20 +800,34 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
           <section className={`${styles.card} ${styles.dualCard}`}>
             <div className={styles.cardHeader}>
               <h3 className={styles.cardTitle}>확장주문검색</h3>
-              {loadingUpload && <span className={styles.pill}>업로드 중</span>}
-              {count !== null && !loadingUpload && (
+              {(loadingUpload || ezadminOrdersLoading) && <span className={styles.pill}>불러오는 중</span>}
+              {count !== null && !loadingUpload && !ezadminOrdersLoading && (
                 <span className={styles.pill}>송장 {count} · 코드 {codesTotal}</span>
               )}
             </div>
             <div className={styles.uploadRow}>
               <label className={styles.fileInput} style={{ flex: 1, justifyContent: 'flex-start' }}>
-                <input type="file" accept=".xls,.xlsx" onChange={(e) => { setFile(e.target.files?.[0] ?? null); setUploadMsg(""); }} />
+                <input type="file" accept=".xls,.xlsx" onChange={(e) => { setFile(e.target.files?.[0] ?? null); setUploadMsg(""); setEzadminOrdersMsg(""); }} />
                 {file ? file.name : "파일 선택"}
               </label>
-              <button className={styles.primaryBtn} onClick={handleUpload} disabled={loadingUpload || !file}>
+              <button className={styles.primaryBtn} onClick={handleUpload} disabled={loadingUpload || ezadminOrdersLoading || !file}>
                 업로드
               </button>
             </div>
+            <div className={styles.uploadRow}>
+              <button className={styles.secondaryBtn} style={{ flex: 1 }} onClick={handleUploadFromEzadminOrders} disabled={loadingUpload || ezadminOrdersLoading}>
+                {ezadminOrdersLoading ? "EZAdmin 불러오는 중..." : "EZAdmin에서 불러오기"}
+              </button>
+              <button className={styles.secondaryBtn} onClick={handleOrdersXlsDownload} disabled={loadingUpload || ezadminOrdersLoading || count === null}>
+                다운로드
+              </button>
+            </div>
+            {ezadminOrdersMsg && (
+              <div className={styles.statusMsg}
+                style={{ borderColor: ezadminOrdersMsg.includes("실패") ? "rgba(220,53,69,0.4)" : "rgba(59,130,246,0.4)", backgroundColor: ezadminOrdersMsg.includes("실패") ? "rgba(220,53,69,0.07)" : "rgba(59,130,246,0.07)" }}>
+                <strong>{ezadminOrdersMsg}</strong>
+              </div>
+            )}
             {uploadMsg && (
               <div className={styles.statusMsg}
                 style={{ borderColor: uploadMsg.includes("실패") ? "rgba(220,53,69,0.4)" : "rgba(34,197,94,0.4)", backgroundColor: uploadMsg.includes("실패") ? "rgba(220,53,69,0.07)" : "rgba(34,197,94,0.07)" }}>

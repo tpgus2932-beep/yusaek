@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import tempfile
-import uuid
-from pathlib import Path
-
-import pandas as pd
 from datetime import date
-from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+
+from api.wonbe_routes import load_wonbe_product_cost_map
 from services.amood_settlement_utils import (
     aggregate_by_product,
     aggregate_realtime_by_product,
@@ -17,126 +14,12 @@ from services.amood_settlement_utils import (
     fetch_settlement_csv,
     fetch_settlement_history_list,
     now_iso,
-    preprocess_product_name,
 )
 from services.pastelco_utils import pastelco_login
 
 
 def build_amood_settlement_router(*, get_current_user, get_db):
     router = APIRouter(prefix="/amood-settlement", tags=["amood-settlement"])
-
-    # ── 원가 DB ──────────────────────────────────────────────────────────────
-
-    @router.get("/cost-db")
-    def cost_db_list(user: str = Depends(get_current_user)):
-        conn = get_db()
-        try:
-            rows = conn.execute(
-                "SELECT product_name, cost_price, updated_at FROM amood_product_costs ORDER BY product_name"
-            ).fetchall()
-            return {"ok": True, "items": [dict(r) for r in rows]}
-        finally:
-            conn.close()
-
-    @router.post("/cost-db/upsert")
-    def cost_db_upsert(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        name = str(payload.get("product_name", "")).strip()
-        cost = payload.get("cost_price")
-        if not name:
-            raise HTTPException(status_code=400, detail="product_name 필수")
-        try:
-            cost = int(cost)
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="cost_price는 정수여야 합니다")
-
-        processed = preprocess_product_name(name)
-        conn = get_db()
-        try:
-            conn.execute(
-                """
-                INSERT INTO amood_product_costs (product_name, cost_price, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(product_name) DO UPDATE SET cost_price = excluded.cost_price, updated_at = excluded.updated_at
-                """,
-                (processed, cost, now_iso()),
-            )
-            conn.commit()
-            return {"ok": True, "product_name": processed, "cost_price": cost}
-        finally:
-            conn.close()
-
-    @router.delete("/cost-db/{product_name:path}")
-    def cost_db_delete(product_name: str, user: str = Depends(get_current_user)):
-        conn = get_db()
-        try:
-            conn.execute(
-                "DELETE FROM amood_product_costs WHERE product_name = ?", (product_name,)
-            )
-            conn.commit()
-            return {"ok": True}
-        finally:
-            conn.close()
-
-    @router.post("/cost-db/import")
-    async def cost_db_import(
-        file: UploadFile = File(...), user: str = Depends(get_current_user)
-    ):
-        name = (file.filename or "").lower()
-        if not (name.endswith(".xlsx") or name.endswith(".xls")):
-            raise HTTPException(status_code=400, detail="xlsx/xls 파일만 가능합니다")
-
-        data = await file.read()
-        if not data:
-            raise HTTPException(status_code=400, detail="파일이 비어있습니다")
-
-        suffix = ".xlsx" if name.endswith(".xlsx") else ".xls"
-        tmp = Path(tempfile.gettempdir()) / f"amood_cost_{uuid.uuid4().hex}{suffix}"
-        tmp.write_bytes(data)
-
-        try:
-            try:
-                df = pd.read_excel(tmp, engine="openpyxl", header=None)
-            except Exception:
-                df = pd.read_excel(tmp, engine="xlrd", header=None)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Excel 읽기 실패: {e}")
-        finally:
-            tmp.unlink(missing_ok=True)
-
-        now = now_iso()
-        imported = 0
-        skipped = 0
-        conn = get_db()
-        try:
-            for _, row in df.iterrows():
-                raw_name = row.iloc[0] if len(row) > 0 else None
-                raw_cost = row.iloc[1] if len(row) > 1 else None
-                if raw_name is None or (isinstance(raw_name, float) and pd.isna(raw_name)):
-                    skipped += 1
-                    continue
-                name_str = preprocess_product_name(str(raw_name).strip())
-                if not name_str:
-                    skipped += 1
-                    continue
-                try:
-                    cost_val = int(float(raw_cost))
-                except (TypeError, ValueError):
-                    skipped += 1
-                    continue
-                conn.execute(
-                    """
-                    INSERT INTO amood_product_costs (product_name, cost_price, updated_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(product_name) DO UPDATE SET cost_price = excluded.cost_price, updated_at = excluded.updated_at
-                    """,
-                    (name_str, cost_val, now),
-                )
-                imported += 1
-            conn.commit()
-        finally:
-            conn.close()
-
-        return {"ok": True, "imported": imported, "skipped": skipped}
 
     # ── 설정 ──────────────────────────────────────────────────────────────────
 
@@ -293,15 +176,8 @@ def build_amood_settlement_router(*, get_current_user, get_db):
             finally:
                 conn.close()
 
-        # 5. 원가 DB 로드
-        conn = get_db()
-        try:
-            cost_rows = conn.execute(
-                "SELECT product_name, cost_price FROM amood_product_costs"
-            ).fetchall()
-            cost_map = {r["product_name"]: r["cost_price"] for r in cost_rows}
-        finally:
-            conn.close()
+        # 5. 원가 DB 로드 (DB관리 원가베이스유 참조)
+        cost_map = load_wonbe_product_cost_map()
 
         # 6. 설정에서 per_item_cost 로드
         conn = get_db()
@@ -344,14 +220,7 @@ def build_amood_settlement_router(*, get_current_user, get_db):
 
         order_details = await fetch_order_details_realtime(order_ids, jwt_token, concurrency=10)
 
-        conn = get_db()
-        try:
-            cost_rows = conn.execute(
-                "SELECT product_name, cost_price FROM amood_product_costs"
-            ).fetchall()
-            cost_map = {r["product_name"]: r["cost_price"] for r in cost_rows}
-        finally:
-            conn.close()
+        cost_map = load_wonbe_product_cost_map()
 
         conn = get_db()
         try:

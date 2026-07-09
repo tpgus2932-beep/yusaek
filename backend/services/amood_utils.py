@@ -42,6 +42,7 @@ class AmoodState:
         self.waiting_for_items: bool = False
         self.completed_mgmt_numbers: set[str] = set()
         self.incoming_counts: dict[str, int] = {}
+        self.ezadmin_saved_at: str | None = None
 
 
 def _amood_status(state: AmoodState) -> dict:
@@ -56,6 +57,7 @@ def _amood_status(state: AmoodState) -> dict:
         "waiting_for_items": state.waiting_for_items,
         "incoming_codes": len(incoming_counts),
         "incoming_total": sum(incoming_counts.values()) if incoming_counts else 0,
+        "ezadmin_saved_at": state.ezadmin_saved_at,
     }
 
 
@@ -115,6 +117,49 @@ def _amood_parse_option(opt: str | None) -> tuple[str, str]:
 
 def _amood_build_output_text(name: str | None, opt: str | None, qty) -> str:
     base = str(name).strip() if name is not None else ""
+    opt_str = str(opt or "").strip()
+    opt_clean = re.sub(r"^\s*[\[\(\{]\s*", "", opt_str)
+    opt_clean = re.sub(r"\s*[\]\)\}]\s*$", "", opt_clean).strip()
+
+    # 합배송: 이지어드민이 " / "(공백+슬래시+공백)로 여러 상품 옵션을 합친 경우
+    if " / " in opt_clean:
+        opt_parts = [p.strip() for p in opt_clean.split(" / ") if p.strip()]
+        # 이름도 "/"로 구분된 경우
+        if "/" in base:
+            name_parts = [p.strip() for p in base.split("/") if p.strip()]
+        else:
+            # 이름은 줄바꿈→공백으로 합쳐진 경우: 단어 수가 옵션 수와 맞으면 페어링
+            name_words = base.split()
+            name_parts = name_words if len(name_words) == len(opt_parts) else []
+
+        if len(name_parts) == len(opt_parts):
+            combined = []
+            for n, o in zip(name_parts, opt_parts):
+                color, size = _amood_parse_option(o)
+                pieces = [n]
+                if color:
+                    pieces.append(color)
+                if size:
+                    pieces.append(size)
+                combined.append(" ".join(pieces))
+            return " / ".join(combined)
+
+        # 페어링 불가: 이름 앞에 두고 옵션 파트를 " / "로 유지
+        opt_formatted_parts = []
+        for o in opt_parts:
+            color, size = _amood_parse_option(o)
+            o_pieces = []
+            if color:
+                o_pieces.append(color)
+            if size:
+                o_pieces.append(size)
+            if o_pieces:
+                opt_formatted_parts.append(" ".join(o_pieces))
+        opt_formatted = " / ".join(opt_formatted_parts) if opt_formatted_parts else opt_clean
+        q = _amood_to_int_qty(qty)
+        return " ".join(filter(None, [base, opt_formatted, str(q)])).strip()
+
+    # 단일 상품
     color, size = _amood_parse_option(opt)
     q = _amood_to_int_qty(qty)
     pieces = [base]

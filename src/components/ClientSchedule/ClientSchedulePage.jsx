@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarDays, Database, Download, GitMerge, RefreshCw, Search, Sparkles, FileUp, Trash2, X } from 'lucide-react';
+import { CalendarDays, Database, Download, GitMerge, RefreshCw, Save, Search, Sparkles, FileUp, Trash2, X } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { COLLAB_API_BASE as API, LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import { useEzadminSession } from '../../lib/EzadminSessionContext';
@@ -9,15 +9,7 @@ const DEFAULT_PREFIX = '\uc548\ub155\ud558\uc138\uc694';
 const DEFAULT_SUFFIX = '일정 알 수 있을까요?';
 const DEFAULT_TEXT_MSG = '\uc624\ub298 \uc8fc\ubb38 \uac00\ub2a5\ud558\uc2e4\uae4c\uc694? \uac00\ub2a5\ud558\uc2dc\uba74 \uc77c\uc815 \ubd80\ud0c1\ub4dc\ub9bd\ub2c8\ub2e4.';
 const HEADER_SHEET1 = ['\uac70\ub798\ucc98', '\ubb38\uc790'];
-const WEEKDAY_LABELS = [
-  '\uc6d4\uc694\uc77c',
-  '\ud654\uc694\uc77c',
-  '\uc218\uc694\uc77c',
-  '\ubaa9\uc694\uc77c',
-  '\uae08\uc694\uc77c',
-  '\ud1a0\uc694\uc77c',
-  '\uc77c\uc694\uc77c',
-];
+const NUMERIC_SORT_COLUMNS = new Set(['G', 'H']);
 
 function formatInputDate(date = new Date()) {
   const year = date.getFullYear();
@@ -178,24 +170,28 @@ function normalizeDValueForMerge(value, baseDate) {
 }
 
 function mergeScheduleRows(baseRows, mergeRows, baseDate) {
+  // 거래처(B) + 상품코드(F)로 매칭. 상세(C)는 원본 텍스트를 2단어로 절삭해 만든
+  // 값이라 기준파일을 다시 가공할 때 살짝 달라질 수 있어 매칭 키에서 제외한다.
   const mergeMap = new Map();
   mergeRows.forEach((row) => {
-    const key = [row.A, row.B, row.C, row.F].map(toDisplayText).join('||');
+    const key = [row.B, row.F].map(toDisplayText).join('||');
     mergeMap.set(key, {
       D: normalizeDValueForMerge(row.D, baseDate),
       E: toDisplayText(row.E),
+      I: toDisplayText(row.I),
     });
   });
 
   return withIds(
     baseRows.map((row) => {
-      const key = [row.A, row.B, row.C, row.F].map(toDisplayText).join('||');
+      const key = [row.B, row.F].map(toDisplayText).join('||');
       const merged = mergeMap.get(key);
       if (!merged) return row;
       return {
         ...row,
         D: merged.D,
         E: merged.E,
+        I: merged.I,
       };
     })
   );
@@ -219,25 +215,6 @@ function buildItemText(row) {
   if (g > 0) return `${base} ${g}\uac1c`;
   if (g === 0 && h >= 1) return `${base} \ubbf8\uc1a1\ud53d\uc5c5\uac74`;
   return '';
-}
-
-function buildGuideMessage(dValue) {
-  const dateValue = coerceDate(dValue);
-  if (dateValue) {
-    return `\uc548\ub155\ud558\uc138\uc694. \uc8fc\ubb38\ud574\uc8fc\uc2e0 \uc0c1\ud488 \ubc30\uc1a1 \uc77c\uc815\uc740 ${dateValue.getFullYear()}\ub144 ${dateValue.getMonth() + 1}\uc6d4 ${dateValue.getDate()}\uc77c ${WEEKDAY_LABELS[(dateValue.getDay() + 6) % 7]} \ubc1c\uc1a1 \uc608\uc815\uc785\ub2c8\ub2e4.`;
-  }
-
-  const text = toDisplayText(dValue).replace(/\s+/g, '');
-  if (text === '\uc774\ubc88\uc8fc\uc911') {
-    return '\uc548\ub155\ud558\uc138\uc694. \uc8fc\ubb38\ud574\uc8fc\uc2e0 \uc0c1\ud488 \uc774\ubc88\uc8fc\uc911 \ubc1c\uc1a1 \uc608\uc815\uc785\ub2c8\ub2e4. \uac10\uc0ac\ud569\ub2c8\ub2e4.';
-  }
-  if (text === '\ub2e4\uc74c\uc8fc\uc911') {
-    return '\uc548\ub155\ud558\uc138\uc694. \uc8fc\ubb38\ud574\uc8fc\uc2e0 \uc0c1\ud488 \ub2e4\uc74c\uc8fc\uc911 \ubc1c\uc1a1 \uc608\uc815\uc785\ub2c8\ub2e4. \uac10\uc0ac\ud569\ub2c8\ub2e4.';
-  }
-  if (text === '\ub2e4\ub2e4\uc74c\uc8fc\uc911') {
-    return '\uc548\ub155\ud558\uc138\uc694. \uc8fc\ubb38\ud574\uc8fc\uc2e0 \uc0c1\ud488 \ub2e4\ub2e4\uc74c\uc8fc\uc911 \ubc1c\uc1a1 \uc608\uc815\uc785\ub2c8\ub2e4. \uac10\uc0ac\ud569\ub2c8\ub2e4.';
-  }
-  return '\ud574\ub2f9 \uc0c1\ud488 \ud604\uc7ac \uc77c\uc815 \ud655\uc778\uc911\uc774\uba70 \uc785\uace0 \ud655\uc778\ub418\ub294\ub300\ub85c \uc77c\uc815 \uc548\ub0b4\ub4dc\ub9ac\uaca0\uc2b5\ub2c8\ub2e4. \uac10\uc0ac\ud569\ub2c8\ub2e4.';
 }
 
 function parseExcludedClients(text) {
@@ -293,7 +270,7 @@ function buildSheet1AndSheet2(rows, prefix, suffix, excludedClients = []) {
   const sheet2Rows = withIds(
     rolled.map((row) => ({
       ...row,
-      I: buildGuideMessage(row.D),
+      I: toDisplayText(row.I),
     }))
   );
 
@@ -381,9 +358,35 @@ export default function ClientSchedulePage() {
   const [dbRows, setDbRows] = useState([]);
   const [dbSavedAt, setDbSavedAt] = useState(null);
   const [dbLoading, setDbLoading] = useState(false);
+  const [dirtyRowIds, setDirtyRowIds] = useState(() => new Set());
   const [showAllExcluded, setShowAllExcluded] = useState(false);
   const authHeaders = getAuthHeaders();
   const excludedClientInputRef = useRef(null);
+  const saveTimerRef = useRef(null);
+
+  const autoSaveToDb = (rowsToSave) => {
+    if (!rowsToSave.length) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      try {
+        const payload = rowsToSave.map(({ A, B, C, D, E, F, G, H, I }) => ({ A, B, C, D, E, F, G, H, I }));
+        const res = await fetch(`${API}/client-schedule/db`, {
+          method: 'PUT',
+          headers: { ...authHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rows: payload }),
+        });
+        if (handleUnauthorized(res)) return;
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.detail || 'DB 자동 저장 실패');
+        setDbRows(withIds(rowsToSave));
+        setDbSavedAt(data.saved_at);
+        setDirtyRowIds(new Set());
+        setStatus(`자동 저장 완료: ${data.count}행`);
+      } catch (err) {
+        setStatus(err.message || 'DB 자동 저장 실패');
+      }
+    }, 500);
+  };
 
   const VISIBLE_TAG_COUNT = 2;
   const hiddenTagCount = Math.max(0, excludedClients.length - VISIBLE_TAG_COUNT);
@@ -398,6 +401,29 @@ export default function ClientSchedulePage() {
       [row.A, row.B, row.C, row.D, row.E, row.F, row.G, row.H, row.I].join(' ').toLowerCase().includes(keyword)
     );
   }, [query, sheet2Rows]);
+
+  const [sortColumn, setSortColumn] = useState(null);
+  const [sortDirection, setSortDirection] = useState('asc');
+
+  const handleSort = (column) => {
+    if (sortColumn === column) {
+      setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortColumn(column);
+      setSortDirection('asc');
+    }
+  };
+
+  const sortedRows = useMemo(() => {
+    if (!sortColumn) return filteredRows;
+    const sign = sortDirection === 'asc' ? 1 : -1;
+    return [...filteredRows].sort((a, b) => {
+      if (NUMERIC_SORT_COLUMNS.has(sortColumn)) {
+        return (toNumber(a[sortColumn]) - toNumber(b[sortColumn])) * sign;
+      }
+      return toDisplayText(a[sortColumn]).localeCompare(toDisplayText(b[sortColumn]), 'ko') * sign;
+    });
+  }, [filteredRows, sortColumn, sortDirection]);
 
   const baseDate = useMemo(() => coerceDate(baseDateText) || new Date(), [baseDateText]);
 
@@ -507,7 +533,7 @@ export default function ClientSchedulePage() {
     setDbLoading(true);
     try {
       const payload = sheet2Rows.map((r) => ({
-        A: r.A, B: r.B, C: r.C, D: r.D, E: r.E, F: r.F, G: r.G, H: r.H,
+        A: r.A, B: r.B, C: r.C, D: r.D, E: r.E, F: r.F, G: r.G, H: r.H, I: r.I,
       }));
       const res = await fetch(`${API}/client-schedule/db`, {
         method: 'PUT',
@@ -519,6 +545,7 @@ export default function ClientSchedulePage() {
       if (!res.ok) throw new Error(data?.detail || 'DB 저장 실패');
       setDbRows(withIds(payload));
       setDbSavedAt(data.saved_at);
+      setDirtyRowIds(new Set());
       setStatus(`DB 저장 완료: ${data.count}행`);
     } catch (err) {
       setStatus(err.message || 'DB 저장 실패');
@@ -641,7 +668,7 @@ export default function ClientSchedulePage() {
     let changed = 0;
     setSheet2Rows(prev =>
       prev.map(row => {
-        const normalized = normalizeDValueForMerge(row.D, baseDateText);
+        const normalized = normalizeDValueForMerge(row.D, baseDate);
         if (normalized === row.D) return row;
         changed++;
         return { ...row, D: normalized };
@@ -672,13 +699,25 @@ export default function ClientSchedulePage() {
 
   const handleSheet2Change = (id, field, value) => {
     setSheet2Rows((prev) => prev.map((row) => (row.id === id ? { ...row, [field]: value } : row)));
+    setDirtyRowIds((prev) => new Set(prev).add(id));
   };
 
   const handleDBlur = (id, value) => {
     const expanded = expandDateShorthand(value, baseDateText);
+    let currentRows = sheet2Rows;
     if (expanded !== value) {
-      setSheet2Rows((prev) => prev.map((row) => (row.id === id ? { ...row, D: expanded } : row)));
+      currentRows = sheet2Rows.map((row) => (row.id === id ? { ...row, D: expanded } : row));
+      setSheet2Rows(currentRows);
     }
+    autoSaveToDb(currentRows);
+  };
+
+  const handleEBlur = () => {
+    autoSaveToDb(sheet2Rows);
+  };
+
+  const handleIBlur = () => {
+    autoSaveToDb(sheet2Rows);
   };
 
   const DB_HEADERS = ['그룹', '거래처', '상세', '일정', '보조', '상품코드', '수량', '미송'];
@@ -736,7 +775,7 @@ export default function ClientSchedulePage() {
         return { ...row, D: match.D, E: match.E };
       });
 
-      const payload = updated.map(({ A, B, C, D, E, F, G, H }) => ({ A, B, C, D, E, F, G, H }));
+      const payload = updated.map(({ A, B, C, D, E, F, G, H, I }) => ({ A, B, C, D, E, F, G, H, I }));
       const res = await fetch(`${API}/client-schedule/db`, {
         method: 'PUT',
         headers: { ...authHeaders, 'Content-Type': 'application/json' },
@@ -986,19 +1025,32 @@ export default function ClientSchedulePage() {
             <table className={styles.table}>
               <thead>
                 <tr>
-                  <th>그룹</th>
-                  <th>거래처</th>
-                  <th>상세</th>
-                  <th>일정</th>
-                  <th>보조</th>
-                  <th>상품코드</th>
-                  <th>수량</th>
-                  <th>미송</th>
-                  <th>안내문구</th>
+                  {[
+                    ['A', '그룹'],
+                    ['B', '거래처'],
+                    ['C', '상세'],
+                    ['D', '일정'],
+                    ['E', '보조'],
+                    ['F', '상품코드'],
+                    ['G', '수량'],
+                    ['H', '미송'],
+                    ['I', '안내문구'],
+                  ].map(([col, label]) => (
+                    <th
+                      key={col}
+                      className={styles.sortableHeader}
+                      onClick={() => handleSort(col)}
+                    >
+                      {label}
+                      {sortColumn === col && (
+                        <span className={styles.sortArrow}>{sortDirection === 'asc' ? ' ▲' : ' ▼'}</span>
+                      )}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.map((row) => (
+                {sortedRows.map((row) => (
                   <tr key={row.id}>
                     <td>{row.A}</td>
                     <td>{row.B}</td>
@@ -1017,13 +1069,36 @@ export default function ClientSchedulePage() {
                         className={styles.cellInput}
                         value={toDisplayText(row.E)}
                         onChange={(e) => handleSheet2Change(row.id, 'E', e.target.value)}
+                        onBlur={handleEBlur}
                         placeholder="보조 일정"
                       />
                     </td>
                     <td>{row.F}</td>
                     <td>{row.G}</td>
                     <td>{row.H}</td>
-                    <td className={styles.colGuide}>{row.I}</td>
+                    <td className={styles.colGuide}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <textarea
+                          className={`${styles.cellInput} ${styles.cellTextarea}`}
+                          value={toDisplayText(row.I)}
+                          onChange={(e) => handleSheet2Change(row.id, 'I', e.target.value)}
+                          onBlur={handleIBlur}
+                          placeholder="안내문구 직접 입력"
+                          rows={2}
+                        />
+                        {dirtyRowIds.has(row.id) && (
+                          <button
+                            type="button"
+                            className={styles.cellSaveBtn}
+                            onClick={handleSaveToDb}
+                            disabled={dbLoading}
+                            title="저장되지 않은 변경사항 저장"
+                          >
+                            <Save size={11} />저장
+                          </button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>

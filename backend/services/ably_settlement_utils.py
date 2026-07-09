@@ -66,10 +66,15 @@ async def fetch_ably_settlement_csv(sno: int | str, jwt_token: str) -> list[dict
             settlement_krw = int(float(cols[12].strip().strip('"')))
         except (ValueError, IndexError):
             continue
+        try:
+            payment_krw = int(float(cols[7].strip().strip('"')))
+        except (ValueError, IndexError):
+            payment_krw = settlement_krw
         rows.append({
             "order_id": order_id_raw,
             "category": cols[5].strip().strip('"'),
             "settlement_krw": settlement_krw,
+            "payment_krw": payment_krw,
         })
     return rows
 

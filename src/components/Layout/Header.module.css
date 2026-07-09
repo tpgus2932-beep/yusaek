@@ -8,6 +8,48 @@
     background-color: var(--bg-primary);
 }
 
+.leftSection {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.topNav {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding-left: 0.25rem;
+    border-left: 1px solid var(--border-color);
+    margin-left: 0.25rem;
+}
+
+.topNavItem {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0.4rem 0.75rem;
+    background: transparent;
+    color: var(--text-secondary);
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+    white-space: nowrap;
+}
+
+.topNavItem:hover {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+.topNavItemActive {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    box-shadow: inset 0 0 0 1px var(--border-color);
+}
+
 .ezadminBtn {
     display: inline-flex;
     align-items: center;

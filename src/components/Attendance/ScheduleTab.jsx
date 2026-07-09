@@ -102,6 +102,27 @@ function getHoliday(date) {
   return KOREAN_HOLIDAYS.find((holiday) => holiday.date === date) ?? null;
 }
 
+function buildActualHoursMap(records) {
+  const grouped = {};
+  records.forEach((r) => {
+    const key = `${r.date}__${r.name}`;
+    if (!grouped[key]) grouped[key] = { checkIn: null, checkOut: null };
+    if (r.type === "출근" && !grouped[key].checkIn) grouped[key].checkIn = r;
+    if (r.type === "퇴근") grouped[key].checkOut = r; // 마지막 퇴근 기록 사용
+  });
+  const map = {};
+  Object.entries(grouped).forEach(([key, { checkIn, checkOut }]) => {
+    if (!checkIn || !checkOut) { map[key] = null; return; }
+    const hours = (new Date(checkOut.timestamp) - new Date(checkIn.timestamp)) / 3600000;
+    map[key] = hours > 0 ? hours : null;
+  });
+  return map;
+}
+
+function getActualHours(map, name, date) {
+  return map[`${date}__${name}`] ?? null;
+}
+
 export default function ScheduleTab({ pin, members }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date(), { weekStartsOn: 1 }));
   const [fixedRules, setFixedRules] = useState([]);
@@ -109,6 +130,8 @@ export default function ScheduleTab({ pin, members }) {
   const [memos, setMemos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [scheduleError, setScheduleError] = useState("");
+  const [weekActualRecords, setWeekActualRecords] = useState([]);
+  const [calendarActualRecords, setCalendarActualRecords] = useState([]);
 
   const [selected, setSelected] = useState(null);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
@@ -240,6 +263,13 @@ export default function ScheduleTab({ pin, members }) {
     activeShifts
       .filter((shift) => shift.memberId === memberId)
       .reduce((total, shift) => total + getHours(shift.startTime, shift.endTime), 0);
+
+  const weeklyActualHours = (memberName) => {
+    const values = weekDays
+      .map((day) => getActualHours(weekActualHoursMap, memberName, day.date))
+      .filter((h) => h !== null);
+    return values.length ? values.reduce((sum, h) => sum + h, 0) : null;
+  };
 
   const dailyHours = (date) =>
     activeShifts
@@ -594,6 +624,39 @@ export default function ScheduleTab({ pin, members }) {
     return `${Number(month)}월`;
   }, [calendarMonth]);
 
+  const fetchActualRecords = useCallback(async (dateFrom, dateTo) => {
+    const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo });
+    const res = await fetch(`${API}/attendance/records?${params}`);
+    if (!res.ok) throw new Error("실제 근무기록을 불러오지 못했습니다.");
+    return res.json();
+  }, [pin]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await fetchActualRecords(weekDays[0].date, weekDays[weekDays.length - 1].date);
+        setWeekActualRecords(data);
+      } catch {
+        setWeekActualRecords([]);
+      }
+    })();
+  }, [fetchActualRecords, weekDays]);
+
+  useEffect(() => {
+    if (!showCalendarView) return;
+    (async () => {
+      try {
+        const data = await fetchActualRecords(calendarDays[0].date, calendarDays[calendarDays.length - 1].date);
+        setCalendarActualRecords(data);
+      } catch {
+        setCalendarActualRecords([]);
+      }
+    })();
+  }, [fetchActualRecords, calendarDays, showCalendarView]);
+
+  const weekActualHoursMap = useMemo(() => buildActualHoursMap(weekActualRecords), [weekActualRecords]);
+  const calendarActualHoursMap = useMemo(() => buildActualHoursMap(calendarActualRecords), [calendarActualRecords]);
+
   const calendarMemberNames = selectedCalendarMemberIds
     .map((id) => members.find((m) => m.id === id))
     .filter(Boolean);
@@ -814,13 +877,19 @@ export default function ScheduleTab({ pin, members }) {
                     {holiday && <span className={styles.holidayBadge}>{holiday.name}</span>}
                   </div>
                   <div className={`${styles.calendarNameList} ${dayWorkers.length >= 4 ? styles.dense : ""}`}>
-                    {dayWorkers.map(({ member, shift }) => (
-                      <span className={`${styles.calendarNameBadge} ${shift?.status === "dayOff" ? styles.dayOff : ""}`} key={member.id}>
-                        <span>{member.name}</span>
-                        {shift?.status === "dayOff" && <span>휴무</span>}
-                        {showCalendarTimes && shift?.status !== "dayOff" && <small>{shift?.startTime}-{shift?.endTime}</small>}
-                      </span>
-                    ))}
+                    {dayWorkers.map(({ member, shift }) => {
+                      const actualHours = getActualHours(calendarActualHoursMap, member.name, day.date);
+                      return (
+                        <span className={`${styles.calendarNameBadge} ${shift?.status === "dayOff" ? styles.dayOff : ""}`} key={member.id}>
+                          <span>{member.name}</span>
+                          {shift?.status === "dayOff" && <span>휴무</span>}
+                          {showCalendarTimes && shift?.status !== "dayOff" && <small>{shift?.startTime}-{shift?.endTime}</small>}
+                          <small className={styles.actualHoursNote}>
+                            실제 {actualHours !== null ? formatHours(actualHours) : "-"}
+                          </small>
+                        </span>
+                      );
+                    })}
                   </div>
                 </div>
               );
@@ -849,7 +918,9 @@ export default function ScheduleTab({ pin, members }) {
           <div className={`${styles.cell} ${styles.total}`}>주간합계</div>
         </div>
 
-        {members.map((member) => (
+        {members.map((member) => {
+          const memberActualHours = weeklyActualHours(member.name);
+          return (
           <div className={styles.row} key={member.id}>
             <div className={`${styles.cell} ${styles.name}`}>{member.name}</div>
             {weekDays.map((day) => {
@@ -896,9 +967,15 @@ export default function ScheduleTab({ pin, members }) {
                 </div>
               );
             })}
-            <div className={`${styles.cell} ${styles.total}`}>{formatHours(weeklyHours(member.id))}</div>
+            <div className={`${styles.cell} ${styles.total}`}>
+              <strong>{formatHours(weeklyHours(member.id))}</strong>
+              <em className={styles.weeklyTotalActual}>
+                실제 {memberActualHours !== null ? formatHours(memberActualHours) : "-"}
+              </em>
+            </div>
           </div>
-        ))}
+          );
+        })}
 
         <div className={`${styles.row} ${styles.footer} ${styles.hoursFooter}`}>
           <div className={`${styles.cell} ${styles.name}`}>일 총 근무시간</div>

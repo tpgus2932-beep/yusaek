@@ -52,6 +52,7 @@ def build_barcode_router(
     _DEFECT_BASE_HEADERS = ["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]
     hapbae_target_shop = "에이블리(유색)"
     hapbae_checked_rows_key = "test_hapbae_checked_rows"
+    hapbae_checked_rows_today_key = "test_hapbae_checked_rows_today"
     hapbae_registered_products_key = "test_hapbae_registered_products"
 
     def _normalize_text(value) -> str:
@@ -74,7 +75,7 @@ def build_barcode_router(
                 return idx
         return fallback
 
-    def _get_hapbae_checked_rows() -> dict[str, bool]:
+    def _get_hapbae_checked_rows_shared() -> dict[str, bool]:
         raw = get_setting(hapbae_checked_rows_key) or "{}"
         try:
             parsed = json.loads(raw)
@@ -84,21 +85,76 @@ def build_barcode_router(
             return {}
         clean = {}
         for key, value in parsed.items():
-            if isinstance(key, str) and key.strip() and value:
+            if isinstance(key, str) and key.strip() and value and not key.strip().startswith("today::"):
                 clean[key.strip()] = True
         return clean
 
-    def _set_hapbae_checked_rows(checked_rows: dict[str, bool]):
+    def _set_hapbae_checked_rows_shared(checked_rows: dict[str, bool]):
         clean = {
             key.strip(): True
             for key, value in checked_rows.items()
-            if isinstance(key, str) and key.strip() and value
+            if isinstance(key, str) and key.strip() and value and not key.strip().startswith("today::")
         }
         set_setting(hapbae_checked_rows_key, json.dumps(clean, ensure_ascii=False))
         return clean
 
+    # TODAY 대량 섹션은 계정마다 진행 상황이 달라서, 다른 섹션(공용)과 분리해
+    # 사용자별로 체크 상태를 저장한다: { username: { "today::...": true } }
+    def _get_hapbae_checked_rows_today_all() -> dict[str, dict[str, bool]]:
+        raw = get_setting(hapbae_checked_rows_today_key) or "{}"
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = {}
+        if not isinstance(parsed, dict):
+            return {}
+        clean = {}
+        for user_key, rows in parsed.items():
+            if not isinstance(user_key, str) or not user_key.strip() or not isinstance(rows, dict):
+                continue
+            clean_rows = {
+                key.strip(): True
+                for key, value in rows.items()
+                if isinstance(key, str) and key.strip() and value
+            }
+            if clean_rows:
+                clean[user_key.strip()] = clean_rows
+        return clean
+
+    def _set_hapbae_checked_rows_today_all(all_rows: dict[str, dict[str, bool]]):
+        set_setting(hapbae_checked_rows_today_key, json.dumps(all_rows, ensure_ascii=False))
+        return all_rows
+
+    def _get_hapbae_checked_rows(user: str) -> dict[str, bool]:
+        merged = _get_hapbae_checked_rows_shared()
+        merged.update(_get_hapbae_checked_rows_today_all().get(user, {}))
+        return merged
+
+    def _set_hapbae_checked_row(user: str, key: str, checked: bool) -> dict[str, bool]:
+        if key.startswith("today::"):
+            all_today = _get_hapbae_checked_rows_today_all()
+            user_rows = dict(all_today.get(user, {}))
+            if checked:
+                user_rows[key] = True
+            else:
+                user_rows.pop(key, None)
+            if user_rows:
+                all_today[user] = user_rows
+            else:
+                all_today.pop(user, None)
+            _set_hapbae_checked_rows_today_all(all_today)
+        else:
+            shared = _get_hapbae_checked_rows_shared()
+            if checked:
+                shared[key] = True
+            else:
+                shared.pop(key, None)
+            _set_hapbae_checked_rows_shared(shared)
+        return _get_hapbae_checked_rows(user)
+
     def _clear_hapbae_checked_rows():
-        return _set_hapbae_checked_rows({})
+        _set_hapbae_checked_rows_shared({})
+        _set_hapbae_checked_rows_today_all({})
 
     def _get_registered_products() -> list[dict]:
         raw = get_setting(hapbae_registered_products_key) or "[]"
@@ -153,6 +209,20 @@ def build_barcode_router(
         finally:
             conn.close()
 
+    def _parse_dt_hapbae(v):
+        if isinstance(v, datetime):
+            return v
+        if v is None or str(v).strip() == "":
+            return None
+        s = str(v).strip()
+        try:
+            return datetime.fromisoformat(s)
+        except Exception:
+            try:
+                return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return None
+
     def _extract_hapbae_pre_match_rows(path: Path) -> list[dict]:
         wb, ws = load_excel_any(path)
         try:
@@ -169,7 +239,7 @@ def build_barcode_router(
                 shop = _normalize_text(ws.cell(row_idx, 4).value)
                 if not duplicate_key and not shop and not code:
                     continue
-                trans_date = _normalize_text(ws.cell(row_idx, 14).value)
+                raw_trans_date = ws.cell(row_idx, 14).value
                 rows.append({
                     "rowNumber": row_idx,
                     "shop": shop,
@@ -178,20 +248,61 @@ def build_barcode_router(
                     "productName": _normalize_text(ws.cell(row_idx, name_col).value),
                     "optionName": _normalize_text(ws.cell(row_idx, option_col).value),
                     "orderQty": _normalize_text(ws.cell(row_idx, qty_col).value),
-                    "transDate": trans_date,
+                    "transDate": _normalize_text(raw_trans_date),
+                    "_dt": _parse_dt_hapbae(raw_trans_date),
                     "runLen": 0,
                 })
-            # 송장입력일 오름차순 → 같은 날짜 내 바코드 기준 정렬 → runLen 정확도 향상
-            rows.sort(key=lambda r: (r["transDate"] or "", r["code"] or ""))
-            i = 0
-            while i < len(rows):
-                j = i
-                while j < len(rows) and rows[j]["code"] == rows[i]["code"]:
-                    j += 1
-                run_len = j - i
-                for k in range(i, j):
-                    rows[k]["runLen"] = run_len
-                i = j
+
+            # 스캔 화면(barcode_core.py process_and_load_any)과 동일한 연속 판정:
+            # 시간순 정렬(동률이면 원본 행 순서 유지) 후, 송장번호·상품코드·수량이 모두
+            # 유효한 행만 대상으로 바로 앞 유효 행이 같은 코드이거나 같은 코드가 2초 이내에
+            # 다시 나오면 하나의 연속으로 간주한다 (날짜 문자열 완전일치 요구 X)
+            rows.sort(key=lambda r: r["_dt"] or datetime.max)
+            last_time_code: dict[str, datetime] = {}
+            cur_run_len_code: dict[str, int] = {}
+            cur_run_members: dict[str, list[int]] = {}
+            prev_code_row = None
+
+            def _flush_run(code: str):
+                length = cur_run_len_code.get(code, 0)
+                if length > 1:
+                    for idx in cur_run_members.get(code, []):
+                        rows[idx]["runLen"] = length
+                cur_run_len_code[code] = 0
+                cur_run_members[code] = []
+
+            for idx, row in enumerate(rows):
+                code = row["code"]
+                qty = to_int(row.get("orderQty"), default=0)
+                if not (row.get("duplicateKey") and code) or qty <= 0:
+                    prev_code_row = code
+                    continue
+                t = row["_dt"]
+                same_run = False
+                if prev_code_row == code:
+                    same_run = True
+                else:
+                    lt = last_time_code.get(code)
+                    if lt and t and abs((t - lt).total_seconds()) <= 2:
+                        same_run = True
+                if same_run:
+                    cur_run_len_code[code] = cur_run_len_code.get(code, 0) + 1
+                    cur_run_members.setdefault(code, []).append(idx)
+                else:
+                    if cur_run_len_code.get(code, 0) > 0:
+                        _flush_run(code)
+                    cur_run_len_code[code] = 1
+                    cur_run_members[code] = [idx]
+                if t:
+                    last_time_code[code] = t
+                prev_code_row = code
+
+            for code in list(cur_run_len_code.keys()):
+                if cur_run_len_code.get(code, 0) > 0:
+                    _flush_run(code)
+
+            for row in rows:
+                row.pop("_dt", None)
             return rows
         finally:
             try:
@@ -537,6 +648,58 @@ def build_barcode_router(
         data = buf.read()
         buf.close()
         return data, completed_count
+
+    def _build_orders_xls_bytes(state) -> tuple[bytes, int]:
+        original_mapping = state.get("original_mapping") or {}
+        details = state.get("details") or {}
+        invoice_order = state.get("invoice_order") or {}
+        invoice_seq = state.get("invoice_seq") or list(original_mapping.keys())
+
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("orders")
+        header_style = xlwt.easyxf("font: bold on; align: horiz center;")
+        headers = ["송장번호", "상품코드", "상품명", "옵션", "수량"]
+        for col_idx, header in enumerate(headers):
+            sheet.write(0, col_idx, header, header_style)
+
+        row_idx = 1
+        seen = set()
+        invoice_seq_set = set(invoice_seq)
+        ordered_invoices = list(invoice_seq) + [
+            invoice for invoice in original_mapping.keys() if invoice not in invoice_seq_set
+        ]
+        for invoice in ordered_invoices:
+            if invoice in seen:
+                continue
+            seen.add(invoice)
+            codes = invoice_order.get(invoice) or list((original_mapping.get(invoice) or {}).keys())
+            written_codes = set()
+            for code in codes:
+                if code in written_codes:
+                    continue
+                written_codes.add(code)
+                qty = int((original_mapping.get(invoice) or {}).get(code, 0) or 0)
+                if qty <= 0:
+                    continue
+                det = (details.get(invoice) or {}).get(code, {})
+                sheet.write(row_idx, 0, str(invoice))
+                sheet.write(row_idx, 1, str(code))
+                sheet.write(row_idx, 2, det.get("name", "") or "")
+                sheet.write(row_idx, 3, det.get("option", "") or "")
+                sheet.write(row_idx, 4, qty)
+                row_idx += 1
+
+        sheet.col(0).width = 22 * 256
+        sheet.col(1).width = 18 * 256
+        sheet.col(2).width = 36 * 256
+        sheet.col(3).width = 36 * 256
+        sheet.col(4).width = 10 * 256
+        buf = tempfile.SpooledTemporaryFile()
+        book.save(buf)
+        buf.seek(0)
+        data = buf.read()
+        buf.close()
+        return data, len(seen)
 
     @router.post("/barcode/upload")
     async def barcode_upload(file: UploadFile = File(...), user: str = Depends(get_current_user)):
@@ -1082,7 +1245,7 @@ def build_barcode_router(
 
     @router.get("/barcode/hapbae-pre-match/checked")
     def get_hapbae_pre_match_checked(user: str = Depends(get_current_user)):
-        return {"ok": True, "checked_rows": _get_hapbae_checked_rows()}
+        return {"ok": True, "checked_rows": _get_hapbae_checked_rows(user)}
 
     @router.patch("/barcode/hapbae-pre-match/checked")
     def set_hapbae_pre_match_checked(payload: dict = Body(...), user: str = Depends(get_current_user)):
@@ -1090,12 +1253,7 @@ def build_barcode_router(
         if not key:
             raise HTTPException(status_code=400, detail="key required")
         checked = bool(payload.get("checked"))
-        checked_rows = _get_hapbae_checked_rows()
-        if checked:
-            checked_rows[key] = True
-        else:
-            checked_rows.pop(key, None)
-        return {"ok": True, "checked_rows": _set_hapbae_checked_rows(checked_rows)}
+        return {"ok": True, "checked_rows": _set_hapbae_checked_row(user, key, checked)}
 
     @router.get("/barcode/hapbae-pre-match/registered")
     def get_hapbae_registered_products(user: str = Depends(get_current_user)):
@@ -1157,6 +1315,77 @@ def build_barcode_router(
             "added": added,
             "total_input": len(normalized_codes),
         }
+
+    @router.post("/barcode/stock-bulk-fetch")
+    async def stock_bulk_fetch(user: str = Depends(get_current_user)):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        now = datetime.now()
+        weekday_kr = ["월", "화", "수", "목", "금", "토", "일"][now.weekday()]
+        number_date = f"{now.year}-{now.month}-{now.day}"
+        start_date3 = f"{now.year}년 {now.month:02d}월 {now.day:02d}일 {weekday_kr}요일"
+
+        par = (
+            f"orderReserve=0&priorityDeliv=0"
+            f"&numberDate={number_date}"
+            f"&start_date3={start_date3}"
+            f"&number_no=1&is_download=0&orderType=2"
+            f"&agencyTemplate=20004&check_address=2"
+            f"&teamf_transType=tonight&kakaoT_type=0&deliv_today_type=0&hanjin_deliv_type=GN"
+        )
+        form_data = {
+            "template": "S700",
+            "action": "get_success_order",
+            "_search": "false",
+            "nd": str(int(now.timestamp() * 1000)),
+            "rows": "999999",
+            "page": "1",
+            "sidx": "",
+            "sord": "asc",
+            "readonly": "T",
+            "par": par,
+        }
+        ez_headers = {
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Origin": _EZADMIN_BASE,
+            "Referer": f"{_EZADMIN_BASE}/template35.htm?template=S700",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        cookies = {"PHPSESSID": phpsessid}
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0, verify=False, follow_redirects=True) as client:
+                res = await client.post(f"{_EZADMIN_BASE}/function.htm", headers=ez_headers, cookies=cookies, data=form_data)
+            result = res.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"이지어드민 응답 오류: {e}")
+
+        api_rows = result.get("rows", [])
+        if not api_rows:
+            return {"ok": True, "rows": []}
+
+        _product_re = re.compile(r'\[([A-Z]\d+)\](.*?)(?:-\[([^\]]*)\])?\s+(\d+)개')
+        counts: Counter = Counter()
+        for order in api_rows:
+            cell = order.get("cell", {})
+            products_str = str(cell.get("products", ""))
+            for m in _product_re.finditer(products_str):
+                code = m.group(1).strip()
+                name = m.group(2).strip().rstrip("-").strip()
+                option = m.group(3).strip() if m.group(3) else ""
+                qty = int(m.group(4))
+                counts[(code, name, option)] += qty
+
+        bulk_rows = [
+            {"code": k[0], "productName": k[1], "optionName": k[2], "qty": v}
+            for k, v in sorted(counts.items(), key=lambda x: -x[1])
+            if v >= 10
+        ]
+        return {"ok": True, "rows": bulk_rows, "total": len(api_rows)}
 
     @router.post("/barcode/scan/invoice")
     def scan_invoice(payload: dict = Body(...), user: str = Depends(get_current_user)):
@@ -1506,6 +1735,20 @@ def build_barcode_router(
             raise HTTPException(status_code=400, detail="다운로드할 완료목록이 없습니다")
 
         filename = f"completed_products_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xls"
+        headers = {"Content-Disposition": content_disposition(filename)}
+        return Response(content=content, media_type="application/vnd.ms-excel", headers=headers)
+
+    @router.get("/barcode/orders/export-xls")
+    def export_orders_xls(user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
+        if not state["loaded"]:
+            raise HTTPException(status_code=400, detail="Upload barcode data first")
+
+        content, invoice_count = _build_orders_xls_bytes(state)
+        if invoice_count <= 0:
+            raise HTTPException(status_code=400, detail="다운로드할 주문 목록이 없습니다")
+
+        filename = f"extended_orders_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xls"
         headers = {"Content-Disposition": content_disposition(filename)}
         return Response(content=content, media_type="application/vnd.ms-excel", headers=headers)
 
