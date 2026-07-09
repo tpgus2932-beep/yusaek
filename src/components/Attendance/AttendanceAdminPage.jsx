@@ -44,7 +44,7 @@ export default function AttendanceAdminPage() {
   const [salaryHourlyRate, setSalaryHourlyRate] = useState(10400);
   const [salaryHolidayMin, setSalaryHolidayMin] = useState(15);
   const [salaryWorkDays, setSalaryWorkDays] = useState(5);
-  const [salaryDeductPct, setSalaryDeductPct] = useState(3.3);
+  const [salaryDeductPct, setSalaryDeductPct] = useState(3);
   const [salaryResult, setSalaryResult] = useState(null);
   const [allSalaryResults, setAllSalaryResults] = useState(null);
   const [salaryAllowances, setSalaryAllowances] = useState([]);
@@ -327,13 +327,16 @@ export default function AttendanceAdminPage() {
     const holTotal = weeks.reduce((s, w) => s + w.holPay, 0);
     const allowanceTotal = allowances.reduce((s, a) => s + (Number(a.amount) || 0), 0);
     const totalPay = basicPay + holTotal + allowanceTotal;
-    const deduction = Math.round(totalPay * (deductPct / 100));
+    // 소득세(deductPct%) + 지방소득세(소득세의 10%)
+    const incomeTax = Math.round(totalPay * (deductPct / 100));
+    const localTax = Math.round(incomeTax * 0.1);
+    const deduction = incomeTax + localTax;
     const netPay = totalPay - deduction;
 
     return {
       member: memberName, year, month,
       hourlyRate, deductPct,
-      monthlyHours, basicPay, holTotal, allowances, allowanceTotal, totalPay, deduction, netPay,
+      monthlyHours, basicPay, holTotal, allowances, allowanceTotal, totalPay, incomeTax, localTax, deduction, netPay,
       qualifyingWeeks: weeks.filter((w) => w.qualifies).length,
       weeks,
     };
@@ -739,7 +742,7 @@ export default function AttendanceAdminPage() {
                   <input type="number" className={styles.salarySettingInput} value={salaryWorkDays} onChange={(e) => setSalaryWorkDays(+e.target.value)} />
                 </label>
                 <label className={styles.salarySettingItem}>
-                  <span>공제율(%)</span>
+                  <span>소득세율(%)</span>
                   <input type="number" step="0.1" className={styles.salarySettingInput} value={salaryDeductPct} onChange={(e) => setSalaryDeductPct(+e.target.value)} />
                 </label>
               </div>
@@ -876,8 +879,12 @@ export default function AttendanceAdminPage() {
                     <span className={styles.slipVal}>{salaryResult.totalPay.toLocaleString()}원</span>
                   </div>
                   <div className={styles.slipRow}>
-                    <span className={styles.slipKey}>공제 ({salaryResult.deductPct}%)</span>
-                    <span className={`${styles.slipVal} ${styles.slipValDeduct}`}>−{salaryResult.deduction.toLocaleString()}원</span>
+                    <span className={styles.slipKey}>소득세 ({salaryResult.deductPct}%)</span>
+                    <span className={`${styles.slipVal} ${styles.slipValDeduct}`}>−{salaryResult.incomeTax.toLocaleString()}원</span>
+                  </div>
+                  <div className={styles.slipRow}>
+                    <span className={styles.slipKey}>지방소득세 (소득세의 10%)</span>
+                    <span className={`${styles.slipVal} ${styles.slipValDeduct}`}>−{salaryResult.localTax.toLocaleString()}원</span>
                   </div>
                   <div className={`${styles.slipRow} ${styles.slipRowNet}`}>
                     <span className={styles.slipKeyNet}>실지급액</span>
