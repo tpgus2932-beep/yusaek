@@ -49,3 +49,16 @@ coverage/
 
 # Documentation
 public/docs/
+
+# Python
+__pycache__/
+*.pyc
+
+# Local SQLite DB
+backend/app.db
+
+# PyInstaller build output
+/build/자동/
+
+# Runtime uploads
+backend/uploads/

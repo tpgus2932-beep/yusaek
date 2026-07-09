@@ -5,7 +5,7 @@ a = Analysis(
     ['자동.PY'],
     pathex=[],
     binaries=[],
-    datas=[('자동_템플릿.json', '.')],
+    datas=[('자동_템플릿.json', '.'), ('자동_disasm.txt', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
