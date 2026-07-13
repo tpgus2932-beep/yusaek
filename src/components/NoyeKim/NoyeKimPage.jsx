@@ -1891,7 +1891,7 @@ export default function NoyeKimPage() {
   const copyMisongTsv = async () => {
     if (!sortedMisongItems.length) { setMessage("복사할 항목이 없습니다."); return; }
     const tsv = sortedMisongItems
-      .map((item) => [item.A, "주문", item.B, item.D, item.E, item.F, "(미송픽업)"].join("\t"))
+      .map((item) => [item.A, "주문", "(미송픽업)", item.B, item.D, item.E, item.F, "(미송픽업)"].join("\t"))
       .join("\n");
     try {
       await navigator.clipboard.writeText(tsv);
