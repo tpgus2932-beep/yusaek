@@ -343,6 +343,7 @@ export default function ClientSchedulePage() {
   const [incomingFile, setIncomingFile] = useState(null);
   const [incomingEzLoading, setIncomingEzLoading] = useState(false);
   const [baseEzLoading, setBaseEzLoading] = useState(false);
+  const [exportEzLoading, setExportEzLoading] = useState(false);
   const [baseEzStart, setBaseEzStart] = useState(() => formatInputDate(new Date(Date.now() - 90 * 86400000)));
   const [baseEzEnd, setBaseEzEnd] = useState(() => formatInputDate());
   const [baseDateText, setBaseDateText] = useState(formatInputDate());
@@ -623,6 +624,52 @@ export default function ClientSchedulePage() {
     }
   };
 
+  const handleExportScheduleToEzadmin = async () => {
+    const scheduled = sheet2Rows.filter((row) => toDisplayText(row.D));
+    if (scheduled.length === 0) {
+      setStatus('내보낼 일정이 없습니다.');
+      return;
+    }
+
+    const missingCode = scheduled.filter((row) => !toDisplayText(row.productCode));
+    if (missingCode.length > 0) {
+      setStatus(`${missingCode.length}건은 상품코드가 없어 내보낼 수 없습니다. 기준 파일을 다시 불러와 가공해주세요.`);
+      return;
+    }
+
+    if (!window.confirm(`${scheduled.length}건을 EZAdmin에 반영합니다. 계속할까요?`)) {
+      return;
+    }
+
+    setExportEzLoading(true);
+    try {
+      setStatus('EZAdmin에 일정 내보내는 중...');
+      const rows = scheduled.map((row) => ({
+        productCode: toDisplayText(row.productCode),
+        note: toDisplayText(row.D),
+      }));
+      const res = await fetch(`${LOCAL_API_BASE}/barcode/client-schedule/export-to-ezadmin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ rows }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) {
+        openEzadminModal(handleExportScheduleToEzadmin);
+        return;
+      }
+      if (!data?.ok) {
+        setStatus(data?.error || 'EZAdmin 날짜 내보내기 실패');
+        return;
+      }
+      setStatus(`EZAdmin 날짜 내보내기 완료 (${data.count ?? 0}건 변경)`);
+    } catch (err) {
+      setStatus(`EZAdmin 날짜 내보내기 실패: ${err.message || ''}`);
+    } finally {
+      setExportEzLoading(false);
+    }
+  };
+
   const handleBaseProcess = async () => {
     if (!baseFile) {
       setStatus('기준 파일을 먼저 선택하세요.');
@@ -883,6 +930,17 @@ export default function ClientSchedulePage() {
                 style={{ marginTop: '0.25rem', fontSize: '0.8rem' }}
               >
                 {incomingEzLoading ? '불러오는 중...' : 'EZAdmin 불러오기'}
+              </button>
+            </div>
+            <div className={styles.fileField}>
+              <span className={styles.fieldLabel}>일정 반영 <small>(상품메모)</small></span>
+              <button
+                className={styles.ghostBtn}
+                onClick={handleExportScheduleToEzadmin}
+                disabled={exportEzLoading || !sheet2Rows.length}
+                style={{ fontSize: '0.8rem' }}
+              >
+                {exportEzLoading ? '내보내는 중...' : 'EZAdmin 날짜 내보내기'}
               </button>
             </div>
           </div>
