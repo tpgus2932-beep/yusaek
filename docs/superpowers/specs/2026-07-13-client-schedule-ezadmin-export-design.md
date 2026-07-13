@@ -74,28 +74,32 @@ _ensure_client_schedule_column(
    `"N건은 상품코드가 없어 내보낼 수 없습니다. 기준 파일을 다시 불러와 가공해주세요."`
 3. 내보낼 행이 0건이면 API 호출 없이 `"내보낼 일정이 없습니다"` 표시.
 4. 문제 없으면 `confirm("N건을 EZAdmin에 반영합니다. 계속할까요?")` → 취소 시 중단.
-5. `POST {API}/client-schedule/export-to-ezadmin`
+5. `POST {LOCAL_API_BASE}/barcode/client-schedule/export-to-ezadmin`
    - body: `{ rows: [{ productCode, note: <D값> }, ...] }`
+   - **주의**: `API`(COLLAB_API_BASE)가 아니라 `LOCAL_API_BASE`를 사용한다. 같은 화면의
+     `handleBaseFromEzadmin`/`handleIncomingFromEzadmin`이 이미 `LOCAL_API_BASE`로
+     `barcode_routes.py`를 호출하고 있고, EZAdmin 세션(PHPSESSID) 저장/조회도 그 서버
+     프로세스의 `get_setting`을 통해 이뤄지므로 동일한 서버로 맞춘다.
 6. 응답이 `need_session`이면 `openEzadminModal(handleExportScheduleToEzadmin)` 호출 (기존
    패턴과 동일하게, 로그인 성공 후 동일 함수 재실행).
 7. 성공/실패를 `status`에 표시. 성공 예: `"EZAdmin 날짜 내보내기 완료 (12건 변경)"`.
 
-## 백엔드 변경 (`backend/api/collab_routes.py`)
+## 백엔드 변경 1: DB 스키마/저장·조회 (`backend/api/collab_routes.py`)
 
 ### GET/PUT `/client-schedule/db` 수정
 
 - `GET`: `SELECT` 절에 `product_code` 추가, 응답 아이템에 `"productCode": r["product_code"]` 추가.
 - `PUT`: `INSERT` 컬럼에 `product_code` 추가, `payload.get("productCode", "")` 값 저장.
 
-### 신규 `POST /client-schedule/export-to-ezadmin`
+이 두 엔드포인트는 지금처럼 `COLLAB_API_BASE`(`API`)로 계속 호출된다 (일정 데이터 자체는
+공용/협업 데이터이므로 기존과 동일).
 
-기존 EZAdmin 연동 라우트들의 컨벤션(`misong_routes.py`, `barcode_routes.py` 등)을 따라
-이 파일에도 로컬 상수를 정의한다.
+## 백엔드 변경 2: EZAdmin 내보내기 (`backend/api/barcode_routes.py`)
 
-```python
-_EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
-_EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
-```
+새 엔드포인트는 `client_schedule_db`를 직접 조회하지 않는다 — 프론트가 이미 필터링한
+행 데이터(`productCode`, `note`)를 요청 바디로 그대로 받는다. 따라서 `get_db`가 전혀
+필요 없고, 이 파일에 이미 있는 `get_setting`, `xlwt`, `httpx`, `_EZADMIN_BASE`,
+`_EZADMIN_SESSION_KEY`만으로 구현 가능하다 (`base_file_from_ezadmin` 바로 아래에 추가).
 
 핸들러 로직:
 
