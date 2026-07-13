@@ -32,6 +32,7 @@ from api.attendance_routes import build_attendance_router
 from api.guidebook_routes import build_guidebook_router
 from api.amood_settlement_routes import build_amood_settlement_router
 from api.ably_settlement_routes import build_ably_settlement_router
+from api.misong_routes import build_misong_router
 from main import (
     ALLOWED_REQUEST_EXTS,
     ALLOWED_SHARED_EXTS,
@@ -44,6 +45,7 @@ from main import (
     _get_db,
     _get_request_attachments,
     _get_setting,
+    _get_shared_db,
     _get_user_display,
     _hash_password,
     _hash_pin,
@@ -164,6 +166,14 @@ app.include_router(
         get_db=_get_db,
         get_current_user=_get_current_user,
         guidebook_upload_base=_GUIDEBOOK_UPLOAD_BASE,
+    )
+)
+
+app.include_router(
+    build_misong_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        get_setting=_get_setting,
     )
 )
 
