@@ -1071,14 +1071,15 @@ def build_collab_router(
         conn = get_db()
         try:
             rows = conn.execute(
-                "SELECT row_a,row_b,row_c,row_d,row_e,row_f,row_g,row_h,row_i,saved_at FROM client_schedule_db ORDER BY id"
+                "SELECT row_a,row_b,row_c,row_d,row_e,row_f,row_g,row_h,row_i,product_code,saved_at FROM client_schedule_db ORDER BY id"
             ).fetchall()
         finally:
             conn.close()
         items = [
             {"A": r["row_a"], "B": r["row_b"], "C": r["row_c"],
              "D": r["row_d"], "E": r["row_e"], "F": r["row_f"],
-             "G": r["row_g"], "H": r["row_h"], "I": r["row_i"]}
+             "G": r["row_g"], "H": r["row_h"], "I": r["row_i"],
+             "productCode": r["product_code"]}
             for r in rows
         ]
         saved_at = rows[-1]["saved_at"] if rows else None
@@ -1093,10 +1094,11 @@ def build_collab_router(
             conn.execute("DELETE FROM client_schedule_db")
             for row in rows:
                 conn.execute(
-                    "INSERT INTO client_schedule_db (row_a,row_b,row_c,row_d,row_e,row_f,row_g,row_h,row_i,saved_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO client_schedule_db (row_a,row_b,row_c,row_d,row_e,row_f,row_g,row_h,row_i,product_code,saved_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (str(row.get("A","")), str(row.get("B","")), str(row.get("C","")),
                      str(row.get("D","")), str(row.get("E","")), str(row.get("F","")),
-                     str(row.get("G","")), str(row.get("H","")), str(row.get("I","")), now),
+                     str(row.get("G","")), str(row.get("H","")), str(row.get("I","")),
+                     str(row.get("productCode","")), now),
                 )
             conn.commit()
         finally:

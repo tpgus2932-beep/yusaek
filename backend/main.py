@@ -461,6 +461,10 @@ class _TursoHTTPCursor:
                     row.append(int(v))
                 elif t == "float":
                     row.append(float(v))
+                elif t == "blob":
+                    b64 = cell.get("base64")
+                    import base64
+                    row.append(base64.b64decode(b64 + "=" * (-len(b64) % 4)) if b64 else None)
                 else:
                     row.append(v)
             self._rows.append(row)
@@ -960,6 +964,11 @@ def _ensure_client_schedule_column(column: str, ddl: str):
 _ensure_client_schedule_column(
     "row_i",
     "ALTER TABLE client_schedule_db ADD COLUMN row_i TEXT NOT NULL DEFAULT ''",
+)
+
+_ensure_client_schedule_column(
+    "product_code",
+    "ALTER TABLE client_schedule_db ADD COLUMN product_code TEXT NOT NULL DEFAULT ''",
 )
 
 
