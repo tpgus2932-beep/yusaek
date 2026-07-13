@@ -1888,6 +1888,19 @@ export default function NoyeKimPage() {
     }
   };
 
+  const copyMisongTsv = async () => {
+    if (!sortedMisongItems.length) { setMessage("복사할 항목이 없습니다."); return; }
+    const tsv = sortedMisongItems
+      .map((item) => [item.A, "주문", item.B, item.D, item.E, item.F, "(미송픽업)"].join("\t"))
+      .join("\n");
+    try {
+      await navigator.clipboard.writeText(tsv);
+      setMessage(`엑셀 복사 완료 (${sortedMisongItems.length}행)`);
+    } catch (err) {
+      setMessage(`엑셀 복사 실패: ${err.message || ""}`);
+    }
+  };
+
   const downloadMisongXls = async () => {
     if (!misongItems.length) { setMessage("다운로드할 항목이 없습니다."); return; }
     setLoading(true);
@@ -2346,6 +2359,13 @@ export default function NoyeKimPage() {
                   disabled={misongItems.length === 0}
                 >
                   <ArrowDownToLine size={13} />입고대기 다운로드
+                </button>
+                <button
+                  className={styles.secondaryBtn}
+                  onClick={copyMisongTsv}
+                  disabled={misongItems.length === 0}
+                >
+                  <Clipboard size={13} />엑셀복사
                 </button>
                 <button
                   className={styles.secondaryBtn}
