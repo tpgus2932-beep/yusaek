@@ -2412,4 +2412,59 @@ def build_barcode_router(
             headers={"Content-Disposition": 'attachment; filename="base_file.xls"'},
         )
 
+    @router.post("/barcode/client-schedule/export-to-ezadmin")
+    async def client_schedule_export_to_ezadmin(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        import io as _io
+        rows = payload.get("rows") or []
+
+        wb = xlwt.Workbook()
+        ws = wb.add_sheet("Sheet1")
+        ws.write(0, 0, "상품코드")
+        ws.write(0, 1, "상품메모")
+        for ri, row in enumerate(rows, 1):
+            ws.write(ri, 0, str(row.get("productCode", "")))
+            ws.write(ri, 1, str(row.get("note", "")))
+
+        buf = _io.BytesIO()
+        wb.save(buf)
+        xls_bytes = buf.getvalue()
+
+        c620_url = f"{_EZADMIN_BASE}/template40.htm?template=C620"
+        ts_ms = str(int(datetime.now().timestamp() * 1000))
+        ez_headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Origin": _EZADMIN_BASE,
+            "Referer": c620_url,
+        }
+        cookies = {"PHPSESSID": phpsessid}
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0, verify=False, follow_redirects=True) as client:
+                r = await client.post(
+                    c620_url,
+                    data={"page": "1", "action": "update2", "template": "C620", "total": "0", "status": "6"},
+                    files={"_file": (f"client_schedule_{ts_ms}.xls", xls_bytes, "application/vnd.ms-excel")},
+                    cookies=cookies,
+                    headers=ez_headers,
+                )
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        html = r.text
+        m = re.search(r'alert\("(\d+)\s*개 변경 완료 되었습니다\."\)', html)
+        if not m:
+            return {"ok": False, "error": "응답에서 변경 완료 문구를 찾지 못했습니다", "raw_snippet": html[:300]}
+        return {"ok": True, "count": int(m.group(1))}
+
     return router
