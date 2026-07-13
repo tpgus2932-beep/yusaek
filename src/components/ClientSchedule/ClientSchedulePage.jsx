@@ -108,7 +108,7 @@ function preprocessBaseSheet(rawRows) {
       G: toDisplayText(row[6]),
       H: toDisplayText(row[11]),
       I: '',
-      srcI: toDisplayText(row[8]),
+      productCode: toDisplayText(row[8]),
     });
   });
 
@@ -369,7 +369,7 @@ export default function ClientSchedulePage() {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
       try {
-        const payload = rowsToSave.map(({ A, B, C, D, E, F, G, H, I }) => ({ A, B, C, D, E, F, G, H, I }));
+        const payload = rowsToSave.map(({ A, B, C, D, E, F, G, H, I, productCode }) => ({ A, B, C, D, E, F, G, H, I, productCode }));
         const res = await fetch(`${API}/client-schedule/db`, {
           method: 'PUT',
           headers: { ...authHeaders, 'Content-Type': 'application/json' },
@@ -533,7 +533,7 @@ export default function ClientSchedulePage() {
     setDbLoading(true);
     try {
       const payload = sheet2Rows.map((r) => ({
-        A: r.A, B: r.B, C: r.C, D: r.D, E: r.E, F: r.F, G: r.G, H: r.H, I: r.I,
+        A: r.A, B: r.B, C: r.C, D: r.D, E: r.E, F: r.F, G: r.G, H: r.H, I: r.I, productCode: r.productCode,
       }));
       const res = await fetch(`${API}/client-schedule/db`, {
         method: 'PUT',
@@ -648,7 +648,7 @@ export default function ClientSchedulePage() {
         const { rows: inRows } = await readWorkbook(incomingFile);
         const incomingKeys = readIncomingKeys(inRows);
         const before = processed.length;
-        processed = withIds(processed.filter((row) => !incomingKeys.has(toDisplayText(row.srcI))));
+        processed = withIds(processed.filter((row) => !incomingKeys.has(toDisplayText(row.productCode))));
         removedCount = before - processed.length;
       }
 
@@ -775,7 +775,7 @@ export default function ClientSchedulePage() {
         return { ...row, D: match.D, E: match.E };
       });
 
-      const payload = updated.map(({ A, B, C, D, E, F, G, H, I }) => ({ A, B, C, D, E, F, G, H, I }));
+      const payload = updated.map(({ A, B, C, D, E, F, G, H, I, productCode }) => ({ A, B, C, D, E, F, G, H, I, productCode }));
       const res = await fetch(`${API}/client-schedule/db`, {
         method: 'PUT',
         headers: { ...authHeaders, 'Content-Type': 'application/json' },
