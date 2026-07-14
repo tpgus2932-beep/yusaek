@@ -3,6 +3,7 @@ import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import styles from "./NoyeKimPage.module.css";
 import { getDownloadFilename } from "../../lib/download";
 import { appendTsvToCostBase } from "../../lib/costBase";
+import PurchaseManager from "./PurchaseManager";
 import {
   AlertTriangle, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, Calendar, Clock, Clipboard, FileSpreadsheet,
   MessageSquare, Package, Pencil, Plus, Printer, RefreshCw, Search, Shuffle, Table2, Trash2, X, Zap,
@@ -383,7 +384,7 @@ function compareMisongValues(a, b, column) {
 }
 
 export default function NoyeKimPage() {
-  const [activeTab, setActiveTab] = useState("kdg");
+  const [activeTab, setActiveTab] = useState(() => localStorage.getItem("noye-kimsungil-active-tab") || "kdg");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -489,6 +490,9 @@ export default function NoyeKimPage() {
   const bulyangPreviewRef = useRef(null);
   useEffect(() => { bulyangLayoutRef.current = bulyangLayout; }, [bulyangLayout]);
   useEffect(() => { bulyangSessionRef.current = { id: bulyangSessionId, index: bulyangIndex }; }, [bulyangSessionId, bulyangIndex]);
+  useEffect(() => {
+    localStorage.setItem("noye-kimsungil-active-tab", activeTab);
+  }, [activeTab]);
 
   useEffect(() => {
     (async () => {
@@ -2230,6 +2234,7 @@ export default function NoyeKimPage() {
         {[
           { key: "date-chunk",    label: "날짜별장끼정리",          icon: <Calendar size={13} />,      badge: null },
           { key: "misong",        label: "미송관리",                icon: <Package size={13} />,       badge: misongItems.length > 0 ? misongItems.length : null },
+          { key: "purchase",      label: "매입관리",                icon: <Clipboard size={13} />,     badge: null },
           { key: "kdg",           label: "케이디지가공2",           icon: <Shuffle size={13} />,       badge: null },
           { key: "janggi",        label: "신상 업로드 날짜별 시트2", icon: <Table2 size={13} />,        badge: null },
           { key: "today",         label: "오늘출발",                icon: <Zap size={13} />,           badge: null },
@@ -2945,6 +2950,10 @@ export default function NoyeKimPage() {
           )}
 
         </>
+      )}
+
+      {activeTab === "purchase" && (
+        <PurchaseManager />
       )}
 
       {activeTab === "kdg" && (

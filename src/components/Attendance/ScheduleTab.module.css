@@ -118,6 +118,51 @@
   gap: 8px;
 }
 
+.departurePanel {
+  display: grid;
+  gap: 12px;
+  margin: -8px 0 18px;
+  padding: 18px;
+  border: 1px solid #f0c5c5;
+  border-radius: 8px;
+  background: #fffafa;
+  box-shadow: 0 10px 30px rgb(15 23 42 / 6%);
+}
+
+.departurePanel h2,
+.departurePanel p {
+  margin: 0;
+}
+
+.departureList {
+  display: grid;
+  gap: 8px;
+}
+
+.departureItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 14px;
+  border: 1px solid #f1d1d1;
+  border-radius: 6px;
+  background: #ffffff;
+  font-weight: 800;
+}
+
+.departureItem strong {
+  color: #dc2626;
+  font-size: 20px;
+  font-weight: 900;
+}
+
+.noDepartureRecommendation {
+  color: #64748b;
+  font-size: 14px;
+  font-weight: 700;
+}
+
 .fixedDatePanel {
   margin-top: -8px;
 }
@@ -544,6 +589,42 @@
   color: #64748b;
   font-size: 12px;
   font-style: normal;
+}
+
+.actualShift {
+  cursor: default;
+}
+
+.actualShift:hover {
+  background: #fbfdff;
+}
+
+.actualTimeBox {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+}
+
+.shift .actualHoursText {
+  color: #16a34a;
+  font-size: 20px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.actualRangeText {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.noActualTime {
+  color: #94a3b8;
+  font-size: 14px;
+  font-weight: 800;
 }
 
 .dayContextMenu {
