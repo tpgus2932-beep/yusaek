@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { Plus, Calendar, Bell, ChevronDown, ChevronUp, Pin, PinOff, GripVertical, MessageSquare } from 'lucide-react';
 import styles from './Dashboard.module.css';
 import { COLLAB_API_BASE as API, LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
+import DeliveryAnomalyCard from './DeliveryAnomalyCard';
 
 function AuthImage({ src, token, className, alt, onClick }) {
     const [blobUrl, setBlobUrl] = useState('');
@@ -1960,6 +1961,8 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
                     </div>
                 </div>
             </div>
+
+            <DeliveryAnomalyCard />
 
             <div className={styles.resolvedGrid}>
                 {/* 공동 할 일 - 접기/펼치기 */}
