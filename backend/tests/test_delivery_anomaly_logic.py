@@ -39,6 +39,11 @@ def test_parse_llogis_scan_date_invalid_length():
     assert parse_llogis_scan_date(None) is None
 
 
+def test_parse_llogis_scan_date_with_time_suffix():
+    # 실제 llogis rgstYmd는 'YYYYMMDDHHmmss'(14자리)로 오는 경우가 있다
+    assert parse_llogis_scan_date("20260713105514") == date(2026, 7, 13)
+
+
 def test_is_invoice_missing_true_when_no_inv_info():
     assert is_invoice_missing({"invInfoList": [], "mvmList": []}) is True
     assert is_invoice_missing({}) is True
@@ -46,6 +51,13 @@ def test_is_invoice_missing_true_when_no_inv_info():
 
 def test_is_invoice_missing_false_when_inv_info_present():
     assert is_invoice_missing({"invInfoList": [{"a": 1}]}) is False
+
+
+def test_is_invoice_missing_false_when_only_movement_present():
+    # 실제 사례: invInfoList는 없지만 mvmList에 '예약접수' 이력이 있는 경우
+    # (접수는 됐으나 아직 invInfoList가 채워지지 않은 단계) — 찾을 수 없는 게 아니다
+    llogis_raw = {"invInfoList": None, "mvmList": [{"paclStatNm": "예약접수", "rgstYmd": "20260713105514"}]}
+    assert is_invoice_missing(llogis_raw) is False
 
 
 def test_latest_scan_date_uses_last_movement():
@@ -121,3 +133,23 @@ def test_evaluate_anomaly_no_movement_history_flagged():
     llogis_raw = {"invInfoList": [{"a": 1}], "mvmList": []}
     reason = evaluate_anomaly(sent, today, llogis_raw)
     assert reason == "최종스캔 3일 이상 경과"
+
+
+def test_evaluate_anomaly_reservation_received_without_inv_info_flagged_via_scan_date():
+    # 실제 사례 재현: invInfoList는 null이지만 mvmList에 '예약접수'가 있고 그 날짜가 오래됨.
+    # invInfoList만 보고 '송장을 찾을 수 없음'으로 오판하면 안 되고, 최종스캔일 기준으로 판단해야 한다.
+    sent = date(2026, 7, 12)
+    today = date(2026, 7, 20)
+    llogis_raw = {
+        "invInfoList": None,
+        "mvmList": [{"paclStatNm": "예약접수", "rgstYmd": "20260713105514"}],
+    }
+    reason = evaluate_anomaly(sent, today, llogis_raw)
+    assert reason == "최종스캔 3일 이상 경과"
+
+
+def test_evaluate_anomaly_truly_missing_when_both_empty():
+    sent = date(2026, 7, 15)
+    today = date(2026, 7, 20)
+    reason = evaluate_anomaly(sent, today, {"invInfoList": None, "mvmList": None})
+    assert reason == "llogis에서 송장을 찾을 수 없음"

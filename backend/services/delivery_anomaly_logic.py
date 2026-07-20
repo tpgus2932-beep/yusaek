@@ -18,11 +18,11 @@ def parse_ably_sent_date(raw: str | None) -> date | None:
 
 
 def parse_llogis_scan_date(raw: str | None) -> date | None:
-    """llogis 최종스캔일('20260718' 등)을 date로 변환."""
+    """llogis 최종스캔일('20260718' 또는 시분초 포함 '20260718105514' 등)을 date로 변환."""
     if not raw:
         return None
     digits = re.sub(r"\D", "", str(raw))
-    if len(digits) != 8:
+    if len(digits) < 8:
         return None
     try:
         return date(int(digits[0:4]), int(digits[4:6]), int(digits[6:8]))
@@ -31,8 +31,15 @@ def parse_llogis_scan_date(raw: str | None) -> date | None:
 
 
 def is_invoice_missing(llogis_raw: dict) -> bool:
-    """llogis 응답에 invInfoList가 없으면 송장 자체를 찾을 수 없는 것."""
-    return not (llogis_raw.get("invInfoList") or [])
+    """llogis에 송장 자체가 전혀 없는 경우만 True.
+
+    invInfoList가 비어 있어도 mvmList(이동이력)가 있으면 실제로는 접수·등록된
+    송장이다 (예: 예약접수 후 아직 invInfoList가 채워지지 않은 단계) — 이 경우는
+    '찾을 수 없음'이 아니라 최종스캔일 기준으로 판단해야 한다.
+    """
+    has_inv_info = bool(llogis_raw.get("invInfoList") or [])
+    has_movement = bool(llogis_raw.get("mvmList") or [])
+    return not has_inv_info and not has_movement
 
 
 def latest_scan_date(llogis_raw: dict) -> date | None:
