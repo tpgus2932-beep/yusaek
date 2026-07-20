@@ -8,6 +8,15 @@ function formatDate(raw) {
     return String(raw).slice(0, 10);
 }
 
+function formatScanDate(raw) {
+    if (!raw) return '-';
+    const s = String(raw).replace(/\D/g, '');
+    if (s.length < 8) return raw;
+    const month = parseInt(s.slice(4, 6), 10);
+    const day = parseInt(s.slice(6, 8), 10);
+    return `${month}월 ${day}일`;
+}
+
 function isPastFourPmKst() {
     const now = new Date();
     const kstHour = Number(
@@ -161,7 +170,7 @@ export default function DeliveryAnomalyCard() {
                             </div>
                             <div className={styles.anomalyField}>
                                 <span className={styles.anomalyFieldLabel}>최종스캔일</span>
-                                {formatDate(item.scanDate)}
+                                {formatScanDate(item.scanDate)}
                             </div>
                         </div>
                         <button type="button" className={styles.commentToggleBtn} onClick={() => toggleExpanded(item.id)}>
