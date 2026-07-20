@@ -31,15 +31,12 @@ def parse_llogis_scan_date(raw: str | None) -> date | None:
 
 
 def is_invoice_missing(llogis_raw: dict) -> bool:
-    """llogis에 송장 자체가 전혀 없는 경우만 True.
+    """llogis 응답에 invInfoList가 없으면 송장 자체를 찾을 수 없는 것.
 
-    invInfoList가 비어 있어도 mvmList(이동이력)가 있으면 실제로는 접수·등록된
-    송장이다 (예: 예약접수 후 아직 invInfoList가 채워지지 않은 단계) — 이 경우는
-    '찾을 수 없음'이 아니라 최종스캔일 기준으로 판단해야 한다.
+    mvmList에 '예약접수'만 있는 경우(택배사가 아직 집화도 하지 않은 단계)는
+    실질적인 추적 정보가 없는 것과 같으므로, invInfoList 유무만으로 판단한다.
     """
-    has_inv_info = bool(llogis_raw.get("invInfoList") or [])
-    has_movement = bool(llogis_raw.get("mvmList") or [])
-    return not has_inv_info and not has_movement
+    return not (llogis_raw.get("invInfoList") or [])
 
 
 def latest_scan_date(llogis_raw: dict) -> date | None:
