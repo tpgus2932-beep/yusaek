@@ -56,6 +56,8 @@ from api.exchange_return_routes import build_exchange_return_router
 from api.pastelco_routes import build_pastelco_router
 from api.ably_minus_routes import build_ably_minus_router
 from api.accident_cargo_routes import build_accident_cargo_router
+from api.delivery_anomaly_routes import build_delivery_anomaly_router
+from services.delivery_anomaly_store import init_delivery_anomaly_tables
 from api.collaboration_tools_routes import build_collaboration_tools_router
 from api.attendance_routes import build_attendance_router
 from api.guidebook_routes import build_guidebook_router
@@ -1496,6 +1498,17 @@ app.include_router(
     build_accident_cargo_router(
         get_current_user=_get_current_user,
         get_db=_get_shared_db,
+    )
+)
+
+init_delivery_anomaly_tables(_get_shared_db)
+
+app.include_router(
+    build_delivery_anomaly_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        get_setting=_get_setting,
+        set_setting=_set_setting,
     )
 )
 
