@@ -5,16 +5,19 @@ import uuid
 import warnings
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import json
 import re
+from time import perf_counter
 
 import httpx
+import pandas as pd
 import xlwt
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile
 from openpyxl import load_workbook
 
+from sdk.ably import AblyClient
 from services.easyadmin_product import process_easyadmin_product_from_api
 from services.pastelco_utils import pastelco_login
 
@@ -25,7 +28,7 @@ _ABLY_PASSWORD = "!Glqgkqdldi1126"
 _EZADMIN_BASE        = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
 
-from api.wonbe_routes import _get_wonbe_db as _get_wonbe_db
+from api.wonbe_routes import _get_wonbe_db as _get_wonbe_db, record_defect_process_logs
 
 
 def build_barcode_router(
@@ -47,6 +50,7 @@ def build_barcode_router(
     set_shared_barcode_data,
     get_setting,
     set_setting,
+    get_user_display,
 ):
     router = APIRouter()
     _DEFECT_BASE_HEADERS = ["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]
@@ -309,6 +313,120 @@ def build_barcode_router(
                 wb.close()
             except Exception:
                 pass
+
+    def _build_ezadmin_order_state(ez_rows: list[dict]):
+        """Build barcode state directly from the DS00 JSON response.
+
+        This mirrors the former temporary-XLS parsing path without writing or
+        reading an intermediate file.
+        """
+        html_re = re.compile(r"<[^>]+>")
+
+        def clean(value):
+            return html_re.sub("", str(value or "")).strip()
+
+        def parse_qty(value):
+            try:
+                return int(float(clean(value) or "1"))
+            except (TypeError, ValueError):
+                return 1
+
+        prepared = []
+        for index, source_row in enumerate(ez_rows, start=2):
+            cell = source_row.get("cell", {}) or {}
+            raw_code = clean(cell.get("product_id", ""))
+            code = normalize_to_yusas(raw_code)
+            invoice = clean(cell.get("trans_no", ""))
+            trans_date = clean(cell.get("trans_date", "") or cell.get("collect_date", ""))
+            prepared.append({
+                "rowNumber": index,
+                "shop": clean(cell.get("shop_id", "")),
+                "duplicateKey": invoice,
+                "code": code,
+                "productName": clean(cell.get("name", "")),
+                "optionName": re.sub(r"^\[|\]$", "", clean(cell.get("p_options", ""))).strip(),
+                "orderQty": parse_qty(cell.get("qty", "1")),
+                "transDate": trans_date,
+                "_dt": _parse_dt_hapbae(trans_date),
+            })
+
+        prepared.sort(key=lambda row: row["_dt"] or datetime.max)
+        mapping = {}
+        details = {}
+        invoice_order = {}
+        invoice_seq = []
+        code_o_text = {}
+        seen_invoices = set()
+
+        last_time_code = {}
+        current_run_length = {}
+        current_run_members = {}
+        run_length_by_invoice_code = {}
+        prev_code = None
+
+        def flush_run(code):
+            length = current_run_length.get(code, 0)
+            if length > 1:
+                for invoice, product_code in current_run_members.get(code, []):
+                    key = (invoice, product_code)
+                    run_length_by_invoice_code[key] = max(run_length_by_invoice_code.get(key, 0), length)
+            current_run_length[code] = 0
+            current_run_members[code] = []
+
+        for row in prepared:
+            code = row["code"]
+            invoice = row["duplicateKey"]
+            qty = row["orderQty"]
+            if not (invoice and code) or qty <= 0:
+                prev_code = code
+                continue
+
+            if invoice not in seen_invoices:
+                seen_invoices.add(invoice)
+                invoice_seq.append(invoice)
+                mapping[invoice] = {}
+                details[invoice] = {}
+                invoice_order[invoice] = []
+            if code not in invoice_order[invoice]:
+                invoice_order[invoice].append(code)
+            mapping[invoice][code] = mapping[invoice].get(code, 0) + qty
+            details[invoice].setdefault(code, {"name": row["productName"], "option": row["optionName"]})
+
+            timestamp = row["_dt"]
+            same_run = prev_code == code
+            if not same_run:
+                last_seen = last_time_code.get(code)
+                same_run = bool(last_seen and timestamp and abs((timestamp - last_seen).total_seconds()) <= 2)
+            if same_run:
+                current_run_length[code] = current_run_length.get(code, 0) + 1
+                current_run_members.setdefault(code, []).append((invoice, code))
+            else:
+                if current_run_length.get(code, 0):
+                    flush_run(code)
+                current_run_length[code] = 1
+                current_run_members[code] = [(invoice, code)]
+            if timestamp:
+                last_time_code[code] = timestamp
+            prev_code = code
+
+        for code in list(current_run_length):
+            flush_run(code)
+
+        runs = {}
+        for (invoice, code), length in run_length_by_invoice_code.items():
+            runs.setdefault(invoice, {})[code] = length
+
+        pre_match_rows = []
+        for row in prepared:
+            pre_match_rows.append({
+                key: value for key, value in row.items() if key != "_dt"
+            } | {"runLen": 0})
+        for index, row in enumerate(prepared):
+            code = row["code"]
+            invoice = row["duplicateKey"]
+            pre_match_rows[index]["runLen"] = run_length_by_invoice_code.get((invoice, code), 0)
+
+        return mapping, details, runs, invoice_order, invoice_seq, code_o_text, pre_match_rows
 
     def _csv_escape(value) -> str:
         return '"' + str(value or "").replace('"', '""') + '"'
@@ -778,6 +896,7 @@ def build_barcode_router(
         )
 
         try:
+            request_started = perf_counter()
             async with httpx.AsyncClient(**_kw) as client:
                 r = await client.post(
                     f"{_EZADMIN_BASE}/function.htm",
@@ -799,9 +918,11 @@ def build_barcode_router(
                         "Referer": f"{_EZADMIN_BASE}/template40.htm?template=DS00",
                     },
                 )
+            response_received = perf_counter()
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+        processing_started = perf_counter()
         try:
             obj = r.json()
         except Exception:
@@ -813,6 +934,41 @@ def build_barcode_router(
         ez_rows = obj.get("rows", [])
         if not ez_rows:
             return {"ok": False, "error": f"{today} 조회된 주문이 없습니다."}
+
+        try:
+            mapping, details, runs, invoice_order, invoice_seq, code_o_text, hapbae_pre_match_rows = _build_ezadmin_order_state(ez_rows)
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"주문 데이터 처리 실패: {exc}")
+
+        set_shared_barcode_data({
+            "loaded": True,
+            "processed_path": None,
+            "mapping": mapping,
+            "original_mapping": _copy_original_mapping(mapping),
+            "details": details,
+            "runs": runs,
+            "invoice_order": invoice_order,
+            "invoice_seq": invoice_seq,
+            "code_o_text": code_o_text,
+            "hapbae_pre_match_rows": hapbae_pre_match_rows,
+            "_detail_lookup": None,
+            "_invoice_lookup": None,
+        })
+        _clear_hapbae_checked_rows()
+        processing_finished = perf_counter()
+        return {
+            "ok": True,
+            "invoices": len(mapping),
+            "codes_total": sum(len(v) for v in mapping.values()),
+            "total_rows": len(ez_rows),
+            "date": today,
+            "timings": {
+                "api_ms": round((response_received - request_started) * 1000),
+                "processing_ms": round((processing_finished - processing_started) * 1000),
+                "total_ms": round((processing_finished - request_started) * 1000),
+            },
+        }
 
         _html_re = re.compile(r"<[^>]+>")
 
@@ -1020,21 +1176,16 @@ def build_barcode_router(
 
         # search API returns option_groups=null; fetch per-goods detail to get option names
         if all_goods:
-            async def _fetch_detail(client, sno):
+            ably_client = AblyClient()
+            ably_client.set_token(token)
+
+            async def _fetch_detail(sno):
                 try:
-                    r = await client.get(
-                        f"{_ABLY_BASE}/seller/goods/{sno}/",
-                        headers=ably_headers,
-                    )
-                    r.raise_for_status()
-                    return sno, r.json().get("goods", {})
+                    return sno, await ably_client.get_goods_detail(sno)
                 except Exception:
                     return sno, {}
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                results = await asyncio.gather(
-                    *[_fetch_detail(client, g["sno"]) for g in all_goods]
-                )
+            results = await asyncio.gather(*[_fetch_detail(g["sno"]) for g in all_goods])
             detail_map = {sno: detail for sno, detail in results}
             for i, g in enumerate(all_goods):
                 detail = detail_map.get(g["sno"])
@@ -1079,6 +1230,346 @@ def build_barcode_router(
             "incoming_total": sum((get_shared_incoming_counts() or {}).values()),
             "kimsungil_codes": len(get_shared_kimsungil_counts() or {}),
             "kimsungil_total": sum((get_shared_kimsungil_counts() or {}).values()),
+        }
+
+    def _ez_time_flag(now: datetime) -> str:
+        """I100(set_stock_data)류 템플릿이 쓰는 브라우저 포맷 timeFlag."""
+        weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        return f"{weekdays[now.weekday()]} {months[now.month - 1]} {now.day:02d} {now.year} {now:%H:%M:%S} GMT+0900 (한국 표준시)"
+
+    def _ez_time_flag_ms(now: datetime) -> str:
+        """E900(packlist_json/cancel_trans/delete_trans_no)류 템플릿이 쓰는 epoch-ms timeFlag."""
+        return str(int(now.timestamp() * 1000))
+
+    def _looks_like_ez_session_error(resp, body: str) -> bool:
+        lowered = (body or "").lower()
+        if resp.url and "login" in str(resp.url).lower():
+            return True
+        if "<html" in lowered or "<!doctype html" in lowered:
+            return True
+        return any(t in lowered for t in ("phpsessid", "session_error", "로그인이 필요"))
+
+    def _extract_ably_order_items(packlist_data: dict) -> tuple[list[dict], "Counter[str]"]:
+        """packlist_json 응답에서 (에이블리 주문상품, 상품코드별 출고수량)을 추출."""
+        product_qty: Counter = Counter()
+        items: list[dict] = []
+        seen_sno: set[int] = set()
+        for row in (packlist_data.get("rows") or []):
+            cell = row.get("cell") or {}
+            product_id = str(cell.get("product_id") or "").strip()
+            if product_id:
+                product_qty[product_id] += 1
+
+            data_row_raw = cell.get("data_row")
+            if not data_row_raw:
+                continue
+            try:
+                data_row = json.loads(data_row_raw)
+            except (TypeError, ValueError):
+                continue
+
+            order_id_seq = data_row.get("order_id_seq")
+            if order_id_seq in (None, ""):
+                continue
+            try:
+                sno = int(order_id_seq)
+            except (TypeError, ValueError):
+                continue
+            if sno in seen_sno:
+                continue
+            seen_sno.add(sno)
+            items.append({"product_id": product_id, "sno": sno})
+        return items, product_qty
+
+    def _ez_invoice_headers() -> dict:
+        return {
+            "User-Agent": "Mozilla/5.0",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": "https://ga80.ezadmin.co.kr/popup25.htm?template=E900",
+        }
+
+    @router.post("/barcode/invoice/preview")
+    async def barcode_invoice_preview(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        invoice_no = str(payload.get("invoice_no") or "").strip()
+        if not invoice_no:
+            raise HTTPException(status_code=400, detail="송장번호가 필요합니다.")
+
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        cookies = {"PHPSESSID": phpsessid}
+        ez_headers = _ez_invoice_headers()
+
+        today = datetime.now()
+        start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+        end_date = today.strftime("%Y-%m-%d")
+        search_par = (
+            f"pack=&history_seq=&date_type=collect_date"
+            f"&start_date={start_date}&end_date={end_date}"
+            f"&date_period_sel=0&search_type=0&keyword="
+            f"&keyword1=&keyword2=&keyword3=&keyword4=&keyword5="
+            f"&super_keyword={invoice_no}&order_status=-1&order_cs=0"
+            f"&query_trans_who=0&is_gift=0&work_type=0"
+            f"&labels_string=&checkbox_options_string="
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+                # Step 0: 송장번호(super_keyword)로 주문 검색 → 내부 pack 값 추출
+                r0 = await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data={
+                        "_search": "false", "nd": _ez_time_flag_ms(datetime.now()),
+                        "rows": "10", "page": "1", "sidx": "", "sord": "desc",
+                        "readonly": "T", "template": "E900", "action": "query_json",
+                        "par": search_par,
+                    },
+                    cookies=cookies, headers=ez_headers,
+                )
+                body0 = (r0.text or "").strip()
+                if _looks_like_ez_session_error(r0, body0):
+                    return {"ok": False, "need_session": True}
+                try:
+                    search_data = r0.json()
+                except Exception:
+                    return {"ok": False, "need_session": True}
+
+                pack = None
+                for row in (search_data.get("rows") or []):
+                    cell = row.get("cell") or {}
+                    if isinstance(cell, dict) and cell.get("pack"):
+                        pack = cell.get("pack")
+                        break
+
+                if not pack:
+                    return {
+                        "ok": True,
+                        "invoice_no": invoice_no,
+                        "pack": None,
+                        "ezadmin_found": False,
+                        "ably_found": False,
+                        "products": [],
+                        "sno_list": [],
+                    }
+
+                # Step 1: packlist_json (읽기전용) - 상품코드 + 에이블리 주문상품 sno 추출
+                r1 = await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data={
+                        "_search": "false", "nd": _ez_time_flag_ms(datetime.now()),
+                        "rows": "500", "page": "1", "sidx": "", "sord": "",
+                        "readonly": "T", "template": "E900", "action": "packlist_json",
+                        "pack": pack, "stock": "0", "is_masking": "0",
+                        "timeFlag": _ez_time_flag_ms(datetime.now()),
+                    },
+                    cookies=cookies, headers=ez_headers,
+                )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"패킹리스트 조회 실패: {exc}")
+
+        body1 = (r1.text or "").strip()
+        if _looks_like_ez_session_error(r1, body1):
+            return {"ok": False, "need_session": True}
+        try:
+            packlist_data = r1.json()
+        except Exception:
+            return {"ok": False, "need_session": True}
+
+        ezadmin_found = bool(packlist_data.get("rows"))
+        items, product_qty = _extract_ably_order_items(packlist_data)
+        sno_list = [item["sno"] for item in items]
+        ably_found = bool(sno_list)
+
+        codes = list(product_qty.keys())
+        info_map: dict[str, dict] = {}
+        if codes:
+            conn = _get_wonbe_db()
+            try:
+                placeholders = ",".join(["?"] * len(codes))
+                rows = conn.execute(
+                    f"SELECT 상품코드, 상품명, 색상, 사이즈 FROM wonbe WHERE 상품코드 IN ({placeholders})",
+                    codes,
+                ).fetchall()
+                info_map = {r["상품코드"]: dict(r) for r in rows}
+            finally:
+                conn.close()
+
+        products = [
+            {
+                "product_id": code,
+                "qty": qty,
+                "name": info_map.get(code, {}).get("상품명", ""),
+                "color": info_map.get(code, {}).get("색상", ""),
+                "size": info_map.get(code, {}).get("사이즈", ""),
+            }
+            for code, qty in product_qty.items()
+        ]
+
+        return {
+            "ok": True,
+            "invoice_no": invoice_no,
+            "pack": pack,
+            "ezadmin_found": ezadmin_found,
+            "ably_found": ably_found,
+            "products": products,
+            "sno_list": sno_list,
+        }
+
+    @router.post("/barcode/invoice/cancel")
+    async def barcode_invoice_cancel(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        seq = str(payload.get("pack") or payload.get("seq") or "").strip()
+        if not seq:
+            raise HTTPException(status_code=400, detail="pack(seq) 값이 필요합니다.")
+
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        cookies = {"PHPSESSID": phpsessid}
+        ez_headers = _ez_invoice_headers()
+
+        async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+            try:
+                r2 = await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data={
+                        "template": "E900", "action": "cancel_trans",
+                        "seq": seq, "content": "",
+                        "timeFlag": _ez_time_flag_ms(datetime.now()),
+                    },
+                    cookies=cookies, headers=ez_headers,
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f"거래 취소 실패: {exc}")
+            if _looks_like_ez_session_error(r2, (r2.text or "").strip()):
+                return {"ok": False, "need_session": True}
+
+            try:
+                r3 = await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data={
+                        "template": "E900", "action": "delete_trans_no",
+                        "seq": seq, "content": "",
+                        "timeFlag": _ez_time_flag_ms(datetime.now()),
+                    },
+                    cookies=cookies, headers=ez_headers,
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f"송장번호 삭제 실패: {exc}")
+            if _looks_like_ez_session_error(r3, (r3.text or "").strip()):
+                return {"ok": False, "need_session": True}
+
+        return {"ok": True, "pack": seq}
+
+    @router.post("/barcode/invoice/stock-out")
+    async def barcode_invoice_stock_out(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        products = payload.get("products") or []
+        memo = str(payload.get("memo") or "").strip()
+        if not products:
+            raise HTTPException(status_code=400, detail="출고 처리할 상품이 없습니다.")
+
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        cookies = {"PHPSESSID": phpsessid}
+        ez_headers = _ez_invoice_headers()
+
+        results = []
+        async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+            for p in products:
+                product_id = str((p or {}).get("product_id") or "").strip()
+                try:
+                    qty = int((p or {}).get("qty") or 0)
+                except (TypeError, ValueError):
+                    qty = 0
+                if not product_id or qty <= 0:
+                    continue
+                try:
+                    sr = await client.post(
+                        f"{_EZADMIN_BASE}/function.htm",
+                        data={
+                            "template": "I100", "action": "set_stock_data",
+                            "product_id": product_id, "bad": "0", "type": "out",
+                            "stock_label": "", "move_warehouse": "0",
+                            "stock_unit": "stock_unit_ea", "qty": str(qty), "memo": memo,
+                            "timeFlag": _ez_time_flag(datetime.now()),
+                        },
+                        cookies=cookies, headers=ez_headers,
+                    )
+                    if _looks_like_ez_session_error(sr, (sr.text or "").strip()):
+                        return {"ok": False, "need_session": True}
+                    results.append({"product_id": product_id, "qty": qty, "ok": sr.status_code < 400})
+                except Exception as exc:
+                    results.append({"product_id": product_id, "qty": qty, "ok": False, "error": str(exc)})
+
+        return {"ok": all(r["ok"] for r in results), "results": results}
+
+    @router.post("/barcode/invoice/rollback")
+    async def barcode_invoice_rollback(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        raw_sno_list = payload.get("sno_list") or []
+        sno_list = []
+        for s in raw_sno_list:
+            try:
+                sno_list.append(int(s))
+            except (TypeError, ValueError):
+                continue
+        if not sno_list:
+            raise HTTPException(status_code=400, detail="sno_list가 비어 있습니다.")
+
+        async with httpx.AsyncClient(timeout=15.0) as login_client:
+            login_res = await login_client.post(
+                f"{_ABLY_BASE}/seller/login/",
+                json={"email": _ABLY_EMAIL, "password": _ABLY_PASSWORD},
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": "https://seller-admin.a-bly.com",
+                    "Referer": "https://seller-admin.a-bly.com/",
+                    "User-Agent": "Mozilla/5.0",
+                },
+            )
+            if not login_res.is_success:
+                raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
+        token = login_res.json().get("token")
+        if not token:
+            raise HTTPException(status_code=502, detail="에이블리 로그인 실패: 토큰 없음")
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as ably_client:
+                rollback_res = await ably_client.put(
+                    f"{_ABLY_BASE}/seller/order_items/rollback_to_prepare/",
+                    headers={
+                        "Authorization": f"JWT {token}",
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                        "Origin": "https://my.a-bly.com",
+                        "Referer": "https://my.a-bly.com/",
+                        "User-Agent": "Mozilla/5.0",
+                    },
+                    json={"sno_list": sno_list},
+                )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"에이블리 발송관리 롤백 실패: {exc}")
+
+        rollback_ok = rollback_res.status_code in (200, 201, 204)
+        return {
+            "ok": rollback_ok,
+            "rollback_status": rollback_res.status_code,
+            "rollback_detail": None if rollback_ok else rollback_res.text[:200],
         }
 
     @router.get("/barcode/hapbae-pre-match")
@@ -1649,6 +2140,55 @@ def build_barcode_router(
             headers=headers,
         )
 
+    @router.post("/barcode/defect/purchase-manager-handoff")
+    def defect_purchase_manager_handoff(user: str = Depends(get_current_user)):
+        defect_counts = get_shared_defect_counts()
+        if not defect_counts:
+            raise HTTPException(status_code=400, detail="불량 목록이 비어 있습니다.")
+
+        def normalize_s_code(value) -> str:
+            code = str(value or "").strip()
+            upper = code.upper()
+            if upper.startswith("YUSAS"):
+                return f"S{code[5:]}"
+            if upper.startswith("S"):
+                return f"S{code[1:]}"
+            return code
+
+        conn = _get_wonbe_db()
+        try:
+            base_rows = conn.execute(
+                "SELECT 상품코드, 거래처, 거래처상품명, 색상, 사이즈, 원가 FROM wonbe"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        wonbe_by_s_code = {}
+        for row in base_rows:
+            code = normalize_s_code(row["상품코드"])
+            if code and code not in wonbe_by_s_code:
+                wonbe_by_s_code[code] = row
+
+        rows = []
+        unmatched_codes = []
+        for raw_code, qty in sorted(defect_counts.items()):
+            code = normalize_s_code(raw_code)
+            matched = wonbe_by_s_code.get(code)
+            if not matched:
+                unmatched_codes.append(code or str(raw_code or ""))
+                continue
+            rows.append({
+                "code": code,
+                "vendor": str(matched["거래처"] or "").strip(),
+                "productName": str(matched["거래처상품명"] or "").strip(),
+                "color": str(matched["색상"] or "").strip(),
+                "size": str(matched["사이즈"] or "").strip(),
+                "cost": matched["원가"],
+                "qty": int(qty or 0),
+            })
+
+        return {"ok": True, "rows": rows, "unmatched_codes": unmatched_codes}
+
     @router.post("/barcode/defect/export-to-ezadmin")
     async def defect_export_to_ezadmin(
         payload: dict = Body(default={}),
@@ -1662,6 +2202,7 @@ def build_barcode_router(
         if not defect_counts:
             return {"ok": False, "error": "불량 목록이 비어 있습니다."}
 
+        defect_rows = _get_defect_list(get_barcode_state(user))
         xls_bytes = _build_defect_xls_bytes()
         cookies = {"PHPSESSID": phpsessid}
         ez_headers = {
@@ -1722,7 +2263,16 @@ def build_barcode_router(
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-        return {"ok": True, "count": len(defect_counts)}
+        execution_id = str(uuid.uuid4())
+        record_defect_process_logs(
+            execution_id=execution_id,
+            processed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            process_type="ezadmin_stock_out",
+            rows=defect_rows,
+            username=user,
+            display_name=get_user_display(user),
+        )
+        return {"ok": True, "count": len(defect_counts), "execution_id": execution_id}
 
     @router.get("/barcode/completed/export-xls")
     def export_completed_xls(user: str = Depends(get_current_user)):
@@ -1841,6 +2391,7 @@ def build_barcode_router(
         if not defect_counts:
             return {"ok": True, "matched": 0, "details": [], "message": "불량 목록이 없습니다."}
 
+        defect_rows = _get_defect_list(get_barcode_state(user))
         code_to_sno: dict[str, int] = {}
         _wconn = _get_wonbe_db()
         try:
@@ -1860,12 +2411,37 @@ def build_barcode_router(
             _wconn.close()
 
         sno_to_ea: dict[int, int] = {}
+        missing_option_codes: list[str] = []
         for code, count in defect_counts.items():
             sno = code_to_sno.get(code)
             if sno and count > 0:
                 sno_to_ea[sno] = sno_to_ea.get(sno, 0) + count
+            elif count > 0:
+                missing_option_codes.append(code)
 
         if not sno_to_ea:
+            execution_id = str(uuid.uuid4())
+            early_outcomes = {
+                str(row.get("code") or ""): {"applied_qty": 0, "result_status": "missing_option_number"}
+                for row in defect_rows
+            }
+            record_defect_process_logs(
+                execution_id=execution_id,
+                processed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                process_type="ably_ochuul_minus",
+                rows=defect_rows,
+                username=user,
+                display_name=get_user_display(user),
+                outcomes=early_outcomes,
+            )
+            return {
+                "ok": True,
+                "matched": 0,
+                "details": [],
+                "missing_option_codes": missing_option_codes,
+                "ably_missing_codes": [],
+                "message": "옵션번호가 매칭되지 않았습니다. 원가베이스 K열을 확인하세요.",
+            }
             return {"ok": True, "matched": 0, "details": [],
                     "message": "매칭된 옵션이 없습니다. 원가베이스 K열을 확인하세요."}
 
@@ -1909,8 +2485,14 @@ def build_barcode_router(
                 page += 1
 
         updates = []
+        ably_option_snos = set()
         for opt in all_opts:
             sno = opt.get("sno")
+            if sno is not None:
+                try:
+                    ably_option_snos.add(int(sno))
+                except (ValueError, TypeError):
+                    pass
             if sno not in sno_to_ea:
                 continue
             ea = sno_to_ea[sno]
@@ -1942,7 +2524,47 @@ def build_barcode_router(
                 raise HTTPException(status_code=502,
                     detail=f"bulk-update 실패 (HTTP {res.status_code}): {res.text[:300]}")
 
-        return {"ok": True, "matched": len(updates), "details": updates}
+        updates_by_sno = {item["sno"]: item for item in updates}
+        ably_missing_codes = [
+            code for code, count in defect_counts.items()
+            if count > 0 and code_to_sno.get(code) and code_to_sno[code] not in ably_option_snos
+        ]
+        outcomes = {}
+        for row in defect_rows:
+            code = str(row.get("code") or "")
+            item = updates_by_sno.get(code_to_sno.get(code))
+            if item:
+                outcomes[code] = {
+                    "applied_qty": int(row.get("count") or 0),
+                    "result_status": "matched",
+                    "option_sno": item["sno"],
+                    "stock_before": item["_prev_stock"],
+                    "stock_after": item["stock"],
+                }
+        for row in defect_rows:
+            outcomes.setdefault(str(row.get("code") or ""), {"applied_qty": 0, "result_status": "unmatched"})
+        for code in missing_option_codes:
+            outcomes[code] = {"applied_qty": 0, "result_status": "missing_option_number"}
+        for code in ably_missing_codes:
+            outcomes[code] = {"applied_qty": 0, "result_status": "not_in_ably_today"}
+        execution_id = str(uuid.uuid4())
+        record_defect_process_logs(
+            execution_id=execution_id,
+            processed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            process_type="ably_ochuul_minus",
+            rows=defect_rows,
+            username=user,
+            display_name=get_user_display(user),
+            outcomes=outcomes,
+        )
+        return {
+            "ok": True,
+            "matched": len(updates),
+            "details": updates,
+            "missing_option_codes": missing_option_codes,
+            "ably_missing_codes": ably_missing_codes,
+            "execution_id": execution_id,
+        }
 
     @router.get("/ezadmin/session")
     def ezadmin_session_status(user: str = Depends(get_current_user)):
@@ -2161,6 +2783,30 @@ def build_barcode_router(
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"파일 다운로드 실패: {exc}")
 
+        try:
+            try:
+                dataframe = pd.read_excel(BytesIO(r.content), header=None, engine="xlrd")
+            except Exception:
+                try:
+                    dataframe = pd.read_html(BytesIO(r.content), header=None)[0]
+                except Exception:
+                    dataframe = pd.read_csv(BytesIO(r.content), header=None, encoding="utf-8-sig")
+
+            counts = Counter()
+            for values in dataframe.itertuples(index=False, name=None):
+                if len(values) < 2:
+                    continue
+                code = normalize_to_yusas(values[0])
+                qty = to_int(values[1], default=0)
+                if code and qty > 0:
+                    counts[code] += qty
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"파일 파싱 실패: {exc}")
+
+        set_shared_incoming_counts(dict(counts))
+        return {"ok": True, "codes": len(counts), "total_qty": sum(counts.values())}
+
         suffix = ".xls"
         tmp_path = Path(tempfile.gettempdir()) / f"yusaek_ezadmin_incoming_{uuid.uuid4().hex}{suffix}"
         tmp_path.write_bytes(r.content)
@@ -2267,7 +2913,7 @@ def build_barcode_router(
                         data={
                             "_search": "false",
                             "nd": str(int(datetime.now().timestamp() * 1000)),
-                            "rows": "300", "page": "1", "sidx": "", "sord": "asc",
+                            "rows": "300", "page": "1", "sidx": "", "sord": "desc",
                             "template": "BL30", "action": "grid_BL30",
                             "par": (
                                 "template=BL30&action=&bck_search="
@@ -2383,6 +3029,16 @@ def build_barcode_router(
                 return m.group(1).strip()
             # 태그 없으면 그대로
             return re.sub(r"<[^>]+>", "", s).strip()
+
+        rows = [["product_name", "supply_product_name", "", "", "", "options", "request_qty", "", "product_id", "", "", "reserve_qty"]]
+        for row in obj.get("rows", []):
+            cell = row.get("cell", row)
+            rows.append([
+                _ez_val(cell.get("product_name")), _ez_val(cell.get("supply_product_name")), "", "", "",
+                _ez_val(cell.get("options")), _ez_val(cell.get("request_qty")), "",
+                _ez_val(cell.get("product_id")), "", "", _ez_val(cell.get("reserve_qty")),
+            ])
+        return {"ok": True, "rows": rows, "count": len(rows) - 1}
 
         wb = xlwt.Workbook()
         ws = wb.add_sheet("Sheet1")

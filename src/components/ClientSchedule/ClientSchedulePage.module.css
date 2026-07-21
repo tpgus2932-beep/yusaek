@@ -78,6 +78,22 @@
   gap: 12px;
 }
 
+.ezadminAutoControls {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.ezadminAutoControls input[type="date"] {
+  padding: 0.35rem 0.45rem;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+}
+
 .fileRow {
   display: flex;
   gap: 10px;
@@ -371,6 +387,32 @@
 
 .dbSaveBtn:hover { background: var(--cs-green-bg); }
 .dbSaveBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.defaultSaveBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--cs-green);
+  background: var(--cs-green-bg);
+  color: var(--cs-green-text);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.defaultSaveBtn:hover {
+  background: rgba(45, 109, 86, 0.14);
+}
+
+.defaultSaveBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 
 .dbClearBtn {
   display: inline-flex;

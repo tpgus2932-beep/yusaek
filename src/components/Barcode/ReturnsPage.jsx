@@ -53,6 +53,7 @@ const ReturnsPage = () => {
         new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10)
     );
     const [lotteDateTo, setLotteDateTo] = useState(new Date().toISOString().slice(0, 10));
+    const [lotteAccount, setLotteAccount] = useState('348867');
     const [scanText, setScanText] = useState('');
     const [lastType, setLastType] = useState('-');
     const [onebeFormat, setOnebeFormat] = useState('xls');
@@ -269,6 +270,7 @@ const ReturnsPage = () => {
                 body: JSON.stringify({
                     date_fr: lotteDateFr.replace(/-/g, ''),
                     date_to: lotteDateTo.replace(/-/g, ''),
+                    account: lotteAccount,
                 }),
             });
             const data = await res.json().catch(() => ({}));
@@ -921,6 +923,15 @@ const ReturnsPage = () => {
                             />
                             CJ 엑셀 선택
                         </label>
+                        <select
+                            value={lotteAccount}
+                            onChange={(e) => setLotteAccount(e.target.value)}
+                            disabled={loading}
+                            style={{ width: 'auto' }}
+                        >
+                            <option value="348867">영신디앤아이 (348867)</option>
+                            <option value="331595">바브 (331595)</option>
+                        </select>
                         <button
                             type="button"
                             className={pageStyles.fileInput}

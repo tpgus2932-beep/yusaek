@@ -8,6 +8,7 @@ import AccountDataTable from "./AccountDataTable";
 import IchaeTable from "./IchaeTable";
 import IngodaegiTable from "./IngodaegiTable";
 import AblyStockTable from "./AblyStockTable";
+import DefectProcessLogTable from "./DefectProcessLogTable";
 
 const TABLES = [
   { key: "wonbe", label: "원가베이스유", component: WonbeTable },
@@ -17,6 +18,7 @@ const TABLES = [
   { key: "ichae", label: "이체파일", component: IchaeTable },
   { key: "ingodaegi", label: "입고대기", component: IngodaegiTable },
   { key: "ably-stock", label: "에이블리재고변경", component: AblyStockTable },
+  { key: "defect-process-logs", label: "불량처리로그", component: DefectProcessLogTable },
 ];
 
 export default function DBManagerLayout() {

@@ -52,11 +52,13 @@ from api.noye_kimsungil_routes import build_noye_kimsungil_router
 from api.misong_routes import build_misong_router
 from api.sms_routes import build_sms_router
 from api.return_shipping_routes import build_return_shipping_router
+from api.return_automation_routes import build_return_automation_router
 from api.exchange_return_routes import build_exchange_return_router
 from api.pastelco_routes import build_pastelco_router
 from api.ably_minus_routes import build_ably_minus_router
 from api.accident_cargo_routes import build_accident_cargo_router
 from api.delivery_anomaly_routes import build_delivery_anomaly_router
+from api.daily_checklist_routes import build_daily_checklist_router
 from services.delivery_anomaly_store import init_delivery_anomaly_tables
 from api.collaboration_tools_routes import build_collaboration_tools_router
 from api.attendance_routes import build_attendance_router
@@ -566,6 +568,14 @@ def _get_shared_db():
     """요청/공유 DB: Turso가 설정되면 항상 Turso (로컬·배포 공유), 아니면 SQLite."""
     if _USE_TURSO:
         return _TursoHTTPConn()
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _get_automation_db():
+    """Local SQLite DB reserved for return automation data."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -1276,6 +1286,7 @@ app.include_router(
         set_shared_barcode_data=_set_shared_barcode_data,
         get_setting=_get_setting,
         set_setting=_set_setting,
+        get_user_display=_get_user_display,
     )
 )
 app.include_router(
@@ -1303,6 +1314,7 @@ app.include_router(
         get_setting=_get_setting,
         enqueue_sms=_enqueue_sms_fn,
         get_shared_db=_get_shared_db,
+        set_setting=_set_setting,
     )
 )
 
@@ -1312,6 +1324,7 @@ app.include_router(
         get_setting=_get_setting,
         get_db=_get_shared_db,
         enqueue_sms=_enqueue_sms_fn,
+        set_setting=_set_setting,
     )
 )
 
@@ -1427,8 +1440,26 @@ app.include_router(
         get_current_user=_get_current_user,
         get_setting=_get_setting,
         set_setting=_set_setting,
+        get_db=_get_db,
     )
 )
+
+def _return_automation_templates():
+    conn = _get_automation_db()
+    try:
+        return [dict(row) for row in conn.execute(
+            "SELECT id, name, msg, title, msg_type FROM sms_templates ORDER BY sort_order ASC, rowid ASC"
+        ).fetchall()]
+    finally:
+        conn.close()
+
+app.include_router(build_return_automation_router(
+    get_current_user=_get_current_user,
+    get_shared_db=_get_automation_db,
+    get_setting=_get_setting,
+    set_setting=_set_setting,
+    get_sms_templates=_return_automation_templates,
+))
 app.include_router(
     build_misong_router(
         get_current_user=_get_current_user,
@@ -1509,6 +1540,13 @@ app.include_router(
         get_db=_get_shared_db,
         get_setting=_get_setting,
         set_setting=_set_setting,
+    )
+)
+
+app.include_router(
+    build_daily_checklist_router(
+        get_current_user=_get_current_user,
+        get_setting=_get_setting,
     )
 )
 

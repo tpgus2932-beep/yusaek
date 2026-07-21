@@ -1144,6 +1144,22 @@ def build_collab_router(
             conn.close()
         return {"ok": True, "count": len(items)}
 
+    @router.get("/client-schedule/message-defaults")
+    def get_client_schedule_message_defaults(user: str = Depends(get_current_user)):
+        return {
+            "ok": True,
+            "prefix": get_setting("client_schedule_message_prefix") or "",
+            "suffix": get_setting("client_schedule_message_suffix") or "",
+        }
+
+    @router.put("/client-schedule/message-defaults")
+    def save_client_schedule_message_defaults(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        prefix = str(payload.get("prefix", ""))
+        suffix = str(payload.get("suffix", ""))
+        set_setting("client_schedule_message_prefix", prefix)
+        set_setting("client_schedule_message_suffix", suffix)
+        return {"ok": True, "prefix": prefix, "suffix": suffix}
+
     @router.get("/company-credentials")
     def list_company_credentials(user: str = Depends(get_current_user)):
         admin_flag = is_admin(user)

@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, RefreshCw, Upload, RefreshCcw, PencilLine, Check, X } from "lucide-react";
+import { Download, RefreshCw, Upload, RefreshCcw, PencilLine, Check, X, SlidersHorizontal } from "lucide-react";
 import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
 const PAGE_SIZE = 50;
 const EDITABLE_COLS = ["상품명합", "거래처합", "원가", "거래처주소"];
-const ALL_COLS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호"];
+const ALL_COLS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국"];
+const VISIBLE_COLS_STORAGE_KEY = "wonbe_visible_cols";
 
 export default function WonbeTable() {
   const [rows, setRows] = useState([]);
@@ -15,7 +16,13 @@ export default function WonbeTable() {
   const [inputQuery, setInputQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [snoSyncing, setSnoSyncing] = useState(false);
+  const [regDateSyncing, setRegDateSyncing] = useState(false);
+  const [countrySyncing, setCountrySyncing] = useState(false);
+  const [countryProgress, setCountryProgress] = useState(null); // { total, done, matched }
+  const countryPollRef = useRef(null);
   const [message, setMessage] = useState("");
+  const [rawUnexpected, setRawUnexpected] = useState(null);
   const todayStr = new Date().toISOString().slice(0, 10);
   const [syncStartDate, setSyncStartDate] = useState(todayStr);
   const [syncEndDate, setSyncEndDate] = useState(todayStr);
@@ -30,6 +37,47 @@ export default function WonbeTable() {
   const [bulkEditValue, setBulkEditValue] = useState("");
   const [bulkEditLoading, setBulkEditLoading] = useState(false);
   const bulkEditRef = useRef(null);
+
+  // 표시할 컬럼 선택
+  const [visibleCols, setVisibleCols] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(VISIBLE_COLS_STORAGE_KEY) || "null");
+      if (Array.isArray(saved) && saved.length) {
+        return new Set(saved.filter((c) => ALL_COLS.includes(c)));
+      }
+    } catch { /* noop */ }
+    return new Set(ALL_COLS);
+  });
+  const [colPanelOpen, setColPanelOpen] = useState(false);
+  const colPanelRef = useRef(null);
+
+  useEffect(() => {
+    localStorage.setItem(VISIBLE_COLS_STORAGE_KEY, JSON.stringify(Array.from(visibleCols)));
+  }, [visibleCols]);
+
+  useEffect(() => {
+    if (!colPanelOpen) return;
+    const onClickOutside = (e) => {
+      if (colPanelRef.current && !colPanelRef.current.contains(e.target)) setColPanelOpen(false);
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [colPanelOpen]);
+
+  const toggleCol = (col) => {
+    setVisibleCols((prev) => {
+      const next = new Set(prev);
+      if (next.has(col)) {
+        if (next.size === 1) return next; // 최소 1개는 유지
+        next.delete(col);
+      } else {
+        next.add(col);
+      }
+      return next;
+    });
+  };
+
+  const displayCols = useMemo(() => ALL_COLS.filter((c) => visibleCols.has(c)), [visibleCols]);
 
   const handleSort = (col) => {
     if (sortCol === col) {
@@ -183,6 +231,7 @@ export default function WonbeTable() {
   const handleSyncEzadmin = async () => {
     setSyncing(true);
     setMessage("");
+    setRawUnexpected(null);
     try {
       const res = await fetch(`${API}/wonbe/sync-from-ezadmin`, {
         method: "POST",
@@ -192,6 +241,11 @@ export default function WonbeTable() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
         if (data?.need_session) { setMessage("이지어드민 세션이 없습니다. EZAdmin 설정에서 PHPSESSID를 먼저 등록해주세요."); return; }
+        if (data?.unexpected_response) {
+          setMessage("예상과 다른 응답을 받았습니다 (세션 문제 아님) — 아래 원본을 확인해주세요.");
+          setRawUnexpected(data.raw);
+          return;
+        }
         throw new Error(data?.detail || "동기화 실패");
       }
       setLastSync({ at: data.synced_at, count: String(data.inserted), fetched: String(data.fetched) });
@@ -204,6 +258,89 @@ export default function WonbeTable() {
       setMessage(err.message);
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handleSyncAblySno = async () => {
+    setSnoSyncing(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/sync-ably-sno`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "에이블리상품번호 동기화 실패");
+      setMessage(`에이블리상품번호 동기화 완료: 카탈로그 ${data.fetched_goods}건 조회 · ${data.considered}건 중 ${data.matched}건 매칭 (미매칭 ${data.unmatched}건)`);
+      await fetchRows(query, offset);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setSnoSyncing(false);
+    }
+  };
+
+  const handleSyncRegistrationDate = async () => {
+    setRegDateSyncing(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/sync-registration-date`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "등록일 채우기 실패");
+      setMessage(`등록일/진열상태/품절상태 채우기 완료: 카탈로그 ${data.fetched_goods}건 조회 · ${data.considered}건 중 ${data.matched}건 채움 (미매칭 ${data.unmatched}건)`);
+      await fetchRows(query, offset);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setRegDateSyncing(false);
+    }
+  };
+
+  const stopCountryPolling = () => {
+    if (countryPollRef.current) {
+      clearInterval(countryPollRef.current);
+      countryPollRef.current = null;
+    }
+  };
+
+  useEffect(() => stopCountryPolling, []);
+
+  const handleSyncCountry = async () => {
+    if (!window.confirm("에이블리상품번호가 있는 모든 상품의 상세정보를 개별 조회해서 제조국을 채웁니다.\n상품 수에 따라 시간이 걸릴 수 있습니다. 진행하시겠습니까?")) return;
+    setCountrySyncing(true);
+    setMessage("");
+    setCountryProgress({ total: 0, done: 0, matched: 0 });
+
+    stopCountryPolling();
+    countryPollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`${API}/wonbe/sync-country/progress`, { headers: getAuthHeaders() });
+        const data = await res.json().catch(() => null);
+        if (data) setCountryProgress({ total: data.total, done: data.done, matched: data.matched });
+      } catch { /* noop */ }
+    }, 700);
+
+    try {
+      const res = await fetch(`${API}/wonbe/sync-country`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "제조국 채우기 실패");
+      setMessage(`제조국 채우기 완료: 상품코드 ${data.considered}건 (고유 상품번호 ${data.unique_snos}건 조회) 중 ${data.matched}건 채움 (미매칭 ${data.unmatched}건)`);
+      await fetchRows(query, offset);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      stopCountryPolling();
+      setCountrySyncing(false);
+      setCountryProgress(null);
     }
   };
 
@@ -273,15 +410,67 @@ export default function WonbeTable() {
         <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={handleExport} disabled={loading}>
           <Download size={13} />xls 내보내기
         </button>
+        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncAblySno} disabled={loading || snoSyncing}>
+          <RefreshCcw size={13} />{snoSyncing ? "동기화 중..." : "에이블리상품번호 채우기"}
+        </button>
+        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncRegistrationDate} disabled={loading || regDateSyncing}>
+          <RefreshCcw size={13} />{regDateSyncing ? "채우는 중..." : "등록일 채우기"}
+        </button>
+        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncCountry} disabled={loading || countrySyncing}>
+          <RefreshCcw size={13} />{countrySyncing ? "채우는 중..." : "제조국 채우기"}
+        </button>
+        {countrySyncing && countryProgress && (
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <div style={{ width: "100px", height: "6px", background: "#e5e7eb", borderRadius: "999px", overflow: "hidden" }}>
+              <div
+                style={{
+                  width: countryProgress.total ? `${Math.min(100, (countryProgress.done / countryProgress.total) * 100)}%` : "0%",
+                  height: "100%", background: "#7c3aed", transition: "width 0.3s ease",
+                }}
+              />
+            </div>
+            <span style={{ fontSize: "0.72rem", color: "#6b7280", whiteSpace: "nowrap" }}>
+              {countryProgress.done}/{countryProgress.total || "?"} · 매칭 {countryProgress.matched}
+            </span>
+          </div>
+        )}
+        <div ref={colPanelRef} style={{ position: "relative" }}>
+          <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setColPanelOpen((v) => !v)}>
+            <SlidersHorizontal size={13} />열 선택 ({displayCols.length}/{ALL_COLS.length})
+          </button>
+          {colPanelOpen && (
+            <div
+              style={{
+                position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 20,
+                background: "#fff", border: "1px solid #d1d5db", borderRadius: "6px",
+                padding: "8px", boxShadow: "0 4px 12px rgba(0,0,0,0.12)",
+                display: "flex", flexDirection: "column", gap: "2px", minWidth: "170px", maxHeight: "320px", overflowY: "auto",
+              }}
+            >
+              {ALL_COLS.map((col) => (
+                <label
+                  key={col}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "0.78rem", cursor: "pointer", padding: "2px 4px", borderRadius: "3px" }}
+                >
+                  <input type="checkbox" checked={visibleCols.has(col)} onChange={() => toggleCol(col)} />
+                  {col}
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {message && <div className={styles.message}>{message}</div>}
+      {rawUnexpected && (
+        <pre className={styles.rawBlock}>{JSON.stringify(rawUnexpected, null, 2)}</pre>
+      )}
 
       <div className={styles.tableWrap}>
         <table className={styles.table}>
           <thead>
             <tr>
-              {ALL_COLS.map((col) => {
+              {displayCols.map((col) => {
                 const isEditable = EDITABLE_COLS.includes(col);
                 const isBulkActive = bulkEditCol === col;
                 return (
@@ -343,7 +532,7 @@ export default function WonbeTable() {
               const code = row["상품코드"];
               return (
                 <tr key={code}>
-                  {ALL_COLS.map((col) => {
+                  {displayCols.map((col) => {
                     const isEditing = editing?.code === code && editing?.col === col;
                     const isEditable = EDITABLE_COLS.includes(col);
                     if (isEditing) {

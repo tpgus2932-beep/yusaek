@@ -303,13 +303,13 @@ def build_amood_router(
         tmp_path = Path(tempfile.gettempdir()) / f"amood_excel2_{uuid.uuid4().hex}{ext}"
         with tmp_path.open("wb") as out:
             shutil.copyfileobj(file.file, out)
+        set_shared_amood_ezadmin_file({
+            "file2_path": tmp_path,
+            "file2_name": name or tmp_path.name,
+        })
         state = get_amood_state(user)
-        state.file2_path = tmp_path
-        state.file2_name = name or tmp_path.name
         state.processed1_path = None
         state.processed2_path = None
-        state.wb2 = None
-        state.ws2 = None
         state.current_invoice = None
         state.pending_items = []
         state.waiting_for_items = False

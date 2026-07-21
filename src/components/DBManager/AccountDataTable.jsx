@@ -1,16 +1,17 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { Plus, RefreshCw, Search, X } from "lucide-react";
 import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
 const COLS = ["A", "B", "C", "D", "E", "F"];
-const COL_HINTS = ["거래처명(매핑키)", "은행코드", "계좌번호", "예금주", "연락처", "메모"];
+const COL_HINTS = ["거래처명(매핑키)", "은행코드", "계좌번호", "은행명", "예금주", "부가세 유무"];
 
 export default function AccountDataTable() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [editing, setEditing] = useState(null); // { id, col, value }
+  const [search, setSearch] = useState("");
   const inputRef = useRef(null);
 
   const fetchRows = useCallback(async () => {
@@ -92,19 +93,39 @@ export default function AccountDataTable() {
     }
   };
 
+  const normalizedSearch = search.trim().toLowerCase();
+  const filteredRows = normalizedSearch
+    ? rows.filter((row) => COLS.some((col) => String(row[col] ?? "").toLowerCase().includes(normalizedSearch)))
+    : rows;
+
   return (
     <>
       <div className={styles.header}>
         <div>
           <div className={styles.title}>거래처계좌데이터</div>
           <div className={styles.subtitle}>
-            A=거래처명(매핑키) · B=은행명 · C=계좌번호 · D=예금주 · E=연락처 · F=메모 | 셀 클릭 → 수정
+            A=거래처명(매핑키) · B=은행코드 · C=계좌번호 · D=은행명 · E=예금주 · F=부가세 유무 | 셀 클릭 → 수정
           </div>
         </div>
-        <span className={styles.pill}>{rows.length}행</span>
+        <span className={styles.pill}>{normalizedSearch ? `${filteredRows.length} / ${rows.length}` : rows.length}행</span>
       </div>
 
       <div className={styles.controls}>
+        <div className={styles.searchBox}>
+          <Search size={14} aria-hidden="true" />
+          <input
+            className={styles.searchInput}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="거래처명, 계좌번호, 예금주 검색"
+            aria-label="거래처계좌데이터 검색"
+          />
+          {search && (
+            <button className={styles.searchClear} onClick={() => setSearch("")} aria-label="검색어 지우기">
+              <X size={13} />
+            </button>
+          )}
+        </div>
         <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={fetchRows} disabled={loading}>
           <RefreshCw size={13} />새로고침
         </button>
@@ -126,7 +147,7 @@ export default function AccountDataTable() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
+            {filteredRows.map((row) => (
               <tr key={row.id}>
                 <td style={{ textAlign: "center", padding: "0.25rem" }}>
                   <button
@@ -170,9 +191,9 @@ export default function AccountDataTable() {
             ))}
           </tbody>
         </table>
-        {!rows.length && !loading && (
+        {!filteredRows.length && !loading && (
           <div className={styles.empty}>
-            데이터가 없습니다. 행 추가 또는 xlsx import를 사용하세요.
+            {normalizedSearch ? "검색 결과가 없습니다." : "데이터가 없습니다. 행 추가 또는 xlsx import를 사용하세요."}
           </div>
         )}
       </div>

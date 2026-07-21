@@ -407,7 +407,7 @@ async def _kdg_find_sheet_seq(
     return sorted(matches, key=_sort_key)[-1] if matches else None
 
 
-def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting):
+def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, get_db):
     router = APIRouter(prefix="/noye-kimsungil")
 
     KDG_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\케이디지원가베이스.db")
@@ -424,6 +424,17 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting):
             CREATE TABLE IF NOT EXISTS kdg (
                 변환품명 TEXT PRIMARY KEY,
                 상품코드 TEXT
+            )
+        """)
+        conn.commit()
+
+    def _init_purchase_manager_table(conn):
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS noye_purchase_manager_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                state_json TEXT NOT NULL,
+                updated_by TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
         conn.commit()
@@ -1221,7 +1232,7 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting):
         out_wb = openpyxl.Workbook()
         out_ws = out_wb.active
         out_ws.title = "Sheet1"
-        out_ws.cell(1, 1, "에이블리 옵션 번호")
+        out_ws.cell(1, 1, "솔루션사 고유코드")
         out_ws.cell(1, 2, "재고 수량")
         for ri, r in enumerate(base_rows, start=2):
             option_no = r["옵션번호"]
@@ -1433,5 +1444,51 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting):
         cleaned = sorted({str(v).strip() for v in vendors if str(v).strip()})
         set_setting(VAT_VENDORS_KEY, json.dumps(cleaned, ensure_ascii=False))
         return {"ok": True, "vendors": cleaned}
+
+    @router.get("/purchase-manager/state")
+    def get_purchase_manager_state(user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            _init_purchase_manager_table(conn)
+            row = conn.execute(
+                "SELECT state_json, updated_at FROM noye_purchase_manager_state WHERE id = 1"
+            ).fetchone()
+            if not row:
+                return {"ok": True, "state": None}
+            try:
+                state = json.loads(row["state_json"])
+            except (TypeError, json.JSONDecodeError):
+                state = None
+            return {"ok": True, "state": state, "updatedAt": row["updated_at"]}
+        finally:
+            conn.close()
+
+    @router.put("/purchase-manager/state")
+    def save_purchase_manager_state(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        state = payload.get("state")
+        if not isinstance(state, dict):
+            raise HTTPException(status_code=400, detail="state must be an object")
+        try:
+            state_json = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="state must be JSON serializable")
+        if len(state_json.encode("utf-8")) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="purchase manager state is too large")
+
+        conn = get_db()
+        try:
+            _init_purchase_manager_table(conn)
+            conn.execute("""
+                INSERT INTO noye_purchase_manager_state (id, state_json, updated_by, updated_at)
+                VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET
+                    state_json = excluded.state_json,
+                    updated_by = excluded.updated_by,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (state_json, user))
+            conn.commit()
+            return {"ok": True}
+        finally:
+            conn.close()
 
     return router

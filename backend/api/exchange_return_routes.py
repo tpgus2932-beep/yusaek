@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import re
@@ -30,7 +31,7 @@ _BROWSER_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 _BROWSER_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
-def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, enqueue_sms=None):
+def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, enqueue_sms=None, set_setting=None):
     router = APIRouter(prefix="/exchange-return")
 
     def _browser_time_flag(now: datetime) -> str:
@@ -241,13 +242,48 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                         "option_info": order_item.get("option_info") or first.get("option_info"),
                         "member_name": (ex.get("member") or {}).get("name"),
                         "requested_at": ex.get("requested_at"),
-                        "order_sno": order_item.get("order_sno"),
-                        "phone": order_item.get("buyer_tel") or order_item.get("receiver_tel") or "",
+                        # order_item.order_sno(중첩)는 자주 비어 있어 exchange 객체
+                        # 최상위의 order_sno를 쓴다 - process_exchange_pickup 등에서
+                        # 이미 검증된 신뢰 가능한 필드다.
+                        "order_sno": ex.get("order_sno"),
+                        "phone": "".join(
+                            ch for ch in str(order_item.get("buyer_tel") or order_item.get("receiver_tel") or "")
+                            if ch.isdigit()
+                        ),
                     })
 
                 if page >= data.get("max_page_number", 1):
                     break
                 page += 1
+
+        # 교환목록(exchange_items[].order_item)엔 buyer_tel/receiver_tel이 비어
+        # 오는 경우가 많아, 상세조회(order_items/{sno}/)로 폴백해서 채운다 -
+        # process_one/process_exchange_pickup이 이미 이 상세조회 필드로 전화번호를
+        # 가져오고 있어 신뢰할 수 있는 소스다.
+        async def _fetch_phone(client: httpx.AsyncClient, sno):
+            if not sno:
+                return ""
+            try:
+                res = await client.get(
+                    f"{ABLY_BASE}/seller/order_items/{sno}/",
+                    headers=_ably_headers(token),
+                )
+                if res.status_code != 200:
+                    return ""
+                oi = res.json().get("order_item") or {}
+                raw_tel = oi.get("buyer_tel") or oi.get("receiver_tel") or ""
+                return "".join(ch for ch in str(raw_tel) if ch.isdigit())
+            except Exception:
+                return ""
+
+        need_phone = [item for item in all_items if not item.get("phone")]
+        if need_phone:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                phones = await asyncio.gather(
+                    *(_fetch_phone(client, item["order_item_sno"]) for item in need_phone)
+                )
+            for item, phone in zip(need_phone, phones):
+                item["phone"] = phone
 
         return {"items": all_items, "total": len(all_items)}
 
@@ -335,6 +371,8 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         order_item_sno: int = Body(...),
         user=Depends(get_current_user),
     ):
+        if set_setting:
+            set_setting("daily_check_process_all", datetime.now(_KST).isoformat())
         try:
             ably_token = await _ably_login()
             llogis_token = await _llogis_login()
@@ -383,6 +421,9 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
         if not phpsessid:
             return {"ok": False, "need_session": True}
+
+        if set_setting:
+            set_setting("daily_check_ship_pending", datetime.now(_KST).isoformat())
 
         if not end_date:
             end_date = datetime.now(_KST).strftime("%Y-%m-%d")
@@ -584,6 +625,9 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         phpsessid = get_setting(_EZADMIN_SESSION_KEY)
         if not phpsessid:
             return {"ok": False, "need_session": True}
+
+        if set_setting:
+            set_setting("daily_check_exchange_pickup", datetime.now(_KST).isoformat())
 
         try:
             token = await _ably_login()

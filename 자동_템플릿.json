@@ -1308,5 +1308,109 @@
       "value": "Y",
       "clipboard_starts4": true
     }
+  ],
+  "제조국변경": [
+    {
+      "type": "auto_copy_col",
+      "value": "A"
+    },
+    {
+      "type": "key",
+      "value": "alt+tab",
+      "first_only": true
+    },
+    {
+      "type": "click",
+      "value": [
+        413,
+        453
+      ],
+      "first_only": true
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "key",
+      "value": "enter"
+    },
+    {
+      "type": "wait",
+      "value": 0.5
+    },
+    {
+      "type": "click",
+      "value": [
+        322,
+        796
+      ]
+    },
+    {
+      "type": "wait",
+      "value": 0.6
+    },
+    {
+      "type": "click",
+      "value": [
+        1565,
+        779
+      ]
+    },
+    {
+      "type": "copy_text",
+      "value": "제조국"
+    },
+    {
+      "type": "key",
+      "value": "ctrl+f"
+    },
+    {
+      "type": "paste",
+      "value": null
+    },
+    {
+      "type": "key",
+      "value": "enter"
+    },
+    {
+      "type": "click",
+      "value": [
+        1695,
+        592
+      ]
+    },
+    {
+      "type": "click",
+      "value": [
+        461,
+        624
+      ]
+    },
+    {
+      "type": "click",
+      "value": [
+        402,
+        671
+      ]
+    },
+    {
+      "type": "click",
+      "value": [
+        207,
+        979
+      ]
+    },
+    {
+      "type": "wait",
+      "value": 6.0
+    },
+    {
+      "type": "double_click",
+      "value": [
+        394,
+        451
+      ]
+    }
   ]
 }

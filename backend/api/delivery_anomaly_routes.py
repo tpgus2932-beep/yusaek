@@ -7,8 +7,24 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from services.delivery_anomaly_logic import evaluate_anomaly, parse_ably_sent_date
+from services.delivery_anomaly_logic import (
+    LOST_PACKAGE_MESSAGE,
+    build_confirm_receipt_message,
+    evaluate_anomaly,
+    is_invoice_missing,
+    latest_movement,
+    latest_reply_after,
+    parse_ably_sent_date,
+    parse_ezdesk_time,
+)
 from services.delivery_anomaly_store import sync_anomalies
+
+try:
+    from sdk import config as ez_config
+    from sdk.ezadmin import EzAdminClient, EzDeskSessionExpired, extract_sms_rows, normalize_sms_row
+except ModuleNotFoundError:  # package import in unit tests
+    from backend.sdk import config as ez_config
+    from backend.sdk.ezadmin import EzAdminClient, EzDeskSessionExpired, extract_sms_rows, normalize_sms_row
 
 _KST = timezone(timedelta(hours=9))
 
@@ -138,13 +154,7 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
     def list_anomalies(user: str = Depends(get_current_user)):
         conn = get_db()
         rows = conn.execute(
-            """
-            SELECT a.*, COUNT(c.id) AS comment_count
-            FROM delivery_anomalies a
-            LEFT JOIN delivery_anomaly_comments c ON c.anomaly_id = a.id
-            GROUP BY a.id
-            ORDER BY a.detected_at ASC
-            """
+            "SELECT * FROM delivery_anomalies ORDER BY detected_at ASC"
         ).fetchall()
         conn.close()
         return {
@@ -160,59 +170,153 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
                     "status": r["status"],
                     "location": r["location"],
                     "scanDate": r["scan_date"],
+                    "reason": r["reason"],
                     "detectedAt": r["detected_at"],
-                    "commentCount": r["comment_count"],
+                    "confirmSentAt": r["confirm_sent_at"] or None,
+                    "confirmReply": r["confirm_reply"] or None,
+                    "confirmReplyAt": r["confirm_reply_at"] or None,
+                    "responseSentAt": r["response_sent_at"] or None,
+                    "responseText": r["response_text"] or None,
                 }
                 for r in rows
             ]
         }
 
-    @router.get("/{anomaly_id}/comments")
-    def list_comments(anomaly_id: int, user: str = Depends(get_current_user)):
-        conn = get_db()
-        rows = conn.execute(
-            "SELECT id, username, text, created_at FROM delivery_anomaly_comments"
-            " WHERE anomaly_id = ? ORDER BY created_at ASC",
-            (anomaly_id,),
-        ).fetchall()
-        conn.close()
-        return {
-            "items": [
-                {"id": r["id"], "username": r["username"], "text": r["text"], "createdAt": r["created_at"]}
-                for r in rows
-            ]
-        }
+    async def _send_sms_or_error(phone: str, msg: str) -> dict | None:
+        """문자 발송. 성공하면 None, EZDesk 세션 만료면 에러 응답 dict 반환."""
+        ez = EzAdminClient(get_setting)
+        try:
+            await ez.send_sms(phone, ez_config.EZDESK_SMS_SENDER, msg)
+        except EzDeskSessionExpired:
+            return {"ok": False, "need_ezdesk_session": True}
+        return None
 
-    @router.post("/{anomaly_id}/comments")
-    def add_comment(
+    def _get_anomaly_phone(anomaly_id: int) -> tuple:
+        """(row, phone)을 반환. row가 없으면 404, phone이 없으면 400."""
+        conn = get_db()
+        row = conn.execute("SELECT * FROM delivery_anomalies WHERE id = ?", (anomaly_id,)).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(404, "이상현상 항목을 찾을 수 없습니다")
+        phone = str(row["phone"] or "").strip()
+        if not phone:
+            raise HTTPException(400, "전화번호가 없습니다")
+        return row, phone
+
+    @router.post("/{anomaly_id}/confirm-send")
+    async def send_confirm_sms(anomaly_id: int, user: str = Depends(get_current_user)):
+        row, phone = _get_anomaly_phone(anomaly_id)
+
+        error = await _send_sms_or_error(phone, build_confirm_receipt_message(row["product_name"]))
+        if error:
+            return error
+
+        sent_at = datetime.now(_KST).isoformat()
+        conn = get_db()
+        conn.execute(
+            "UPDATE delivery_anomalies SET confirm_sent_at = ?, confirm_reply = '', confirm_reply_at = '' WHERE id = ?",
+            (sent_at, anomaly_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "confirmSentAt": sent_at}
+
+    async def _respond(anomaly_id: int, msg: str) -> dict:
+        _row, phone = _get_anomaly_phone(anomaly_id)
+
+        error = await _send_sms_or_error(phone, msg)
+        if error:
+            return error
+
+        sent_at = datetime.now(_KST).isoformat()
+        conn = get_db()
+        conn.execute(
+            "UPDATE delivery_anomalies SET response_sent_at = ?, response_text = ? WHERE id = ?",
+            (sent_at, msg, anomaly_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "responseSentAt": sent_at}
+
+    @router.post("/{anomaly_id}/respond-lost")
+    async def respond_lost(anomaly_id: int, user: str = Depends(get_current_user)):
+        return await _respond(anomaly_id, LOST_PACKAGE_MESSAGE)
+
+    @router.post("/{anomaly_id}/respond-custom")
+    async def respond_custom(
         anomaly_id: int,
         text: str = Body(..., embed=True),
         user: str = Depends(get_current_user),
     ):
         text = text.strip()
         if not text:
-            raise HTTPException(400, "댓글 내용을 입력하세요")
-        conn = get_db()
-        exists = conn.execute(
-            "SELECT id FROM delivery_anomalies WHERE id = ?", (anomaly_id,)
-        ).fetchone()
-        if not exists:
-            conn.close()
-            raise HTTPException(404, "이상현상 항목을 찾을 수 없습니다")
-        created_at = datetime.now(_KST).isoformat()
-        conn.execute(
-            "INSERT INTO delivery_anomaly_comments (anomaly_id, username, text, created_at) VALUES (?, ?, ?, ?)",
-            (anomaly_id, user, text, created_at),
-        )
+            raise HTTPException(400, "내용을 입력하세요")
+        return await _respond(anomaly_id, text)
+
+    async def _apply_reply_updates(conn, ez, rows, since_column: str, *, reset_response: bool) -> bool:
+        """rows 각각에 대해 since_column 이후 답장을 찾아 반영. 세션 만료면 False(중단) 반환."""
+        for row in rows:
+            phone = str(row["phone"] or "").strip()
+            since = parse_ezdesk_time(row[since_column])
+            if not phone or since is None:
+                continue
+            try:
+                sms = await ez.sms_chat_detail(phone, ez_config.EZDESK_SMS_SENDER)
+            except EzDeskSessionExpired:
+                return False
+            except Exception:
+                continue
+            normalized = [normalize_sms_row(r) for r in extract_sms_rows(sms)]
+            reply = latest_reply_after(normalized, since)
+            if not reply:
+                continue
+            if reset_response:
+                conn.execute(
+                    "UPDATE delivery_anomalies "
+                    "SET confirm_reply = ?, confirm_reply_at = ?, response_sent_at = '', response_text = '' "
+                    "WHERE id = ?",
+                    (reply["content"], reply["input_time"], row["id"]),
+                )
+            else:
+                conn.execute(
+                    "UPDATE delivery_anomalies SET confirm_reply = ?, confirm_reply_at = ? WHERE id = ?",
+                    (reply["content"], reply["input_time"], row["id"]),
+                )
+        return True
+
+    async def _check_confirm_replies(conn) -> None:
+        """수령여부확인 문자 발송 후 답장 확인.
+
+        1) 아직 답장을 한 번도 못 찾은 건 — confirm_sent_at 이후 첫 답장을 찾는다.
+        2) 이미 응대(미수령/답변하기)한 건 — 응대 이후 새 답장이 왔는지 재확인해서,
+           있으면 confirm_reply를 그 새 답장으로 갱신하고 응대 상태를 초기화한다
+           (버튼이 다시 활성화됨). 새 답장이 없으면 그대로 둔다.
+        """
+        ez = EzAdminClient(get_setting)
+
+        pending_rows = conn.execute(
+            "SELECT id, phone, confirm_sent_at FROM delivery_anomalies "
+            "WHERE confirm_sent_at != '' AND confirm_reply = ''"
+        ).fetchall()
+        if pending_rows:
+            ok = await _apply_reply_updates(conn, ez, pending_rows, "confirm_sent_at", reset_response=False)
+            if not ok:
+                conn.commit()
+                return  # 세션이 없으면 이후 조회도 실패할 것이므로 중단
+
+        responded_rows = conn.execute(
+            "SELECT id, phone, response_sent_at FROM delivery_anomalies WHERE response_sent_at != ''"
+        ).fetchall()
+        if responded_rows:
+            await _apply_reply_updates(conn, ez, responded_rows, "response_sent_at", reset_response=True)
+
         conn.commit()
-        conn.close()
-        return {"ok": True, "createdAt": created_at}
 
     @router.post("/run")
-    async def run_check(user: str = Depends(get_current_user)):
+    async def run_check(force: bool = False, user: str = Depends(get_current_user)):
         today_str = datetime.now(_KST).strftime("%Y-%m-%d")
         last_run = get_setting(_LAST_RUN_SETTING_KEY)
-        if last_run == today_str:
+        if last_run == today_str and not force:
             return list_anomalies(user=user)  # 오늘 이미 실행됨 — 재조회 없이 현재 목록만 반환
 
         ably_token = await _ably_login()
@@ -233,22 +337,31 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
             reason = evaluate_anomaly(sent_date, today, llogis_raw)
             if not reason:
                 continue
-            mvm_list = llogis_raw.get("mvmList") or []
-            latest = mvm_list[-1] if mvm_list else {}
+            if is_invoice_missing(llogis_raw):
+                status, location, scan_date = "-", "-", "-"
+            else:
+                latest = latest_movement(llogis_raw) or {}
+                status = latest.get("paclStatNm") or "-"
+                location = latest.get("scanBrshNm") or "-"
+                scan_date = latest.get("rgstYmd") or "-"
             computed[inv_no] = {
                 "order_no": item["order_no"],
                 "product_name": item["product_name"],
                 "option_info": item["option_info"],
                 "phone": item["phone"],
                 "sent_date": item["sent_date"],
-                "status": latest.get("paclStatNm") or "-",
-                "location": latest.get("scanBrshNm") or "-",
-                "scan_date": latest.get("rgstYmd") or "-",
+                "status": status,
+                "location": location,
+                "scan_date": scan_date,
                 "reason": reason,
             }
 
         conn = get_db()
         sync_anomalies(conn, computed)
+        try:
+            await _check_confirm_replies(conn)
+        except Exception:
+            pass  # 답장 확인 실패는 이상현상 갱신 자체를 막지 않는다
         conn.close()
         set_setting(_LAST_RUN_SETTING_KEY, today_str)
 

@@ -3,6 +3,7 @@ import { Plus, Calendar, Bell, ChevronDown, ChevronUp, Pin, PinOff, GripVertical
 import styles from './Dashboard.module.css';
 import { COLLAB_API_BASE as API, LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import DeliveryAnomalyCard from './DeliveryAnomalyCard';
+import DailyChecklistCard from './DailyChecklistCard';
 
 function AuthImage({ src, token, className, alt, onClick }) {
     const [blobUrl, setBlobUrl] = useState('');
@@ -1963,6 +1964,8 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
             </div>
 
             <DeliveryAnomalyCard />
+
+            <DailyChecklistCard />
 
             <div className={styles.resolvedGrid}>
                 {/* 공동 할 일 - 접기/펼치기 */}

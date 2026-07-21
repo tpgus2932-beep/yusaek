@@ -5,6 +5,7 @@ import ReturnShippingTest from "./ReturnShippingTest";
 import ExchangeReturnTest from "./ExchangeReturnTest";
 import AccidentCargoTab from "./AccidentCargoTab";
 import DeliveryStatusTest from "./DeliveryStatusTest";
+import ReturnAutomationDashboard from "./ReturnAutomationDashboard";
 import styles from "./TestTabsContainer.module.css";
 
 const TABS = [
@@ -14,6 +15,7 @@ const TABS = [
     { key: "exchange-return", label: "교환반품 테스트" },
     { key: "delivery-status", label: "배송 현황 조회" },
     { key: "accident-cargo", label: "택배 사고처리" },
+    { key: "return-automation", label: "자동화 대시보드" },
 ];
 
 export default function TestTabs() {
@@ -45,6 +47,7 @@ export default function TestTabs() {
                 {activeTab === "exchange-return" && <ExchangeReturnTest />}
                 {activeTab === "delivery-status" && <DeliveryStatusTest />}
                 {activeTab === "accident-cargo" && <AccidentCargoTab />}
+                {activeTab === "return-automation" && <ReturnAutomationDashboard />}
             </div>
         </div>
     );

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import re
 import sqlite3
@@ -13,6 +14,8 @@ import pandas as pd
 import xlwt
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response
+
+from sdk.ably import AblyClient
 
 try:
     from bs4 import BeautifulSoup as _BS4
@@ -53,7 +56,10 @@ WONBE_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스�
 JANGGI_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\날짜별장끼정리.db")
 INGODAEGI_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\입고대기.xlsx")
 
-COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호"]
+COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국"]
+
+# username → {"running": bool, "total": int, "done": int, "matched": int} — 제조국 채우기 진행상황 폴링용
+_country_sync_progress: dict[str, dict] = {}
 EDITABLE = {"상품명합", "거래처합", "원가", "거래처주소"}
 
 INGODAEGI_COLUMNS = ["상품코드", "입고수량"]
@@ -63,6 +69,49 @@ JANGGI_COLUMNS = ["거래처", "거래처상품명", "가격", "옵션", "사이
 
 ACCOUNT_COLS = ["A", "B", "C", "D", "E", "F"]
 ICHAE_COLS = ["날짜", "A", "B", "C", "D", "E", "F", "G", "H", "상태", "생성일시"]
+
+# 은행명 → 금융결제원 은행코드 (정규화된 축약형 키 기준)
+_BANK_CODE_MAP: dict[str, str] = {
+    "산업": "002",
+    "기업": "003", "ibk": "003", "ibk기업": "003",
+    "국민": "004", "kb": "004", "kb국민": "004",
+    "수협": "007",
+    "수출입": "008",
+    "농협": "011", "nh": "011", "nh농협": "011",
+    "지역농협": "012", "단위농협": "012",
+    "우리": "020",
+    "sc제일": "023", "제일": "023", "sc": "023",
+    "한국씨티": "027", "씨티": "027",
+    "대구": "031", "im": "031", "아이엠": "031",
+    "부산": "032",
+    "광주": "034",
+    "제주": "035",
+    "전북": "037",
+    "경남": "039",
+    "새마을금고": "045", "새마을": "045",
+    "신협": "048", "신용협동조합": "048",
+    "저축": "050", "상호저축": "050",
+    "우체국": "071",
+    "하나": "081", "keb하나": "081",
+    "신한": "088",
+    "케이뱅크": "089", "k뱅크": "089", "케이": "089",
+    "카카오뱅크": "090", "카카오": "090",
+    "토스뱅크": "092", "토스": "092",
+}
+
+
+def _normalize_bank_key(name: str) -> str:
+    s = str(name or "").strip().lower()
+    s = re.sub(r"[\s()㈜]+", "", s)
+    s = s.replace("주식회사", "")
+    if s.endswith("은행"):
+        s = s[:-2]
+    return s
+
+
+def _resolve_bank_code(name: str) -> str:
+    key = _normalize_bank_key(name)
+    return _BANK_CODE_MAP.get(key, "") if key else ""
 
 
 def _get_wonbe_db() -> sqlite3.Connection:
@@ -88,6 +137,17 @@ def _init_wonbe_table(conn: sqlite3.Connection):
             옵션번호  TEXT
         )
     """)
+    wonbe_cols = {row["name"] for row in conn.execute("PRAGMA table_info(wonbe)").fetchall()}
+    if "에이블리상품번호" not in wonbe_cols:
+        conn.execute("ALTER TABLE wonbe ADD COLUMN 에이블리상품번호 TEXT")
+    if "등록일" not in wonbe_cols:
+        conn.execute("ALTER TABLE wonbe ADD COLUMN 등록일 TEXT")
+    if "진열상태" not in wonbe_cols:
+        conn.execute("ALTER TABLE wonbe ADD COLUMN 진열상태 TEXT")
+    if "품절상태" not in wonbe_cols:
+        conn.execute("ALTER TABLE wonbe ADD COLUMN 품절상태 TEXT")
+    if "제조국" not in wonbe_cols:
+        conn.execute("ALTER TABLE wonbe ADD COLUMN 제조국 TEXT")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS wonbe_meta (
             key   TEXT PRIMARY KEY,
@@ -243,6 +303,90 @@ def _init_ably_stock_table(conn: sqlite3.Connection):
     conn.commit()
 
 
+def _init_defect_process_log_table(conn: sqlite3.Connection):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS defect_process_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            execution_id TEXT NOT NULL,
+            processed_at TEXT NOT NULL,
+            process_type TEXT NOT NULL,
+            product_code TEXT NOT NULL,
+            product_name TEXT NOT NULL DEFAULT '',
+            product_option TEXT NOT NULL DEFAULT '',
+            vendor TEXT NOT NULL DEFAULT '',
+            vendor_product TEXT NOT NULL DEFAULT '',
+            requested_qty INTEGER NOT NULL,
+            applied_qty INTEGER,
+            result_status TEXT NOT NULL DEFAULT 'completed',
+            option_sno TEXT NOT NULL DEFAULT '',
+            stock_before INTEGER,
+            stock_after INTEGER,
+            processed_by_username TEXT NOT NULL,
+            processed_by_display_name TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_defect_process_logs_processed_at ON defect_process_logs(processed_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_defect_process_logs_execution_id ON defect_process_logs(execution_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_defect_process_logs_product_code ON defect_process_logs(product_code)")
+    conn.commit()
+
+
+def record_defect_process_logs(
+    *,
+    execution_id: str,
+    processed_at: str,
+    process_type: str,
+    rows: list[dict],
+    username: str,
+    display_name: str,
+    outcomes: dict[str, dict] | None = None,
+) -> None:
+    """Persist an immutable, per-product snapshot after a defect process succeeds."""
+    outcomes = outcomes or {}
+    records = []
+    for row in rows:
+        code = str(row.get("code") or "").strip()
+        qty = int(row.get("count") or 0)
+        if not code or qty <= 0:
+            continue
+        outcome = outcomes.get(code) or {}
+        records.append((
+            execution_id,
+            processed_at,
+            process_type,
+            code,
+            str(row.get("base_name") or row.get("name") or ""),
+            str(row.get("base_color") or row.get("option") or ""),
+            str(row.get("base_vendor") or ""),
+            str(row.get("base_product") or ""),
+            qty,
+            outcome.get("applied_qty"),
+            str(outcome.get("result_status") or "completed"),
+            str(outcome.get("option_sno") or ""),
+            outcome.get("stock_before"),
+            outcome.get("stock_after"),
+            username,
+            display_name,
+        ))
+    if not records:
+        return
+    conn = _get_wonbe_db()
+    try:
+        _init_defect_process_log_table(conn)
+        conn.executemany(
+            """INSERT INTO defect_process_logs (
+                execution_id, processed_at, process_type, product_code, product_name,
+                product_option, vendor, vendor_product, requested_qty, applied_qty,
+                result_status, option_sno, stock_before, stock_after,
+                processed_by_username, processed_by_display_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            records,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _sync_ably_stock_from_wonbe(conn: sqlite3.Connection) -> int:
     _init_wonbe_table(conn)
     _init_ably_stock_table(conn)
@@ -354,6 +498,14 @@ def _init_janggi_table(conn: sqlite3.Connection):
             value TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS janggi_top_col_widths (
+            username TEXT NOT NULL,
+            col_key  TEXT NOT NULL,
+            width    INTEGER NOT NULL,
+            PRIMARY KEY (username, col_key)
+        )
+    """)
     try:
         conn.execute("ALTER TABLE 날짜별장끼정리 ADD COLUMN 일괄이체 TEXT NOT NULL DEFAULT ''")
     except Exception:
@@ -382,6 +534,46 @@ def _strip_html(html_str: str) -> str:
 
 def build_wonbe_router(*, get_current_user, get_setting=None):
     router = APIRouter(prefix="/wonbe")
+
+    @router.get("/defect-process-logs")
+    def get_defect_process_logs(
+        offset: int = 0,
+        limit: int = 50,
+        date_from: str = "",
+        date_to: str = "",
+        process_type: str = "",
+        q: str = "",
+        user: str = Depends(get_current_user),
+    ):
+        offset = max(0, offset)
+        limit = min(max(1, limit), 200)
+        clauses = []
+        params = []
+        if date_from:
+            clauses.append("processed_at >= ?")
+            params.append(f"{date_from} 00:00:00")
+        if date_to:
+            clauses.append("processed_at <= ?")
+            params.append(f"{date_to} 23:59:59")
+        if process_type:
+            clauses.append("process_type = ?")
+            params.append(process_type)
+        if q.strip():
+            like = f"%{q.strip()}%"
+            clauses.append("(product_code LIKE ? OR product_name LIKE ? OR vendor LIKE ? OR processed_by_username LIKE ? OR processed_by_display_name LIKE ?)")
+            params.extend([like, like, like, like, like])
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        conn = _get_wonbe_db()
+        try:
+            _init_defect_process_log_table(conn)
+            total = conn.execute(f"SELECT COUNT(*) FROM defect_process_logs{where}", params).fetchone()[0]
+            rows = conn.execute(
+                f"SELECT * FROM defect_process_logs{where} ORDER BY processed_at DESC, id DESC LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            ).fetchall()
+            return {"ok": True, "total": total, "rows": [dict(row) for row in rows]}
+        finally:
+            conn.close()
 
     @router.post("/import")
     async def wonbe_import(
@@ -412,7 +604,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"엑셀 파싱 오류: {e}")
 
-        data_rows.reverse()  # 엑셀 맨 아래 행이 rowid 1 → 목록 맨 위에 표시
+        # 엑셀 맨 아래 행이 가장 나중에 삽입되어 rowid가 가장 커짐 → 기본 정렬(rowid DESC)에서 맨 위에 표시
 
         conn = _get_wonbe_db()
         try:
@@ -449,7 +641,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"파일 읽기 오류: {e}")
 
-        data_rows.reverse()  # 엑셀 맨 아래 행이 rowid 1 → 목록 맨 위에 표시
+        # 엑셀 맨 아래 행이 가장 나중에 삽입되어 rowid가 가장 커짐 → 기본 정렬(rowid DESC)에서 맨 위에 표시
 
         conn = _get_wonbe_db()
         try:
@@ -711,7 +903,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             q = q.strip()
             if not q:
                 rows = conn.execute(
-                    "SELECT * FROM wonbe ORDER BY rowid ASC LIMIT ? OFFSET ?",
+                    "SELECT * FROM wonbe ORDER BY rowid DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
                 total = conn.execute("SELECT COUNT(*) FROM wonbe").fetchone()[0]
@@ -866,13 +1058,17 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"EZAdmin 요청 실패: {exc}")
 
+        raw_text = r.text
         try:
             obj = r.json()
         except Exception:
-            return {"ok": False, "need_session": True}
+            # 세션이 만료되면 JSON이 아니라 로그인 HTML 페이지가 내려온다 — 이 경우만 진짜 need_session.
+            return {"ok": False, "need_session": True, "raw_preview": raw_text[:1000]}
 
-        if "rows" not in obj:
-            return {"ok": False, "need_session": True}
+        if not isinstance(obj, dict) or "rows" not in obj:
+            # JSON은 정상 수신했지만 rows가 없는 경우 — 세션 문제가 아닐 수 있다.
+            # 세션 재입력을 유도하지 않고, 실제 받은 응답을 그대로 보여준다.
+            return {"ok": False, "unexpected_response": True, "raw": obj}
 
         data_rows = []
         for row in obj.get("rows", []):
@@ -1142,6 +1338,287 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             "ablystock_added": _int_or_zero(meta.get("freshness_ablystock_added")),
         }
 
+    @router.post("/sync-ably-sno")
+    async def wonbe_sync_ably_sno(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        force = bool(payload.get("force"))
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.post(
+                f"{_ABLY_BASE}/seller/login/",
+                json={"email": _ABLY_EMAIL, "password": _ABLY_PASSWORD},
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": "https://seller-admin.a-bly.com",
+                    "Referer": "https://seller-admin.a-bly.com/",
+                    "User-Agent": "Mozilla/5.0",
+                },
+            )
+            if not res.is_success:
+                raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
+        token = res.json().get("token")
+        if not token:
+            raise HTTPException(status_code=502, detail="에이블리 로그인 실패: 토큰 없음")
+
+        ably_headers = {
+            "Authorization": f"JWT {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": "https://seller-admin.a-bly.com",
+            "Referer": "https://seller-admin.a-bly.com/",
+            "User-Agent": "Mozilla/5.0",
+        }
+
+        # 상품명(대괄호 태그 제거) → sno 매핑을 전체 카탈로그를 훑어서 구성
+        name_to_sno: dict[str, int] = {}
+        fetched_goods = 0
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                page = 1
+                max_page = 1
+                while page <= max_page:
+                    res = await client.post(
+                        f"{_ABLY_BASE}/seller/goods/search/",
+                        headers=ably_headers,
+                        json={"page": page, "per_page": 1000},
+                    )
+                    res.raise_for_status()
+                    data = res.json()
+                    goods = data.get("goods", [])
+                    max_page = data.get("max_page_number", 1) or 1
+                    for g in goods:
+                        fetched_goods += 1
+                        sno = g.get("sno")
+                        raw_name = str(g.get("name") or "")
+                        stripped = re.sub(r"^(\[[^\]]*\]\s*)+", "", raw_name).strip()
+                        key = _normalize_cost_base_key(stripped)
+                        if key and sno:
+                            name_to_sno[key] = sno
+                    page += 1
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"상품 목록 조회 실패: {exc}")
+
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            if force:
+                rows = conn.execute("SELECT 상품코드, 상품명 FROM wonbe").fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT 상품코드, 상품명 FROM wonbe WHERE 에이블리상품번호 IS NULL OR 에이블리상품번호 = ''"
+                ).fetchall()
+
+            updates = []
+            unmatched = 0
+            for r in rows:
+                key = _normalize_cost_base_key(r["상품명"])
+                sno = name_to_sno.get(key)
+                if sno:
+                    updates.append((str(sno), r["상품코드"]))
+                else:
+                    unmatched += 1
+
+            if updates:
+                conn.executemany(
+                    "UPDATE wonbe SET 에이블리상품번호 = ? WHERE 상품코드 = ?",
+                    updates,
+                )
+                conn.commit()
+        finally:
+            conn.close()
+
+        return {
+            "ok": True,
+            "fetched_goods": fetched_goods,
+            "considered": len(rows),
+            "matched": len(updates),
+            "unmatched": unmatched,
+        }
+
+    @router.post("/sync-registration-date")
+    async def wonbe_sync_registration_date(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.post(
+                f"{_ABLY_BASE}/seller/login/",
+                json={"email": _ABLY_EMAIL, "password": _ABLY_PASSWORD},
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": "https://seller-admin.a-bly.com",
+                    "Referer": "https://seller-admin.a-bly.com/",
+                    "User-Agent": "Mozilla/5.0",
+                },
+            )
+            if not res.is_success:
+                raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
+        token = res.json().get("token")
+        if not token:
+            raise HTTPException(status_code=502, detail="에이블리 로그인 실패: 토큰 없음")
+
+        ably_headers = {
+            "Authorization": f"JWT {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": "https://seller-admin.a-bly.com",
+            "Referer": "https://seller-admin.a-bly.com/",
+            "User-Agent": "Mozilla/5.0",
+        }
+
+        # sno → (등록일, 진열상태, 품절상태) 매핑을 전체 카탈로그를 훑어서 구성
+        sno_to_info: dict[str, tuple[str, str, str]] = {}
+        fetched_goods = 0
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                page = 1
+                max_page = 1
+                while page <= max_page:
+                    res = await client.post(
+                        f"{_ABLY_BASE}/seller/goods/search/",
+                        headers=ably_headers,
+                        json={"page": page, "per_page": 1000},
+                    )
+                    res.raise_for_status()
+                    data = res.json()
+                    goods = data.get("goods", [])
+                    max_page = data.get("max_page_number", 1) or 1
+                    for g in goods:
+                        fetched_goods += 1
+                        sno = g.get("sno")
+                        if not sno:
+                            continue
+                        dt = _parse_ably_datetime(g.get("created_at"))
+                        created = dt.strftime("%Y-%m-%d %H:%M:%S") if dt else ""
+                        display_status = "진열" if g.get("is_open") else "미진열"
+                        soldout_status = "품절" if g.get("is_soldout") else "정상"
+                        sno_to_info[str(sno)] = (created, display_status, soldout_status)
+                    page += 1
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"상품 목록 조회 실패: {exc}")
+
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            rows = conn.execute(
+                "SELECT 상품코드, 에이블리상품번호 FROM wonbe WHERE 에이블리상품번호 IS NOT NULL AND 에이블리상품번호 != ''"
+            ).fetchall()
+
+            updates = []
+            unmatched = 0
+            for r in rows:
+                info = sno_to_info.get(str(r["에이블리상품번호"]))
+                if info:
+                    created, display_status, soldout_status = info
+                    updates.append((created, display_status, soldout_status, r["상품코드"]))
+                else:
+                    unmatched += 1
+
+            if updates:
+                conn.executemany(
+                    "UPDATE wonbe SET 등록일 = ?, 진열상태 = ?, 품절상태 = ? WHERE 상품코드 = ?",
+                    updates,
+                )
+                conn.commit()
+        finally:
+            conn.close()
+
+        return {
+            "ok": True,
+            "fetched_goods": fetched_goods,
+            "considered": len(rows),
+            "matched": len(updates),
+            "unmatched": unmatched,
+        }
+
+    @router.get("/sync-country/progress")
+    def wonbe_sync_country_progress(user: str = Depends(get_current_user)):
+        return _country_sync_progress.get(user) or {
+            "running": False, "total": 0, "done": 0, "matched": 0,
+        }
+
+    @router.post("/sync-country")
+    async def wonbe_sync_country(user: str = Depends(get_current_user)):
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            rows = conn.execute(
+                "SELECT 상품코드, 에이블리상품번호 FROM wonbe WHERE 에이블리상품번호 IS NOT NULL AND 에이블리상품번호 != ''"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        if not rows:
+            return {"ok": True, "considered": 0, "matched": 0, "unmatched": 0}
+
+        ably_client = AblyClient()
+        try:
+            await ably_client.login()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {exc}")
+
+        # 색상/사이즈별로 상품코드는 다르지만 에이블리상품번호(sno)는 같은 경우가 많음 → sno 기준으로 중복 제거 후 1회씩만 조회
+        unique_snos = sorted({str(r["에이블리상품번호"]) for r in rows})
+
+        progress = {"running": True, "total": len(unique_snos), "done": 0, "matched": 0}
+        _country_sync_progress[user] = progress
+        progress_lock = asyncio.Lock()
+
+        # 상품 상세는 상품별 개별 조회라서 동시 요청 수를 제한한다
+        semaphore = asyncio.Semaphore(8)
+
+        async def _fetch(sno: str):
+            async with semaphore:
+                try:
+                    detail = await ably_client.get_goods_detail(sno)
+                    c = str(detail.get("country") or "").strip()
+                except Exception:
+                    c = ""
+            async with progress_lock:
+                progress["done"] += 1
+                if c:
+                    progress["matched"] += 1
+            return sno, c
+
+        try:
+            results = await asyncio.gather(*[_fetch(sno) for sno in unique_snos])
+        finally:
+            progress["running"] = False
+
+        sno_to_country = {sno: c for sno, c in results if c}
+
+        updates = []
+        unmatched = 0
+        for r in rows:
+            c = sno_to_country.get(str(r["에이블리상품번호"]))
+            if c:
+                updates.append((c, r["상품코드"]))
+            else:
+                unmatched += 1
+
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            if updates:
+                conn.executemany("UPDATE wonbe SET 제조국 = ? WHERE 상품코드 = ?", updates)
+                conn.commit()
+        finally:
+            conn.close()
+
+        return {
+            "ok": True,
+            "considered": len(rows),
+            "unique_snos": len(unique_snos),
+            "matched": len(updates),
+            "unmatched": unmatched,
+        }
+
     @router.post("/janggi/save")
     def janggi_save(
         payload: dict = Body(...),
@@ -1385,6 +1862,38 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
         finally:
             conn.close()
 
+    @router.get("/janggi/top-col-widths")
+    def janggi_get_col_widths(user: str = Depends(get_current_user)):
+        conn = _get_janggi_db()
+        try:
+            _init_janggi_table(conn)
+            rows = conn.execute(
+                "SELECT col_key, width FROM janggi_top_col_widths WHERE username = ?", (user,)
+            ).fetchall()
+            return {"ok": True, "widths": {r["col_key"]: r["width"] for r in rows}}
+        finally:
+            conn.close()
+
+    @router.put("/janggi/top-col-widths")
+    def janggi_save_col_widths(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        widths = payload.get("widths") or {}
+        conn = _get_janggi_db()
+        try:
+            _init_janggi_table(conn)
+            conn.execute("DELETE FROM janggi_top_col_widths WHERE username = ?", (user,))
+            if widths:
+                conn.executemany(
+                    "INSERT INTO janggi_top_col_widths (username, col_key, width) VALUES (?, ?, ?)",
+                    [(user, str(k), int(round(float(v)))) for k, v in widths.items() if k and v],
+                )
+            conn.commit()
+            return {"ok": True, "count": len(widths)}
+        finally:
+            conn.close()
+
     @router.get("/janggi/recent-summary")
     def janggi_recent_summary(user: str = Depends(get_current_user)):
         conn = _get_janggi_db()
@@ -1523,9 +2032,12 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
         conn = _get_janggi_db()
         try:
             _init_account_table(conn)
+            values = {c: str(payload.get(c) or "").strip() for c in ACCOUNT_COLS}
+            if not values["B"] and values["D"]:
+                values["B"] = _resolve_bank_code(values["D"])
             cur = conn.execute(
                 "INSERT INTO 거래처계좌데이터 (A, B, C, D, E, F) VALUES (?, ?, ?, ?, ?, ?)",
-                tuple(str(payload.get(c) or "").strip() for c in ACCOUNT_COLS),
+                tuple(values[c] for c in ACCOUNT_COLS),
             )
             conn.commit()
             row = conn.execute("SELECT * FROM 거래처계좌데이터 WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -1543,10 +2055,17 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
         conn = _get_janggi_db()
         try:
             _init_account_table(conn)
-            cur = conn.execute(
-                f"UPDATE 거래처계좌데이터 SET {col} = ? WHERE id = ?",
-                (value, row_id),
-            )
+            if col == "D":
+                # 은행명(D)을 수정하면 은행코드(B)를 자동으로 다시 계산한다
+                cur = conn.execute(
+                    "UPDATE 거래처계좌데이터 SET D = ?, B = ? WHERE id = ?",
+                    (value, _resolve_bank_code(value), row_id),
+                )
+            else:
+                cur = conn.execute(
+                    f"UPDATE 거래처계좌데이터 SET {col} = ? WHERE id = ?",
+                    (value, row_id),
+                )
             conn.commit()
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="해당 id 없음")
@@ -1779,14 +2298,22 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
 
             # 거래처 유니크 행 생성
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            result_rows = []
+            class _ResultRows(list):
+                def append(self, row):
+                    # 구 계좌 데이터 행은 계좌번호가 빠진 8열 튜플일 수 있어 새 C열을 보정한다.
+                    if len(row) == 8:
+                        account = account_map.get(row[3]) or {}
+                        row = tuple(row[:2]) + (account.get("C", ""),) + tuple(row[2:])
+                    super().append(row)
+
+            result_rows = _ResultRows()
             for supplier in sorted(supplier_totals.keys()):
                 total = supplier_totals[supplier]
                 ar = account_map.get(supplier)
                 if ar:
                     result_rows.append((
                         date_str,
-                        ar.get("B", ""),   # A: 은행코드
+                        ar.get("B", "") or _resolve_bank_code(ar.get("D", "")),   # A: 은행코드
                         ar.get("C", ""),   # B: 계좌번호
                         total,             # C: 입금금액
                         ar.get("A", ""),   # D: 거래처명

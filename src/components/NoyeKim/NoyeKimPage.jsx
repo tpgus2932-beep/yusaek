@@ -3,6 +3,7 @@ import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import styles from "./NoyeKimPage.module.css";
 import { getDownloadFilename } from "../../lib/download";
 import { appendTsvToCostBase } from "../../lib/costBase";
+import PurchaseManager from "./PurchaseManager";
 import {
   AlertTriangle, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, Calendar, Clock, Clipboard, FileSpreadsheet,
   MessageSquare, Package, Pencil, Plus, Printer, RefreshCw, Search, Shuffle, Table2, Trash2, X, Zap,
@@ -162,7 +163,9 @@ async function fillCostPrices(rows, authHeaders) {
     });
     const data = await res.json().catch(() => ({}));
     if (data.ok) priceMap = data.prices || {};
-  } catch (_) {}
+  } catch {
+    priceMap = {};
+  }
 
   return rows.map((r) => {
     if (r.C !== "__COST__") return r;
@@ -174,12 +177,14 @@ async function fillCostPrices(rows, authHeaders) {
   });
 }
 
-// 거래처별 상품금액(매입차감·부가세 제외 합계)을 초과하는 매입차감 음수를
-// 상품금액 크기로 제한하고, 남는 차액을 해당 행의 메모에 기록한다.
-function applyPurchaseDeductionCap(rows) {
+// 거래처별 상품금액을 초과하는 매입차감 음수를 제한하고, 남는 차액을 메모에 기록한다.
+// 부가세 거래처는 자동 추가된 부가세 행까지 매입 가능 금액에 포함한다.
+function applyPurchaseDeductionCap(rows, vatVendors = []) {
+  const vatVendorSet = new Set((vatVendors || []).map((vendor) => String(vendor).trim()).filter(Boolean));
   const productAmountByVendor = {};
   for (const r of rows) {
-    if (r.B === "매입차감" || r.B === "부가세") continue;
+    if (r.B === "매입차감") continue;
+    if (r.B === "부가세" && !vatVendorSet.has(r.A)) continue;
     productAmountByVendor[r.A] = (productAmountByVendor[r.A] || 0) + parseNumber(r.C);
   }
   const remainingBudgetByVendor = { ...productAmountByVendor };
@@ -383,7 +388,7 @@ function compareMisongValues(a, b, column) {
 }
 
 export default function NoyeKimPage() {
-  const [activeTab, setActiveTab] = useState("kdg");
+  const [activeTab, setActiveTab] = useState(() => localStorage.getItem("noye-kimsungil-active-tab") || "kdg");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -489,6 +494,9 @@ export default function NoyeKimPage() {
   const bulyangPreviewRef = useRef(null);
   useEffect(() => { bulyangLayoutRef.current = bulyangLayout; }, [bulyangLayout]);
   useEffect(() => { bulyangSessionRef.current = { id: bulyangSessionId, index: bulyangIndex }; }, [bulyangSessionId, bulyangIndex]);
+  useEffect(() => {
+    localStorage.setItem("noye-kimsungil-active-tab", activeTab);
+  }, [activeTab]);
 
   useEffect(() => {
     (async () => {
@@ -1113,7 +1121,7 @@ export default function NoyeKimPage() {
     try {
       const XLSX = await import("xlsx");
       const wsData = [
-        ["에이블리 옵션 번호", "재고 수량"],
+        ["솔루션사 고유코드", "재고 수량"],
         ...todayRows.map((r) => [r.A, r.B]),
       ];
       const ws = XLSX.utils.aoa_to_sheet(wsData);
@@ -1203,7 +1211,7 @@ export default function NoyeKimPage() {
     setLoading(true);
     setMessage("");
     try {
-      const header = "에이블리 옵션 번호\t재고 수량";
+      const header = "솔루션사 고유코드\t재고 수량";
       const body = todayRows.map((r) => `${r.A}\t${r.B}`).join("\n");
       const tsv = `${header}\n${body}`;
       if (navigator.clipboard?.writeText) {
@@ -1362,7 +1370,7 @@ export default function NoyeKimPage() {
           return;
         }
 
-        const rows = applyPurchaseDeductionCap(applyVendorVat(await fillCostPrices(rawRows, getAuthHeaders()), vatVendors));
+        const rows = applyPurchaseDeductionCap(applyVendorVat(await fillCostPrices(rawRows, getAuthHeaders()), vatVendors), vatVendors);
         setExcelSlipRows(rows);
         setExcelSlipOutput(rowsToTsv(rows));
 
@@ -1422,7 +1430,7 @@ export default function NoyeKimPage() {
       const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
       const rawRows = convertCurrentReceiptExcelRowsSplitV3(rawData);
       if (!rawRows.length) { setMessage("변환 가능한 행을 찾지 못했습니다."); return; }
-      const rows = applyPurchaseDeductionCap(applyVendorVat(await fillCostPrices(rawRows, getAuthHeaders()), vatVendors));
+      const rows = applyPurchaseDeductionCap(applyVendorVat(await fillCostPrices(rawRows, getAuthHeaders()), vatVendors), vatVendors);
       setExcelSlipRows(rows);
       setExcelSlipOutput(rowsToTsv(rows));
       setMessage(`EZAdmin 입고전표 변환 완료: ${rows.length}건 (${selectedSlipSheets.length}개 전표)`);
@@ -2243,6 +2251,7 @@ export default function NoyeKimPage() {
         {[
           { key: "date-chunk",    label: "날짜별장끼정리",          icon: <Calendar size={13} />,      badge: null },
           { key: "misong",        label: "미송관리",                icon: <Package size={13} />,       badge: misongItems.length > 0 ? misongItems.length : null },
+          { key: "purchase",      label: "매입관리",                icon: <Clipboard size={13} />,     badge: null },
           { key: "kdg",           label: "케이디지가공2",           icon: <Shuffle size={13} />,       badge: null },
           { key: "janggi",        label: "신상 업로드 날짜별 시트2", icon: <Table2 size={13} />,        badge: null },
           { key: "today",         label: "오늘출발",                icon: <Zap size={13} />,           badge: null },
@@ -2967,6 +2976,10 @@ export default function NoyeKimPage() {
         </>
       )}
 
+      {activeTab === "purchase" && (
+        <PurchaseManager />
+      )}
+
       {activeTab === "kdg" && (
         <>
           <section className={styles.card}>
@@ -3174,7 +3187,7 @@ export default function NoyeKimPage() {
                 <table className={styles.table}>
                   <thead>
                     <tr>
-                      <th>에이블리 옵션 번호 (G열)</th>
+                      <th>솔루션사 고유코드 (G열)</th>
                       <th>재고 수량 (E열)</th>
                     </tr>
                   </thead>

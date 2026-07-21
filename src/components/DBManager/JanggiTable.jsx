@@ -760,6 +760,67 @@ function JanggiTopComparison() {
   const [showAliasPanel, setShowAliasPanel] = useState(false);
   const [aliasLeft, setAliasLeft] = useState("");
   const [aliasRight, setAliasRight] = useState("");
+  const [accountSet, setAccountSet] = useState(new Set());
+  const [accountLoaded, setAccountLoaded] = useState(false);
+  const [addingAccountFor, setAddingAccountFor] = useState(null);
+  const [accountForm, setAccountForm] = useState({ bank: "", accountNumber: "", owner: "", vatStatus: "" });
+  const [accountSaving, setAccountSaving] = useState(false);
+  const [colWidths, setColWidths] = useState({});
+
+  useEffect(() => {
+    fetch(`${API}/wonbe/janggi/top-col-widths`, { headers: getAuthHeaders() })
+      .then((r) => r.json())
+      .then((d) => { if (d.ok) setColWidths(d.widths || {}); })
+      .catch(() => {});
+  }, []);
+
+  const saveColWidths = (widths) => {
+    fetch(`${API}/wonbe/janggi/top-col-widths`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      body: JSON.stringify({ widths }),
+    }).catch(() => {});
+  };
+
+  const startColResize = (colKey) => (e) => {
+    e.preventDefault();
+    const th = e.currentTarget.closest("th");
+    const startWidth = colWidths[colKey] ?? th.getBoundingClientRect().width;
+    const startX = e.clientX;
+    let latest = startWidth;
+    document.body.style.cursor = "ew-resize";
+    document.body.style.userSelect = "none";
+    const onMove = (moveEvent) => {
+      latest = Math.min(500, Math.max(50, startWidth + (moveEvent.clientX - startX)));
+      setColWidths((prev) => ({ ...prev, [colKey]: latest }));
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setColWidths((prev) => {
+        const next = { ...prev, [colKey]: latest };
+        saveColWidths(next);
+        return next;
+      });
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
+
+  const resizableTh = (colKey, label, extraStyle) => (
+    <th className={topStyles.thResizable} style={{ width: colWidths[colKey], paddingRight: "1.1rem", ...extraStyle }}>
+      {label}
+      <span className={topStyles.resizeHandle} onMouseDown={startColResize(colKey)} title="드래그하여 너비 조정" />
+    </th>
+  );
+
+  const resizedTdStyle = (colKey, extraStyle) => {
+    const w = colWidths[colKey];
+    if (w == null) return extraStyle;
+    return { ...extraStyle, width: w, maxWidth: w, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+  };
 
   useEffect(() => {
     fetch(`${API}/wonbe/janggi/aliases`, { headers: getAuthHeaders() })
@@ -767,6 +828,64 @@ function JanggiTopComparison() {
       .then((d) => { if (d.ok) setAliasMap(d.aliases || {}); })
       .catch(() => {});
   }, []);
+
+  const fetchAccountSet = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/wonbe/account/rows`, { headers: getAuthHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setAccountSet(new Set((data.rows || []).map((r) => String(r.A || "").trim()).filter(Boolean)));
+      }
+    } catch {
+      // 계좌 데이터 조회 실패 시 미등록 표시를 비활성화한 채로 둔다
+    } finally {
+      setAccountLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => { fetchAccountSet(); }, [fetchAccountSet]);
+
+  const hasAccount = (name) => accountSet.has(String(name || "").trim());
+
+  const openAccountForm = (name) => {
+    setAddingAccountFor(name);
+    setAccountForm({ bank: "", accountNumber: "", owner: "", vatStatus: "" });
+  };
+
+  const closeAccountForm = () => {
+    setAddingAccountFor(null);
+    setAccountForm({ bank: "", accountNumber: "", owner: "", vatStatus: "" });
+  };
+
+  const saveAccount = async (name) => {
+    const bank = accountForm.bank.trim();
+    const accountNumber = accountForm.accountNumber.trim();
+    const owner = accountForm.owner.trim();
+    const vatStatus = accountForm.vatStatus.trim();
+    if (!bank || !accountNumber || !owner || !vatStatus) return;
+    setAccountSaving(true);
+    try {
+      const res = await fetch(`${API}/wonbe/account/row`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ A: name, C: accountNumber, D: bank, E: owner, F: vatStatus }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "계좌 추가 실패");
+      setAccountSet((prev) => new Set([...prev, String(name).trim()]));
+      const bankCode = data.row?.B || "";
+      setMessage(
+        bankCode
+          ? `계좌 등록 완료: ${name} (은행코드 ${bankCode} 자동 적용됨)`
+          : `계좌 등록 완료: ${name} (은행코드 자동 매칭 실패 - 거래처계좌데이터에서 B열을 직접 입력하세요)`
+      );
+      closeAccountForm();
+    } catch (err) {
+      setMessage(err.message || "계좌 추가 실패");
+    } finally {
+      setAccountSaving(false);
+    }
+  };
 
   const saveAliases = (map) => {
     setAliasMap(map);
@@ -819,6 +938,7 @@ function JanggiTopComparison() {
       setDbRows(data.rows || []);
       setDbLoaded(true);
       setMessage("");
+      fetchAccountSet();
       localStorage.setItem("janggi_top_cache", JSON.stringify({
         dbDate: data.date,
         dbRows: data.rows || [],
@@ -879,6 +999,7 @@ function JanggiTopComparison() {
   const matchCount = topLoaded ? sortedDbRows.filter((r) => dbMatchesTop(r.거래처)).length : 0;
   const dbOnlyCount = topLoaded ? sortedDbRows.filter((r) => !dbMatchesTop(r.거래처)).length : 0;
   const topOnlyCount = topLoaded ? visibleTopShops.filter((s) => !topMatchesDb(s)).length : 0;
+  const accountMissingCount = accountLoaded ? sortedDbRows.filter((r) => !hasAccount(r.거래처)).length : 0;
 
   return (
     <div className={topStyles.root}>
@@ -907,6 +1028,7 @@ function JanggiTopComparison() {
             {topLoaded && <span className={topStyles.badgeGreen}>일치 {matchCount}건</span>}
             {topLoaded && dbOnlyCount > 0 && <span className={topStyles.badgeOrange}>DB만 {dbOnlyCount}건</span>}
             {topLoaded && topOnlyCount > 0 && <span className={topStyles.badgeBlue}>TOP만 {topOnlyCount}건</span>}
+            {accountLoaded && accountMissingCount > 0 && <span className={topStyles.badgeOrange}>계좌 미등록 {accountMissingCount}건</span>}
           </div>
         )}
       </div>
@@ -962,45 +1084,123 @@ function JanggiTopComparison() {
             <table className={topStyles.table}>
               <thead>
                 <tr>
-                  <th>거래처</th>
-                  <th style={{ textAlign: "right" }}>합산금액</th>
-                  <th>확인</th>
-                  {topLoaded && <th>TOP 비교</th>}
+                  {resizableTh("거래처", "거래처")}
+                  {resizableTh("합산금액", "합산금액", { textAlign: "right" })}
+                  {resizableTh("확인", "확인")}
+                  {resizableTh("계좌", "계좌")}
+                  {topLoaded && resizableTh("TOP비교", "TOP 비교")}
                 </tr>
               </thead>
               <tbody>
                 {sortedDbRows.map((r) => {
                   const checked = checkedRows.has(r.거래처);
                   const matched = topLoaded && dbMatchesTop(r.거래처);
+                  const accountOk = hasAccount(r.거래처);
+                  const isAddingAccount = addingAccountFor === r.거래처;
                   let rowClass = "";
                   if (checked) rowClass = topStyles.rowChecked;
                   else if (topLoaded) rowClass = matched ? topStyles.rowMatch : topStyles.rowDbOnly;
                   return (
-                    <tr key={r.거래처} className={rowClass}>
-                      <td style={{ textDecoration: checked ? "line-through" : undefined, opacity: checked ? 0.6 : 1 }}>{r.거래처}</td>
-                      <td style={{ textAlign: "right", fontWeight: 600 }}>{r.합산 != null ? Math.round(r.합산).toLocaleString() : ""}</td>
-                      <td>
-                        <button
-                          className={checked ? topStyles.confirmBtnDone : topStyles.confirmBtn}
-                          onClick={() => toggleCheck(r.거래처)}
+                    <React.Fragment key={r.거래처}>
+                      <tr className={rowClass}>
+                        <td
+                          style={resizedTdStyle("거래처", {
+                            textDecoration: checked ? "line-through" : undefined,
+                            opacity: checked ? 0.6 : 1,
+                          })}
+                          title={r.거래처}
                         >
-                          {checked ? "✓ 완료" : "확인완료"}
-                        </button>
-                      </td>
-                      {topLoaded && (
-                        <td>
-                          {matched ? "✓ 일치" : (
+                          {r.거래처}
+                        </td>
+                        <td style={resizedTdStyle("합산금액", { textAlign: "right", fontWeight: 600 })}>{r.합산 != null ? Math.round(r.합산).toLocaleString() : ""}</td>
+                        <td style={resizedTdStyle("확인")}>
+                          <button
+                            className={checked ? topStyles.confirmBtnDone : topStyles.confirmBtn}
+                            onClick={() => toggleCheck(r.거래처)}
+                          >
+                            {checked ? "✓ 완료" : "확인완료"}
+                          </button>
+                        </td>
+                        <td style={resizedTdStyle("계좌")}>
+                          {accountOk ? "✓ 등록됨" : (
                             <span style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-                              ⚠ DB만
-                              <button className={topStyles.confirmBtn} onClick={() => dismiss("db", r.거래처)}>숨기기</button>
+                              ⚠ 미등록
+                              <button
+                                className={topStyles.confirmBtn}
+                                onClick={() => (isAddingAccount ? closeAccountForm() : openAccountForm(r.거래처))}
+                              >
+                                {isAddingAccount ? "닫기" : "계좌추가"}
+                              </button>
                             </span>
                           )}
                         </td>
+                        {topLoaded && (
+                          <td style={resizedTdStyle("TOP비교")}>
+                            {matched ? "✓ 일치" : (
+                              <span style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                                ⚠ DB만
+                                <button className={topStyles.confirmBtn} onClick={() => dismiss("db", r.거래처)}>숨기기</button>
+                              </span>
+                            )}
+                          </td>
+                        )}
+                      </tr>
+                      {isAddingAccount && (
+                        <tr>
+                          <td colSpan={topLoaded ? 5 : 4} style={{ background: "var(--bg-secondary)", padding: "0.5rem 0.75rem" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                              <input
+                                className={topStyles.aliasInput}
+                                style={{ width: "110px" }}
+                                placeholder="은행"
+                                value={accountForm.bank}
+                                onChange={(e) => setAccountForm((p) => ({ ...p, bank: e.target.value }))}
+                                autoFocus
+                              />
+                              <input
+                                className={topStyles.aliasInput}
+                                style={{ width: "160px" }}
+                                placeholder="계좌번호"
+                                value={accountForm.accountNumber}
+                                onChange={(e) => setAccountForm((p) => ({ ...p, accountNumber: e.target.value }))}
+                              />
+                              <input
+                                className={topStyles.aliasInput}
+                                style={{ width: "110px" }}
+                                placeholder="예금주"
+                                value={accountForm.owner}
+                                onChange={(e) => setAccountForm((p) => ({ ...p, owner: e.target.value }))}
+                                onKeyDown={(e) => e.key === "Enter" && saveAccount(r.거래처)}
+                              />
+                              <select
+                                className={topStyles.aliasInput}
+                                style={{ width: "110px" }}
+                                value={accountForm.vatStatus}
+                                onChange={(e) => setAccountForm((p) => ({ ...p, vatStatus: e.target.value }))}
+                                aria-label="부가세 유무"
+                              >
+                                <option value="">부가세 유무</option>
+                                <option value="유">부가세 유</option>
+                                <option value="무">부가세 무</option>
+                              </select>
+                              <button
+                                className={`${styles.btn} ${styles.btnPrimary}`}
+                                onClick={() => saveAccount(r.거래처)}
+                                disabled={accountSaving || !accountForm.bank.trim() || !accountForm.accountNumber.trim() || !accountForm.owner.trim() || !accountForm.vatStatus.trim()}
+                              >
+                                {accountSaving ? "저장 중..." : "저장"}
+                              </button>
+                              <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={closeAccountForm} disabled={accountSaving}>
+                                취소
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
                       )}
-                    </tr>
+                    </React.Fragment>
                   );
                 })}
-                {!sortedDbRows.length && <tr><td colSpan={topLoaded ? 4 : 3} style={{ textAlign: "center", color: "var(--text-muted)", padding: "1rem" }}>데이터 없음</td></tr>}
+                {!sortedDbRows.length && <tr><td colSpan={topLoaded ? 5 : 4} style={{ textAlign: "center", color: "var(--text-muted)", padding: "1rem" }}>데이터 없음</td></tr>}
               </tbody>
             </table>
           </div>

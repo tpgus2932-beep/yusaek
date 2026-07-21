@@ -18,8 +18,10 @@ from fastapi.responses import FileResponse
 
 LLOGIS_LOGIN_URL  = "https://partner.alps.llogis.com/auth/login"
 LLOGIS_PID_BASE   = "https://pid.alps.llogis.com:18210"
-LLOGIS_PRINCIPAL  = "348867"
-LLOGIS_CREDENTIAL = "1q2w3e4r5t"
+LLOGIS_ACCOUNTS = {
+    "348867": {"principal": "348867", "credential": "1q2w3e4r5t", "cust_cd": "348867", "cust_nm": "주식회사 영신디앤아이"},
+    "331595": {"principal": "331595", "credential": "plan123!", "cust_cd": "331595", "cust_nm": "바브"},
+}
 
 ABLY_BASE     = "https://api.a-bly.com"
 ABLY_EMAIL    = "eostm1997@naver.com"
@@ -1899,11 +1901,11 @@ def build_returns_router(
 
         return {"ok": True, "item_sno": item_sno_int}
 
-    async def _llogis_login() -> str:
+    async def _llogis_login(principal: str, credential: str) -> str:
         async with httpx.AsyncClient(verify=False, timeout=15.0) as c:
             res = await c.post(
                 LLOGIS_LOGIN_URL,
-                json={"principal": LLOGIS_PRINCIPAL, "credential": LLOGIS_CREDENTIAL, "macAddress": "normal-browser"},
+                json={"principal": principal, "credential": credential, "macAddress": "normal-browser"},
             )
             res.raise_for_status()
         token = res.json().get("accessToken")
@@ -1915,12 +1917,16 @@ def build_returns_router(
     async def returns_lotte_from_api(
         date_fr: str = Body(...),
         date_to: str = Body(...),
+        account: str = Body("348867"),
         user: str = Depends(get_current_user),
     ):
-        token = await _llogis_login()
+        acc = LLOGIS_ACCOUNTS.get(account)
+        if not acc:
+            raise HTTPException(400, f"알 수 없는 롯데 API 계정: {account}")
+        token = await _llogis_login(acc["principal"], acc["credential"])
         filter_obj = {
             "srchPickYmd": "", "srchPickYmdStrt": date_fr, "srchPickYmdEnd": date_to,
-            "cboSrchCustSctCd": "10", "srchCustCd": "348867", "srchCustNm": "바브",
+            "cboSrchCustSctCd": "10", "srchCustCd": acc["cust_cd"], "srchCustNm": acc["cust_nm"],
             "cboSrchWkSctCd": "02", "jobCustCd": "", "tabIdx": "", "rowCount": "",
             "dispCount": "", "pickYmd": "", "colNm": "", "ustRtgSctCd": "",
             "fstmIstrYmd": "", "srchHdqrCd": "", "srchHdqrNm": "", "srchBrnCd": "",

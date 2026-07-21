@@ -170,12 +170,12 @@ def build_collaboration_tools_router(*, get_current_user, get_setting, set_setti
                 unmatched.append({"supplier": supplier, "total_amount": total_amount, "status": "미등록"})
                 continue
             result_rows.append({
-                "A": _normalize_text(ar.get("B", "")),
+                "A": _normalize_text(ar.get("D", "") or ar.get("B", "")),
                 "B": _normalize_text(ar.get("C", "")),
                 "C": total_amount,
                 "D": _normalize_text(ar.get("A", "")),
-                "E": _normalize_text(ar.get("D", "")),
-                "F": _normalize_text(ar.get("E", "")),
+                "E": _normalize_text(ar.get("E", "") or ar.get("D", "")),
+                "F": "",
                 "G": "",
                 "H": _normalize_text(ar.get("F", "")),
                 "status": "매칭",

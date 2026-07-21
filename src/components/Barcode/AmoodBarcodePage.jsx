@@ -506,8 +506,13 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
       if (!res.ok) throw new Error(data?.detail || "스캔 실패");
 
       if (toInvoice) {
-        if (data.ok === false && data.result === "NOT_FOUND") {
-          pushLog(`송장 없음: ${value}`);
+        if (data.ok === false) {
+          const reason = data.result === "NO_ORDER_KEY"
+            ? "주문번호 없음 (엑셀1 C열 확인)"
+            : data.result === "NO_ITEMS"
+            ? "주문번호는 찾았지만 엑셀2에 매칭되는 상품 없음"
+            : "송장 없음";
+          pushLog(`${reason}: ${value}`);
           setCurrentInvoice(null);
           setItems([]);
           setCurrentNext(null);

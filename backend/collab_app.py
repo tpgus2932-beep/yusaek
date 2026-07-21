@@ -58,6 +58,7 @@ from main import (
     _verify_password,
     _verify_pin,
 )
+from sdk.ably import AblyClient
 from services.easyadmin_product import (
     _content_disposition,
     _process_easyadmin_product_upload,
@@ -279,21 +280,16 @@ async def product_upload_from_api(
         all_goods = filtered
 
     if all_goods:
-        async def _fetch_detail(client, sno):
+        ably_client = AblyClient()
+        ably_client.set_token(token)
+
+        async def _fetch_detail(sno):
             try:
-                r = await client.get(
-                    f"{_ABLY_BASE}/seller/goods/{sno}/",
-                    headers=ably_headers,
-                )
-                r.raise_for_status()
-                return sno, r.json().get("goods", {})
+                return sno, await ably_client.get_goods_detail(sno)
             except Exception:
                 return sno, {}
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            results = await asyncio.gather(
-                *[_fetch_detail(client, g["sno"]) for g in all_goods]
-            )
+        results = await asyncio.gather(*[_fetch_detail(g["sno"]) for g in all_goods])
         detail_map = {sno: detail for sno, detail in results}
         for i, g in enumerate(all_goods):
             detail = detail_map.get(g["sno"])

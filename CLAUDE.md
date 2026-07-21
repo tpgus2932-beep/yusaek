@@ -105,7 +105,7 @@ Auth token is stored in `localStorage` as `token` and sent as `Authorization: Be
 
 ### External APIs
 
-See `API.md` for full reference. Key integrations:
+Key integrations:
 - **Ably** (`https://api.a-bly.com`) — e-commerce orders, exchanges, returns, stock. Two origin modes: `my.a-bly.com` (read) vs `seller-admin.a-bly.com` (write).
 - **Pastelco** (`https://api.pastelco.jp`) — Japanese marketplace orders.
 - **EZAdmin** (`https://ga80.ezadmin.co.kr`) — inventory management via `POST /function.htm` with `PHPSESSID` cookie. Session stored in `app_settings` table under key `ezadmin_phpsessid`.

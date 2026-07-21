@@ -40,7 +40,7 @@ _CANCEL_REASON = {
 }
 
 
-def build_return_shipping_router(*, get_current_user, get_db, get_setting, enqueue_sms=None, get_shared_db=None):
+def build_return_shipping_router(*, get_current_user, get_db, get_setting, enqueue_sms=None, get_shared_db=None, set_setting=None):
     router = APIRouter(prefix="/return-shipping")
 
     def _browser_time_flag(now: datetime) -> str:
@@ -649,6 +649,9 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
         phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
         if not phpsessid:
             return {"ok": False, "need_session": True}
+
+        if set_setting:
+            set_setting("daily_check_new_return_pickup", datetime.now(_KST).isoformat())
 
         end_date = datetime.now(_KST).strftime("%Y-%m-%d")
         start_date = (datetime.now(_KST) - timedelta(days=30)).strftime("%Y-%m-%d")

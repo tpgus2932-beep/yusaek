@@ -343,6 +343,7 @@ export default function ClientSchedulePage() {
   const [incomingFile, setIncomingFile] = useState(null);
   const [incomingEzLoading, setIncomingEzLoading] = useState(false);
   const [baseEzLoading, setBaseEzLoading] = useState(false);
+  const [pendingBaseRows, setPendingBaseRows] = useState(null);
   const [exportEzLoading, setExportEzLoading] = useState(false);
   const [baseEzStart, setBaseEzStart] = useState(() => formatInputDate(new Date(Date.now() - 90 * 86400000)));
   const [baseEzEnd, setBaseEzEnd] = useState(() => formatInputDate());
@@ -361,6 +362,7 @@ export default function ClientSchedulePage() {
   const [dbLoading, setDbLoading] = useState(false);
   const [dirtyRowIds, setDirtyRowIds] = useState(() => new Set());
   const [showAllExcluded, setShowAllExcluded] = useState(false);
+  const [messageDefaultsSaving, setMessageDefaultsSaving] = useState(false);
   const authHeaders = getAuthHeaders();
   const excludedClientInputRef = useRef(null);
   const saveTimerRef = useRef(null);
@@ -427,6 +429,38 @@ export default function ClientSchedulePage() {
   }, [filteredRows, sortColumn, sortDirection]);
 
   const baseDate = useMemo(() => coerceDate(baseDateText) || new Date(), [baseDateText]);
+
+  const fetchMessageDefaults = async () => {
+    try {
+      const res = await fetch(`${API}/client-schedule/message-defaults`, { headers: authHeaders });
+      if (handleUnauthorized(res)) return;
+      if (!res.ok) return;
+      const data = await res.json();
+      if (typeof data.prefix === 'string') setMsgPrefix(data.prefix);
+      if (typeof data.suffix === 'string') setMsgSuffix(data.suffix);
+    } catch {
+      // Default text loading is optional; keep built-in defaults if it fails.
+    }
+  };
+
+  const handleSaveMessageDefaults = async () => {
+    setMessageDefaultsSaving(true);
+    try {
+      const res = await fetch(`${API}/client-schedule/message-defaults`, {
+        method: 'PUT',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prefix: msgPrefix, suffix: msgSuffix }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.detail || '문자 기본문구 저장 실패');
+      setStatus('문자 시작/마무리 기본문구를 저장했습니다.');
+    } catch (err) {
+      setStatus(err.message || '문자 기본문구 저장 실패');
+    } finally {
+      setMessageDefaultsSaving(false);
+    }
+  };
 
   const saveExcludedClientsToDb = async (items) => {
     try {
@@ -527,7 +561,7 @@ export default function ClientSchedulePage() {
     }
   };
 
-  useEffect(() => { fetchDbRows(); fetchExcludedClients(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchDbRows(); fetchExcludedClients(); fetchMessageDefaults(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSaveToDb = async () => {
     if (!sheet2Rows.length) { setStatus('저장할 데이터가 없습니다.'); return; }
@@ -598,8 +632,72 @@ export default function ClientSchedulePage() {
     }
   };
 
+  const fetchIncomingRowsFromEzadmin = async () => {
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const res = await fetch(`${LOCAL_API_BASE}/barcode/incoming/raw-file-from-ezadmin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({}),
+      });
+      if (res.headers.get('content-type')?.includes('application/json')) {
+        const data = await res.json().catch(() => ({}));
+        if (data?.need_session) throw new Error('EZADMIN_SESSION_REQUIRED');
+        throw new Error(data?.error || 'EZAdmin 입고파일 불러오기 실패');
+      }
+      if (!res.ok) throw new Error(`EZAdmin 입고파일 불러오기 실패 (HTTP ${res.status})`);
+      const blob = await res.blob();
+      const rows = (await readWorkbook(new File([blob], 'incoming.xls', { type: 'application/vnd.ms-excel' }))).rows;
+      if (rows.slice(1).some((row) => Array.isArray(row) && row.some((cell) => toDisplayText(cell)))) {
+        return rows;
+      }
+      if (attempt < maxAttempts) {
+        setStatus(`입고파일이 비어 있어 재조회합니다. (${attempt}/${maxAttempts})`);
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      }
+    }
+    throw new Error('입고파일이 3회 연속 비어 있습니다. 잠시 후 재시도하세요.');
+  };
+
+  const retryIncomingAndRun = async (baseRows = pendingBaseRows) => {
+    if (!baseRows) return;
+    try {
+      setIncomingEzLoading(true);
+      setStatus('EZAdmin에서 오늘 입고파일 불러오는 중...');
+      const incomingRows = await fetchIncomingRowsFromEzadmin();
+      setPendingBaseRows(null);
+      await handleBaseProcess(baseRows, incomingRows, true);
+    } catch (err) {
+      if (err.message === 'EZADMIN_SESSION_REQUIRED') {
+        openEzadminModal(() => retryIncomingAndRun(baseRows));
+        return;
+      }
+      setPendingBaseRows(baseRows);
+      setStatus(`입고파일 불러오기 실패: ${err.message || ''} — 재시도 버튼을 눌러 이어서 진행하세요.`);
+    } finally {
+      setIncomingEzLoading(false);
+    }
+  };
+
   const handleBaseFromEzadmin = async () => {
     try {
+      setBaseEzLoading(true);
+      setStatus('EZAdmin에서 기준 데이터를 불러오는 중...');
+      const response = await fetch(`${LOCAL_API_BASE}/barcode/base-file-from-ezadmin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ start_date: baseEzStart, end_date: baseEzEnd }),
+      });
+      const responseData = await response.json().catch(() => ({}));
+      if (responseData?.need_session) { openEzadminModal(handleBaseFromEzadmin); return; }
+      if (!response.ok || !responseData?.ok || !Array.isArray(responseData?.rows)) {
+        setStatus(responseData?.error || 'EZAdmin 기준 데이터 불러오기 실패');
+        return;
+      }
+      setPendingBaseRows(responseData.rows);
+      await retryIncomingAndRun(responseData.rows);
+      return;
+
       setBaseEzLoading(true);
       setStatus('EZAdmin에서 기준 파일 불러오는 중...');
       const res = await fetch(`${LOCAL_API_BASE}/barcode/base-file-from-ezadmin`, {
@@ -670,15 +768,15 @@ export default function ClientSchedulePage() {
     }
   };
 
-  const handleBaseProcess = async () => {
-    if (!baseFile) {
+  const handleBaseProcess = async (ezadminBaseRows = null, ezadminIncomingRows = null, runAllAfterProcess = false) => {
+    if (!ezadminBaseRows && !baseFile) {
       setStatus('기준 파일을 먼저 선택하세요.');
       return;
     }
 
     setLoading(true);
     try {
-      const { rows } = await readWorkbook(baseFile);
+      const { rows } = ezadminBaseRows ? { rows: ezadminBaseRows } : await readWorkbook(baseFile);
       let processed = preprocessBaseSheet(rows);
 
       // 현재 테이블에 데이터가 있으면 그걸로 병합 (DB 저장 여부 무관하게 날짜 유지)
@@ -689,18 +787,28 @@ export default function ClientSchedulePage() {
         processed = mergeScheduleRows(processed, mergeSource, baseDate);
       }
 
-      // 입고 파일로 행 삭제
+      // 입고 파일로 행 삭제 (단, 기준파일 요청수량(G)·입고대기(H) 중 하나라도 10개 이상이면 보존)
       let removedCount = 0;
-      if (incomingFile) {
-        const { rows: inRows } = await readWorkbook(incomingFile);
+      if (ezadminIncomingRows || incomingFile) {
+        const inRows = ezadminIncomingRows || (await readWorkbook(incomingFile)).rows;
         const incomingKeys = readIncomingKeys(inRows);
         const before = processed.length;
-        processed = withIds(processed.filter((row) => !incomingKeys.has(toDisplayText(row.productCode))));
+        processed = withIds(processed.filter((row) => {
+          if (!incomingKeys.has(toDisplayText(row.productCode))) return true;
+          return toNumber(row.G) >= 10 || toNumber(row.H) >= 10;
+        }));
         removedCount = before - processed.length;
       }
 
-      setSheet2Rows(processed);
-      setSheet1Rows([HEADER_SHEET1]);
+      if (runAllAfterProcess) {
+        processed = processed.map((row) => ({ ...row, D: normalizeDValueForMerge(row.D, baseDate) }));
+        const result = buildSheet1AndSheet2(processed, msgPrefix, msgSuffix, excludedClients);
+        setSheet2Rows(result.sheet2Rows);
+        setSheet1Rows(result.sheet1Rows);
+      } else {
+        setSheet2Rows(processed);
+        setSheet1Rows([HEADER_SHEET1]);
+      }
       const mergeNote = mergeSource.length > 0 ? ` · ${mergeSourceLabel} ${mergeSource.length}행 병합` : ' · 병합 데이터 없음';
       const incomingNote = removedCount > 0 ? ` · 입고 삭제 ${removedCount}행` : '';
       setStatus(`가공 완료: ${processed.length}행${mergeNote}${incomingNote}`);
@@ -891,8 +999,34 @@ export default function ClientSchedulePage() {
       {/* ── 컨트롤 패널 ── */}
       <div className={styles.controlPanel}>
         <div className={styles.controlLeft}>
+          <div className={styles.ezadminAutoControls}>
+            <span className={styles.fieldLabel}>기준 조회 기간</span>
+            <input type="date" value={baseEzStart} onChange={(e) => setBaseEzStart(e.target.value)} />
+            <span>~</span>
+            <input type="date" value={baseEzEnd} onChange={(e) => setBaseEzEnd(e.target.value)} />
+            <button className={styles.primaryBtn} onClick={handleBaseFromEzadmin} disabled={baseEzLoading || incomingEzLoading || loading}>
+              <Sparkles size={14} /> {baseEzLoading || incomingEzLoading || loading ? 'EZAdmin 처리 중...' : 'EZAdmin 불러오기·자동 실행'}
+            </button>
+            {pendingBaseRows && (
+              <button className={styles.ghostBtn} onClick={() => retryIncomingAndRun()} disabled={incomingEzLoading}>
+                입고파일 재시도 후 계속 실행
+              </button>
+            )}
+            <span className={styles.btnDivider} />
+            <div className={styles.fileField}>
+              <span className={styles.fieldLabel}>일정 반영 <small>(상품메모)</small></span>
+              <button
+                className={styles.ghostBtn}
+                onClick={handleExportScheduleToEzadmin}
+                disabled={exportEzLoading || !sheet2Rows.length}
+                style={{ fontSize: '0.8rem' }}
+              >
+                {exportEzLoading ? '내보내는 중...' : 'EZAdmin 날짜 내보내기'}
+              </button>
+            </div>
+          </div>
           {/* 파일 선택 */}
-          <div className={styles.fileRow}>
+          <div className={styles.fileRow} style={{ display: 'none' }}>
             <div className={styles.fileField}>
               <span className={styles.fieldLabel}>기준 파일 <small>(당일 발주)</small></span>
               <label className={`${styles.fileInput} ${baseFile ? styles.fileSelected : ''}`}>
@@ -912,7 +1046,7 @@ export default function ClientSchedulePage() {
                   disabled={baseEzLoading}
                   style={{ fontSize: '0.8rem' }}
                 >
-                  {baseEzLoading ? '불러오는 중...' : 'EZAdmin 불러오기'}
+                  {baseEzLoading ? '불러오는 중...' : 'EZAdmin 불러오기·자동 실행'}
                 </button>
               </div>
             </div>
@@ -931,28 +1065,27 @@ export default function ClientSchedulePage() {
               >
                 {incomingEzLoading ? '불러오는 중...' : 'EZAdmin 불러오기'}
               </button>
-            </div>
-            <div className={styles.fileField}>
-              <span className={styles.fieldLabel}>일정 반영 <small>(상품메모)</small></span>
-              <button
-                className={styles.ghostBtn}
-                onClick={handleExportScheduleToEzadmin}
-                disabled={exportEzLoading || !sheet2Rows.length}
-                style={{ fontSize: '0.8rem' }}
-              >
-                {exportEzLoading ? '내보내는 중...' : 'EZAdmin 날짜 내보내기'}
-              </button>
+              {pendingBaseRows && (
+                <button
+                  className={styles.ghostBtn}
+                  onClick={() => retryIncomingAndRun()}
+                  disabled={incomingEzLoading}
+                  style={{ marginTop: '0.25rem', fontSize: '0.8rem' }}
+                >
+                  입고파일 재시도 후 계속 실행
+                </button>
+              )}
             </div>
           </div>
           {/* 액션 버튼 */}
           <div className={styles.btnRow}>
-            <button className={styles.primaryBtn} onClick={handleBaseProcess} disabled={loading || dbLoading}>
+            <button className={styles.primaryBtn} onClick={handleBaseProcess} disabled={loading || dbLoading} style={{ display: 'none' }}>
               <Sparkles size={14} /> 기준 가공 + 병합
             </button>
-            <button className={styles.ghostBtn} onClick={handleRunAll} disabled={loading}>
+            <button className={styles.ghostBtn} onClick={handleRunAll} disabled={loading} style={{ display: 'none' }}>
               <CalendarDays size={14} /> 통합 실행
             </button>
-            <button className={styles.ghostBtn} onClick={handleNormalizeDates} disabled={!sheet2Rows.length}>
+            <button className={styles.ghostBtn} onClick={handleNormalizeDates} disabled={!sheet2Rows.length} style={{ display: 'none' }}>
               <RefreshCw size={14} /> 날짜 정규화
             </button>
             <button className={styles.ghostBtn} onClick={handleDownload} disabled={loading}>
@@ -992,6 +1125,14 @@ export default function ClientSchedulePage() {
             <span className={styles.fieldLabel}>문자 마무리</span>
             <input value={msgSuffix} onChange={(e) => setMsgSuffix(e.target.value)} placeholder={DEFAULT_SUFFIX} />
           </div>
+          <button
+            type="button"
+            className={styles.defaultSaveBtn}
+            onClick={handleSaveMessageDefaults}
+            disabled={messageDefaultsSaving}
+          >
+            <Save size={14} /> {messageDefaultsSaving ? '저장 중...' : '문자 기본문구 저장'}
+          </button>
           <div className={styles.settingGroup}>
             <div className={styles.excludedHeader}>
               <span className={styles.fieldLabel}>

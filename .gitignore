@@ -56,6 +56,8 @@ __pycache__/
 
 # Local SQLite DB
 backend/app.db
+backend/app.db.backup-*
+backend/out.txt
 
 # PyInstaller build output
 /build/자동/

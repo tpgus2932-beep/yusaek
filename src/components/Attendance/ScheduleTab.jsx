@@ -7,6 +7,7 @@ const API = COLLAB_API_BASE;
 
 const DAY_NAMES = ["월", "화", "수", "목", "금"];
 const WEEKDAYS = [1, 2, 3, 4, 5];
+const WEEKLY_RECOMMENDATION_HOURS = 14.5;
 
 const KOREAN_HOLIDAYS = [
   { date: "2026-01-01", name: "신정" },
@@ -98,6 +99,31 @@ function formatHours(value) {
   return `${value.toFixed(1)}h`;
 }
 
+function formatRecordTime(timestamp) {
+  if (!timestamp) return "";
+  return new Intl.DateTimeFormat("ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZone: "Asia/Seoul",
+  }).format(new Date(timestamp));
+}
+
+function getKoreanDateString() {
+  return new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "Asia/Seoul",
+  }).format(new Date());
+}
+
+function getRecordHours(inRecord, outRecord) {
+  if (!inRecord?.timestamp || !outRecord?.timestamp) return 0;
+  const diff = new Date(outRecord.timestamp) - new Date(inRecord.timestamp);
+  return diff > 0 ? diff / 3600000 : 0;
+}
+
 function getHoliday(date) {
   return KOREAN_HOLIDAYS.find((holiday) => holiday.date === date) ?? null;
 }
@@ -142,6 +168,8 @@ export default function ScheduleTab({ pin, members }) {
   const [showFixedDateManager, setShowFixedDateManager] = useState(false);
   const [showFixedTimeManager, setShowFixedTimeManager] = useState(false);
   const [showCalendarView, setShowCalendarView] = useState(false);
+  const [showActualWorkTimes, setShowActualWorkTimes] = useState(false);
+  const [departureRecommendations, setDepartureRecommendations] = useState(null);
   const [selectedFixedMemberId, setSelectedFixedMemberId] = useState(null);
   const [editingFixedDays, setEditingFixedDays] = useState(null);
   const [selectedFixedTimeMemberId, setSelectedFixedTimeMemberId] = useState(null);
@@ -201,6 +229,30 @@ export default function ScheduleTab({ pin, members }) {
     }),
     [weekStart]
   );
+
+  const actualWorkMap = useMemo(() => {
+    const map = new Map();
+    weekActualRecords.forEach((record) => {
+      const key = `${record.date}__${record.name}`;
+      const current = map.get(key) || { date: record.date, name: record.name, inRecord: null, outRecord: null };
+      if (record.type === "출근" && !current.inRecord) current.inRecord = record;
+      if (record.type === "퇴근") current.outRecord = record;
+      map.set(key, current);
+    });
+    return map;
+  }, [weekActualRecords]);
+
+  const getActualWork = (member, date) => actualWorkMap.get(`${date}__${member.name}`) || null;
+
+  const formatActualWork = (actual) => {
+    if (!actual?.inRecord || !actual?.outRecord) return null;
+    const hours = getRecordHours(actual.inRecord, actual.outRecord);
+    if (hours <= 0) return null;
+    return {
+      hoursLabel: formatHours(hours),
+      timeRange: `${formatRecordTime(actual.inRecord.timestamp)}~${formatRecordTime(actual.outRecord.timestamp)}`,
+    };
+  };
 
   const getFixedRule = (memberId, weekday, date) => {
     const candidates = fixedRules.filter(
@@ -280,6 +332,69 @@ export default function ScheduleTab({ pin, members }) {
     activeShifts.filter((shift) => shift.date === date).length;
 
   const totalWeeklyHours = activeShifts.reduce((total, shift) => total + getHours(shift.startTime, shift.endTime), 0);
+
+  const actualWeeklyHours = (member) =>
+    weekDays.reduce((total, day) => {
+      const actual = getActualWork(member, day.date);
+      return total + getRecordHours(actual?.inRecord, actual?.outRecord);
+    }, 0);
+
+  const actualDailyHours = (date) =>
+    members.reduce((total, member) => {
+      const actual = getActualWork(member, date);
+      return total + getRecordHours(actual?.inRecord, actual?.outRecord);
+    }, 0);
+
+  const actualDailyWorkerCount = (date) =>
+    members.filter((member) => {
+      const actual = getActualWork(member, date);
+      return getRecordHours(actual?.inRecord, actual?.outRecord) > 0;
+    }).length;
+
+  const actualTotalWeeklyHours = members.reduce((total, member) => total + actualWeeklyHours(member), 0);
+
+  const checkDepartureTimes = () => {
+    const today = getKoreanDateString();
+    const todaySchedule = weekDays.find((day) => day.date === today);
+
+    if (!todaySchedule) {
+      setDepartureRecommendations([]);
+      return;
+    }
+
+    const recommendations = members.flatMap((member) => {
+      const scheduledDays = weekDays.filter((day) => {
+        const shift = getVisibleShift(member.id, day.weekday, day.date);
+        return shift?.status === "scheduled";
+      });
+
+      if (![2, 3].includes(scheduledDays.length)) return [];
+      if (scheduledDays.at(-1)?.date !== today) return [];
+
+      const todayActual = getActualWork(member, today);
+      if (!todayActual?.inRecord?.timestamp) return [];
+
+      const previousHours = weekDays
+        .filter((day) => day.date < today)
+        .reduce((total, day) => {
+          const actual = getActualWork(member, day.date);
+          return total + getRecordHours(actual?.inRecord, actual?.outRecord);
+        }, 0);
+      const remainingHours = Math.max(0, WEEKLY_RECOMMENDATION_HOURS - previousHours);
+      const recommendedAt = new Date(
+        new Date(todayActual.inRecord.timestamp).getTime() + remainingHours * 3600000
+      );
+      recommendedAt.setSeconds(0, 0);
+
+      return [{
+        memberId: member.id,
+        name: member.name,
+        departureTime: formatRecordTime(recommendedAt),
+      }];
+    });
+
+    setDepartureRecommendations(recommendations);
+  };
 
   const selectedFixedMember = members.find((m) => m.id === selectedFixedMemberId);
   const selectedFixedTimeMember = members.find((m) => m.id === selectedFixedTimeMemberId);
@@ -713,8 +828,33 @@ export default function ScheduleTab({ pin, members }) {
           >
             {showCalendarView ? "캘린더 닫기" : "캘린더 보기"}
           </button>
+          <button
+            className={showActualWorkTimes ? `${styles.modeButton} ${styles.active}` : styles.modeButton}
+            onClick={() => setShowActualWorkTimes((prev) => !prev)}
+          >
+            실제근무시간
+          </button>
+          <button onClick={checkDepartureTimes}>퇴근시간 확인</button>
         </div>
       </section>
+
+      {departureRecommendations && (
+        <section className={styles.departurePanel}>
+          <h2>퇴근시간 추천</h2>
+          {departureRecommendations.length > 0 ? (
+            <div className={styles.departureList}>
+              {departureRecommendations.map((recommendation) => (
+                <div className={styles.departureItem} key={recommendation.memberId}>
+                  <span>{recommendation.name}</span>
+                  <strong>{recommendation.departureTime}</strong>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className={styles.noDepartureRecommendation}>오늘 확인할 퇴근시간 추천이 없습니다.</p>
+          )}
+        </section>
+      )}
 
       {showFixedDateManager && (
         <section className={`${styles.employeePanel} ${styles.fixedDatePanel}`}>
@@ -929,17 +1069,19 @@ export default function ScheduleTab({ pin, members }) {
               const memo = getMemo(member.id, day.date);
               const isDayOff = shift?.status === "dayOff";
               const shiftHours = shift && !isDayOff ? getHours(shift.startTime, shift.endTime) : 0;
+              const actualWork = getActualWork(member, day.date);
+              const actualLabel = formatActualWork(actualWork);
               const isSelected = selected?.memberId === member.id && selected?.weekday === day.weekday && selected?.date === day.date;
 
               return (
                 <div
-                  className={`${styles.cell} ${styles.shift} ${shift ? styles.filled : ""} ${isDayOff ? styles.dayOff : ""} ${shift?.source === "override" ? styles.override : ""} ${isSelected ? styles.selected : ""}`}
+                  className={`${styles.cell} ${styles.shift} ${showActualWorkTimes ? styles.actualShift : ""} ${showActualWorkTimes ? (actualLabel ? styles.filled : "") : (shift ? styles.filled : "")} ${!showActualWorkTimes && isDayOff ? styles.dayOff : ""} ${!showActualWorkTimes && shift?.source === "override" ? styles.override : ""} ${!showActualWorkTimes && isSelected ? styles.selected : ""}`}
                   key={day.weekday}
                   role="button"
                   tabIndex={0}
-                  onClick={() => openCell(member.id, day.weekday, day.date, shift, false)}
-                  onDoubleClick={() => openCell(member.id, day.weekday, day.date, shift, true)}
-                  onKeyDown={(event) => { if (event.key === "Enter") openCell(member.id, day.weekday, day.date, shift, true); }}
+                  onClick={() => { if (!showActualWorkTimes) openCell(member.id, day.weekday, day.date, shift, false); }}
+                  onDoubleClick={() => { if (!showActualWorkTimes) openCell(member.id, day.weekday, day.date, shift, true); }}
+                  onKeyDown={(event) => { if (!showActualWorkTimes && event.key === "Enter") openCell(member.id, day.weekday, day.date, shift, true); }}
                 >
                   {memo && (
                     <button
@@ -950,15 +1092,23 @@ export default function ScheduleTab({ pin, members }) {
                       📝
                     </button>
                   )}
-                  {!shift && <span>+</span>}
-                  {shift && isDayOff && (
+                  {showActualWorkTimes && (
+                    actualLabel ? (
+                      <div className={styles.actualTimeBox}>
+                        <strong className={styles.actualHoursText}>{actualLabel.hoursLabel}</strong>
+                        <span className={styles.actualRangeText}>{actualLabel.timeRange}</span>
+                      </div>
+                    ) : <span className={styles.noActualTime}>-</span>
+                  )}
+                  {!showActualWorkTimes && !shift && <span>+</span>}
+                  {!showActualWorkTimes && shift && isDayOff && (
                     <>
                       <strong>{shift.source === "holiday" ? "공휴일" : "휴무"}</strong>
                       {shift.source === "holiday" && holiday && <em>{holiday.name}</em>}
                       {showTimes && <em>기존 {shift.startTime}-{shift.endTime}</em>}
                     </>
                   )}
-                  {shift && !isDayOff && (
+                  {!showActualWorkTimes && shift && !isDayOff && (
                     <>
                       <strong>{formatHours(shiftHours)}</strong>
                       {showTimes && <em>{shift.startTime}-{shift.endTime}</em>}
@@ -980,15 +1130,15 @@ export default function ScheduleTab({ pin, members }) {
         <div className={`${styles.row} ${styles.footer} ${styles.hoursFooter}`}>
           <div className={`${styles.cell} ${styles.name}`}>일 총 근무시간</div>
           {weekDays.map((day) => (
-            <div className={`${styles.cell} ${styles.total}`} key={day.weekday}>{formatHours(dailyHours(day.date))}</div>
+            <div className={`${styles.cell} ${styles.total}`} key={day.weekday}>{formatHours(showActualWorkTimes ? actualDailyHours(day.date) : dailyHours(day.date))}</div>
           ))}
-          <div className={`${styles.cell} ${styles.total}`}>{formatHours(totalWeeklyHours)}</div>
+          <div className={`${styles.cell} ${styles.total}`}>{formatHours(showActualWorkTimes ? actualTotalWeeklyHours : totalWeeklyHours)}</div>
         </div>
 
         <div className={`${styles.row} ${styles.footer} ${styles.peopleFooter}`}>
           <div className={`${styles.cell} ${styles.name}`}>출근 인원</div>
           {weekDays.map((day) => (
-            <div className={`${styles.cell} ${styles.total}`} key={day.weekday}>{dailyWorkerCount(day.date)}명</div>
+            <div className={`${styles.cell} ${styles.total}`} key={day.weekday}>{showActualWorkTimes ? actualDailyWorkerCount(day.date) : dailyWorkerCount(day.date)}명</div>
           ))}
           <div className={`${styles.cell} ${styles.total}`}>-</div>
         </div>

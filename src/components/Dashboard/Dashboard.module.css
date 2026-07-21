@@ -201,6 +201,81 @@
   color: var(--d-text-3);
 }
 
+.anomalyMissingMsg {
+  grid-column: 1 / -1;
+  color: #ef4444;
+}
+
+.anomalyRefreshBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.anomalyActionRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.38rem;
+}
+.anomalyActionRow .commentToggleBtn {
+  margin-top: 0;
+}
+
+.anomalyConfirmStatus {
+  font-size: 0.66rem;
+  color: var(--d-text-3);
+}
+
+.anomalyConfirmError {
+  color: #ef4444;
+}
+
+.anomalyReplyBlock {
+  width: 100%;
+  margin-top: 0.4rem;
+  padding: 0.45rem 0.65rem;
+  background: rgba(22, 163, 74, 0.08);
+  border: 1px solid rgba(22, 163, 74, 0.25);
+  border-radius: 6px;
+}
+
+.anomalyReplyBlockLabel {
+  display: block;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: #16a34a;
+  margin-bottom: 0.2rem;
+}
+
+.anomalyReplyBlockText {
+  font-size: 0.8rem;
+  color: var(--d-text-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.commentToggleBtn.anomalyMemoActive {
+  color: #3b82f6;
+  border-color: rgba(59, 130, 246, 0.35);
+}
+.commentToggleBtn.anomalyMemoActive:hover {
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.4);
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.spinning {
+  animation: spin 0.75s linear infinite;
+}
+
 /* ─── Resolved / Stats Grid ─── */
 .resolvedGrid {
   display: grid;

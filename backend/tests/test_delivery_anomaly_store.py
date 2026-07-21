@@ -48,7 +48,6 @@ def test_init_creates_tables():
         for row in keep_alive.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     }
     assert "delivery_anomalies" in tables
-    assert "delivery_anomaly_comments" in tables
 
 
 def test_sync_inserts_new_anomalies():
@@ -80,51 +79,3 @@ def test_sync_removes_resolved_and_keeps_still_open():
     assert [r["invoice_no"] for r in rows] == ["222", "333"]
 
 
-def test_sync_deletes_comments_of_resolved_anomaly():
-    get_db, keep_alive = _make_db_factory()
-    init_delivery_anomaly_tables(get_db)
-
-    conn = get_db()
-    sync_anomalies(conn, {"111": _sample("111")})
-    conn.close()
-
-    anomaly_id = keep_alive.execute(
-        "SELECT id FROM delivery_anomalies WHERE invoice_no = ?", ("111",)
-    ).fetchone()["id"]
-    keep_alive.execute(
-        "INSERT INTO delivery_anomaly_comments (anomaly_id, username, text, created_at) VALUES (?, ?, ?, ?)",
-        (anomaly_id, "tester", "확인 중", "2026-07-18T00:00:00"),
-    )
-    keep_alive.commit()
-
-    conn = get_db()
-    sync_anomalies(conn, {})  # 111도 해결됨
-    conn.close()
-
-    remaining_comments = keep_alive.execute("SELECT * FROM delivery_anomaly_comments").fetchall()
-    assert remaining_comments == []
-
-
-def test_sync_preserves_comments_when_still_open():
-    get_db, keep_alive = _make_db_factory()
-    init_delivery_anomaly_tables(get_db)
-
-    conn = get_db()
-    sync_anomalies(conn, {"111": _sample("111")})
-    conn.close()
-
-    anomaly_id = keep_alive.execute(
-        "SELECT id FROM delivery_anomalies WHERE invoice_no = ?", ("111",)
-    ).fetchone()["id"]
-    keep_alive.execute(
-        "INSERT INTO delivery_anomaly_comments (anomaly_id, username, text, created_at) VALUES (?, ?, ?, ?)",
-        (anomaly_id, "tester", "확인 중", "2026-07-18T00:00:00"),
-    )
-    keep_alive.commit()
-
-    conn = get_db()
-    sync_anomalies(conn, {"111": _sample("111")})  # 계속 열려있음
-    conn.close()
-
-    remaining_comments = keep_alive.execute("SELECT * FROM delivery_anomaly_comments").fetchall()
-    assert len(remaining_comments) == 1

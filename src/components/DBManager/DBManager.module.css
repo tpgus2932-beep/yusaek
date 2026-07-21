@@ -107,6 +107,40 @@
 }
 .searchInput:focus { border-color: var(--text-primary); }
 
+.searchBox {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.45rem 0 0.65rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md, 6px);
+  background: var(--bg-primary);
+  color: var(--text-muted);
+}
+
+.searchBox:focus-within { border-color: var(--text-primary); }
+
+.searchBox .searchInput {
+  width: 220px;
+  padding: 0.45rem 0;
+  border: 0;
+}
+
+.searchBox .searchInput:focus { border-color: transparent; }
+
+.searchClear {
+  display: grid;
+  place-items: center;
+  padding: 0.15rem;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.searchClear:hover { background: var(--bg-hover); color: var(--text-primary); }
+
 .btn {
   display: flex;
   align-items: center;
@@ -154,6 +188,17 @@
   font-size: 0.82rem;
   color: var(--text-muted);
   padding: 0.4rem 0;
+}
+
+.rawBlock {
+  margin-top: 0.5rem;
+  padding: 0.6rem;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 0.75rem;
+  overflow-x: auto;
+  max-height: 240px;
 }
 
 /* ── 테이블 ── */

@@ -119,7 +119,12 @@ export default function IchaeTable() {
   const handleCopyExcel = async () => {
     if (!rows.length) return;
     const COPY_COLS = ["A", "B", "C", "D", "E", "F"];
-    const tsv = rows
+    const copyRows = rows.filter((r) => Number(r.C) !== 0);
+    if (!copyRows.length) {
+      setMessage("입금금액이 0원이 아닌 행이 없습니다.");
+      return;
+    }
+    const tsv = copyRows
       .map((r) => COPY_COLS.map((col) => {
         const v = r[col];
         return v == null ? "" : String(v);
@@ -136,7 +141,8 @@ export default function IchaeTable() {
         document.execCommand("copy");
         ta.remove();
       }
-      setMessage(`${rows.length}행 복사됨 — 엑셀에 붙여넣기 하세요`);
+      const skipped = rows.length - copyRows.length;
+      setMessage(`${copyRows.length}행 복사됨${skipped ? ` (0원 ${skipped}행 제외)` : ""} — 엑셀에 붙여넣기 하세요`);
     } catch {
       setMessage("클립보드 복사 실패 (브라우저 권한 확인)");
     }

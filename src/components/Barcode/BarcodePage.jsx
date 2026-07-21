@@ -80,10 +80,30 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [ezadminMsg, setEzadminMsg] = useState("");
   const [ezadminOrdersLoading, setEzadminOrdersLoading] = useState(false);
   const [ezadminOrdersMsg, setEzadminOrdersMsg] = useState("");
+  const [ezadminOrdersTiming, setEzadminOrdersTiming] = useState(null);
   const [defectEzadminLoading, setDefectEzadminLoading] = useState(false);
   const [defectEzadminMsg, setDefectEzadminMsg] = useState("");
   const { openModal: openEzadminModal } = useEzadminSession();
   const soundsRef = useRef(null);
+
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [invoiceBulkMode, setInvoiceBulkMode] = useState(false);
+  const [invoiceStockOutEnabled, setInvoiceStockOutEnabled] = useState(true);
+  const [invoiceStockOutMemo, setInvoiceStockOutMemo] = useState("");
+  const [invoiceNoInput, setInvoiceNoInput] = useState("");
+  const [invoicePreview, setInvoicePreview] = useState(null);
+  const [invoicePreviewLoading, setInvoicePreviewLoading] = useState(false);
+  const [invoicePreviewError, setInvoicePreviewError] = useState("");
+  const [invoiceSteps, setInvoiceSteps] = useState([]);
+  const [invoiceExecuting, setInvoiceExecuting] = useState(false);
+  const [invoiceBulkInput, setInvoiceBulkInput] = useState("");
+  const [invoiceBulkResults, setInvoiceBulkResults] = useState([]);
+  const [invoiceBulkRunning, setInvoiceBulkRunning] = useState(false);
+  const getInvoiceStepLabels = (includeStockOut) => (
+    includeStockOut
+      ? ["거래취소 · 송장번호 삭제", "재고 출고처리", "에이블리 발송관리 롤백"]
+      : ["거래취소 · 송장번호 삭제", "에이블리 발송관리 롤백"]
+  );
 
   const pushLog = (msg) => setLog((prev) => [msg, ...prev]);
 
@@ -205,8 +225,10 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   };
 
   const handleUploadFromEzadminOrders = async () => {
+    const startedAt = performance.now();
     try {
       setEzadminOrdersLoading(true); setEzadminOrdersMsg("EZAdmin에서 주문 불러오는 중...");
+      setEzadminOrdersTiming(null);
       setUploadMsg(""); setCount(null); setCodesTotal(null);
       const res = await fetch(`${API}/barcode/upload-from-ezadmin-orders`, {
         method: "POST",
@@ -225,7 +247,15 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
         setEzadminOrdersMsg(msg);
         return;
       }
-      setEzadminOrdersMsg(`완료 (${data.date} · 송장 ${data.invoices} · 코드 ${data.codes_total})`);
+      const timing = data.timings || {
+        total_ms: Math.round(performance.now() - startedAt),
+        fallback: true,
+      };
+      const timingText = timing.fallback
+        ? `전체 요청 ${(timing.total_ms / 1000).toFixed(2)}초`
+        : `응답 ${(timing.api_ms / 1000).toFixed(2)}초 · 가공 ${(timing.processing_ms / 1000).toFixed(2)}초 · 총 ${(timing.total_ms / 1000).toFixed(2)}초`;
+      setEzadminOrdersMsg(`완료 (${data.date} · 송장 ${data.invoices} · 코드 ${data.codes_total}) · ${timingText}`);
+      setEzadminOrdersTiming(timing);
       setCount(data.invoices ?? null); setCodesTotal(data.codes_total ?? null);
       setCurrentInvoice(null); setInvoiceDone(false);
       setItems([]); setDefectRecentCodes([]); setScanText("");
@@ -603,38 +633,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     }
   };
 
-  const handleDefectXlsDownload = async () => {
-    if (defectList.length === 0) {
-      alert("다운로드할 불량 목록이 없습니다.");
-      return;
-    }
-    try {
-      const res = await fetch(`${API}/barcode/defect/export-xls`, { headers: getAuthHeaders() });
-      if (handleUnauthorized(res)) return;
-      if (!res.ok) {
-        let message = "xls 다운로드 실패";
-        try { const data = await res.json(); message = data?.detail || message; }
-        catch { const text = await res.text(); if (text) message = text; }
-        throw new Error(message);
-      }
-      const blob = await res.blob();
-      const fallback = `defects_work_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}.xls`;
-      const filename = getDownloadFilename(res, fallback);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-      pushLog(`불량 xls 다운로드 완료: ${filename}`);
-    } catch (err) {
-      alert(err.message || "xls 다운로드 실패");
-      pushLog(`불량 xls 다운로드 실패: ${err.message || ""}`.trim());
-    }
-  };
-
   const handleOrdersXlsDownload = async () => {
     try {
       const res = await fetch(`${API}/barcode/orders/export-xls`, { headers: getAuthHeaders() });
@@ -737,6 +735,40 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     }
   };
 
+  const handleDefectPurchaseManager = async () => {
+    if (defectList.length === 0) {
+      alert("보낼 불량 목록이 없습니다.");
+      return;
+    }
+    try {
+      const res = await fetch(`${API}/barcode/defect/purchase-manager-handoff`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "매입관리 데이터 변환에 실패했습니다.");
+      if (!(data.rows || []).length) {
+        throw new Error(`원가베이스유에서 일치하는 상품코드를 찾지 못했습니다.${data.unmatched_codes?.length ? ` (${data.unmatched_codes.join(", ")})` : ""}`);
+      }
+
+      localStorage.setItem("activeTab", "noye-kimsungil");
+      localStorage.setItem("noye-kimsungil-active-tab", "purchase");
+      localStorage.setItem(
+        "noye-kimsungil-purchase-handoff",
+        JSON.stringify({
+          rows: data.rows,
+          unmatched_codes: data.unmatched_codes || [],
+          created_at: Date.now(),
+        })
+      );
+      window.location.reload();
+    } catch (err) {
+      alert(err.message || "매입관리 전송에 실패했습니다.");
+      pushLog(`매입관리 전송 실패: ${err.message || ""}`.trim());
+    }
+  };
+
   const handleOchuulMinus = async () => {
     if (defectList.length === 0) { alert("불량 목록이 없습니다."); return; }
     const total = getDefectTotalCount();
@@ -759,6 +791,171 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     } finally {
       setOchuulLoading(false);
     }
+  };
+
+  const invoicePostJson = async (url, body) => {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      body: JSON.stringify(body),
+    });
+    if (handleUnauthorized(res)) throw Object.assign(new Error("인증 만료"), { silent: true });
+    const data = await res.json().catch(() => ({}));
+    if (data?.need_session) throw Object.assign(new Error("이지어드민 세션 필요"), { needSession: true });
+    if (!res.ok || data?.ok === false) throw new Error(data?.detail || "요청 실패");
+    return data;
+  };
+
+  const fetchInvoicePreview = async (invoiceNo) => {
+    const data = await invoicePostJson(`${API}/barcode/invoice/preview`, { invoice_no: invoiceNo });
+    if (!data.ezadmin_found || !data.pack) throw new Error("이지어드민 주문을 찾지 못했습니다.");
+    if (!data.ably_found || !(data.products || []).length) throw new Error("에이블리 주문상품 정보를 찾지 못했습니다.");
+    return data;
+  };
+
+  // 조회(preview) 이후: 거래취소·송장삭제 → (선택) 재고출고 → 에이블리 롤백
+  const runInvoicePipeline = async (preview, includeStockOut, stockOutMemo, onStep) => {
+    onStep?.(0, "running");
+    await invoicePostJson(`${API}/barcode/invoice/cancel`, { pack: preview.pack });
+    onStep?.(0, "done");
+
+    let idx = 1;
+    if (includeStockOut) {
+      onStep?.(idx, "running");
+      const stockData = await invoicePostJson(`${API}/barcode/invoice/stock-out`, {
+        products: preview.products,
+        memo: stockOutMemo,
+      });
+      const stockOk = stockData.results?.every((r) => r.ok) ?? true;
+      onStep?.(idx, stockOk ? "done" : "error", stockOk ? undefined : "일부 상품 출고 실패");
+      if (!stockOk) throw new Error("일부 상품 재고 출고처리에 실패했습니다.");
+      idx += 1;
+    }
+
+    onStep?.(idx, "running");
+    await invoicePostJson(`${API}/barcode/invoice/rollback`, { sno_list: preview.sno_list });
+    onStep?.(idx, "done");
+  };
+
+  const openInvoiceDeleteModal = () => {
+    setInvoiceBulkMode(false);
+    setInvoiceStockOutEnabled(true);
+    setInvoiceStockOutMemo("");
+    setInvoiceNoInput("");
+    setInvoicePreview(null);
+    setInvoicePreviewError("");
+    setInvoiceSteps([]);
+    setInvoiceExecuting(false);
+    setInvoiceBulkInput("");
+    setInvoiceBulkResults([]);
+    setInvoiceBulkRunning(false);
+    setShowInvoiceModal(true);
+  };
+
+  const handleInvoicePreview = async () => {
+    const invoiceNo = invoiceNoInput.trim();
+    if (!invoiceNo) { setInvoicePreviewError("송장번호를 입력하세요."); return; }
+    setInvoicePreviewLoading(true);
+    setInvoicePreviewError("");
+    setInvoicePreview(null);
+    setInvoiceSteps([]);
+    try {
+      const res = await fetch(`${API}/barcode/invoice/preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ invoice_no: invoiceNo }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) { openEzadminModal(handleInvoicePreview); return; }
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "조회 실패");
+      setInvoicePreview(data);
+    } catch (err) {
+      setInvoicePreviewError(err.message || "조회 실패");
+    } finally {
+      setInvoicePreviewLoading(false);
+    }
+  };
+
+  const handleInvoiceExecute = async () => {
+    if (!invoicePreview) return;
+    if (!window.confirm(
+      `송장번호 ${invoicePreview.invoice_no}를 삭제${invoiceStockOutEnabled ? "하고 재고를 출고처리" : ""}한 뒤 발송상태를 되돌리겠습니까?`
+    )) return;
+
+    setInvoiceExecuting(true);
+    const labels = getInvoiceStepLabels(invoiceStockOutEnabled);
+    setInvoiceSteps(labels.map((label) => ({ label, status: "pending" })));
+
+    const setStepStatus = (idx, status, detail) => {
+      setInvoiceSteps((prev) => prev.map((s, i) => (i === idx ? { ...s, status, detail } : s)));
+    };
+
+    let failedIdx = -1;
+    try {
+      await runInvoicePipeline(invoicePreview, invoiceStockOutEnabled, invoiceStockOutMemo, (idx, status, detail) => {
+        failedIdx = idx;
+        setStepStatus(idx, status, detail);
+      });
+      pushLog(`송장삭제 완료: ${invoicePreview.invoice_no}`);
+    } catch (err) {
+      if (err.needSession) {
+        openEzadminModal(handleInvoiceExecute);
+      } else if (!err.silent) {
+        alert(err.message || "송장삭제 처리 중 오류가 발생했습니다.");
+        pushLog(`송장삭제 실패 (${invoicePreview.invoice_no}): ${err.message || ""}`.trim());
+      }
+      if (failedIdx >= 0) setStepStatus(failedIdx, "error", err.message);
+    } finally {
+      setInvoiceExecuting(false);
+    }
+  };
+
+  const parseBulkInvoiceNos = (text) => {
+    const seen = new Set();
+    return String(text || "")
+      .split(/[\s,]+/)
+      .map((v) => v.trim())
+      .filter((v) => v && !seen.has(v) && seen.add(v));
+  };
+
+  const handleInvoiceBulkExecute = async () => {
+    const invoiceNos = parseBulkInvoiceNos(invoiceBulkInput);
+    if (!invoiceNos.length) { setInvoicePreviewError("송장번호를 한 줄에 하나씩(또는 쉼표로 구분) 입력하세요."); return; }
+    if (!window.confirm(
+      `송장번호 ${invoiceNos.length}건을 일괄 삭제${invoiceStockOutEnabled ? "(재고 출고처리 포함)" : "(재고 출고처리 제외)"}하시겠습니까?`
+    )) return;
+
+    setInvoicePreviewError("");
+    setInvoiceBulkRunning(true);
+    const localResults = invoiceNos.map((no) => ({ invoice_no: no, status: "pending" }));
+    setInvoiceBulkResults(localResults);
+
+    const setResult = (invoiceNo, status, detail) => {
+      const target = localResults.find((r) => r.invoice_no === invoiceNo);
+      if (target) { target.status = status; target.detail = detail; }
+      setInvoiceBulkResults([...localResults]);
+    };
+
+    for (const invoiceNo of invoiceNos) {
+      setResult(invoiceNo, "running");
+      try {
+        const preview = await fetchInvoicePreview(invoiceNo);
+        await runInvoicePipeline(preview, invoiceStockOutEnabled, invoiceStockOutMemo, () => {});
+        setResult(invoiceNo, "done");
+      } catch (err) {
+        if (err.needSession) {
+          setResult(invoiceNo, "error", "이지어드민 세션 필요");
+          openEzadminModal(null);
+          break;
+        }
+        setResult(invoiceNo, "error", err.message);
+      }
+    }
+
+    const doneCount = localResults.filter((r) => r.status === "done").length;
+    pushLog(`송장 일괄삭제 완료: ${doneCount}/${invoiceNos.length}건 성공`);
+    setInvoiceBulkRunning(false);
   };
 
   const openDefectBaseEditor = async () => {
@@ -807,7 +1004,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
             </div>
             <div className={styles.uploadRow}>
               <label className={styles.fileInput} style={{ flex: 1, justifyContent: 'flex-start' }}>
-                <input type="file" accept=".xls,.xlsx" onChange={(e) => { setFile(e.target.files?.[0] ?? null); setUploadMsg(""); setEzadminOrdersMsg(""); }} />
+                <input type="file" accept=".xls,.xlsx" onChange={(e) => { setFile(e.target.files?.[0] ?? null); setUploadMsg(""); setEzadminOrdersMsg(""); setEzadminOrdersTiming(null); }} />
                 {file ? file.name : "파일 선택"}
               </label>
               <button className={styles.primaryBtn} onClick={handleUpload} disabled={loadingUpload || ezadminOrdersLoading || !file}>
@@ -881,6 +1078,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
             <h3 className={styles.cardTitle}>스캔</h3>
             <div className={styles.headerActions}>
               <button className={styles.secondaryBtn} onClick={refreshStatus} title="새로고침">↺</button>
+              <button className={styles.secondaryBtn} onClick={openInvoiceDeleteModal}>송장삭제</button>
               <button className={styles.secondaryBtn} onClick={handleCompletedXlsDownload}>
                 완료목록 다운로드
               </button>
@@ -1027,15 +1225,194 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
 
       {/* 불량 리스트 모달 */}
+      {showInvoiceModal && (
+        <div className={styles.modalOverlay} onClick={() => { if (!invoiceExecuting && !invoiceBulkRunning) setShowInvoiceModal(false); }}>
+          <div className={styles.modal} style={{ width: "min(520px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <h4 className={styles.modalTitle}>송장삭제</h4>
+              <div className={styles.modalActions}>
+                <button className={styles.secondaryBtn} onClick={() => setShowInvoiceModal(false)} disabled={invoiceExecuting || invoiceBulkRunning}>닫기</button>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "0.6rem", fontSize: "0.85rem" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: "0.3rem", cursor: "pointer" }}>
+                <input
+                  type="radio"
+                  checked={!invoiceBulkMode}
+                  onChange={() => setInvoiceBulkMode(false)}
+                  disabled={invoiceExecuting || invoiceBulkRunning}
+                />
+                단일
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: "0.3rem", cursor: "pointer" }}>
+                <input
+                  type="radio"
+                  checked={invoiceBulkMode}
+                  onChange={() => setInvoiceBulkMode(true)}
+                  disabled={invoiceExecuting || invoiceBulkRunning}
+                />
+                일괄삭제
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: "0.3rem", cursor: "pointer", marginLeft: "auto" }}>
+                <input
+                  type="checkbox"
+                  checked={invoiceStockOutEnabled}
+                  onChange={(e) => setInvoiceStockOutEnabled(e.target.checked)}
+                  disabled={invoiceExecuting || invoiceBulkRunning}
+                />
+                재고 출고처리 포함
+              </label>
+            </div>
+
+            {invoiceStockOutEnabled && (
+              <input
+                value={invoiceStockOutMemo}
+                onChange={(e) => setInvoiceStockOutMemo(e.target.value)}
+                placeholder="재고 출고 메모 (선택)"
+                className={styles.searchInput}
+                disabled={invoiceExecuting || invoiceBulkRunning}
+                style={{ width: "100%", marginBottom: "0.6rem", boxSizing: "border-box" }}
+              />
+            )}
+            {ezadminOrdersTiming && (
+              <div className={styles.statusMsg} style={{ borderColor: "rgba(100,116,139,0.3)", backgroundColor: "rgba(100,116,139,0.06)", fontSize: "0.8rem" }}>
+                {ezadminOrdersTiming.fallback
+                  ? `전체 요청 ${(ezadminOrdersTiming.total_ms / 1000).toFixed(2)}초 (서버 세부 측정값 없음)`
+                  : `요청 응답 ${(ezadminOrdersTiming.api_ms / 1000).toFixed(2)}초 · 내부 가공 ${(ezadminOrdersTiming.processing_ms / 1000).toFixed(2)}초 · 총 ${(ezadminOrdersTiming.total_ms / 1000).toFixed(2)}초`}
+              </div>
+            )}
+
+            {!invoiceBulkMode ? (
+              <>
+                <div className={styles.uploadRow}>
+                  <input
+                    value={invoiceNoInput}
+                    onChange={(e) => setInvoiceNoInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleInvoicePreview(); }}
+                    placeholder="송장번호 입력"
+                    className={styles.searchInput}
+                    disabled={invoicePreviewLoading || invoiceExecuting}
+                  />
+                  <button className={styles.primaryBtn} onClick={handleInvoicePreview} disabled={invoicePreviewLoading || invoiceExecuting}>
+                    {invoicePreviewLoading ? "조회 중..." : "조회"}
+                  </button>
+                </div>
+
+                {invoicePreviewError && (
+                  <div className={styles.statusMsg} style={{ color: "#dc3545" }}>{invoicePreviewError}</div>
+                )}
+
+                {invoicePreview && (
+                  <div style={{ marginTop: "0.75rem", fontSize: "0.85rem" }}>
+                    <div style={{ marginBottom: "0.5rem" }}>송장번호 : <strong>{invoicePreview.invoice_no}</strong></div>
+                    <div>{invoicePreview.ably_found ? "✔" : "✘"} 에이블리 주문 발견</div>
+                    <div>{invoicePreview.ezadmin_found ? "✔" : "✘"} 이지어드민 주문 발견</div>
+
+                    <div style={{ marginTop: "0.75rem", fontWeight: 600 }}>상품</div>
+                    {(invoicePreview.products || []).length === 0 ? (
+                      <div style={{ color: "#888" }}>상품 정보를 찾지 못했습니다.</div>
+                    ) : (
+                      invoicePreview.products.map((p) => (
+                        <div key={p.product_id} style={{ padding: "0.35rem 0", borderBottom: "1px solid rgba(0,0,0,0.08)" }}>
+                          <div>- {p.product_id}{p.name ? ` (${p.name})` : ""}</div>
+                          <div style={{ color: "#666" }}>
+                            {[p.color, p.size].filter(Boolean).join(" / ") || "옵션 정보 없음"} · 수량 {p.qty}
+                          </div>
+                        </div>
+                      ))
+                    )}
+
+                    {invoiceSteps.length > 0 && (
+                      <div style={{ marginTop: "0.75rem" }}>
+                        <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>진행 상태</div>
+                        {invoiceSteps.map((s) => (
+                          <div key={s.label} style={{ display: "flex", alignItems: "center", gap: "0.35rem", padding: "0.15rem 0" }}>
+                            <span>
+                              {s.status === "done" ? "✔" : s.status === "error" ? "✘" : s.status === "running" ? "⏳" : "▫"}
+                            </span>
+                            <span>{s.label}</span>
+                            {s.status === "error" && s.detail && (
+                              <span style={{ color: "#dc3545", fontSize: "0.78rem" }}>({s.detail})</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className={styles.modalActions} style={{ marginTop: "1rem" }}>
+                      <button className={styles.secondaryBtn} onClick={() => setShowInvoiceModal(false)} disabled={invoiceExecuting}>
+                        취소
+                      </button>
+                      <button
+                        className={styles.primaryBtn}
+                        onClick={handleInvoiceExecute}
+                        disabled={invoiceExecuting || !invoicePreview.ably_found || !(invoicePreview.products || []).length}
+                      >
+                        {invoiceExecuting ? "처리 중..." : "실행"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <textarea
+                  value={invoiceBulkInput}
+                  onChange={(e) => setInvoiceBulkInput(e.target.value)}
+                  placeholder={"송장번호를 한 줄에 하나씩(또는 쉼표로 구분) 입력"}
+                  rows={6}
+                  style={{ width: "100%", fontSize: "0.85rem", padding: "0.5rem", boxSizing: "border-box" }}
+                  disabled={invoiceBulkRunning}
+                />
+
+                {invoicePreviewError && (
+                  <div className={styles.statusMsg} style={{ color: "#dc3545" }}>{invoicePreviewError}</div>
+                )}
+
+                {invoiceBulkResults.length > 0 && (
+                  <div style={{ marginTop: "0.75rem", fontSize: "0.85rem", maxHeight: "260px", overflowY: "auto" }}>
+                    {invoiceBulkResults.map((r) => (
+                      <div key={r.invoice_no} style={{ display: "flex", alignItems: "center", gap: "0.35rem", padding: "0.15rem 0" }}>
+                        <span>
+                          {r.status === "done" ? "✔" : r.status === "error" ? "✘" : r.status === "running" ? "⏳" : "▫"}
+                        </span>
+                        <span>{r.invoice_no}</span>
+                        {r.status === "error" && r.detail && (
+                          <span style={{ color: "#dc3545", fontSize: "0.78rem" }}>({r.detail})</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className={styles.modalActions} style={{ marginTop: "1rem" }}>
+                  <button className={styles.secondaryBtn} onClick={() => setShowInvoiceModal(false)} disabled={invoiceBulkRunning}>
+                    취소
+                  </button>
+                  <button
+                    className={styles.primaryBtn}
+                    onClick={handleInvoiceBulkExecute}
+                    disabled={invoiceBulkRunning || !parseBulkInvoiceNos(invoiceBulkInput).length}
+                  >
+                    {invoiceBulkRunning ? "처리 중..." : "일괄실행"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {showDefectList && (
         <div className={styles.modalOverlay} onClick={() => setShowDefectList(false)}>
           <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHeader}>
               <h4 className={styles.modalTitle}>불량 리스트</h4>
               <div className={styles.modalActions}>
-                <button className={styles.secondaryBtn} onClick={handleDefectXlsDownload}>xls 다운로드</button>
                 <button className={styles.secondaryBtn} onClick={handleDefectExport}>내보내기</button>
                 <button className={styles.secondaryBtn} onClick={handleDefectPrint}>불량출력</button>
+                <button className={styles.secondaryBtn} onClick={handleDefectPurchaseManager} disabled={defectList.length === 0}>매입관리</button>
                 <button className={styles.secondaryBtn} onClick={handleDefectExportToEzadmin} disabled={defectEzadminLoading || defectList.length === 0}>
                   {defectEzadminLoading ? "처리 중..." : "출고처리"}
                 </button>
@@ -1055,6 +1432,18 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                   오출내리기 완료: {ochuulResult.matched}건 차감
                   {ochuulResult.message ? ` — ${ochuulResult.message}` : ""}
                 </strong>
+                {ochuulResult.missing_option_codes?.length > 0 && (
+                  <div style={{ marginTop: "0.5rem", color: "#b45309", fontSize: "0.85rem" }}>
+                    <strong>원가베이스 옵션번호(K열) 없음 {ochuulResult.missing_option_codes.length}건</strong>
+                    <div>{ochuulResult.missing_option_codes.join(", ")}</div>
+                  </div>
+                )}
+                {ochuulResult.ably_missing_codes?.length > 0 && (
+                  <div style={{ marginTop: "0.5rem", color: "#b45309", fontSize: "0.85rem" }}>
+                    <strong>에이블리 오늘출발 옵션 목록에 없음 {ochuulResult.ably_missing_codes.length}건</strong>
+                    <div>{ochuulResult.ably_missing_codes.join(", ")}</div>
+                  </div>
+                )}
                 {ochuulResult.details?.length > 0 && (
                   <ul style={{ margin: "0.5rem 0 0", paddingLeft: "1rem", fontSize: "0.85rem" }}>
                     {ochuulResult.details.map((d, i) => (
