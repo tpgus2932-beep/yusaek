@@ -2,6 +2,12 @@ import React, { useState } from 'react';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import styles from './ClientCancelSoldOutPage.module.css';
 
+const FAILED_STAGE_LABELS = {
+  search: '주문 검색',
+  order_lookup: '주문 상세 조회',
+  cancel: '주문 취소',
+};
+
 const ClientCancelSoldOutPage = () => {
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -263,40 +269,65 @@ const ClientCancelSoldOutPage = () => {
             </p>
           )}
           {result.pending_counts?.length > 0 && (
-            <ul className={styles.resultList}>
-              {result.pending_counts.map((pc) => (
-                <li key={pc.product_id} className={styles.resultItem}>
-                  <span>{pc.product_id}</span>
-                  <span>
-                    {pc.remaining === null
-                      ? `접수 조회 실패${pc.error ? `: ${pc.error}` : ''}`
-                      : `남은 접수 ${pc.remaining}건`}
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <>
+              <h4 className={styles.subTitle}>상품코드별 잔여 접수</h4>
+              <ul className={styles.resultList}>
+                {result.pending_counts.map((pc) => (
+                  <li key={pc.product_id} className={styles.resultItem}>
+                    <span>{pc.product_id}</span>
+                    <span>
+                      {pc.remaining === null
+                        ? `접수 조회 실패${pc.error ? `: ${pc.error}` : ''}`
+                        : `남은 접수 ${pc.remaining}건`}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
           {result.cancelled_orders.length > 0 && (
-            <ul className={styles.resultList}>
-              {result.cancelled_orders.map((order) => (
-                <li key={order.order_sno} className={styles.resultItem}>
-                  <span>주문 {order.order_sno}</span>
-                  <span>{order.product_names.join(', ')}</span>
-                  <span>{order.sms_sent ? '문자 발송됨' : `문자 발송 실패${order.sms_error ? `: ${order.sms_error}` : ''}`}</span>
-                </li>
-              ))}
-            </ul>
+            <>
+              <h4 className={styles.subTitle}>취소된 주문 상세</h4>
+              <ul className={styles.resultList}>
+                {result.cancelled_orders.map((order) => (
+                  <li key={order.order_sno} className={styles.orderCard}>
+                    <div className={styles.orderHeader}>
+                      <span>주문 {order.order_sno}</span>
+                      <span>{order.buyer_name || ''} {order.buyer_tel ? `(${order.buyer_tel})` : ''}</span>
+                    </div>
+                    <ul className={styles.itemList}>
+                      {order.items?.map((it, idx) => (
+                        <li key={idx} className={styles.optionCount}>
+                          {it.name} · {it.option_info || '-'} · {it.ea ?? '-'}개
+                        </li>
+                      ))}
+                    </ul>
+                    <div>
+                      {order.sms_sent
+                        ? '문자 발송됨'
+                        : `문자 발송 실패${order.sms_error ? `: ${order.sms_error}` : ''}`}
+                    </div>
+                    {order.warnings?.length > 0 && (
+                      <div className={styles.error}>{order.warnings.join(' / ')}</div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
           {result.failed_orders.length > 0 && (
-            <ul className={styles.resultList}>
-              {result.failed_orders.map((fail, idx) => (
-                <li key={idx} className={styles.resultItem}>
-                  <span>{fail.product_name || fail.order_sno}</span>
-                  <span>{fail.stage}</span>
-                  <span>{fail.reason}</span>
-                </li>
-              ))}
-            </ul>
+            <>
+              <h4 className={styles.subTitle}>실패한 항목</h4>
+              <ul className={styles.resultList}>
+                {result.failed_orders.map((fail, idx) => (
+                  <li key={idx} className={styles.resultItem}>
+                    <span>{fail.product_name || `주문 ${fail.order_sno}`}</span>
+                    <span>{FAILED_STAGE_LABELS[fail.stage] || fail.stage}</span>
+                    <span>{fail.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
         </div>
       )}

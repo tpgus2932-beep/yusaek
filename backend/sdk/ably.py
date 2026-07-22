@@ -139,10 +139,11 @@ class AblyClient:
         return all_items
 
     async def get_order_refund_info(self, order_sno: int | str) -> dict:
-        """주문 상세에서 환불계좌 정보와 구매자 연락처를 가져온다.
+        """주문 상세에서 환불계좌 정보와 구매자 연락처/이름을 가져온다.
 
         receive_cancel 호출에 필요한 refund_bank_account_holder/number/sno와
-        품절문자 발송용 buyer_tel을 한 번에 담고 있다 (실제 캡처로 확인).
+        품절문자 발송용 buyer_tel, 결과 화면 표시용 buyer_name을 한 번에
+        담고 있다 (실제 캡처로 확인).
         """
         response = await self.request(
             "GET", f"/seller/orders/{order_sno}/items/",
@@ -157,6 +158,7 @@ class AblyClient:
             "refund_bank_account_holder": order.get("refund_bank_account_holder"),
             "refund_bank_account_number": order.get("refund_bank_account_number"),
             "buyer_tel": order.get("buyer_tel"),
+            "buyer_name": order.get("buyer_name"),
         }
 
     async def cancel_order_items(

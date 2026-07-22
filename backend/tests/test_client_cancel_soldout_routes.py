@@ -208,10 +208,12 @@ def test_run_cancels_matching_order_sends_sms_and_reports_pending_count(tmp_path
     search_result = [{
         "sno": 636699893, "order_sno": 1784397062398,
         "option_stock_sync_code": "175252569", "goods_name": "빈티지 흑청 스커트",
+        "option_info": "흑청/S", "ea": 1,
     }]
     refund_info = {
         "refund_bank_sno": 23, "refund_bank_account_holder": "김도희",
         "refund_bank_account_number": "190869094396", "buyer_tel": "010-9895-3722",
+        "buyer_name": "김도희",
     }
     cancel_result = {
         "need_to_be_soldout_goods_list": [],
@@ -251,7 +253,8 @@ def test_run_cancels_matching_order_sends_sms_and_reports_pending_count(tmp_path
     data = res.json()
     assert data["ok"] is True
     assert data["cancelled_orders"] == [{
-        "order_sno": 1784397062398, "buyer_tel": "010-9895-3722",
+        "order_sno": 1784397062398, "buyer_name": "김도희", "buyer_tel": "010-9895-3722",
+        "items": [{"name": "빈티지 흑청 스커트", "option_info": "흑청/S", "ea": 1}],
         "product_names": ["빈티지 흑청 스커트"], "sms_sent": True,
     }]
     assert data["failed_orders"] == []

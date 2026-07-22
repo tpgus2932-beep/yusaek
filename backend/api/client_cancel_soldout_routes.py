@@ -166,10 +166,20 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
                 option_code_to_name.get(str(item.get("option_stock_sync_code") or ""), item.get("goods_name", ""))
                 for item in items
             ]
+            item_details = [
+                {
+                    "name": option_code_to_name.get(str(item.get("option_stock_sync_code") or ""), item.get("goods_name", "")),
+                    "option_info": item.get("option_info", ""),
+                    "ea": item.get("ea"),
+                }
+                for item in items
+            ]
             cancelled.append({
                 "order_sno": order_sno,
+                "buyer_name": refund_info.get("buyer_name"),
                 "buyer_tel": refund_info.get("buyer_tel"),
                 "product_names": names,
+                "items": item_details,
             })
 
         if non_display_snos or soldout_snos:

@@ -65,6 +65,7 @@ def test_get_order_refund_info_extracts_fields():
                 "refund_bank_account_holder": "김도희",
                 "refund_bank_account_number": "190869094396",
                 "buyer_tel": "010-9895-3722",
+                "buyer_name": "김도희",
             },
             "order_items": [],
         },
@@ -78,6 +79,7 @@ def test_get_order_refund_info_extracts_fields():
         "refund_bank_account_holder": "김도희",
         "refund_bank_account_number": "190869094396",
         "buyer_tel": "010-9895-3722",
+        "buyer_name": "김도희",
     }
     call_kwargs = mock_request.call_args.kwargs
     assert call_kwargs["origin"] == "my.a-bly.com"
