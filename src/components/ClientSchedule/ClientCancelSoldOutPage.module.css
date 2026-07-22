@@ -34,8 +34,8 @@
 }
 
 .runBtn {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-black);
+  color: var(--accent-white);
   border: none;
   font-weight: 600;
   align-self: flex-start;
