@@ -1,6 +1,8 @@
+import asyncio
 import sqlite3
 import sys
 import uuid
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -12,6 +14,7 @@ from fastapi.testclient import TestClient
 from api.delivery_anomaly_routes import (
     EzAdminSessionExpired,
     EzDeskSessionExpired,
+    _KST,
     build_delivery_anomaly_router,
 )
 from services.delivery_anomaly_store import init_delivery_anomaly_tables, sync_anomalies
@@ -389,3 +392,17 @@ def test_copy_order_session_expired():
 
     assert res.status_code == 200
     assert res.json() == {"ok": False, "need_session": True}
+
+
+def test_run_scheduled_attribute_skips_when_already_run_today():
+    get_db, keep_alive = _make_db_factory()
+    init_delivery_anomaly_tables(get_db)
+    today_iso = datetime.now(_KST).isoformat()
+    router = build_delivery_anomaly_router(
+        get_current_user=lambda: "tester",
+        get_db=get_db,
+        get_setting=lambda key: today_iso if key == "delivery_anomaly_last_run_date" else None,
+        set_setting=lambda key, value: None,
+    )
+    assert hasattr(router, "run_scheduled")
+    asyncio.run(router.run_scheduled(force=False))  # 네트워크 호출 없이 즉시 반환돼야 함
