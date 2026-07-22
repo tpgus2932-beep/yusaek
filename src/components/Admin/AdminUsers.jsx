@@ -7,14 +7,13 @@ import {
 } from 'lucide-react';
 
 const COLLABORATION_MENU_TAB = { key: 'collaboration-menu', label: '협업메뉴' };
-const CLIENT_SCHEDULE_MENU_TAB = { key: 'client-schedule', label: '거래처 일정' };
+const CLIENT_SCHEDULE_MENU_TAB = { key: 'client-schedule', label: '거래처' };
 
 const ALL_MENU_TABS = [
   { key: 'dashboard', label: '대시보드' },
   { key: 'barcode', label: '바코드' },
   { key: 'returns', label: '반품' },
   { key: 'barcode-product-upload', label: '상품 업로드' },
-  { key: 'shared-files', label: '유색 공용 파일' },
   { key: 'noye-kimsungil', label: '노예김승일' },
   { key: 'hapbae-management', label: '합배송관리' },
   { key: 'test', label: '테스트' },

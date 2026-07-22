@@ -7,14 +7,13 @@ import styles from './components/Layout/Layout.module.css';
 import BarcodeTabs from './components/Barcode/BarcodeTabs';
 import HapbaeManagementTabs from './components/Barcode/HapbaeManagementTabs';
 import ProductUploadPage from './components/Barcode/ProductUploadPage';
-import SharedFilesPage from './components/Barcode/SharedFilesPage';
 import ReturnsPage from './components/Barcode/ReturnsPage';
 import AuthPage from './components/Auth/AuthPage';
 import AdminUsers from './components/Admin/AdminUsers';
 import OrderPage from './components/Admin/OrderPage';
 import SettingsPage from './components/Layout/SettingsPage';
 import NoyeKimPage from './components/NoyeKim/NoyeKimPage';
-import ClientSchedulePage from './components/ClientSchedule/ClientSchedulePage';
+import ClientPage from './components/ClientSchedule/ClientPage';
 import SMSPage from './components/SMS/SMSPage';
 import CollaborationMenuPage from './components/CollabTools/CollaborationMenuPage';
 import MobileRequestKimsungilPage from './components/Mobile/MobileRequestKimsungilPage';
@@ -30,7 +29,7 @@ import { COLLAB_API_BASE } from './lib/api';
 
 
 const KNOWN_TABS = [
-  'dashboard', 'barcode', 'returns', 'barcode-product-upload', 'shared-files',
+  'dashboard', 'barcode', 'returns', 'barcode-product-upload',
   'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'hapbae-management',
   'test', 'order', 'admin', 'settings', 'margin-calc',
 ];
@@ -182,7 +181,7 @@ const App = () => {
 
   // viewer 역할이면 hiddenTabs 무시하고 대시보드만 허용
   const effectiveHiddenTabs = role === 'viewer'
-    ? ['barcode', 'returns', 'barcode-product-upload', 'shared-files', 'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'order', 'admin', 'settings', 'hapbae-management', 'test', 'margin-calc']
+    ? ['barcode', 'returns', 'barcode-product-upload', 'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'order', 'admin', 'settings', 'hapbae-management', 'test', 'margin-calc']
     : hiddenTabs;
 
   const handleLogout = () => {
@@ -289,9 +288,8 @@ const App = () => {
             )}
             {visibleActiveTab === 'returns' && !effectiveHiddenTabs.includes('returns') && <ReturnsPage />}
             {visibleActiveTab === 'barcode-product-upload' && !effectiveHiddenTabs.includes('barcode-product-upload') && <ProductUploadPage />}
-            {visibleActiveTab === 'shared-files' && !effectiveHiddenTabs.includes('shared-files') && <SharedFilesPage />}
             {visibleActiveTab === 'noye-kimsungil' && !effectiveHiddenTabs.includes('noye-kimsungil') && <NoyeKimPage />}
-            {visibleActiveTab === 'client-schedule' && !effectiveHiddenTabs.includes('client-schedule') && <ClientSchedulePage />}
+            {visibleActiveTab === 'client-schedule' && !effectiveHiddenTabs.includes('client-schedule') && <ClientPage />}
             {visibleActiveTab === 'sms' && !effectiveHiddenTabs.includes('sms') && <SMSPage />}
             {visibleActiveTab === 'collaboration-menu' && !effectiveHiddenTabs.includes('collaboration-menu') && <CollaborationMenuPage />}
             {visibleActiveTab === 'hapbae-management' && !effectiveHiddenTabs.includes('hapbae-management') && (

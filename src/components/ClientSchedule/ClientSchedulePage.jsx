@@ -986,7 +986,7 @@ export default function ClientSchedulePage() {
     <div className={styles.page}>
       {/* ── 헤더 ── */}
       <div className={styles.header}>
-        <h2 className={styles.headerTitle}>거래처 일정</h2>
+        <h2 className={styles.headerTitle}>일정</h2>
         <div className={styles.headerStats}>
           <span className={styles.statBadge}>
             <Database size={12} /> DB <strong>{dbRows.length}</strong>행
