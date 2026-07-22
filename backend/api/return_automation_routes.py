@@ -146,7 +146,7 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
                         # otherwise, which used to raise a KeyError when this item
                         # was written to SQLite further down and silently aborted
                         # the entire preview for every item in the run.
-                        item = {"order_no": str(cancel.get("order_id") or raw.get("order_id") or raw.get("sno") or ""), "invoice_no": inv, "return_invoice_no": return_invoice, "return_date": return_date, "logis": logis_data, "logis_found": bool(logis_data.get("llogis_status") not in (None, "", "-")), "has_return_invoice": False, "elapsed_status": "NO_RETURN_INVOICE", "last_direction": "", "received_content": "", "messages": [], "input_time": None, "phone": phone, "sms_sent_count": 0, "sms_sent_history": []}
+                        item = {"order_no": str(cancel.get("order_id") or raw.get("order_id") or raw.get("sno") or ""), "cancel_sno": str(cancel.get("sno") or ""), "invoice_no": inv, "return_invoice_no": return_invoice, "return_date": return_date, "logis": logis_data, "logis_found": bool(logis_data.get("llogis_status") not in (None, "", "-")), "has_return_invoice": False, "elapsed_status": "NO_RETURN_INVOICE", "last_direction": "", "received_content": "", "messages": [], "input_time": None, "phone": phone, "sms_sent_count": 0, "sms_sent_history": []}
                         seq = (raw.get("seq") or raw.get("order_seq") or raw.get("pack") or raw.get("pack_seq")
                                or cancel.get("seq") or cancel.get("order_seq") or cancel.get("pack") or cancel.get("pack_seq"))
                         # Ably return payloads often omit EZAdmin's transaction seq.
@@ -206,6 +206,7 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
                         error_count += 1
                         items.append({
                             "order_no": str(cancel.get("order_id") or raw.get("order_id") or raw.get("sno") or ""),
+                            "cancel_sno": str(cancel.get("sno") or ""),
                             "invoice_no": inv, "return_invoice_no": "", "return_date": return_date,
                             "logis": {}, "logis_found": False, "has_return_invoice": False,
                             "elapsed_status": "ERROR", "last_direction": "", "received_content": "",
@@ -514,6 +515,36 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
                 break
         conn=get_shared_db(); conn.execute("UPDATE return_automation_runs SET success_count=?,failure_count=? WHERE run_id=?", (sum(1 for x in results if x.get("pickup") and not x.get("error")), sum(1 for x in results if x.get("error")), run_id)); conn.commit(); conn.close()
         return {"ok": not any(x.get("error") for x in results), "run_id": run_id, "results": results, "need_session": need_session, "need_ezdesk_session": need_ezdesk_session}
+
+    REJECT_REASON = "문자 3통 답변 x 물건 회수 x"
+
+    @router.post("/reject")
+    async def reject(payload: dict = Body(...), user=Depends(get_current_user)):
+        selected = payload.get("items") or []
+        if not selected:
+            raise HTTPException(status_code=400, detail="선택된 항목이 없습니다.")
+        ably = AblyClient(); results = []
+        # 같은 반품요청(cancel_sno)에 상품이 여러 개 묶여 여러 invoice로 나온
+        # 경우에도 reject_request는 요청 단위 처리라 한 번만 호출하면 된다 -
+        # execute()가 order_no로 묶어 SMS/회수를 한 번만 실행하는 것과 같은 이유.
+        seen_cancel_sno: set[str] = set()
+        for selected_item in selected:
+            invoice_no = str(selected_item.get("invoice_no") or "")
+            cancel_sno = str(selected_item.get("cancel_sno") or "").strip()
+            if not cancel_sno:
+                results.append({"invoice_no": invoice_no, "error": "반품요청번호(cancel_sno)가 없어 거부할 수 없습니다"})
+                continue
+            if cancel_sno in seen_cancel_sno:
+                results.append({"invoice_no": invoice_no, "cancel_sno": cancel_sno, "skipped": True, "grouped_with": cancel_sno})
+                continue
+            seen_cancel_sno.add(cancel_sno)
+            try:
+                res = await ably.reject_order_cancel(cancel_sno, refuse_cause_comment=REJECT_REASON)
+                res.raise_for_status()
+                results.append({"invoice_no": invoice_no, "cancel_sno": cancel_sno, "ok": True})
+            except Exception as exc:
+                results.append({"invoice_no": invoice_no, "cancel_sno": cancel_sno, "error": str(exc)})
+        return {"ok": not any(x.get("error") for x in results), "results": results}
 
     @router.post("/reply-sms")
     async def reply_sms(payload: dict = Body(...), user=Depends(get_current_user)):

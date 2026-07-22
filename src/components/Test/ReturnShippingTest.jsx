@@ -106,8 +106,9 @@ export default function ReturnShippingTest() {
       if (data?.need_session) { openEzadminModal(newReturnPickup); return; }
       if (!res.ok) throw new Error(data?.detail || "처리 실패");
       if (!data?.ok) throw new Error(data?.error || "처리 실패");
+      const excludedNote = data.seller_fault_excluded > 0 ? ` (판매자 부담 ${data.seller_fault_excluded}건 제외)` : "";
       setPickupMessage(
-        `완료 — 송장 ${data.invoice_count}건 업로드, 에이블리 반품접수 ${data.sno_count}건 (HTTP ${data.ably_status}), 문자 ${data.sms_queued ?? 0}건 발송`
+        `완료 — 송장 ${data.invoice_count}건 업로드${excludedNote}, 에이블리 반품접수 ${data.sno_count}건 (HTTP ${data.ably_status}), 문자 ${data.sms_queued ?? 0}건 발송`
       );
     } catch (err) {
       setPickupMessage(err.message || "처리 실패");

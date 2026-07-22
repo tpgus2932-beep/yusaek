@@ -149,6 +149,7 @@ export default function ReturnAutomationDashboard() {
   const [expandedReplies, setExpandedReplies] = useState(new Set());
   const [replySending, setReplySending] = useState({});
   const [csChecking, setCsChecking] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
   const ezdeskRetryRef = useRef(null);
   const { openModal: openEzadminModal } = useEzadminSession();
 
@@ -331,9 +332,11 @@ export default function ReturnAutomationDashboard() {
   const passCount = run ? run.items.filter((x) => x.elapsed_status === "PASS").length : 0;
   const errorCount = run ? run.items.filter((x) => x.elapsed_status === "ERROR").length : 0;
 
-  // 조회 대상 전체(run.items)는 통계 카드에서 그대로 보여주되, 표에는 아직
-  // 실행 불가능한 대기중/기타 상태 행을 노출하지 않고 실행가능(eligible) 행만 표시한다.
-  const visibleItems = run ? run.items.filter((x) => x.eligible) : [];
+  // 조회 대상 전체(run.items)는 통계 카드에서 그대로 보여주되, 표에는 기본적으로
+  // 실행가능(eligible) 행만 표시한다. 다만 "상태별 선택"에서 대기중/오류 등 다른
+  // 상태 칩을 체크하면 그 상태의 항목들이 selected에 추가되므로, 그것도 함께
+  // 표에 노출해 사용자가 체크한 대상을 눈으로 확인할 수 있게 한다.
+  const visibleItems = run ? run.items.filter((x) => x.eligible || selected[x.invoice_no]) : [];
 
   // Groups invoice numbers by status so the status-filter chips can show a
   // count and know which rows to toggle without re-scanning run.items.
@@ -362,10 +365,15 @@ export default function ReturnAutomationDashboard() {
     ? Object.fromEntries(run.items.map((x) => [x.invoice_no, x.order_no || `__invoice__${x.invoice_no}`]))
     : {};
 
+  const itemByInvoice = run ? Object.fromEntries(run.items.map((x) => [x.invoice_no, x])) : {};
+
+  // 이미 반품거부 처리된 건은 어떤 경로로 선택을 걸어도(체크박스/전체/상태칩)
+  // selected에 들어가지 않게 여기서 한 번에 걸러낸다.
   const setSelectedForInvoices = (invoices, checked) => {
     setSelected((prev) => {
       const next = { ...prev };
       invoices.forEach((inv) => {
+        if (itemByInvoice[inv]?.rejected) return;
         if (checked) next[inv] = true;
         else delete next[inv];
       });
@@ -373,11 +381,18 @@ export default function ReturnAutomationDashboard() {
     });
   };
 
+  const selectableVisibleItems = visibleItems.filter((x) => !x.rejected);
+
   const toggleAll = (checked) => {
-    setSelected(checked ? Object.fromEntries(visibleItems.map((x) => [x.invoice_no, true])) : {});
+    if (checked) setSelectedForInvoices(selectableVisibleItems.map((x) => x.invoice_no), true);
+    else setSelected({});
   };
 
   const toggleStatus = (invoices, checked) => setSelectedForInvoices(invoices, checked);
+
+  const smsSent2PlusInvoices = run
+    ? run.items.filter((x) => (x.sms_sent_count || 0) >= 2).map((x) => x.invoice_no)
+    : [];
 
   const toggleInvoiceGroup = (invoiceNo, checked) => {
     const groupKey = orderGroupKeyByInvoice[invoiceNo];
@@ -573,6 +588,63 @@ export default function ReturnAutomationDashboard() {
     await runExecute(items);
   };
 
+  // 반품거부는 에이블리 반품요청(cancel_sno) 단위로 처리되므로 실행결과와
+  // 별개 API를 호출한다. 거부사유는 고정 문구("문자 3통 답변 x 물건 회수 x")로
+  // 백엔드에서 채운다 - 프론트는 대상만 넘긴다.
+  const rejectSelected = async () => {
+    const items = (run.items || [])
+      .filter((x) => selected[x.invoice_no])
+      .map((x) => ({ invoice_no: x.invoice_no, cancel_sno: x.cancel_sno }));
+    if (!items.length) {
+      setMessageIsError(true);
+      setMessage("거부할 건을 선택하세요.");
+      return;
+    }
+    if (!confirm(`${items.length}건을 반품거부 처리할까요? 에이블리에 반품 거부 요청이 전송됩니다.`)) return;
+    setRejecting(true);
+    try {
+      const res = await fetch(`${API}/return-automation/reject`, {
+        method: "POST",
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ items }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "반품거부 실패");
+      const resultByInvoice = Object.fromEntries((data.results || []).map((r) => [r.invoice_no, r]));
+      setRun((prev) => {
+        if (!prev) return prev;
+        const nextItems = prev.items.map((item) => {
+          const r = resultByInvoice[item.invoice_no];
+          if (!r) return item;
+          return { ...item, rejected: !r.error, rejectError: r.error || null };
+        });
+        return { ...prev, items: nextItems };
+      });
+      // 거부 성공한 건은 체크박스가 잠기므로 선택 상태도 같이 지워, 다음
+      // "전체" 토글이 잔여 selected 때문에 어긋나지 않게 한다.
+      setSelected((prev) => {
+        const next = { ...prev };
+        (data.results || []).forEach((r) => {
+          if (!r.error) delete next[r.invoice_no];
+        });
+        return next;
+      });
+      const failures = (data.results || []).filter((x) => x.error);
+      setMessageIsError(failures.length > 0);
+      setMessage(
+        failures.length
+          ? `반품거부 실패 ${failures.length}건: ${failures.map((x) => `${x.invoice_no} - ${x.error}`).join(" | ")}`
+          : `반품거부 완료 (${(data.results || []).length}건)`
+      );
+    } catch (err) {
+      setMessageIsError(true);
+      setMessage(err.message);
+    } finally {
+      setRejecting(false);
+    }
+  };
+
   return (
     <div className={styles.page}>
       <div className={styles.header}>
@@ -619,6 +691,9 @@ export default function ReturnAutomationDashboard() {
             <button type="button" className={`${styles.btn} ${styles.primaryBtn}`} onClick={execute} disabled={busy}>
               선택 건 실행
             </button>
+            <button type="button" className={styles.btn} onClick={rejectSelected} disabled={rejecting}>
+              {rejecting ? "거부 처리 중…" : "반품거부"}
+            </button>
             <button type="button" className={styles.btn} onClick={checkCs} disabled={csChecking}>
               {csChecking ? "CS 확인 중…" : "CS확인"}
             </button>
@@ -643,6 +718,16 @@ export default function ReturnAutomationDashboard() {
               </label>
             );
           })}
+          {smsSent2PlusInvoices.length > 0 && (
+            <label className={styles.statusFilterChip}>
+              <input
+                type="checkbox"
+                checked={smsSent2PlusInvoices.every((inv) => selected[inv])}
+                onChange={(e) => toggleStatus(smsSent2PlusInvoices, e.target.checked)}
+              />
+              문자발송 2회 이상 ({smsSent2PlusInvoices.length})
+            </label>
+          )}
         </div>
       )}
 
@@ -687,7 +772,7 @@ export default function ReturnAutomationDashboard() {
                     <label className={styles.selectAllLabel}>
                       <input
                         type="checkbox"
-                        checked={visibleItems.length > 0 && visibleItems.every((x) => selected[x.invoice_no])}
+                        checked={selectableVisibleItems.length > 0 && selectableVisibleItems.every((x) => selected[x.invoice_no])}
                         onChange={(e) => toggleAll(e.target.checked)}
                       />
                       전체
@@ -727,6 +812,8 @@ export default function ReturnAutomationDashboard() {
                         <input
                           type="checkbox"
                           checked={!!selected[item.invoice_no]}
+                          disabled={!!item.rejected}
+                          title={item.rejected ? "이미 반품거부 처리된 건입니다" : undefined}
                           onChange={(e) => toggleInvoiceGroup(item.invoice_no, e.target.checked)}
                         />
                       </td>
@@ -755,7 +842,7 @@ export default function ReturnAutomationDashboard() {
                         {item.kind === "exchange" && (
                           <span className={`${styles.badge} ${styles.badgeNeutral}`} title="교환반품(교환수거중) - 반품과 동일하게 문자발송+회수신청을 실행합니다. 에이블리 반품송장 등록은 교환반품 테스트 탭에서 처리합니다" style={{ marginRight: "0.3rem" }}>교환</span>
                         )}
-                        {item.order_no}
+                        {item.cancel_sno || item.order_no}
                         {groupSize > 1 && <span className={styles.groupHint} title="같은 주문번호 - 체크박스가 함께 작동하고 문자/회수접수도 한 번만 실행됩니다">동일주문 {groupSize}건</span>}
                         <br />
                         {item.invoice_no}
@@ -771,7 +858,11 @@ export default function ReturnAutomationDashboard() {
                       <td>{item.input_time || "-"}</td>
                       <td><StatusBadge status={item.elapsed_status} stage={item.error_stage} /></td>
                       <td>
-                        {item.executeError ? (
+                        {item.rejectError ? (
+                          <span className={`${styles.badge} ${styles.badgeError}`} title={item.rejectError}>거부실패</span>
+                        ) : item.rejected ? (
+                          <span className={`${styles.badge} ${styles.badgeNeutral}`}>반품거부됨</span>
+                        ) : item.executeError ? (
                           <span className={`${styles.badge} ${styles.badgeError}`} title={item.executeError}>실행오류</span>
                         ) : item.groupedWith ? (
                           <span className={`${styles.badge} ${styles.badgeNeutral}`} title={`송장 ${item.groupedWith}과(와) 같은 주문으로 묶여 처리됨`}>묶음처리</span>
