@@ -5,6 +5,7 @@ import styles from './ClientCancelSoldOutPage.module.css';
 const ClientCancelSoldOutPage = () => {
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
+  const [checkedCodes, setCheckedCodes] = useState({}); // { [productName]: Set<code> }
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [products, setProducts] = useState([]);
@@ -25,7 +26,12 @@ const ClientCancelSoldOutPage = () => {
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data?.ok === false) throw new Error(data?.detail || '검색에 실패했습니다.');
-      setSearchResults(Array.isArray(data.items) ? data.items : []);
+      const items = Array.isArray(data.items) ? data.items : [];
+      setSearchResults(items);
+      // 기본값: 옵션 전부 선택된 상태로 시작 (전부 취소하고 싶은 경우가 대부분)
+      setCheckedCodes(
+        Object.fromEntries(items.map((item) => [item.name, new Set(item.options.map((o) => o.code))]))
+      );
     } catch (err) {
       setSearchError(err.message || '검색에 실패했습니다.');
       setSearchResults([]);
@@ -34,10 +40,21 @@ const ClientCancelSoldOutPage = () => {
     }
   };
 
+  const toggleOption = (productName, code) => {
+    setCheckedCodes((prev) => {
+      const next = new Set(prev[productName] || []);
+      if (next.has(code)) next.delete(code); else next.add(code);
+      return { ...prev, [productName]: next };
+    });
+  };
+
   const addProduct = (item) => {
+    const selected = checkedCodes[item.name] || new Set();
+    const chosenOptions = item.options.filter((o) => selected.has(o.code));
+    if (chosenOptions.length === 0) return;
     setProducts((prev) => {
-      if (prev.some((p) => p.name === item.name)) return prev;
-      return [...prev, item];
+      const others = prev.filter((p) => p.name !== item.name);
+      return [...others, { name: item.name, options: chosenOptions }];
     });
   };
 
@@ -51,10 +68,14 @@ const ClientCancelSoldOutPage = () => {
     setRunError('');
     setResult(null);
     try {
+      const payloadProducts = products.map((p) => ({
+        name: p.name,
+        option_codes: p.options.map((o) => o.code),
+      }));
       const res = await fetch(`${API}/client-cancel-soldout/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ products }),
+        body: JSON.stringify({ products: payloadProducts }),
       });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
@@ -86,12 +107,25 @@ const ClientCancelSoldOutPage = () => {
       {searchResults.length > 0 && (
         <ul className={styles.resultList}>
           {searchResults.map((item) => (
-            <li key={item.name} className={styles.resultItem}>
-              <span>{item.name}</span>
-              <span className={styles.optionCount}>옵션 {item.option_codes.length}개</span>
-              <button type="button" className={styles.addBtn} onClick={() => addProduct(item)}>
-                추가
-              </button>
+            <li key={item.name} className={styles.resultCard}>
+              <div className={styles.resultHeader}>
+                <span>{item.name}</span>
+                <button type="button" className={styles.addBtn} onClick={() => addProduct(item)}>
+                  추가
+                </button>
+              </div>
+              <div className={styles.optionChecks}>
+                {item.options.map((opt) => (
+                  <label key={opt.code} className={styles.optionCheckLabel}>
+                    <input
+                      type="checkbox"
+                      checked={(checkedCodes[item.name] || new Set()).has(opt.code)}
+                      onChange={() => toggleOption(item.name, opt.code)}
+                    />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
             </li>
           ))}
         </ul>
@@ -106,7 +140,7 @@ const ClientCancelSoldOutPage = () => {
             {products.map((p) => (
               <li key={p.name} className={styles.productItem}>
                 <span>{p.name}</span>
-                <span className={styles.optionCount}>옵션 {p.option_codes.length}개</span>
+                <span className={styles.optionCount}>{p.options.map((o) => o.label).join(', ')}</span>
                 <button type="button" className={styles.removeBtn} onClick={() => removeProduct(p.name)}>
                   삭제
                 </button>

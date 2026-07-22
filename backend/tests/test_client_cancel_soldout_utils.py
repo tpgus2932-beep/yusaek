@@ -38,7 +38,13 @@ def test_search_cost_base_products_groups_by_name(tmp_path):
     results = search_cost_base_products(path, "빈티지 흑청 스커트")
 
     assert results == [
-        {"name": "빈티지 흑청 스커트", "option_codes": ["175252569", "175252570"]}
+        {
+            "name": "빈티지 흑청 스커트",
+            "options": [
+                {"code": "175252569", "label": "흑청/S"},
+                {"code": "175252570", "label": "흑청/M"},
+            ],
+        }
     ]
 
 

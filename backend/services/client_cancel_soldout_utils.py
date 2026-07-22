@@ -7,15 +7,18 @@ from openpyxl import load_workbook
 # 원가베이스유.xlsx 열 인덱스 (0-based) — 헤더:
 # 상품코드, 상품명, 색상, 사이즈, 원가, 거래처, 거래처상품명, 거래처합, 상품명합, 거래처주소, 옵션번호
 _NAME_COL = 1
+_COLOR_COL = 2
+_SIZE_COL = 3
 _OPTION_CODE_COL = 10
 _REQUIRED_COLS = _OPTION_CODE_COL + 1
 
 
 def search_cost_base_products(path: Path, q: str, limit: int = 20) -> list[dict]:
-    """원가베이스유 엑셀에서 상품명(1열) 기준으로 검색해 옵션번호(11열)를 묶어 반환.
+    """원가베이스유 엑셀에서 상품명(1열) 기준으로 검색해 옵션(색상/사이즈/옵션번호)을 묶어 반환.
 
     같은 상품명의 색상/사이즈별 행들을 하나의 항목으로 묶고, 그 항목의
-    option_codes에 모든 옵션번호를 순서대로 모은다.
+    options에 {code, label}(옵션번호, "색상/사이즈" 표시용 라벨)을 순서대로 모은다.
+    실행 화면에서 옵션을 개별 선택/해제할 수 있도록 코드만이 아니라 라벨도 필요하다.
     """
     if not path.exists():
         return []
@@ -24,7 +27,8 @@ def search_cost_base_products(path: Path, q: str, limit: int = 20) -> list[dict]
     wb = load_workbook(path, data_only=True, read_only=True)
     ws = wb.active
 
-    groups: dict[str, list[str]] = {}
+    groups: dict[str, list[dict]] = {}
+    seen_codes: dict[str, set[str]] = {}
     order: list[str] = []
     for row in ws.iter_rows(min_row=2, values_only=True):
         if len(row) < _REQUIRED_COLS:
@@ -37,11 +41,17 @@ def search_cost_base_products(path: Path, q: str, limit: int = 20) -> list[dict]
             continue
         if name not in groups:
             groups[name] = []
+            seen_codes[name] = set()
             order.append(name)
-        if option_code not in groups[name]:
-            groups[name].append(option_code)
+        if option_code in seen_codes[name]:
+            continue
+        seen_codes[name].add(option_code)
+        color = str(row[_COLOR_COL] or "").strip()
+        size = str(row[_SIZE_COL] or "").strip()
+        label = "/".join(part for part in (color, size) if part) or option_code
+        groups[name].append({"code": option_code, "label": label})
 
-    return [{"name": name, "option_codes": groups[name]} for name in order[:limit]]
+    return [{"name": name, "options": groups[name]} for name in order[:limit]]
 
 
 def filter_matching_order_items(order_items: list[dict], option_codes: set[str]) -> list[dict]:

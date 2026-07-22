@@ -72,7 +72,10 @@ def test_cost_base_search_returns_grouped_items(tmp_path):
     assert res.status_code == 200
     assert res.json() == {
         "ok": True,
-        "items": [{"name": "빈티지 흑청 스커트", "option_codes": ["175252569"]}],
+        "items": [{
+            "name": "빈티지 흑청 스커트",
+            "options": [{"code": "175252569", "label": "흑청/S"}],
+        }],
     }
 
 
