@@ -15,6 +15,7 @@ const ClientCancelSoldOutPage = () => {
   const [delisting, setDelisting] = useState(false);
   const [delistResult, setDelistResult] = useState(null);
   const [delistError, setDelistError] = useState('');
+  const [pendingChecks, setPendingChecks] = useState({}); // { [code]: { loading, remaining, error } }
 
   const handleSearch = async (e) => {
     e.preventDefault();
@@ -63,6 +64,26 @@ const ClientCancelSoldOutPage = () => {
 
   const removeProduct = (name) => {
     setProducts((prev) => prev.filter((p) => p.name !== name));
+  };
+
+  const checkPendingCount = async (opt) => {
+    if (!opt.product_id) return;
+    setPendingChecks((prev) => ({ ...prev, [opt.code]: { loading: true } }));
+    try {
+      const res = await fetch(
+        `${API}/client-cancel-soldout/pending-count?product_id=${encodeURIComponent(opt.product_id)}`,
+        { headers: getAuthHeaders() }
+      );
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok === false) throw new Error(data?.detail || '접수 조회에 실패했습니다.');
+      setPendingChecks((prev) => ({ ...prev, [opt.code]: { loading: false, remaining: data.remaining } }));
+    } catch (err) {
+      setPendingChecks((prev) => ({
+        ...prev,
+        [opt.code]: { loading: false, error: err.message || '접수 조회에 실패했습니다.' },
+      }));
+    }
   };
 
   const toPayloadProducts = () =>
@@ -143,16 +164,34 @@ const ClientCancelSoldOutPage = () => {
                 </button>
               </div>
               <div className={styles.optionChecks}>
-                {item.options.map((opt) => (
-                  <label key={opt.code} className={styles.optionCheckLabel}>
-                    <input
-                      type="checkbox"
-                      checked={(checkedCodes[item.name] || new Set()).has(opt.code)}
-                      onChange={() => toggleOption(item.name, opt.code)}
-                    />
-                    {opt.label}
-                  </label>
-                ))}
+                {item.options.map((opt) => {
+                  const check = pendingChecks[opt.code];
+                  return (
+                    <div key={opt.code} className={styles.optionRow}>
+                      <label className={styles.optionCheckLabel}>
+                        <input
+                          type="checkbox"
+                          checked={(checkedCodes[item.name] || new Set()).has(opt.code)}
+                          onChange={() => toggleOption(item.name, opt.code)}
+                        />
+                        {opt.label}
+                      </label>
+                      <button
+                        type="button"
+                        className={styles.checkBtn}
+                        onClick={() => checkPendingCount(opt)}
+                        disabled={check?.loading}
+                      >
+                        {check?.loading ? '확인 중...' : '접수 확인'}
+                      </button>
+                      {check && !check.loading && (
+                        <span className={check.error ? styles.error : styles.optionCount}>
+                          {check.error ? check.error : `남은 접수 ${check.remaining}건`}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </li>
           ))}

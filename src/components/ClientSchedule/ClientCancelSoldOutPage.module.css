@@ -106,8 +106,15 @@
 
 .optionChecks {
   display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.optionRow {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
   flex-wrap: wrap;
-  gap: 0.5rem 1rem;
 }
 
 .optionCheckLabel {
@@ -117,6 +124,21 @@
   font-size: 0.85rem;
   color: var(--text-secondary);
   cursor: pointer;
+}
+
+.checkBtn {
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.checkBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .section {

@@ -55,6 +55,25 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
         items = search_cost_base_products(cost_base_path, q, limit=limit)
         return {"ok": True, "items": items}
 
+    @router.get("/pending-count")
+    async def pending_count(product_id: str = "", user: str = Depends(get_current_user)):
+        """상품코드 하나로 EZAdmin I100 잔여 접수 수량만 확인 (테스트/단건 조회용)."""
+        code = product_id.strip()
+        if not code:
+            raise HTTPException(status_code=400, detail="product_id가 필요합니다.")
+
+        ez = EzAdminClient(get_setting)
+        try:
+            remaining = await ez.get_pending_order_count(code)
+        except EzAdminSessionExpired:
+            raise HTTPException(status_code=409, detail="EZAdmin 세션이 만료되었습니다.")
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"접수 조회 실패: {exc}")
+
+        return {"ok": True, "product_id": code, "remaining": remaining}
+
     @router.post("/delist")
     async def delist(payload: dict = Body(...), user: str = Depends(get_current_user)):
         """선택한 옵션만 미진열 처리 (주문 검색/취소, 문자 발송 없이).

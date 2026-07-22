@@ -79,6 +79,52 @@ def test_cost_base_search_returns_grouped_items(tmp_path):
     }
 
 
+def test_pending_count_without_product_id_returns_400(tmp_path):
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+
+    res = client.get("/client-cancel-soldout/pending-count", params={"product_id": ""})
+
+    assert res.status_code == 400
+
+
+def test_pending_count_returns_remaining(tmp_path):
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+
+    with patch(
+        "api.client_cancel_soldout_routes.EzAdminClient.get_pending_order_count",
+        new=AsyncMock(return_value=56),
+    ) as mock_get:
+        res = client.get("/client-cancel-soldout/pending-count", params={"product_id": "S13438"})
+
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "product_id": "S13438", "remaining": 56}
+    mock_get.assert_awaited_once_with("S13438")
+
+
+def test_pending_count_product_not_found_returns_404(tmp_path):
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+
+    with patch(
+        "api.client_cancel_soldout_routes.EzAdminClient.get_pending_order_count",
+        new=AsyncMock(side_effect=ValueError("상품코드 S99999를 찾을 수 없습니다")),
+    ):
+        res = client.get("/client-cancel-soldout/pending-count", params={"product_id": "S99999"})
+
+    assert res.status_code == 404
+
+
+def test_pending_count_ezadmin_session_expired_returns_409(tmp_path):
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+
+    with patch(
+        "api.client_cancel_soldout_routes.EzAdminClient.get_pending_order_count",
+        new=AsyncMock(side_effect=EzAdminSessionExpired()),
+    ):
+        res = client.get("/client-cancel-soldout/pending-count", params={"product_id": "S13438"})
+
+    assert res.status_code == 409
+
+
 def test_delist_without_products_returns_400(tmp_path):
     client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
 
