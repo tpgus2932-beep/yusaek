@@ -23,7 +23,8 @@
 .searchBtn,
 .addBtn,
 .removeBtn,
-.runBtn {
+.runBtn,
+.delistBtn {
   padding: 0.5rem 1rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-color);
@@ -38,10 +39,21 @@
   color: var(--accent-white);
   border: none;
   font-weight: 600;
-  align-self: flex-start;
+}
+
+.actionRow {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.delistBtn {
+  border: 1px solid var(--accent-black);
+  color: var(--text-primary);
+  font-weight: 600;
 }
 
 .runBtn:disabled,
+.delistBtn:disabled,
 .searchBtn:disabled {
   opacity: 0.6;
   cursor: not-allowed;

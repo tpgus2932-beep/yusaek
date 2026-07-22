@@ -37,6 +37,38 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
         items = search_cost_base_products(cost_base_path, q, limit=limit)
         return {"ok": True, "items": items}
 
+    @router.post("/delist")
+    async def delist(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """선택한 옵션만 미진열 처리 (주문 검색/취소, 문자 발송 없이).
+
+        stop-selling은 goods_option_sno(=원가베이스유 옵션번호)만 있으면
+        되므로, 대상 주문을 찾을 필요 없이 옵션 코드만으로 바로 처리한다.
+        """
+        products = payload.get("products") or []
+        option_codes: set[str] = set()
+        for product in products:
+            for code in product.get("option_codes") or []:
+                code = str(code).strip()
+                if code:
+                    option_codes.add(code)
+        if not option_codes:
+            raise HTTPException(status_code=400, detail="미진열 처리할 옵션이 없습니다.")
+
+        non_display_snos: list[int] = []
+        for code in option_codes:
+            try:
+                non_display_snos.append(int(code))
+            except ValueError:
+                continue
+
+        ably = AblyClient()
+        try:
+            await ably.stop_selling(non_display_option_snos=non_display_snos, soldout_goods_snos=[])
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"미진열 처리 실패: {exc}")
+
+        return {"ok": True, "non_display_option_count": len(non_display_snos)}
+
     @router.post("/run")
     async def run(payload: dict = Body(...), user: str = Depends(get_current_user)):
         products = payload.get("products") or []

@@ -12,6 +12,9 @@ const ClientCancelSoldOutPage = () => {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
   const [runError, setRunError] = useState('');
+  const [delisting, setDelisting] = useState(false);
+  const [delistResult, setDelistResult] = useState(null);
+  const [delistError, setDelistError] = useState('');
 
   const handleSearch = async (e) => {
     e.preventDefault();
@@ -62,20 +65,22 @@ const ClientCancelSoldOutPage = () => {
     setProducts((prev) => prev.filter((p) => p.name !== name));
   };
 
+  const toPayloadProducts = () =>
+    products.map((p) => ({
+      name: p.name,
+      option_codes: p.options.map((o) => o.code),
+    }));
+
   const handleRun = async () => {
     if (products.length === 0) return;
     setRunning(true);
     setRunError('');
     setResult(null);
     try {
-      const payloadProducts = products.map((p) => ({
-        name: p.name,
-        option_codes: p.options.map((o) => o.code),
-      }));
       const res = await fetch(`${API}/client-cancel-soldout/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ products: payloadProducts }),
+        body: JSON.stringify({ products: toPayloadProducts() }),
       });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
@@ -86,6 +91,29 @@ const ClientCancelSoldOutPage = () => {
       setRunError(err.message || '실행에 실패했습니다.');
     } finally {
       setRunning(false);
+    }
+  };
+
+  const handleDelistOnly = async () => {
+    if (products.length === 0) return;
+    setDelisting(true);
+    setDelistError('');
+    setDelistResult(null);
+    try {
+      const res = await fetch(`${API}/client-cancel-soldout/delist`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ products: toPayloadProducts() }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok === false) throw new Error(data?.detail || '미진열 처리에 실패했습니다.');
+      setDelistResult(data);
+      setProducts([]);
+    } catch (err) {
+      setDelistError(err.message || '미진열 처리에 실패했습니다.');
+    } finally {
+      setDelisting(false);
     }
   };
 
@@ -148,16 +176,35 @@ const ClientCancelSoldOutPage = () => {
             ))}
           </ul>
         )}
-        <button
-          type="button"
-          className={styles.runBtn}
-          onClick={handleRun}
-          disabled={running || products.length === 0}
-        >
-          {running ? '실행 중...' : '실행'}
-        </button>
+        <div className={styles.actionRow}>
+          <button
+            type="button"
+            className={styles.runBtn}
+            onClick={handleRun}
+            disabled={running || delisting || products.length === 0}
+          >
+            {running ? '실행 중...' : '실행 (취소+미진열+문자발송)'}
+          </button>
+          <button
+            type="button"
+            className={styles.delistBtn}
+            onClick={handleDelistOnly}
+            disabled={running || delisting || products.length === 0}
+            title="주문 취소/문자 발송 없이 선택한 옵션만 미진열 처리합니다"
+          >
+            {delisting ? '처리 중...' : '미진열만 처리'}
+          </button>
+        </div>
         {runError && <p className={styles.error}>{runError}</p>}
+        {delistError && <p className={styles.error}>{delistError}</p>}
       </div>
+
+      {delistResult && (
+        <div className={styles.section}>
+          <h3 className={styles.sectionTitle}>미진열 처리 결과</h3>
+          <p>미진열 처리된 옵션 {delistResult.non_display_option_count}개</p>
+        </div>
+      )}
 
       {result && (
         <div className={styles.section}>

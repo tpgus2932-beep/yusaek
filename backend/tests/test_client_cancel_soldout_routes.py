@@ -79,6 +79,50 @@ def test_cost_base_search_returns_grouped_items(tmp_path):
     }
 
 
+def test_delist_without_products_returns_400(tmp_path):
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+
+    res = client.post("/client-cancel-soldout/delist", json={"products": []})
+
+    assert res.status_code == 400
+
+
+def test_delist_calls_stop_selling_with_option_codes_as_ints(tmp_path):
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+
+    with patch(
+        "api.client_cancel_soldout_routes.AblyClient.stop_selling",
+        new=AsyncMock(return_value=None),
+    ) as mock_stop_selling:
+        res = client.post("/client-cancel-soldout/delist", json={
+            "products": [
+                {"name": "빈티지 흑청 스커트", "option_codes": ["175252569", "175252570"]},
+            ]
+        })
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data == {"ok": True, "non_display_option_count": 2}
+
+    call_kwargs = mock_stop_selling.call_args.kwargs
+    assert sorted(call_kwargs["non_display_option_snos"]) == [175252569, 175252570]
+    assert call_kwargs["soldout_goods_snos"] == []
+
+
+def test_delist_stop_selling_failure_returns_502(tmp_path):
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+
+    with patch(
+        "api.client_cancel_soldout_routes.AblyClient.stop_selling",
+        new=AsyncMock(side_effect=RuntimeError("boom")),
+    ):
+        res = client.post("/client-cancel-soldout/delist", json={
+            "products": [{"name": "빈티지 흑청 스커트", "option_codes": ["175252569"]}]
+        })
+
+    assert res.status_code == 502
+
+
 def test_run_without_products_returns_400(tmp_path):
     client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
 
