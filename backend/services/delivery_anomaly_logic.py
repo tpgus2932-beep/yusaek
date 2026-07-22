@@ -101,6 +101,32 @@ def evaluate_anomaly(sent_date: date | None, today: date, llogis_raw: dict) -> s
     return None
 
 
+def evaluate_return_anomaly(today: date, llogis_raw: dict) -> str | None:
+    """교환반품(수거완료) 송장 이상현상이면 사유 문자열, 아니면 None.
+
+    조건: llogis에서 반품송장을 찾을 수 없거나, 최종스캔일이 오늘로부터 3일 이상 지난 경우.
+    (발송일 경과 조건 없음 - 이미 수거완료된 건만 대상으로 하기 때문)
+    """
+    if is_invoice_missing(llogis_raw):
+        return "llogis에서 반품송장을 찾을 수 없음"
+    scan_date = latest_scan_date(llogis_raw)
+    if scan_date is None or (today - scan_date).days >= 3:
+        return "최종스캔 3일 이상 경과"
+    return None
+
+
+def evaluate_return_scan_delay(today: date, llogis_raw: dict) -> str | None:
+    """반품송장의 최종스캔일이 오늘로부터 3일 이상 지났으면 사유 문자열, 아니면 None.
+
+    송장 자체를 llogis에서 조회할 수 없는 경우(is_invoice_missing)는 이상현상 대상에서
+    제외한다(조회 불가 건은 판단할 수 없으므로) - 호출하는 쪽에서 먼저 걸러야 한다.
+    """
+    scan_date = latest_scan_date(llogis_raw)
+    if scan_date is None or (today - scan_date).days >= 3:
+        return "최종스캔 3일 이상 경과"
+    return None
+
+
 def strip_bracket_tags(product_name: str | None) -> str:
     """상품명에서 '[...]' 태그(옵션/홍보 문구 등)를 제거하고 공백을 정리."""
     text = re.sub(r"\[[^\]]*\]", "", str(product_name or ""))

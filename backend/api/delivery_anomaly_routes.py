@@ -21,10 +21,22 @@ from services.delivery_anomaly_store import sync_anomalies
 
 try:
     from sdk import config as ez_config
-    from sdk.ezadmin import EzAdminClient, EzDeskSessionExpired, extract_sms_rows, normalize_sms_row
+    from sdk.ezadmin import (
+        EzAdminClient,
+        EzAdminSessionExpired,
+        EzDeskSessionExpired,
+        extract_sms_rows,
+        normalize_sms_row,
+    )
 except ModuleNotFoundError:  # package import in unit tests
     from backend.sdk import config as ez_config
-    from backend.sdk.ezadmin import EzAdminClient, EzDeskSessionExpired, extract_sms_rows, normalize_sms_row
+    from backend.sdk.ezadmin import (
+        EzAdminClient,
+        EzAdminSessionExpired,
+        EzDeskSessionExpired,
+        extract_sms_rows,
+        normalize_sms_row,
+    )
 
 _KST = timezone(timedelta(hours=9))
 
@@ -158,6 +170,7 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
         ).fetchall()
         conn.close()
         return {
+            "lastRunAt": get_setting(_LAST_RUN_SETTING_KEY) or None,
             "items": [
                 {
                     "id": r["id"],
@@ -177,6 +190,8 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
                     "confirmReplyAt": r["confirm_reply_at"] or None,
                     "responseSentAt": r["response_sent_at"] or None,
                     "responseText": r["response_text"] or None,
+                    "isLostResponse": (r["response_text"] or None) == LOST_PACKAGE_MESSAGE,
+                    "orderCopiedAt": r["order_copied_at"] or None,
                 }
                 for r in rows
             ]
@@ -253,6 +268,95 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
             raise HTTPException(400, "내용을 입력하세요")
         return await _respond(anomaly_id, text)
 
+    def _pick_packlist_item(items: list[dict], row) -> dict | None:
+        """packlist_items 결과에서 이 이상현상 건에 해당하는 라인아이템 하나를 고른다.
+
+        라인아이템이 하나뿐이면 그대로 쓰고, 여러 개면 저장된 상품명/옵션으로
+        매칭한다 - 매칭이 애매하면 엉뚱한 상품이 복사될 수 있으므로 None을 반환해
+        호출부가 자동 실행 대신 에러를 내도록 한다.
+        """
+        if len(items) == 1:
+            return items[0]
+        product_name = str(row["product_name"] or "").strip()
+        option_info = str(row["option_info"] or "").strip()
+        candidates = items
+        if product_name:
+            by_name = [
+                it for it in items
+                if product_name in str(it.get("product_name") or "")
+                or product_name in str(it.get("shop_product_name") or "")
+            ]
+            if by_name:
+                candidates = by_name
+        if option_info and len(candidates) > 1:
+            by_option = [it for it in candidates if option_info in str(it.get("options") or "")]
+            if by_option:
+                candidates = by_option
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    @router.post("/{anomaly_id}/copy-order")
+    async def copy_order(anomaly_id: int, user: str = Depends(get_current_user)):
+        conn = get_db()
+        row = conn.execute("SELECT * FROM delivery_anomalies WHERE id = ?", (anomaly_id,)).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(404, "이상현상 항목을 찾을 수 없습니다")
+
+        order_no = str(row["order_no"] or "").strip()
+        invoice_no = str(row["invoice_no"] or "").strip()
+        if not order_no and not invoice_no:
+            raise HTTPException(400, "주문번호/송장번호가 없습니다")
+
+        ez = EzAdminClient(get_setting)
+        now = datetime.now(_KST)
+        start_date = (now - timedelta(days=365)).strftime("%Y-%m-%d")
+        end_date = now.strftime("%Y-%m-%d")
+
+        try:
+            pack = None
+            if order_no:
+                pack = await ez.find_pack_by_order_sno(order_no, start_date=start_date, end_date=end_date)
+            if not pack and invoice_no:
+                pack = await ez.find_pack_by_order_sno(invoice_no, start_date=start_date, end_date=end_date)
+            if not pack:
+                return {"ok": False, "message": "EZAdmin에서 주문을 찾을 수 없습니다"}
+
+            items = await ez.packlist_items(pack)
+            if not items:
+                return {"ok": False, "message": "주문 상품 정보를 찾을 수 없습니다"}
+
+            item = _pick_packlist_item(items, row)
+            if item is None:
+                return {"ok": False, "message": "주문 내 상품이 여러 개라 자동으로 매칭하지 못했습니다. EZAdmin에서 직접 확인해주세요."}
+
+            result = await ez.copy_order(
+                pack,
+                item.get("prd_seq"),
+                shop_id=item.get("shop_id"),
+                product_id=item.get("product_id"),
+                product_name=item.get("shop_product_name") or item.get("product_name") or "",
+                options=item.get("options") or "",
+                qty=item.get("qty") or 1,
+                extra_money=item.get("amount") or 0,
+            )
+        except EzAdminSessionExpired:
+            return {"ok": False, "need_session": True}
+
+        if result.get("error") not in (0, "0"):
+            return {"ok": False, "message": f"주문복사 실패: {result}"}
+
+        copied_at = datetime.now(_KST).isoformat()
+        conn = get_db()
+        conn.execute(
+            "UPDATE delivery_anomalies SET order_copied_at = ? WHERE id = ?",
+            (copied_at, anomaly_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "orderCopiedAt": copied_at}
+
     async def _apply_reply_updates(conn, ez, rows, since_column: str, *, reset_response: bool) -> bool:
         """rows 각각에 대해 since_column 이후 답장을 찾아 반영. 세션 만료면 False(중단) 반환."""
         for row in rows:
@@ -316,7 +420,7 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
     async def run_check(force: bool = False, user: str = Depends(get_current_user)):
         today_str = datetime.now(_KST).strftime("%Y-%m-%d")
         last_run = get_setting(_LAST_RUN_SETTING_KEY)
-        if last_run == today_str and not force:
+        if str(last_run or "")[:10] == today_str and not force:
             return list_anomalies(user=user)  # 오늘 이미 실행됨 — 재조회 없이 현재 목록만 반환
 
         ably_token = await _ably_login()
@@ -363,7 +467,7 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
         except Exception:
             pass  # 답장 확인 실패는 이상현상 갱신 자체를 막지 않는다
         conn.close()
-        set_setting(_LAST_RUN_SETTING_KEY, today_str)
+        set_setting(_LAST_RUN_SETTING_KEY, datetime.now(_KST).isoformat())
 
         return list_anomalies(user=user)
 

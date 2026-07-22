@@ -49,6 +49,9 @@ def init_delivery_anomaly_tables(get_db) -> None:
                    "ALTER TABLE delivery_anomalies ADD COLUMN response_sent_at TEXT NOT NULL DEFAULT ''")
     _ensure_column(get_db, "delivery_anomalies", "response_text",
                    "ALTER TABLE delivery_anomalies ADD COLUMN response_text TEXT NOT NULL DEFAULT ''")
+    # 미수령 응대 후 EZAdmin CS창에서 주문복사(재출고용)를 실행했는지 여부
+    _ensure_column(get_db, "delivery_anomalies", "order_copied_at",
+                   "ALTER TABLE delivery_anomalies ADD COLUMN order_copied_at TEXT NOT NULL DEFAULT ''")
 
 
 def sync_anomalies(conn, computed: dict[str, dict]) -> None:

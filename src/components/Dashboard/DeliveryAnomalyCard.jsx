@@ -22,6 +22,17 @@ function formatScanDate(raw) {
     return `${month}월 ${day}일`;
 }
 
+// 서버가 실제로 에이블리/LLogis를 다시 조회한 시각(lastRunAt)을 그대로 보여준다 -
+// 브라우저에서 F5로 목록만 다시 불러온 시각(setLastRefreshedAt(new Date()) 같은 것)을
+// 쓰면, 실제로는 오늘 이미 실행되어 재조회 없이 캐시만 반환된 경우에도 "방금
+// 새로고침한 것"처럼 보이는 문제가 있었다.
+function formatRefreshTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    return `${d.getMonth() + 1}월 ${d.getDate()}일 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 function isPastFourPmKst() {
     const now = new Date();
     const kstHour = Number(
@@ -38,6 +49,7 @@ export default function DeliveryAnomalyCard() {
     const [items, setItems] = useState([]);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
+    const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
     const [memos, setMemos] = useState({});
     const [draftMemos, setDraftMemos] = useState({});
     const [expandedInvoices, setExpandedInvoices] = useState(new Set());
@@ -45,6 +57,7 @@ export default function DeliveryAnomalyCard() {
     const [respondStatus, setRespondStatus] = useState({});
     const [respondDrafts, setRespondDrafts] = useState({});
     const [expandedRespond, setExpandedRespond] = useState(new Set());
+    const [copyStatus, setCopyStatus] = useState({});
     const authHeaders = getAuthHeaders();
 
     const fetchList = useCallback(async () => {
@@ -52,7 +65,10 @@ export default function DeliveryAnomalyCard() {
             const res = await fetch(`${API}/delivery-anomaly/list`, { headers: authHeaders });
             if (handleUnauthorized(res)) return;
             const data = await res.json().catch(() => ({}));
-            if (res.ok) setItems(data.items || []);
+            if (res.ok) {
+                setItems(data.items || []);
+                setLastRefreshedAt(data.lastRunAt || null);
+            }
         } catch {
             // 로컬 백엔드에 연결할 수 없으면 조용히 무시
         } finally {
@@ -216,6 +232,34 @@ export default function DeliveryAnomalyCard() {
         sendRespond(item.id, 'respond-custom', { text });
     };
 
+    const handleCopyOrder = async (item) => {
+        if (!window.confirm('EZAdmin에 이 주문을 복사(재출고용 신규 주문 생성)합니다. 계속할까요?')) return;
+        const id = item.id;
+        setCopyStatus((prev) => ({ ...prev, [id]: { state: 'sending' } }));
+        try {
+            const res = await fetch(`${API}/delivery-anomaly/${id}/copy-order`, {
+                method: 'POST',
+                headers: authHeaders,
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.need_session) {
+                setCopyStatus((prev) => ({
+                    ...prev,
+                    [id]: { state: 'error', message: 'EZAdmin 세션이 만료되었습니다. 바코드스캔 탭에서 세션을 다시 입력해주세요.' },
+                }));
+                return;
+            }
+            if (!res.ok || data?.ok === false) {
+                setCopyStatus((prev) => ({ ...prev, [id]: { state: 'error', message: data?.message || '주문복사에 실패했습니다.' } }));
+                return;
+            }
+            setCopyStatus((prev) => ({ ...prev, [id]: { state: 'idle' } }));
+            await fetchList();
+        } catch {
+            setCopyStatus((prev) => ({ ...prev, [id]: { state: 'error', message: '주문복사에 실패했습니다.' } }));
+        }
+    };
+
     if (loading || items.length === 0) return null;
 
     return (
@@ -225,15 +269,22 @@ export default function DeliveryAnomalyCard() {
                     택배 이상현상
                     <span className={styles.countBadge} style={{ marginLeft: '0.45rem' }}>{items.length}</span>
                 </span>
-                <button
-                    type="button"
-                    className={`${styles.filterBtn} ${styles.anomalyRefreshBtn}`}
-                    onClick={handleManualRefresh}
-                    disabled={refreshing}
-                >
-                    <RefreshCw size={12} className={refreshing ? styles.spinning : undefined} />
-                    새로고침
-                </button>
+                <div className={styles.anomalyTitleActions}>
+                    {lastRefreshedAt && (
+                        <span className={styles.anomalyLastRefresh}>
+                            마지막 새로고침 {formatRefreshTime(lastRefreshedAt)}
+                        </span>
+                    )}
+                    <button
+                        type="button"
+                        className={`${styles.filterBtn} ${styles.anomalyRefreshBtn}`}
+                        onClick={handleManualRefresh}
+                        disabled={refreshing}
+                    >
+                        <RefreshCw size={12} className={refreshing ? styles.spinning : undefined} />
+                        새로고침
+                    </button>
+                </div>
             </div>
             <div className={styles.anomalyList}>
                 {items.map((item) => (
@@ -355,6 +406,30 @@ export default function DeliveryAnomalyCard() {
                             {item.responseSentAt && (
                                 <span className={styles.anomalyConfirmStatus}>
                                     응대완료 {formatDate(item.responseSentAt)}
+                                </span>
+                            )}
+                            {item.isLostResponse && !item.orderCopiedAt && (
+                                <button
+                                    type="button"
+                                    className={styles.commentToggleBtn}
+                                    onClick={() => handleCopyOrder(item)}
+                                    disabled={copyStatus[item.id]?.state === 'sending'}
+                                >
+                                    <Send size={11} />
+                                    주문복사
+                                </button>
+                            )}
+                            {copyStatus[item.id]?.state === 'sending' && (
+                                <span className={styles.anomalyConfirmStatus}>복사 중...</span>
+                            )}
+                            {copyStatus[item.id]?.state === 'error' && (
+                                <span className={`${styles.anomalyConfirmStatus} ${styles.anomalyConfirmError}`}>
+                                    {copyStatus[item.id].message}
+                                </span>
+                            )}
+                            {item.orderCopiedAt && (
+                                <span className={styles.anomalyConfirmStatus}>
+                                    주문복사완료 {formatDate(item.orderCopiedAt)}
                                 </span>
                             )}
                         </div>
