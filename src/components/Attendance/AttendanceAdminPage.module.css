@@ -169,6 +169,76 @@
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
 }
 
+/* ── 일일 알바 ── */
+.dailyFormGrid {
+  display: grid;
+  grid-template-columns: 1.4fr repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.dailyField {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+.dailyField .filterInput { width: 100%; min-width: 0; }
+.dailyListHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #1e293b;
+  margin-bottom: 12px;
+}
+.dailyListHeader span {
+  color: #64748b;
+  font-size: 13px;
+}
+.dailyWorkerScroll,
+.dailySalaryScroll {
+  max-height: 62vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 5px;
+}
+.dailyWorkerCard {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+  margin-bottom: 8px;
+}
+.dailyWorkerCard > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.dailyWorkerCard strong { color: #1e293b; font-size: 15px; }
+.dailyWorkerCard span { color: #64748b; font-size: 13px; }
+.dailyWorkerTime {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.dailyWorkerTime span { color: #2563eb; font-weight: 700; }
+.dailyWorkerTime small { color: #94a3b8; }
+.dailySalaryScroll > .card:last-child { margin-bottom: 0; }
+
+@media (max-width: 720px) {
+  .tabBar { overflow-x: auto; }
+  .tabBtn { min-width: 112px; }
+  .dailyFormGrid { grid-template-columns: 1fr 1fr; }
+  .dailyWorkerCard { grid-template-columns: 1fr auto; }
+  .dailyWorkerTime { grid-column: 1; }
+  .dailyWorkerCard .delBtn { grid-column: 2; grid-row: 1 / span 2; }
+}
+
 /* ── 직원 관리 ── */
 .inputRow {
   display: flex;
@@ -296,6 +366,19 @@
   cursor: pointer;
   font-family: inherit;
 }
+.copyImageBtn {
+  padding: 9px 14px;
+  background: #0f766e;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.copyImageBtn:disabled { opacity: 0.65; cursor: wait; }
 .loadingMsg {
   text-align: center;
   color: #94a3b8;

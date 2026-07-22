@@ -395,6 +395,10 @@ class _Cursor:
         for row in self._cur:
             yield _Row(desc, row)
 
+    @property
+    def lastrowid(self):
+        return self._cur.lastrowid
+
 
 class _TursoConn:
     __slots__ = ("_conn",)
