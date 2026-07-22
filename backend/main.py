@@ -1,5 +1,6 @@
 ﻿from dotenv import load_dotenv
 load_dotenv()
+import asyncio
 import json
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body, Header, Depends, Response, Request
 from fastapi.responses import FileResponse
@@ -65,6 +66,7 @@ from api.daily_checklist_routes import build_daily_checklist_router
 from services.delivery_anomaly_store import init_delivery_anomaly_tables
 from services.exchange_return_anomaly_store import init_exchange_return_anomaly_tables
 from services.return_anomaly_store import init_return_anomaly_tables
+from services.anomaly_scheduler import run_anomaly_scheduler_loop
 from api.collaboration_tools_routes import build_collaboration_tools_router
 from api.attendance_routes import build_attendance_router
 from api.guidebook_routes import build_guidebook_router
@@ -1552,36 +1554,46 @@ app.include_router(
 
 init_delivery_anomaly_tables(_get_shared_db)
 
-app.include_router(
-    build_delivery_anomaly_router(
-        get_current_user=_get_current_user,
-        get_db=_get_shared_db,
-        get_setting=_get_setting,
-        set_setting=_set_setting,
-    )
+_delivery_anomaly_router = build_delivery_anomaly_router(
+    get_current_user=_get_current_user,
+    get_db=_get_shared_db,
+    get_setting=_get_setting,
+    set_setting=_set_setting,
 )
+app.include_router(_delivery_anomaly_router)
 
 init_exchange_return_anomaly_tables(_get_shared_db)
 
-app.include_router(
-    build_exchange_return_anomaly_router(
-        get_current_user=_get_current_user,
-        get_db=_get_shared_db,
-        get_setting=_get_setting,
-        set_setting=_set_setting,
-    )
+_exchange_return_anomaly_router = build_exchange_return_anomaly_router(
+    get_current_user=_get_current_user,
+    get_db=_get_shared_db,
+    get_setting=_get_setting,
+    set_setting=_set_setting,
 )
+app.include_router(_exchange_return_anomaly_router)
 
 init_return_anomaly_tables(_get_shared_db)
 
-app.include_router(
-    build_return_anomaly_router(
-        get_current_user=_get_current_user,
-        get_db=_get_shared_db,
-        get_setting=_get_setting,
-        set_setting=_set_setting,
-    )
+_return_anomaly_router = build_return_anomaly_router(
+    get_current_user=_get_current_user,
+    get_db=_get_shared_db,
+    get_setting=_get_setting,
+    set_setting=_set_setting,
 )
+app.include_router(_return_anomaly_router)
+
+_ANOMALY_SCHEDULER_JOBS = [
+    ("delivery_anomaly", _delivery_anomaly_router.run_scheduled),
+    ("return_anomaly", _return_anomaly_router.run_scheduled),
+    ("exchange_return_anomaly", _exchange_return_anomaly_router.run_scheduled),
+]
+
+
+@app.on_event("startup")
+async def _start_anomaly_scheduler():
+    asyncio.create_task(
+        run_anomaly_scheduler_loop(_ANOMALY_SCHEDULER_JOBS, _get_setting, _set_setting)
+    )
 
 app.include_router(
     build_daily_checklist_router(
