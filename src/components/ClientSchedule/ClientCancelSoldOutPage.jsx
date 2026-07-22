@@ -151,7 +151,7 @@ const ClientCancelSoldOutPage = () => {
           className={styles.searchInput}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="상품명으로 원가베이스유 검색"
+          placeholder="상품명 또는 거래처상품명으로 원가베이스유 검색"
         />
         <button className={styles.searchBtn} type="submit" disabled={searching}>
           {searching ? '검색 중...' : '검색'}

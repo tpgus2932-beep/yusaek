@@ -10,15 +10,19 @@ _PRODUCT_ID_COL = 0
 _NAME_COL = 1
 _COLOR_COL = 2
 _SIZE_COL = 3
+_SUPPLIER_NAME_COL = 6
 _OPTION_CODE_COL = 10
 _REQUIRED_COLS = _OPTION_CODE_COL + 1
 
 
 def search_cost_base_products(path: Path, q: str, limit: int = 20) -> list[dict]:
-    """원가베이스유 엑셀에서 상품명(1열) 기준으로 검색해 옵션(색상/사이즈/옵션번호/상품코드)을 묶어 반환.
+    """원가베이스유 엑셀에서 상품명(1열) 또는 거래처상품명(6열)으로 검색해
+    옵션(색상/사이즈/옵션번호/상품코드)을 묶어 반환.
 
     같은 상품명의 색상/사이즈별 행들을 하나의 항목으로 묶고, 그 항목의
-    options에 {code, label, product_id}를 순서대로 모은다.
+    options에 {code, label, product_id}를 순서대로 모은다. 검색어는
+    상품명·거래처상품명 둘 중 아무 곳에나 일치해도 매칭되지만, 결과는
+    항상 상품명(에이블리 goods_name 검색에 쓰이는 값) 기준으로 묶인다.
     - code: 옵션번호 (에이블리 goods_option_sno와 동일, 취소/미진열 API에 사용)
     - label: "색상/사이즈" 표시용 라벨 (실행 화면에서 옵션을 개별 선택/해제하는 데 사용)
     - product_id: 상품코드 (EZAdmin I100 재고조회에서 "접수" 잔여 수량을 조회하는 데 사용)
@@ -37,10 +41,11 @@ def search_cost_base_products(path: Path, q: str, limit: int = 20) -> list[dict]
         if len(row) < _REQUIRED_COLS:
             continue
         name = str(row[_NAME_COL] or "").strip()
+        supplier_name = str(row[_SUPPLIER_NAME_COL] or "").strip()
         option_code = str(row[_OPTION_CODE_COL] or "").strip()
         if not name or not option_code:
             continue
-        if q_norm and q_norm not in name.lower():
+        if q_norm and q_norm not in name.lower() and q_norm not in supplier_name.lower():
             continue
         if name not in groups:
             groups[name] = []

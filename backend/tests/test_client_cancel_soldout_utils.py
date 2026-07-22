@@ -48,6 +48,23 @@ def test_search_cost_base_products_groups_by_name(tmp_path):
     ]
 
 
+def test_search_cost_base_products_matches_supplier_name(tmp_path):
+    path = tmp_path / "cost_base.xlsx"
+    _write_cost_base(path)
+
+    results = search_cost_base_products(path, "273빈티지흑청스커트")
+
+    assert results == [
+        {
+            "name": "빈티지 흑청 스커트",
+            "options": [
+                {"code": "175252569", "label": "흑청/S", "product_id": "S10456"},
+                {"code": "175252570", "label": "흑청/M", "product_id": "S10457"},
+            ],
+        }
+    ]
+
+
 def test_search_cost_base_products_no_match_returns_empty(tmp_path):
     path = tmp_path / "cost_base.xlsx"
     _write_cost_base(path)
