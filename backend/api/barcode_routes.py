@@ -2108,6 +2108,32 @@ def build_barcode_router(
             "current_next": _get_first_remaining_item(state, inv),
         }
 
+    @router.post("/barcode/kimsungil/summon-to-defect")
+    def summon_kimsungil_to_defect(user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
+        kimsungil_counts = dict(get_shared_kimsungil_counts())
+        incoming_counts = get_shared_incoming_counts() or {}
+
+        moved_codes = [code for code in kimsungil_counts if int(incoming_counts.get(code, 0) or 0) > 0]
+        defect_counts = dict(get_shared_defect_counts())
+        moved_total = 0
+        for code in moved_codes:
+            qty = kimsungil_counts.pop(code, 0)
+            defect_counts[code] = defect_counts.get(code, 0) + qty
+            moved_total += qty
+
+        set_shared_kimsungil_counts(kimsungil_counts)
+        set_shared_defect_counts(defect_counts)
+
+        return {
+            "ok": True,
+            "moved_codes": moved_codes,
+            "moved_count": len(moved_codes),
+            "moved_total": moved_total,
+            "defects": _get_defect_list(state),
+            "kimsungil": _get_kimsungil_list(state),
+        }
+
     @router.get("/barcode/defect/export")
     def export_defects(user: str = Depends(get_current_user)):
         state = get_barcode_state(user)

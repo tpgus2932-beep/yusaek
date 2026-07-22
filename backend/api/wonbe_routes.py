@@ -218,6 +218,28 @@ def load_wonbe_cost_base_map() -> dict[str, str]:
     return cost_map
 
 
+def load_wonbe_option_sno_map() -> dict[str, str]:
+    """옵션번호(에이블리 옵션 sno) → 상품코드 매핑.
+
+    옵션번호는 EZAdmin 상품마스타의 옵션추가1 필드에서 채워지지만, 실제로는
+    에이블리 옵션 sno로 관리된다 (barcode_routes.py의 defect_ochuul_minus가
+    같은 컬럼 값을 에이블리 today-delivery-goods-options 응답의 sno와
+    대조해서 쓰고 있음 - 검증된 매핑).
+    """
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute("SELECT 상품코드, 옵션번호 FROM wonbe WHERE 옵션번호 != ''").fetchall()
+    finally:
+        conn.close()
+    sno_map: dict[str, str] = {}
+    for r in rows:
+        sno = str(r["옵션번호"]).strip()
+        if sno and sno not in sno_map:
+            sno_map[sno] = r["상품코드"]
+    return sno_map
+
+
 def load_wonbe_product_cost_map() -> dict[str, int]:
     """상품명합 → 원가(int) 매핑. 마진계산(아무드/에이블리 정산) 등에서 원가 조회용."""
     conn = _get_wonbe_db()

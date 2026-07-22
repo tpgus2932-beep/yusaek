@@ -47,8 +47,9 @@ const ReturnsPage = () => {
     const [ezadminSheetLoading, setEzadminSheetLoading] = useState(false);
     const [lastSheetSeq, setLastSheetSeq] = useState(null);
     const [barcodePrintLoading, setBarcodePrintLoading] = useState(false);
-    const [isLoadingAbly, setIsLoadingAbly] = useState(false);
-    const [isLoadingExchange, setIsLoadingExchange] = useState(false);
+    const [isLoadingAllApis, setIsLoadingAllApis] = useState(false);
+    const [isResolvingEzadmin, setIsResolvingEzadmin] = useState(false);
+    const [isExecutingChangeProduct, setIsExecutingChangeProduct] = useState(false);
     const [lotteDateFr, setLotteDateFr] = useState(
         new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10)
     );
@@ -59,14 +60,6 @@ const ReturnsPage = () => {
     const [onebeFormat, setOnebeFormat] = useState('xls');
     const [exportFormat, setExportFormat] = useState('xlsx');
     const [onebeHeaders, setOnebeHeaders] = useState(() => ({}));
-    const [showCostEditor, setShowCostEditor] = useState(false);
-    const [costColumns, setCostColumns] = useState([]);
-    const [costRows, setCostRows] = useState([]);
-    const [costTotal, setCostTotal] = useState(0);
-    const [costOffset, setCostOffset] = useState(0);
-    const [costQuery, setCostQuery] = useState('');
-    const costLimit = 50;
-    const [costEdits, setCostEdits] = useState({});
     const [costAddName, setCostAddName] = useState('');
     const [costAddCode, setCostAddCode] = useState('');
     const [costBatchOpen, setCostBatchOpen] = useState(false);
@@ -82,7 +75,6 @@ const ReturnsPage = () => {
     const [singleItemResult, setSingleItemResult] = useState(null);
     const [excelRefundLoading, setExcelRefundLoading] = useState(false);
     const [excelRefundResults, setExcelRefundResults] = useState(null);
-    const searchTimer = useRef(null);
     const [selectedCols, setSelectedCols] = useState(() => ({
         상품코드: true,
         요청수량: true,
@@ -113,6 +105,23 @@ const ReturnsPage = () => {
             { key: 'onebe', label: '원베 행', count: onebeRows.length },
         ],
         [queues, onebeRows]
+    );
+
+    const exchangeCustomerAllReady = useMemo(() => {
+        const items = queues.exchange_customer;
+        if (!items.length) return false;
+        return items.every((item) =>
+            item.change_product_done ||
+            (item.ezadmin_seq && item.ezadmin_prd_seq && item.old_product_id && item.new_product_id && !item.ezadmin_error)
+        );
+    }, [queues.exchange_customer]);
+
+    const exchangeCustomerHasPending = useMemo(
+        () => queues.exchange_customer.some((item) =>
+            !item.change_product_done &&
+            item.ezadmin_seq && item.ezadmin_prd_seq && item.old_product_id && item.new_product_id && !item.ezadmin_error
+        ),
+        [queues.exchange_customer]
     );
 
     const playSound = useCallback((key) => {
@@ -187,6 +196,7 @@ const ReturnsPage = () => {
                 unmatched: pool('/sounds/dd.wav'),
                 exchangeDefect: pool('/sounds/ww.wav'),
                 exchangeNormal: pool('/sounds/tt.wav'),
+                relatedNotice: pool('/sounds/ice.wav'),
             };
         }
     }, []);
@@ -260,29 +270,21 @@ const ReturnsPage = () => {
         await handleUpload(file, '/returns/excel_lotte', '롯데택배 엑셀');
     };
 
-    const handleLotteFromApi = async () => {
-        setLoading(true);
-        setMessage('');
-        try {
-            const res = await fetch(`${API}/returns/lotte-from-api`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                body: JSON.stringify({
-                    date_fr: lotteDateFr.replace(/-/g, ''),
-                    date_to: lotteDateTo.replace(/-/g, ''),
-                    account: lotteAccount,
-                }),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '불러오기 실패');
-            setStatus(data.status || status);
-            await refreshState();
-            setMessage(`롯데 API 불러오기 완료 — ${data.map_count}건 매핑`);
-        } catch (err) {
-            setMessage(err.message || '불러오기 실패');
-        } finally {
-            setLoading(false);
-        }
+    const fetchLotteFromApi = async () => {
+        const res = await fetch(`${API}/returns/lotte-from-api`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({
+                date_fr: lotteDateFr.replace(/-/g, ''),
+                date_to: lotteDateTo.replace(/-/g, ''),
+                account: lotteAccount,
+            }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.detail || '불러오기 실패');
+        setStatus(data.status || status);
+        await refreshState();
+        return `롯데 ${data.map_count}건 매핑`;
     };
 
     const handleExcel2Change = async (file) => {
@@ -290,23 +292,15 @@ const ReturnsPage = () => {
         await handleUpload(file, '/returns/excel2', '에이블리 엑셀');
     };
 
-    const handleLoadAblyApi = async () => {
-        setIsLoadingAbly(true);
-        setMessage('');
-        try {
-            const res = await fetch(`${API}/returns/load-ably-api`, {
-                method: 'POST',
-                headers: getAuthHeaders(),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '에이블리 API 호출 실패');
-            if (data.status) setStatus(data.status);
-            setMessage(`에이블리 반품 ${data.loaded}건 로드 완료`);
-        } catch (err) {
-            setMessage(err.message || '에이블리 API 호출 실패');
-        } finally {
-            setIsLoadingAbly(false);
-        }
+    const fetchAblyReturnApi = async () => {
+        const res = await fetch(`${API}/returns/load-ably-api`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.detail || '에이블리 API 호출 실패');
+        if (data.status) setStatus(data.status);
+        return `반품 ${data.loaded}건 로드`;
     };
 
     const handleSingleRefund = async () => {
@@ -399,23 +393,34 @@ const ReturnsPage = () => {
         }
     };
 
-    const handleLoadExchangeApi = async () => {
-        setIsLoadingExchange(true);
+    const fetchExchangeApi = async () => {
+        const res = await fetch(`${API}/returns/load-exchange-api`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.detail || '교환 API 호출 실패');
+        if (data.status) setStatus(data.status);
+        return `교환 ${data.loaded}건 로드`;
+    };
+
+    const handleLoadAllApis = async () => {
+        setIsLoadingAllApis(true);
         setMessage('');
-        try {
-            const res = await fetch(`${API}/returns/load-exchange-api`, {
-                method: 'POST',
-                headers: getAuthHeaders(),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '교환 API 호출 실패');
-            if (data.status) setStatus(data.status);
-            setMessage(`교환 ${data.loaded}건 로드 완료`);
-        } catch (err) {
-            setMessage(err.message || '교환 API 호출 실패');
-        } finally {
-            setIsLoadingExchange(false);
+        const results = [];
+        for (const [label, fetchFn] of [
+            ['롯데', fetchLotteFromApi],
+            ['반품', fetchAblyReturnApi],
+            ['교환', fetchExchangeApi],
+        ]) {
+            try {
+                results.push(await fetchFn());
+            } catch (err) {
+                results.push(`${label} 실패: ${err.message || '불러오기 실패'}`);
+            }
         }
+        setIsLoadingAllApis(false);
+        setMessage(results.join(' / '));
     };
 
     const handleExchangeExcelChange = async (files) => {
@@ -442,6 +447,53 @@ const ReturnsPage = () => {
         }
     };
 
+    const handleResolveExchangeCustomerEzadmin = async () => {
+        setIsResolvingEzadmin(true);
+        setMessage('');
+        try {
+            const res = await fetch(`${API}/returns/exchange-customer/resolve-ezadmin`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.need_session) {
+                openEzadminModal(handleResolveExchangeCustomerEzadmin);
+                return;
+            }
+            if (!res.ok || !data?.ok) throw new Error(data?.detail || '이지어드민 조회 실패');
+            setQueues(normalizeQueues(data.queues));
+            setMessage(`이지어드민 정보 ${data.resolved}건 조회 완료`);
+        } catch (err) {
+            setMessage(err.message || '이지어드민 조회 실패');
+        } finally {
+            setIsResolvingEzadmin(false);
+        }
+    };
+
+    const handleExecuteExchangeChangeProduct = async () => {
+        if (!window.confirm('이지어드민에서 실제로 상품 교환처리를 실행할까요? 되돌리기 어려운 작업입니다.')) return;
+        setIsExecutingChangeProduct(true);
+        setMessage('');
+        try {
+            const res = await fetch(`${API}/returns/exchange-customer/execute-change-product`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.need_session) {
+                openEzadminModal(handleExecuteExchangeChangeProduct);
+                return;
+            }
+            if (data?.queues) setQueues(normalizeQueues(data.queues));
+            if (!res.ok || !data?.ok) throw new Error(data?.detail || '교환 실행 실패');
+            setMessage(`이지어드민 교환처리 ${data.executed}건 완료`);
+        } catch (err) {
+            setMessage(err.message || '교환 실행 실패');
+        } finally {
+            setIsExecutingChangeProduct(false);
+        }
+    };
+
     const handleCostReload = async () => {
         setLoading(true);
         setMessage('');
@@ -459,66 +511,6 @@ const ReturnsPage = () => {
             setMessage(err.message || '원가베이스 로드 실패');
         } finally {
             setLoading(false);
-        }
-    };
-
-    const fetchCostPreview = async (offset = 0, query = costQuery) => {
-        const q = (query || '').trim();
-        try {
-            const res = await fetch(
-                `${API}/returns/cost-base/preview?offset=${offset}&limit=${costLimit}&q=${encodeURIComponent(q)}`,
-                { headers: getAuthHeaders() }
-            );
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '원가베이스 미리보기 실패');
-            setCostColumns(data.columns || []);
-            setCostRows(data.rows || []);
-            setCostTotal(data.total || 0);
-            setCostOffset(offset);
-            setCostEdits({});
-        } catch (err) {
-            setMessage(err.message || '원가베이스 미리보기 실패');
-        }
-    };
-
-    const openCostEditor = async () => {
-        setShowCostEditor(true);
-        await fetchCostPreview(0, '');
-    };
-
-    const handleCostCellChange = (rowIndex, colIndex, value) => {
-        setCostRows((prev) =>
-            prev.map((row) =>
-                row.row_index === rowIndex
-                    ? { ...row, values: row.values.map((v, i) => (i === colIndex ? value : v)) }
-                    : row
-            )
-        );
-        setCostEdits((prev) => {
-            const key = `${rowIndex}:${colIndex}`;
-            return { ...prev, [key]: { row_index: rowIndex, column: colIndex, value } };
-        });
-    };
-
-    const handleCostCellCommit = async () => {
-        const edits = Object.values(costEdits);
-        if (!edits.length) {
-            setMessage('변경된 내용이 없습니다.');
-            return;
-        }
-        try {
-            const res = await fetch(`${API}/returns/cost-base/edit-batch`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                body: JSON.stringify({ edits }),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '원가베이스 수정 실패');
-            setMessage('원가베이스 변경 적용 완료');
-            setCostEdits({});
-        } catch (err) {
-            setMessage(err.message || '원가베이스 수정 실패');
-            await fetchCostPreview(costOffset, costQuery);
         }
     };
 
@@ -542,9 +534,6 @@ const ReturnsPage = () => {
             setCostAddCode('');
             setMessage('개별상품추가 완료');
             await refreshState();
-            if (showCostEditor) {
-                await fetchCostPreview(0, '');
-            }
         } catch (err) {
             setMessage(err.message || '개별상품추가 실패');
         }
@@ -565,8 +554,49 @@ const ReturnsPage = () => {
             setCostBatchOpen(false);
             setMessage(`원가베이스 ${data.appended || 0}행 추가 완료`);
             await refreshState();
-            if (showCostEditor) await fetchCostPreview(0, '');
         } catch (err) { setMessage(err.message || '원가베이스 추가 실패'); }
+    };
+
+    const scanBarcode = async (value) => {
+        const res = await fetch(`${API}/returns/scan`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({ barcode: value }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.detail || '스캔 실패');
+        return data;
+    };
+
+    const addRelatedItem = async (source, invoice) => {
+        const res = await fetch(`${API}/returns/scan-related`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({ source, invoice }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.detail || '추가 실패');
+        return data;
+    };
+
+    const maybeAddRelatedExchange = async (related) => {
+        if (!related || related.length === 0) return;
+        playSound('relatedNotice');
+        const summary = related
+            .map((r) => `- ${r.invoice} (${r.item_text || ''} x${r.qty || ''})`)
+            .join('\n');
+        const ok = window.confirm(
+            `같은 주문번호의 다른 반품/교환건이 아직 큐에 없습니다. 지금 같이 추가할까요?\n${summary}`
+        );
+        if (!ok) return;
+        for (const r of related) {
+            try {
+                const data = await addRelatedItem(r.source, r.invoice);
+                setQueues(normalizeQueues(data.queues || queues));
+            } catch (err) {
+                setMessage(err.message || '추가 실패');
+            }
+        }
     };
 
     const handleScan = async () => {
@@ -574,13 +604,7 @@ const ReturnsPage = () => {
         if (!value) return;
         unlockAudio();
         try {
-            const res = await fetch(`${API}/returns/scan`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                body: JSON.stringify({ barcode: value }),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '스캔 실패');
+            const data = await scanBarcode(value);
             setQueues(normalizeQueues(data.queues || queues));
             const nextType = data.last_type || '-';
             setLastType(nextType);
@@ -591,6 +615,7 @@ const ReturnsPage = () => {
             if (shouldPlay) {
                 playTypeSound(nextType, String(data.sound_type || ''));
             }
+            await maybeAddRelatedExchange(data.related_unscanned);
         } catch (err) {
             setMessage(err.message || '스캔 실패');
         } finally {
@@ -664,39 +689,6 @@ const ReturnsPage = () => {
         }
     };
 
-    const handleCopyPreview = async () => {
-        if (!onebeRows.length) {
-            setMessage('먼저 원베양식을 생성하세요.');
-            return;
-        }
-        const cols = selectedColumnList.length ? selectedColumnList : ['상품코드', '요청수량', '입고수량'];
-        const headers = cols.map((c) => (onebeHeaders[c] ?? c).trim() || c);
-        const header = headers.join('\t');
-        const body = onebeRows
-            .map((row) => cols.map((c) => (row?.[c] ?? '')).join('\t'))
-            .join('\n');
-        try {
-            await navigator.clipboard.writeText(`${header}\n${body}`);
-            setMessage('미리보기 복사 완료');
-        } catch {
-            setMessage('복사 실패');
-        }
-    };
-
-    const handleConsolidate = async () => {
-        try {
-            const res = await fetch(`${API}/returns/onebe/consolidate`, {
-                method: 'POST',
-                headers: getAuthHeaders(),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '같은수량가공 실패');
-            setOnebeRows(data.onebe?.rows || []);
-        } catch (err) {
-            setMessage(err.message || '같은수량가공 실패');
-        }
-    };
-
     const handleBuildOnebe = async () => {
         const source = 'customer';
         try {
@@ -706,11 +698,27 @@ const ReturnsPage = () => {
                 body: JSON.stringify({ source }),
             });
             const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '원베양식 생성 실패');
-            setOnebeRows(data.onebe?.rows || []);
+            if (!res.ok) throw new Error(data?.detail || '생성 실패');
+
+            const consolidateRes = await fetch(`${API}/returns/onebe/consolidate`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            const consolidateData = await consolidateRes.json().catch(() => ({}));
+            if (!consolidateRes.ok) throw new Error(consolidateData?.detail || '같은수량가공 실패');
+
+            const rows = consolidateData.onebe?.rows || [];
+            setOnebeRows(rows);
             setActiveTab('onebe');
+            const unmatchedCount = rows.filter((row) => row['원가베이스매칭'] === 'X').length;
+            if (unmatchedCount > 0) {
+                setMessage(`⚠ 상품코드 미매칭 ${unmatchedCount}건 있습니다 (원가베이스매칭 컬럼 확인)`);
+                setSelectedCols((prev) => ({ ...prev, 원가베이스매칭: true }));
+            } else {
+                setMessage('');
+            }
         } catch (err) {
-            setMessage(err.message || '원베양식 생성 실패');
+            setMessage(err.message || '생성 실패');
         }
     };
 
@@ -854,6 +862,9 @@ const ReturnsPage = () => {
         const hasReason = items.some((item) => item.reason);
         const hasDetailReason = items.some((item) => item.detail_reason);
         const hasUserComment = items.some((item) => item.user_comment);
+        const hasEzadminInfo = items.some((item) =>
+            item.ezadmin_seq || item.old_product_id || item.new_product_id || item.ezadmin_error || item.change_product_done
+        );
         return (
             <div className={pageStyles.tableWrap}>
                 <table className={pageStyles.table}>
@@ -867,6 +878,11 @@ const ReturnsPage = () => {
                             {hasReason && <th>사유</th>}
                             {hasDetailReason && <th>상세사유</th>}
                             {hasUserComment && <th>고객메모</th>}
+                            {hasEzadminInfo && <th>SEQ</th>}
+                            {hasEzadminInfo && <th>PRD_SEQ</th>}
+                            {hasEzadminInfo && <th>기존상품코드</th>}
+                            {hasEzadminInfo && <th>교환상품코드</th>}
+                            {hasEzadminInfo && <th>상태</th>}
                         </tr>
                     </thead>
                     <tbody>
@@ -880,6 +896,17 @@ const ReturnsPage = () => {
                                 {hasReason && <td>{item.reason || ''}</td>}
                                 {hasDetailReason && <td>{item.detail_reason || ''}</td>}
                                 {hasUserComment && <td>{item.user_comment || ''}</td>}
+                                {hasEzadminInfo && <td>{item.ezadmin_seq || ''}</td>}
+                                {hasEzadminInfo && <td>{item.ezadmin_prd_seq || ''}</td>}
+                                {hasEzadminInfo && <td>{item.old_product_id || ''}</td>}
+                                {hasEzadminInfo && <td>{item.new_product_id || ''}</td>}
+                                {hasEzadminInfo && (
+                                    <td style={{ color: item.ezadmin_error ? '#dc2626' : '#22c55e' }}>
+                                        {item.change_product_done
+                                            ? '교환처리완료'
+                                            : item.ezadmin_error || (item.ezadmin_seq ? '완료' : '')}
+                                    </td>
+                                )}
                             </tr>
                         ))}
                     </tbody>
@@ -935,56 +962,33 @@ const ReturnsPage = () => {
                         <button
                             type="button"
                             className={pageStyles.fileInput}
-                            onClick={handleLotteFromApi}
-                            disabled={loading}
+                            onClick={handleLoadAllApis}
+                            disabled={isLoadingAllApis}
                         >
-                            <span style={{
-                                display: 'inline-block',
-                                width: 8,
-                                height: 8,
-                                borderRadius: '50%',
-                                background: (status?.lotte_loaded || status?.map_lotte_count > 0) ? '#22c55e' : '#d1d5db',
-                                marginRight: 6,
-                                verticalAlign: 'middle',
-                                flexShrink: 0,
-                            }} />
-                            롯데 API 불러오기
-                        </button>
-                        <button
-                            type="button"
-                            className={pageStyles.fileInput}
-                            onClick={handleLoadAblyApi}
-                            disabled={isLoadingAbly}
-                        >
-                            <span style={{
-                                display: 'inline-block',
-                                width: 8,
-                                height: 8,
-                                borderRadius: '50%',
-                                background: status?.excel2_loaded ? '#22c55e' : '#d1d5db',
-                                marginRight: 6,
-                                verticalAlign: 'middle',
-                                flexShrink: 0,
-                            }} />
-                            {isLoadingAbly ? '불러오는 중...' : '반품 API 불러오기'}
-                        </button>
-                        <button
-                            type="button"
-                            className={pageStyles.fileInput}
-                            onClick={handleLoadExchangeApi}
-                            disabled={isLoadingExchange}
-                        >
-                            <span style={{
-                                display: 'inline-block',
-                                width: 8,
-                                height: 8,
-                                borderRadius: '50%',
-                                background: status?.exchange_loaded ? '#22c55e' : '#d1d5db',
-                                marginRight: 6,
-                                verticalAlign: 'middle',
-                                flexShrink: 0,
-                            }} />
-                            {isLoadingExchange ? '불러오는 중...' : '교환 API 불러오기'}
+                            <span style={{ display: 'inline-flex', gap: 4, marginRight: 6, verticalAlign: 'middle' }}>
+                                <span title="롯데" style={{
+                                    display: 'inline-block',
+                                    width: 8,
+                                    height: 8,
+                                    borderRadius: '50%',
+                                    background: (status?.lotte_loaded || status?.map_lotte_count > 0) ? '#22c55e' : '#d1d5db',
+                                }} />
+                                <span title="반품" style={{
+                                    display: 'inline-block',
+                                    width: 8,
+                                    height: 8,
+                                    borderRadius: '50%',
+                                    background: status?.excel2_loaded ? '#22c55e' : '#d1d5db',
+                                }} />
+                                <span title="교환" style={{
+                                    display: 'inline-block',
+                                    width: 8,
+                                    height: 8,
+                                    borderRadius: '50%',
+                                    background: status?.exchange_loaded ? '#22c55e' : '#d1d5db',
+                                }} />
+                            </span>
+                            {isLoadingAllApis ? '불러오는 중...' : '전체 API 불러오기'}
                         </button>
                     </div>
                     <div className={`${pageStyles.uploadRow} ${styles.compactActions}`}>
@@ -997,8 +1001,8 @@ const ReturnsPage = () => {
                         <button className={pageStyles.secondaryBtn} onClick={handleLoadSnapshot} disabled={loading}>
                             불러오기
                         </button>
-                        <button className={pageStyles.secondaryBtn} onClick={openCostEditor}>
-                            원가베이스 편집
+                        <button className={pageStyles.secondaryBtn} onClick={handleReset}>
+                            초기화
                         </button>
                     </div>
                     {savedAt && <div className={pageStyles.metaLabel}>마지막 임시저장: {savedAt}</div>}
@@ -1159,7 +1163,33 @@ const ReturnsPage = () => {
                                 );
                             })()}
                             {activeTab === 'exchange_seller' && renderTable(queues.exchange_seller)}
-                            {activeTab === 'exchange_customer' && renderTable(queues.exchange_customer)}
+                            {activeTab === 'exchange_customer' && (
+                                <>
+                                    {renderTable(queues.exchange_customer)}
+                                    {queues.exchange_customer.length > 0 && (
+                                        <div className={`${pageStyles.uploadRow} ${styles.compactActions}`}>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.secondaryBtn}
+                                                onClick={handleResolveExchangeCustomerEzadmin}
+                                                disabled={isResolvingEzadmin}
+                                            >
+                                                {isResolvingEzadmin ? '조회 중...' : '이지어드민 정보 불러오기'}
+                                            </button>
+                                            {exchangeCustomerAllReady && exchangeCustomerHasPending && (
+                                                <button
+                                                    type="button"
+                                                    className={pageStyles.fileInput}
+                                                    onClick={handleExecuteExchangeChangeProduct}
+                                                    disabled={isExecutingChangeProduct}
+                                                >
+                                                    {isExecutingChangeProduct ? '실행 중...' : '실행'}
+                                                </button>
+                                            )}
+                                        </div>
+                                    )}
+                                </>
+                            )}
                             {activeTab === 'unmatched' && renderTable(queues.unmatched)}
                         </>
                     )}
@@ -1168,13 +1198,7 @@ const ReturnsPage = () => {
                         <div className={`${pageStyles.stack} ${styles.onebePanel}`}>
                             <div className={`${pageStyles.uploadRow} ${styles.onebeActions}`}>
                                 <button className={pageStyles.primaryBtn} onClick={handleBuildOnebe}>
-                                    고객대기 → 원베양식 생성
-                                </button>
-                                <button className={pageStyles.secondaryBtn} onClick={handleCopyPreview}>
-                                    미리보기 복사(엑셀 붙여넣기)
-                                </button>
-                                <button className={pageStyles.secondaryBtn} onClick={handleConsolidate}>
-                                    같은수량가공
+                                    생성
                                 </button>
                                 <button
                                     className={pageStyles.secondaryBtn}
@@ -1446,103 +1470,6 @@ const ReturnsPage = () => {
                 </section>
 
             </div>
-
-            {showCostEditor && (
-                <div className={pageStyles.modalOverlay} onClick={() => setShowCostEditor(false)}>
-                    <div className={pageStyles.modal} onClick={(e) => e.stopPropagation()}>
-                        <div className={pageStyles.modalHeader}>
-                            <h3 className={pageStyles.modalTitle}>원가베이스 편집</h3>
-                            <div className={pageStyles.modalActions}>
-                                <input
-                                    className={pageStyles.searchInput}
-                                    value={costQuery}
-                                    onChange={(e) => {
-                                        const val = e.target.value;
-                                        setCostQuery(val);
-                                        if (searchTimer.current) clearTimeout(searchTimer.current);
-                                        searchTimer.current = setTimeout(() => {
-                                            fetchCostPreview(0, val);
-                                        }, 300);
-                                    }}
-                                    onKeyDown={(e) => {
-                                        if (e.key === 'Enter') {
-                                            fetchCostPreview(0, costQuery);
-                                        }
-                                    }}
-                                    placeholder="검색어 입력"
-                                />
-
-                                <button className={pageStyles.primaryBtn} onClick={handleCostCellCommit}>
-                                    변경 적용
-                                </button>
-                                <button
-                                    className={pageStyles.secondaryBtn}
-                                    onClick={() => setShowCostEditor(false)}
-                                >
-                                    닫기
-                                </button>
-                            </div>
-                        </div>
-                        <div className={pageStyles.tableWrap}>
-                            <table className={pageStyles.table}>
-                                <thead>
-                                    <tr>
-                                        <th>#</th>
-                                        {costColumns.map((col) => (
-                                            <th key={col}>{col}</th>
-                                        ))}
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {costRows.map((row) => (
-                                        <tr key={row.row_index}>
-                                            <td>{row.row_index + 1}</td>
-                                            {row.values.map((val, idx) => (
-                                                <td key={`${row.row_index}-${idx}`}>
-                                                    <input
-                                                        className={pageStyles.cellInput}
-                                                        value={val ?? ''}
-                                                        onChange={(e) =>
-                                                            handleCostCellChange(row.row_index, idx, e.target.value)
-                                                        }
-                                                    />
-                                                </td>
-                                            ))}
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                            {!costRows.length && (
-                                <div className={pageStyles.empty}>표시할 데이터가 없습니다.</div>
-                            )}
-                        </div>
-                        <div className={pageStyles.uploadRow}>
-                            <button
-                                className={pageStyles.secondaryBtn}
-                                onClick={() => fetchCostPreview(Math.max(0, costOffset - costLimit), costQuery)}
-                                disabled={costOffset === 0}
-                            >
-                                이전
-                            </button>
-                            <button
-                                className={pageStyles.secondaryBtn}
-                                onClick={() =>
-                                    fetchCostPreview(
-                                        Math.min(costOffset + costLimit, Math.max(costTotal - costLimit, 0)),
-                                        costQuery
-                                    )
-                                }
-                                disabled={costOffset + costLimit >= costTotal}
-                            >
-                                다음
-                            </button>
-                            <span className={pageStyles.metaLabel}>
-                                {costTotal ? `${costOffset + 1}-${Math.min(costOffset + costLimit, costTotal)} / ${costTotal}` : '0'}
-                            </span>
-                        </div>
-                    </div>
-                </div>
-            )}
 
             {costBatchOpen && (
                 <div className={pageStyles.modalOverlay} onClick={() => setCostBatchOpen(false)}>
