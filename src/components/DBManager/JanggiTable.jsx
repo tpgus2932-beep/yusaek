@@ -921,6 +921,12 @@ function JanggiTopComparison() {
     });
   };
 
+  const resetChecked = () => {
+    if (!window.confirm("모든 거래처의 확인완료 표시를 초기화하시겠습니까?")) return;
+    setCheckedRows(new Set());
+    localStorage.removeItem("janggi_top_checked");
+  };
+
   const loadDb = async () => {
     setLoading(true);
     setMessage("DB 조회 중...");
@@ -1022,6 +1028,11 @@ function JanggiTopComparison() {
           <SlidersHorizontal size={13} />
           거래처 별칭{Object.keys(aliasMap).length > 0 ? ` (${Object.keys(aliasMap).length})` : ""}
         </button>
+        {dbLoaded && checkedCount > 0 && (
+          <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={resetChecked}>
+            확인완료 초기화
+          </button>
+        )}
         {dbLoaded && (
           <div className={topStyles.summary}>
             <span className={topStyles.badgeOrange}>확인 {checkedCount}/{sortedDbRows.length}</span>
