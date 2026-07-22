@@ -41,8 +41,8 @@ def test_search_cost_base_products_groups_by_name(tmp_path):
         {
             "name": "빈티지 흑청 스커트",
             "options": [
-                {"code": "175252569", "label": "흑청/S"},
-                {"code": "175252570", "label": "흑청/M"},
+                {"code": "175252569", "label": "흑청/S", "product_id": "S10456"},
+                {"code": "175252570", "label": "흑청/M", "product_id": "S10457"},
             ],
         }
     ]

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 from sdk import config as ez_config
 from sdk.ably import AblyClient
-from sdk.ezadmin import EzAdminClient, EzDeskSessionExpired
+from sdk.ezadmin import EzAdminClient, EzAdminSessionExpired, EzDeskSessionExpired
 from services.client_cancel_soldout_utils import (
     build_soldout_message,
     filter_matching_order_items,
@@ -15,6 +15,24 @@ from services.client_cancel_soldout_utils import (
 )
 
 _SOLDOUT_TEMPLATE_NAME = "품절 문자"
+
+
+def _parse_products(products: list[dict]) -> tuple[dict[str, str], dict[str, str]]:
+    """products: [{name, options: [{code, product_id}]}] → (code→name, code→product_id)."""
+    option_code_to_name: dict[str, str] = {}
+    option_code_to_product_id: dict[str, str] = {}
+    for product in products:
+        name = str(product.get("name") or "").strip()
+        for option in product.get("options") or []:
+            code = str(option.get("code") or "").strip()
+            if not code:
+                continue
+            if name:
+                option_code_to_name[code] = name
+            product_id = str(option.get("product_id") or "").strip()
+            if product_id:
+                option_code_to_product_id[code] = product_id
+    return option_code_to_name, option_code_to_product_id
 
 
 def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db, cost_base_path: Path):
@@ -45,17 +63,12 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
         되므로, 대상 주문을 찾을 필요 없이 옵션 코드만으로 바로 처리한다.
         """
         products = payload.get("products") or []
-        option_codes: set[str] = set()
-        for product in products:
-            for code in product.get("option_codes") or []:
-                code = str(code).strip()
-                if code:
-                    option_codes.add(code)
-        if not option_codes:
+        option_code_to_name, _ = _parse_products(products)
+        if not option_code_to_name:
             raise HTTPException(status_code=400, detail="미진열 처리할 옵션이 없습니다.")
 
         non_display_snos: list[int] = []
-        for code in option_codes:
+        for code in option_code_to_name:
             try:
                 non_display_snos.append(int(code))
             except ValueError:
@@ -72,15 +85,7 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
     @router.post("/run")
     async def run(payload: dict = Body(...), user: str = Depends(get_current_user)):
         products = payload.get("products") or []
-        option_code_to_name: dict[str, str] = {}
-        for product in products:
-            name = str(product.get("name") or "").strip()
-            if not name:
-                continue
-            for code in product.get("option_codes") or []:
-                code = str(code).strip()
-                if code:
-                    option_code_to_name[code] = name
+        option_code_to_name, option_code_to_product_id = _parse_products(products)
         if not option_code_to_name:
             raise HTTPException(status_code=400, detail="취소할 상품/옵션이 없습니다.")
 
@@ -177,6 +182,18 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
                 order["sms_sent"] = False
                 order["sms_error"] = str(exc)
 
+        pending_counts: list[dict] = []
+        need_ezadmin_session = False
+        for product_id in sorted(set(option_code_to_product_id.values())):
+            try:
+                remaining = await ez.get_pending_order_count(product_id)
+                pending_counts.append({"product_id": product_id, "remaining": remaining})
+            except EzAdminSessionExpired:
+                need_ezadmin_session = True
+                pending_counts.append({"product_id": product_id, "remaining": None, "error": "EZAdmin 세션 만료"})
+            except Exception as exc:
+                pending_counts.append({"product_id": product_id, "remaining": None, "error": str(exc)})
+
         return {
             "ok": True,
             "cancelled_orders": cancelled,
@@ -184,6 +201,8 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
             "non_display_option_count": len(non_display_snos),
             "soldout_goods_count": len(soldout_snos),
             "need_ezdesk_session": need_ezdesk_session,
+            "need_ezadmin_session": need_ezadmin_session,
+            "pending_counts": pending_counts,
         }
 
     return router

@@ -68,7 +68,7 @@ const ClientCancelSoldOutPage = () => {
   const toPayloadProducts = () =>
     products.map((p) => ({
       name: p.name,
-      option_codes: p.options.map((o) => o.code),
+      options: p.options.map((o) => ({ code: o.code, product_id: o.product_id })),
     }));
 
   const handleRun = async () => {
@@ -217,6 +217,25 @@ const ClientCancelSoldOutPage = () => {
             <p className={styles.error}>
               EZDesk 세션이 만료되었습니다. 문자 발송이 안 된 건이 있으니 세션을 다시 붙여넣고 재실행해주세요.
             </p>
+          )}
+          {result.need_ezadmin_session && (
+            <p className={styles.error}>
+              EZAdmin 세션이 만료되어 남은 접수 수량을 조회하지 못했습니다. 세션을 다시 붙여넣고 확인해주세요.
+            </p>
+          )}
+          {result.pending_counts?.length > 0 && (
+            <ul className={styles.resultList}>
+              {result.pending_counts.map((pc) => (
+                <li key={pc.product_id} className={styles.resultItem}>
+                  <span>{pc.product_id}</span>
+                  <span>
+                    {pc.remaining === null
+                      ? `접수 조회 실패${pc.error ? `: ${pc.error}` : ''}`
+                      : `남은 접수 ${pc.remaining}건`}
+                  </span>
+                </li>
+              ))}
+            </ul>
           )}
           {result.cancelled_orders.length > 0 && (
             <ul className={styles.resultList}>

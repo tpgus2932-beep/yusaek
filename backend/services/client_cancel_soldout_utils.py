@@ -6,6 +6,7 @@ from openpyxl import load_workbook
 
 # 원가베이스유.xlsx 열 인덱스 (0-based) — 헤더:
 # 상품코드, 상품명, 색상, 사이즈, 원가, 거래처, 거래처상품명, 거래처합, 상품명합, 거래처주소, 옵션번호
+_PRODUCT_ID_COL = 0
 _NAME_COL = 1
 _COLOR_COL = 2
 _SIZE_COL = 3
@@ -14,11 +15,13 @@ _REQUIRED_COLS = _OPTION_CODE_COL + 1
 
 
 def search_cost_base_products(path: Path, q: str, limit: int = 20) -> list[dict]:
-    """원가베이스유 엑셀에서 상품명(1열) 기준으로 검색해 옵션(색상/사이즈/옵션번호)을 묶어 반환.
+    """원가베이스유 엑셀에서 상품명(1열) 기준으로 검색해 옵션(색상/사이즈/옵션번호/상품코드)을 묶어 반환.
 
     같은 상품명의 색상/사이즈별 행들을 하나의 항목으로 묶고, 그 항목의
-    options에 {code, label}(옵션번호, "색상/사이즈" 표시용 라벨)을 순서대로 모은다.
-    실행 화면에서 옵션을 개별 선택/해제할 수 있도록 코드만이 아니라 라벨도 필요하다.
+    options에 {code, label, product_id}를 순서대로 모은다.
+    - code: 옵션번호 (에이블리 goods_option_sno와 동일, 취소/미진열 API에 사용)
+    - label: "색상/사이즈" 표시용 라벨 (실행 화면에서 옵션을 개별 선택/해제하는 데 사용)
+    - product_id: 상품코드 (EZAdmin I100 재고조회에서 "접수" 잔여 수량을 조회하는 데 사용)
     """
     if not path.exists():
         return []
@@ -49,7 +52,8 @@ def search_cost_base_products(path: Path, q: str, limit: int = 20) -> list[dict]
         color = str(row[_COLOR_COL] or "").strip()
         size = str(row[_SIZE_COL] or "").strip()
         label = "/".join(part for part in (color, size) if part) or option_code
-        groups[name].append({"code": option_code, "label": label})
+        product_id = str(row[_PRODUCT_ID_COL] or "").strip()
+        groups[name].append({"code": option_code, "label": label, "product_id": product_id})
 
     return [{"name": name, "options": groups[name]} for name in order[:limit]]
 

@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.client_cancel_soldout_routes import build_client_cancel_soldout_router
-from sdk.ezadmin import EzDeskSessionExpired
+from sdk.ezadmin import EzAdminSessionExpired, EzDeskSessionExpired
 
 
 def _make_db_factory():
@@ -74,7 +74,7 @@ def test_cost_base_search_returns_grouped_items(tmp_path):
         "ok": True,
         "items": [{
             "name": "빈티지 흑청 스커트",
-            "options": [{"code": "175252569", "label": "흑청/S"}],
+            "options": [{"code": "175252569", "label": "흑청/S", "product_id": "S10456"}],
         }],
     }
 
@@ -95,9 +95,13 @@ def test_delist_calls_stop_selling_with_option_codes_as_ints(tmp_path):
         new=AsyncMock(return_value=None),
     ) as mock_stop_selling:
         res = client.post("/client-cancel-soldout/delist", json={
-            "products": [
-                {"name": "빈티지 흑청 스커트", "option_codes": ["175252569", "175252570"]},
-            ]
+            "products": [{
+                "name": "빈티지 흑청 스커트",
+                "options": [
+                    {"code": "175252569", "product_id": "S10456"},
+                    {"code": "175252570", "product_id": "S10457"},
+                ],
+            }],
         })
 
     assert res.status_code == 200
@@ -117,7 +121,7 @@ def test_delist_stop_selling_failure_returns_502(tmp_path):
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         res = client.post("/client-cancel-soldout/delist", json={
-            "products": [{"name": "빈티지 흑청 스커트", "option_codes": ["175252569"]}]
+            "products": [{"name": "빈티지 흑청 스커트", "options": [{"code": "175252569", "product_id": "S10456"}]}]
         })
 
     assert res.status_code == 502
@@ -145,14 +149,14 @@ def test_run_missing_template_returns_400(tmp_path):
     client = TestClient(app)
 
     res = client.post("/client-cancel-soldout/run", json={
-        "products": [{"name": "빈티지 흑청 스커트", "option_codes": ["175252569"]}]
+        "products": [{"name": "빈티지 흑청 스커트", "options": [{"code": "175252569", "product_id": "S10456"}]}]
     })
 
     assert res.status_code == 400
     assert "품절 문자" in res.json()["detail"]
 
 
-def test_run_cancels_matching_order_and_sends_sms(tmp_path):
+def test_run_cancels_matching_order_sends_sms_and_reports_pending_count(tmp_path):
     client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
 
     search_result = [{
@@ -186,9 +190,15 @@ def test_run_cancels_matching_order_and_sends_sms(tmp_path):
     ) as mock_stop_selling, patch(
         "api.client_cancel_soldout_routes.EzAdminClient.send_sms",
         new=AsyncMock(return_value={"ok": True}),
-    ) as mock_send_sms:
+    ) as mock_send_sms, patch(
+        "api.client_cancel_soldout_routes.EzAdminClient.get_pending_order_count",
+        new=AsyncMock(return_value=56),
+    ) as mock_pending_count:
         res = client.post("/client-cancel-soldout/run", json={
-            "products": [{"name": "빈티지 흑청 스커트", "option_codes": ["175252569"]}]
+            "products": [{
+                "name": "빈티지 흑청 스커트",
+                "options": [{"code": "175252569", "product_id": "S10456"}],
+            }]
         })
 
     assert res.status_code == 200
@@ -202,6 +212,8 @@ def test_run_cancels_matching_order_and_sends_sms(tmp_path):
     assert data["non_display_option_count"] == 1
     assert data["soldout_goods_count"] == 0
     assert data["need_ezdesk_session"] is False
+    assert data["need_ezadmin_session"] is False
+    assert data["pending_counts"] == [{"product_id": "S10456", "remaining": 56}]
 
     mock_stop_selling.assert_awaited_once_with(
         non_display_option_snos=[374652350], soldout_goods_snos=[]
@@ -209,6 +221,7 @@ def test_run_cancels_matching_order_and_sends_sms(tmp_path):
     mock_send_sms.assert_awaited_once_with(
         "010-9895-3722", "15339827", "주문해주신 '빈티지 흑청 스커트' 이 품절되었습니다."
     )
+    mock_pending_count.assert_awaited_once_with("S10456")
 
 
 def test_run_records_ezdesk_session_expired_but_keeps_cancel_result(tmp_path):
@@ -236,9 +249,15 @@ def test_run_records_ezdesk_session_expired_but_keeps_cancel_result(tmp_path):
     ), patch(
         "api.client_cancel_soldout_routes.EzAdminClient.send_sms",
         new=AsyncMock(side_effect=EzDeskSessionExpired()),
+    ), patch(
+        "api.client_cancel_soldout_routes.EzAdminClient.get_pending_order_count",
+        new=AsyncMock(return_value=0),
     ):
         res = client.post("/client-cancel-soldout/run", json={
-            "products": [{"name": "빈티지 흑청 스커트", "option_codes": ["175252569"]}]
+            "products": [{
+                "name": "빈티지 흑청 스커트",
+                "options": [{"code": "175252569", "product_id": "S10456"}],
+            }]
         })
 
     data = res.json()
@@ -267,9 +286,15 @@ def test_run_records_cancel_failure_and_continues(tmp_path):
     ), patch(
         "api.client_cancel_soldout_routes.AblyClient.cancel_order_items",
         new=AsyncMock(side_effect=RuntimeError("cancel failed")),
+    ), patch(
+        "api.client_cancel_soldout_routes.EzAdminClient.get_pending_order_count",
+        new=AsyncMock(return_value=0),
     ):
         res = client.post("/client-cancel-soldout/run", json={
-            "products": [{"name": "빈티지 흑청 스커트", "option_codes": ["175252569"]}]
+            "products": [{
+                "name": "빈티지 흑청 스커트",
+                "options": [{"code": "175252569", "product_id": "S10456"}],
+            }]
         })
 
     data = res.json()
@@ -277,3 +302,44 @@ def test_run_records_cancel_failure_and_continues(tmp_path):
     assert data["failed_orders"] == [
         {"order_sno": 1784397062398, "stage": "cancel", "reason": "cancel failed"}
     ]
+
+
+def test_run_pending_count_ezadmin_session_expired_is_reported(tmp_path):
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+
+    search_result = [{
+        "sno": 636699893, "order_sno": 1784397062398,
+        "option_stock_sync_code": "175252569", "goods_name": "빈티지 흑청 스커트",
+    }]
+    refund_info = {
+        "refund_bank_sno": 23, "refund_bank_account_holder": "김도희",
+        "refund_bank_account_number": "190869094396", "buyer_tel": "010-9895-3722",
+    }
+    cancel_result = {"need_to_be_soldout_goods_list": [], "need_to_be_non_display_option_list": []}
+
+    with patch(
+        "api.client_cancel_soldout_routes.AblyClient.search_order_items_by_goods_name",
+        new=AsyncMock(return_value=search_result),
+    ), patch(
+        "api.client_cancel_soldout_routes.AblyClient.get_order_refund_info",
+        new=AsyncMock(return_value=refund_info),
+    ), patch(
+        "api.client_cancel_soldout_routes.AblyClient.cancel_order_items",
+        new=AsyncMock(return_value=cancel_result),
+    ), patch(
+        "api.client_cancel_soldout_routes.EzAdminClient.send_sms",
+        new=AsyncMock(return_value={"ok": True}),
+    ), patch(
+        "api.client_cancel_soldout_routes.EzAdminClient.get_pending_order_count",
+        new=AsyncMock(side_effect=EzAdminSessionExpired()),
+    ):
+        res = client.post("/client-cancel-soldout/run", json={
+            "products": [{
+                "name": "빈티지 흑청 스커트",
+                "options": [{"code": "175252569", "product_id": "S10456"}],
+            }]
+        })
+
+    data = res.json()
+    assert data["need_ezadmin_session"] is True
+    assert data["pending_counts"] == [{"product_id": "S10456", "remaining": None, "error": "EZAdmin 세션 만료"}]

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 import io
+import json
 import re
 import httpx
 from . import config
@@ -156,8 +157,45 @@ class EzAdminClient:
         data = await self.post("E900", "query_json", data={"_search": "false", "rows": str(rows), "page": "1", "sidx": "", "sord": "desc", "readonly": "T"}, par=par, time_flag="epoch_ms")
         return data.get("rows") or []
 
+    async def find_pack_by_order_sno(self, order_sno: str | int, *, start_date: str, end_date: str) -> str | None:
+        """에이블리 order_sno로 EZAdmin 주문을 검색해 pack(≈seq)을 반환.
+
+        EZAdmin 검색창에 order_sno를 그대로 입력했을 때와 동일한 방식
+        (``search_type=0`` + ``super_keyword=<order_sno>``, 접두사 없음) -
+        즉 ``query_orders``와 완전히 동일한 검색이라 그대로 재사용한다.
+        (실제 브라우저 검색 요청 캡처로 검증됨 - super_keyword에 접두사를
+        붙이는 다른 화면의 패턴을 여기 그대로 가져다 쓰면 안 됨.)
+        """
+        rows = await self.query_orders(str(order_sno), start_date=start_date, end_date=end_date, rows=10)
+        for row in rows:
+            cell = row.get("cell") if isinstance(row, dict) else None
+            pack = first_present(cell or row, ("pack", "pack_seq", "seq", "order_seq"))
+            if pack:
+                return str(pack)
+        return None
+
     async def packlist(self, pack: str) -> dict:
         return await self.post("E900", "packlist_json", data={"_search": "false", "rows": "500", "page": "1", "sidx": "", "sord": "", "readonly": "T", "pack": pack, "stock": "0", "is_masking": "0"}, time_flag="epoch_ms")
+
+    async def packlist_items(self, pack: str | int) -> list[dict]:
+        """packlist_json 결과를 라인아이템 단위로 펼쳐서 반환.
+
+        각 row의 ``cell.data_row``는 라인아이템 전용 필드(``prd_seq``,
+        ``trans_corp_id``, ``product_id`` 등)를 담은 JSON 문자열로 이중
+        인코딩되어 있다 - ``change_product``에 넘길 ``prd_seq``의 실제
+        출처가 바로 이 필드다 (packlist 상위 레벨에는 없음).
+        """
+        data = await self.packlist(str(pack))
+        items: list[dict] = []
+        for row in data.get("rows") or []:
+            raw = (row.get("cell") or {}).get("data_row")
+            if not raw:
+                continue
+            try:
+                items.append(json.loads(raw))
+            except (TypeError, ValueError):
+                continue
+        return items
 
     async def get_cs_history(self, seq: str | int, *, cs_all: bool = True) -> dict:
         """Return the E900 CS history for a changing order/transaction sequence."""
@@ -175,6 +213,105 @@ class EzAdminClient:
             time_flag="epoch_ms",
         )
 
+    async def change_product(
+        self,
+        seq: str | int,
+        prd_seq: str | int,
+        *,
+        product_id: str,
+        old_product_id: str,
+        options: str = "",
+        qty: int = 1,
+        trans_corp: str | int = 0,
+        trans_who: str | int = 1,
+        extra_money: int = 0,
+        reason: str = "",
+        match_type: int = 1,
+        pack_same_order: int = 1,
+        send_msg: int = 0,
+        confirm_refund: int = 0,
+        change_to_gift: int = 0,
+    ) -> dict:
+        """E900 상품 교환/변경 처리. 반품 없이 주문상품(prd_seq)을 old_product_id에서 product_id로 즉시 교체.
+
+        ``prd_seq``는 ``packlist_items(seq)``가 반환하는 라인아이템의
+        ``prd_seq`` 필드에서 가져온다 (packlist_json 상위 레벨이 아니라
+        ``cell.data_row`` 안에 있음 - ``packlist_items`` 참고).
+
+        성공 시 ``{"error": 0}`` 형태로 응답 - 호출부에서 ``error`` 값을 확인해야 함.
+        """
+        data = {
+            "seq": str(seq),
+            "prdSeq": str(prd_seq),
+            "product_id": product_id,
+            "old_product_id": old_product_id,
+            "options": options,
+            "qty": str(qty),
+            "extra_money": str(extra_money),
+            "reason": reason,
+            "match_type": str(match_type),
+            "restockin": "0",
+            "restockin_ex": "0",
+            "restockin_cross": "0",
+            "restockin_bad": "0",
+            "return_comp": "0",
+            "site_p": "0",
+            "envelop_p": "0",
+            "account_p": "0",
+            "notget_p": "0",
+            "notget_p2": "0",
+            "trans_corp": str(trans_corp),
+            "trans_no": "",
+            "memo": "",
+            "trans_who": str(trans_who),
+            "trans_price": "",
+            "miss_match": "0",
+            "status_1_change_product": "0",
+            "pack_same_order": str(pack_same_order),
+            "content": "",
+            "callid": "",
+            "confirm_refund": str(confirm_refund),
+            "auto_insert_takeback_order": "0",
+            "send_msg": str(send_msg),
+            "change_to_gift": str(change_to_gift),
+        }
+        return await self.post("E900", "change_product", data=data, time_flag="epoch_ms")
+
+    async def copy_order(
+        self,
+        seq: str | int,
+        prd_seq: str | int,
+        *,
+        shop_id: str | int,
+        product_id: str,
+        product_name: str,
+        options: str = "",
+        qty: int = 1,
+        extra_money: int = 0,
+        content: str = "",
+    ) -> dict:
+        """E900 주문복사. CS 팝업(popup25.htm?template=E900)에서 라인아이템 하나를 그대로 복제해 새 주문을 만든다.
+
+        ``product_name``은 ``packlist_items(seq)`` 라인아이템의 내부 ``product_name``이
+        아니라 ``shop_product_name``(대괄호 태그 포함, 쇼핑몰 노출용 상품명)이어야 한다 -
+        실제 브라우저 캡처(HAR)에서 이 파라미터 값이 shop_product_name과 일치함을 확인함.
+        ``extra_money``도 ``shop_price``(콤마 포함 문자열)가 아니라 ``amount``(정수) 값이다.
+
+        성공 시 ``{"error": 0}`` 형태로 응답 - 호출부에서 ``error`` 값을 확인해야 함.
+        """
+        data = {
+            "seq": str(seq),
+            "shop_id": str(shop_id),
+            "product_id": product_id,
+            "options": options,
+            "qty": str(qty),
+            "extra_money": str(extra_money),
+            "content": content,
+            "product_name": product_name,
+            "prd_seq": str(prd_seq),
+        }
+        return await self.post("E900", "copy_order", data=data, time_flag="epoch_ms")
+
     async def cancel_trans(self, seq: str) -> dict:
         return await self.post("E900", "cancel_trans", data={"seq": seq, "content": ""}, time_flag="epoch_ms")
 
@@ -183,6 +320,38 @@ class EzAdminClient:
 
     async def set_stock_data(self, product_id: str, qty: int, *, type_: str = "out", bad: str = "0") -> dict:
         return await self.post("I100", "set_stock_data", data={"product_id": product_id, "bad": bad, "type": type_, "stock_label": "", "move_warehouse": "0", "stock_unit": "stock_unit_ea", "qty": str(qty), "memo": ""}, time_flag="browser")
+
+    async def get_pending_order_count(self, product_id: str) -> int:
+        """I100(현재고조회)에서 상품코드로 검색해 '접수'(출고 전 대기 주문) 수량을 가져온다.
+
+        응답의 rows[0].cell.before_trans는 ``<a ...>56</a>`` 형태의 HTML
+        문자열로 내려온다 - 실제 브라우저 요청 재현(curl)으로 확인됨. 이
+        엔드포인트는 timeFlag를 보내지 않는다 (다른 I100 액션들과 달리
+        캡처된 요청에 없었음).
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        par = (
+            "auto_search=&search_all_product=&multi_supply_group=&multi_supply=&str_supply_code=0"
+            "&tags_string=&product_tag_include_type=1"
+            f"&query_type=product_id&query_str={product_id}"
+            "&stock_type=0&stock_start=&stock_end=&notrans_day=&notrans_cnt=&notrans_status=0&stock_status=0"
+            f"&start_date={today}&start_hour=00:00:00&end_date={today}&end_hour=23:59:59"
+            "&date_period_sel=1&work_type=stockin&work_start=&work_end=&inout_type=0&product_date="
+            f"&start_date2={today}&end_date2={today}&date_period_sel2=1"
+            "&products_sort=1&category=0&except_soldout=0&temp_soldout=0&location=0"
+        )
+        data = await self.post(
+            "I100", "search",
+            data={"_search": "false", "rows": "100", "page": "1", "sidx": "", "sord": "asc", "page_code": "I100"},
+            par=par, time_flag=None,
+        )
+        rows = data.get("rows") or []
+        if not rows:
+            raise ValueError(f"상품코드 {product_id}를 찾을 수 없습니다")
+        cell = (rows[0] or {}).get("cell") or {}
+        before_trans_html = str(cell.get("before_trans") or "")
+        match = re.search(r">(\d+)</a>", before_trans_html)
+        return int(match.group(1)) if match else 0
 
     async def sms_chat_detail(
         self,
