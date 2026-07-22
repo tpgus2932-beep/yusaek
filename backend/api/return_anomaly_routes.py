@@ -54,12 +54,11 @@ def build_return_anomaly_router(*, get_current_user, get_db, get_setting, set_se
             ]
         }
 
-    @router.post("/run")
-    async def run_check(force: bool = False, user: str = Depends(get_current_user)):
+    async def _run_check_core(force: bool = False) -> None:
         today_str = datetime.now(_KST).strftime("%Y-%m-%d")
         last_run = get_setting(_LAST_RUN_SETTING_KEY)
         if str(last_run or "")[:10] == today_str and not force:
-            return list_anomalies(user=user)  # 오늘 이미 실행됨 - 재조회 없이 현재 목록만 반환
+            return  # 오늘 이미 실행됨 - 재조회 없이 종료
 
         end_date = datetime.now(_KST).strftime("%Y-%m-%d")
         start_date = (datetime.now(_KST) - timedelta(days=_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
@@ -129,6 +128,10 @@ def build_return_anomaly_router(*, get_current_user, get_db, get_setting, set_se
         conn.close()
         set_setting(_LAST_RUN_SETTING_KEY, datetime.now(_KST).isoformat())
 
+    @router.post("/run")
+    async def run_check(force: bool = False, user: str = Depends(get_current_user)):
+        await _run_check_core(force=force)
         return list_anomalies(user=user)
 
+    router.run_scheduled = _run_check_core
     return router
