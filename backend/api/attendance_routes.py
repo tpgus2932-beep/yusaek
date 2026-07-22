@@ -38,6 +38,24 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS attendance_daily_workers (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                name                TEXT NOT NULL,
+                date                TEXT NOT NULL,
+                start_time          TEXT NOT NULL,
+                end_time            TEXT NOT NULL,
+                check_in_record_id  INTEGER NOT NULL,
+                check_out_record_id INTEGER NOT NULL,
+                created_at          TEXT NOT NULL,
+                UNIQUE(name, date)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_daily_workers_date ON attendance_daily_workers(date)"
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS attendance_schedule_fixed_rules (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
                 member_id      INTEGER NOT NULL,
@@ -171,6 +189,16 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         pin: str
         date: str   # YYYY-MM-DD (KST)
         time: str   # HH:MM (KST)
+
+    class DailyWorkerCreate(BaseModel):
+        pin: str
+        name: str
+        date: str
+        startTime: str
+        endTime: str
+
+    class DailyWorkerDelete(BaseModel):
+        pin: str
 
     # ── 직원 목록 (인증 불필요) ─────────────────────────
     @router.get("/members")
@@ -306,6 +334,102 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.commit()
         conn.close()
         return {"ok": True, "timestamp": dt_utc.isoformat()}
+
+    # ── 일일 알바 ──────────────────────────────────────
+    def _daily_worker_row_to_dict(row):
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "date": row["date"],
+            "startTime": row["start_time"],
+            "endTime": row["end_time"],
+            "checkInTimestamp": row["check_in_timestamp"],
+            "checkOutTimestamp": row["check_out_timestamp"],
+        }
+
+    @router.get("/daily-workers")
+    def list_daily_workers(pin: str = "", date_from: str = "", date_to: str = ""):
+        _check_pin(pin)
+        conn = get_db()
+        query = (
+            "SELECT d.id, d.name, d.date, d.start_time, d.end_time, "
+            "i.timestamp AS check_in_timestamp, o.timestamp AS check_out_timestamp "
+            "FROM attendance_daily_workers d "
+            "LEFT JOIN attendance_records i ON i.id = d.check_in_record_id "
+            "LEFT JOIN attendance_records o ON o.id = d.check_out_record_id WHERE 1=1"
+        )
+        params = []
+        if date_from:
+            query += " AND d.date >= ?"
+            params.append(date_from)
+        if date_to:
+            query += " AND d.date <= ?"
+            params.append(date_to)
+        query += " ORDER BY d.date DESC, d.name ASC"
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        return [_daily_worker_row_to_dict(row) for row in rows]
+
+    @router.post("/daily-workers")
+    def add_daily_worker(body: DailyWorkerCreate):
+        _check_pin(body.pin)
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="이름을 입력하세요.")
+        try:
+            start_kst = datetime.strptime(
+                f"{body.date} {body.startTime}", "%Y-%m-%d %H:%M"
+            ).replace(tzinfo=KST)
+            end_kst = datetime.strptime(
+                f"{body.date} {body.endTime}", "%Y-%m-%d %H:%M"
+            ).replace(tzinfo=KST)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="날짜 또는 시간 형식이 올바르지 않습니다.")
+        if end_kst <= start_kst:
+            raise HTTPException(status_code=400, detail="퇴근 시간은 출근 시간보다 늦어야 합니다.")
+
+        conn = get_db()
+        try:
+            in_cursor = conn.execute(
+                "INSERT INTO attendance_records (member_name, type, timestamp, date) VALUES (?, '출근', ?, ?)",
+                (name, start_kst.astimezone(timezone.utc).isoformat(), body.date),
+            )
+            out_cursor = conn.execute(
+                "INSERT INTO attendance_records (member_name, type, timestamp, date) VALUES (?, '퇴근', ?, ?)",
+                (name, end_kst.astimezone(timezone.utc).isoformat(), body.date),
+            )
+            conn.execute(
+                "INSERT INTO attendance_daily_workers "
+                "(name, date, start_time, end_time, check_in_record_id, check_out_record_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (name, body.date, body.startTime, body.endTime, in_cursor.lastrowid, out_cursor.lastrowid, _now_kst().isoformat()),
+            )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            if "UNIQUE" in str(exc).upper():
+                raise HTTPException(status_code=409, detail="같은 이름과 날짜의 기록이 이미 있습니다.")
+            raise
+        finally:
+            conn.close()
+        return {"ok": True}
+
+    @router.delete("/daily-workers/{entry_id}")
+    def delete_daily_worker(entry_id: int, body: DailyWorkerDelete):
+        _check_pin(body.pin)
+        conn = get_db()
+        row = conn.execute(
+            "SELECT check_in_record_id, check_out_record_id FROM attendance_daily_workers WHERE id = ?",
+            (entry_id,),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="일일 알바 기록을 찾을 수 없습니다.")
+        conn.execute("DELETE FROM attendance_records WHERE id IN (?, ?)", (row["check_in_record_id"], row["check_out_record_id"]))
+        conn.execute("DELETE FROM attendance_daily_workers WHERE id = ?", (entry_id,))
+        conn.commit()
+        conn.close()
+        return {"ok": True}
 
     # ── 오늘 기록 (인증 불필요, 메인 페이지용) ─────────
     @router.get("/records/today")

@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
+import html2canvas from 'html2canvas';
 import styles from './AttendanceAdminPage.module.css';
 import { COLLAB_API_BASE } from '../../lib/api';
 import ScheduleTab from './ScheduleTab';
@@ -6,6 +7,101 @@ import ScheduleTab from './ScheduleTab';
 const todayStr = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+const copySalaryCardImage = async (element) => {
+  if (!element) throw new Error('복사할 급여명세서를 찾을 수 없습니다.');
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    throw new Error('이 브라우저에서는 이미지 복사를 지원하지 않습니다.');
+  }
+  const scrollParent = element.closest('[data-salary-scroll]');
+  const previousOverflow = scrollParent?.style.overflow;
+  const previousMaxHeight = scrollParent?.style.maxHeight;
+  if (scrollParent) {
+    scrollParent.style.overflow = 'visible';
+    scrollParent.style.maxHeight = 'none';
+  }
+  try {
+    const canvas = await html2canvas(element, {
+      backgroundColor: '#ffffff',
+      scale: Math.max(2, window.devicePixelRatio || 1),
+      useCORS: true,
+      logging: false,
+      ignoreElements: (node) => node?.dataset?.captureIgnore === 'true',
+    });
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob((value) => value ? resolve(value) : reject(new Error('이미지 생성에 실패했습니다.')), 'image/png');
+    });
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+  } finally {
+    if (scrollParent) {
+      scrollParent.style.overflow = previousOverflow;
+      scrollParent.style.maxHeight = previousMaxHeight;
+    }
+  }
+};
+
+const DailySalaryCard = ({ result }) => {
+  const cardRef = useRef(null);
+  const [copyState, setCopyState] = useState('idle');
+
+  const copyCard = async () => {
+    setCopyState('copying');
+    try {
+      await copySalaryCardImage(cardRef.current);
+      setCopyState('done');
+      window.setTimeout(() => setCopyState('idle'), 1600);
+    } catch (error) {
+      setCopyState('idle');
+      window.alert(error.message || '이미지 복사에 실패했습니다.');
+    }
+  };
+
+  return (
+  <div className={styles.card} ref={cardRef}>
+    <div className={styles.slipHeader}>
+      <div>
+        <div className={styles.slipTitle}>일일 알바 급여 명세서</div>
+        <div className={styles.slipPeriod}>{result.year}년 {result.month}월</div>
+      </div>
+      <button className={styles.copyImageBtn} onClick={copyCard} disabled={copyState === 'copying'} data-capture-ignore="true">
+        {copyState === 'copying' ? '이미지 생성 중...' : copyState === 'done' ? '복사 완료' : '📋 이미지 복사'}
+      </button>
+    </div>
+    <div className={styles.slipName}>{result.member}</div>
+    <div className={styles.slipRows}>
+      <div className={styles.slipRow}><span className={styles.slipKey}>시급</span><span className={styles.slipVal}>{result.hourlyRate.toLocaleString()}원</span></div>
+      <div className={styles.slipRow}><span className={styles.slipKey}>월 근무시간</span><span className={styles.slipVal}>{result.monthlyHours.toFixed(1)}H</span></div>
+      <div className={styles.slipRow}><span className={styles.slipKey}>기본급</span><span className={styles.slipVal}>{result.basicPay.toLocaleString()}원</span></div>
+      <div className={styles.slipRow}><span className={styles.slipKey}>주휴수당 ({result.qualifyingWeeks}주)</span><span className={styles.slipVal}>{result.holTotal.toLocaleString()}원</span></div>
+      {result.allowances.map((allowance, index) => (
+        <div key={`${allowance.name}-${index}`} className={styles.slipRow}>
+          <span className={styles.slipKey}>{allowance.name}</span>
+          <span className={styles.slipVal}>{Number(allowance.amount).toLocaleString()}원</span>
+        </div>
+      ))}
+      <div className={styles.slipRow}><span className={styles.slipKey}>총지급액</span><span className={styles.slipVal}>{result.totalPay.toLocaleString()}원</span></div>
+      <div className={styles.slipRow}><span className={styles.slipKey}>소득세 ({result.deductPct}%)</span><span className={`${styles.slipVal} ${styles.slipValDeduct}`}>−{result.incomeTax.toLocaleString()}원</span></div>
+      <div className={styles.slipRow}><span className={styles.slipKey}>지방소득세</span><span className={`${styles.slipVal} ${styles.slipValDeduct}`}>−{result.localTax.toLocaleString()}원</span></div>
+      <div className={`${styles.slipRow} ${styles.slipRowNet}`}><span className={styles.slipKeyNet}>실지급액</span><span className={styles.slipValNet}>{result.netPay.toLocaleString()}원</span></div>
+    </div>
+    <div className={styles.slipWeekLabel}>주별 근무 내역</div>
+    <div className={styles.tableWrap}>
+      <table className={styles.table}>
+        <thead><tr><th>주차</th><th>주 시작</th><th>근무시간</th><th>주휴</th><th>주휴수당</th></tr></thead>
+        <tbody>
+          {result.weeks.map((week) => (
+            <tr key={week.wkStart} style={week.qualifies ? { background: '#f0fdf4' } : {}}>
+              <td>{week.week}주</td><td className={styles.dateCell}>{week.wkStart.slice(5)}</td><td>{week.hours.toFixed(1)}H</td>
+              <td>{week.qualifies ? <span className={`${styles.badge} ${styles.badgeIn}`}>적용</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+              <td>{week.holPay > 0 ? `${week.holPay.toLocaleString()}원` : '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  );
 };
 
 
@@ -47,21 +143,28 @@ export default function AttendanceAdminPage() {
   const [salaryDeductPct, setSalaryDeductPct] = useState(3);
   const [salaryResult, setSalaryResult] = useState(null);
   const [allSalaryResults, setAllSalaryResults] = useState(null);
+  const [dailySalaryResults, setDailySalaryResults] = useState(null);
   const [salaryAllowances, setSalaryAllowances] = useState([]);
   const [allowanceName, setAllowanceName] = useState('');
   const [allowanceAmount, setAllowanceAmount] = useState('');
   const [salaryLoading, setSalaryLoading] = useState(false);
   const [salaryError, setSalaryError] = useState('');
+  const salaryCardRef = useRef(null);
+  const [salaryCopyState, setSalaryCopyState] = useState('idle');
+
+  // 일일 알바
+  const [dailyWorkers, setDailyWorkers] = useState([]);
+  const [dailyName, setDailyName] = useState('');
+  const [dailyDate, setDailyDate] = useState(todayStr);
+  const [dailyStartTime, setDailyStartTime] = useState('09:00');
+  const [dailyEndTime, setDailyEndTime] = useState('14:00');
+  const [dailyLoading, setDailyLoading] = useState(false);
+  const [dailyError, setDailyError] = useState('');
 
   // 시간 수정
   const [editingRecord, setEditingRecord] = useState(null);
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState('');
-
-  const makeLocalIso = (date, time) => {
-    const dt = new Date(`${date}T${time}:00+09:00`);
-    return dt.toISOString();
-  };
 
   const eachDate = (from, to) => {
     if (!from && !to) return [todayStr()];
@@ -103,7 +206,9 @@ export default function AttendanceAdminPage() {
     try {
       const res = await fetch(`${COLLAB_API_BASE}/attendance/members`);
       if (res.ok) setMembers(await res.json());
-    } catch {}
+    } catch {
+      // 다음 화면 진입 시 다시 조회한다.
+    }
   }, []);
 
   useEffect(() => {
@@ -119,13 +224,76 @@ export default function AttendanceAdminPage() {
       if (filterName)     params.append('name',       filterName);
       const res = await fetch(`${COLLAB_API_BASE}/attendance/records?${params}`);
       if (res.ok) setRecords(await res.json());
-    } catch {}
+    } catch {
+      // 조회 버튼으로 재시도할 수 있다.
+    }
     setRecLoading(false);
   }, [pin, filterDateFrom, filterDateTo, filterName]);
 
   useEffect(() => {
     if (pinAuth && tab === 'records') loadRecords();
   }, [pinAuth, tab, loadRecords]);
+
+  const loadDailyWorkers = useCallback(async () => {
+    setDailyLoading(true);
+    setDailyError('');
+    try {
+      const params = new URLSearchParams({ pin });
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/daily-workers?${params}`);
+      const data = await res.json().catch(() => []);
+      if (!res.ok) throw new Error(data?.detail || '일일 알바 기록 조회에 실패했습니다.');
+      setDailyWorkers(Array.isArray(data) ? data : []);
+    } catch (error) {
+      setDailyError(error.message || '일일 알바 기록 조회에 실패했습니다.');
+    } finally {
+      setDailyLoading(false);
+    }
+  }, [pin]);
+
+  useEffect(() => {
+    if (pinAuth && tab === 'daily') loadDailyWorkers();
+  }, [pinAuth, tab, loadDailyWorkers]);
+
+  const addDailyWorker = async () => {
+    const name = dailyName.trim();
+    if (!name) {
+      setDailyError('이름을 입력하세요.');
+      return;
+    }
+    setDailyLoading(true);
+    setDailyError('');
+    try {
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/daily-workers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin, name, date: dailyDate, startTime: dailyStartTime, endTime: dailyEndTime }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || '일일 알바 등록에 실패했습니다.');
+      setDailyName('');
+      await loadDailyWorkers();
+    } catch (error) {
+      setDailyError(error.message || '일일 알바 등록에 실패했습니다.');
+    } finally {
+      setDailyLoading(false);
+    }
+  };
+
+  const deleteDailyWorker = async (entry) => {
+    if (!window.confirm(`${entry.name}님의 ${entry.date} 기록을 삭제하시겠습니까?`)) return;
+    const res = await fetch(`${COLLAB_API_BASE}/attendance/daily-workers/${entry.id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    });
+    if (res.ok) {
+      await loadDailyWorkers();
+      if (tab === 'records') await loadRecords();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      setDailyError(data?.detail || '삭제에 실패했습니다.');
+    }
+  };
 
   // ── 같은 날짜+이름 → 한 줄로 묶기 ─────────────────
   const groupedRecords = useMemo(() => {
@@ -346,6 +514,7 @@ export default function AttendanceAdminPage() {
     setSalaryError('');
     setSalaryResult(null);
     setAllSalaryResults(null);
+    setDailySalaryResults(null);
     setSalaryLoading(true);
     try {
       const y = salaryYear, m = salaryMonth;
@@ -354,7 +523,24 @@ export default function AttendanceAdminPage() {
       const dateTo = `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
       const cfg = { hourlyRate: salaryHourlyRate, holidayMin: salaryHolidayMin, workDays: salaryWorkDays, deductPct: salaryDeductPct, allowances: salaryAllowances, year: y, month: m };
 
-      if (salaryMember) {
+      if (salaryMember === '__daily__') {
+        const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo });
+        const res = await fetch(`${COLLAB_API_BASE}/attendance/daily-workers?${params}`);
+        if (!res.ok) throw new Error('일일 알바 기록 조회 실패');
+        const entries = await res.json();
+        const byName = entries.reduce((grouped, entry) => {
+          if (!grouped[entry.name]) grouped[entry.name] = [];
+          grouped[entry.name].push(
+            { date: entry.date, type: '출근', timestamp: entry.checkInTimestamp },
+            { date: entry.date, type: '퇴근', timestamp: entry.checkOutTimestamp },
+          );
+          return grouped;
+        }, {});
+        const results = Object.entries(byName)
+          .sort(([a], [b]) => a.localeCompare(b, 'ko-KR'))
+          .map(([name, workerRecords]) => calcSalaryData(workerRecords, { ...cfg, memberName: name }));
+        setDailySalaryResults(results);
+      } else if (salaryMember) {
         const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, name: salaryMember });
         const res = await fetch(`${COLLAB_API_BASE}/attendance/records?${params}`);
         if (!res.ok) throw new Error('출퇴근 기록 조회 실패');
@@ -393,6 +579,18 @@ export default function AttendanceAdminPage() {
       setTimeout(() => { setShowPinChange(false); setPinChangeMsg(''); }, 1500);
     } else {
       setPinChangeMsg('PIN 변경 실패');
+    }
+  };
+
+  const copySalaryImage = async () => {
+    setSalaryCopyState('copying');
+    try {
+      await copySalaryCardImage(salaryCardRef.current);
+      setSalaryCopyState('done');
+      window.setTimeout(() => setSalaryCopyState('idle'), 1600);
+    } catch (error) {
+      setSalaryCopyState('idle');
+      window.alert(error.message || '이미지 복사에 실패했습니다.');
     }
   };
 
@@ -554,6 +752,12 @@ export default function AttendanceAdminPage() {
             onClick={() => setTab('schedule')}
           >
             📅 스케줄관리
+          </button>
+          <button
+            className={`${styles.tabBtn} ${tab === 'daily' ? styles.tabActive : ''}`}
+            onClick={() => setTab('daily')}
+          >
+            🧑‍🔧 일일 알바
           </button>
         </div>
 
@@ -723,9 +927,10 @@ export default function AttendanceAdminPage() {
                 <select className={styles.filterInput} value={salaryMonth} onChange={(e) => setSalaryMonth(+e.target.value)}>
                   {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{m}월</option>)}
                 </select>
-                <select className={styles.filterInput} value={salaryMember} onChange={(e) => { setSalaryMember(e.target.value); setSalaryResult(null); setAllSalaryResults(null); }}>
+                <select className={styles.filterInput} value={salaryMember} onChange={(e) => { setSalaryMember(e.target.value); setSalaryResult(null); setAllSalaryResults(null); setDailySalaryResults(null); }}>
                   <option value="">전체</option>
                   {members.map((m) => <option key={m.id} value={m.name}>{m.name}</option>)}
+                  <option value="__daily__">일일알바</option>
                 </select>
               </div>
               <div className={styles.salarySettingRow}>
@@ -840,13 +1045,15 @@ export default function AttendanceAdminPage() {
             )}
 
             {salaryResult && (
-              <div className={styles.card}>
+              <div className={styles.card} ref={salaryCardRef}>
                 <div className={styles.slipHeader}>
                   <div>
                     <div className={styles.slipTitle}>급여 명세서</div>
                     <div className={styles.slipPeriod}>{salaryResult.year}년 {salaryResult.month}월</div>
                   </div>
-                  <button className={styles.exportBtn} onClick={() => window.print()}>🖨 인쇄</button>
+                  <button className={styles.copyImageBtn} onClick={copySalaryImage} disabled={salaryCopyState === 'copying'} data-capture-ignore="true">
+                    {salaryCopyState === 'copying' ? '이미지 생성 중...' : salaryCopyState === 'done' ? '복사 완료' : '📋 이미지 복사'}
+                  </button>
                 </div>
 
                 <div className={styles.slipName}>{salaryResult.member}</div>
@@ -923,11 +1130,79 @@ export default function AttendanceAdminPage() {
                 </div>
               </div>
             )}
+
+            {dailySalaryResults && (
+              <div className={styles.dailySalaryScroll} data-salary-scroll>
+                {dailySalaryResults.length === 0 ? (
+                  <div className={styles.card}><div className={styles.emptyMsg}>해당 월의 일일 알바 기록이 없습니다.</div></div>
+                ) : dailySalaryResults.map((result) => (
+                  <DailySalaryCard key={result.member} result={result} />
+                ))}
+              </div>
+            )}
           </>
         )}
         {/* ── 스케줄관리 탭 ── */}
         {tab === 'schedule' && (
           <ScheduleTab pin={pin} members={members.filter((m) => m.includeInSchedule)} />
+        )}
+
+        {/* ── 일일 알바 탭 ── */}
+        {tab === 'daily' && (
+          <>
+            <div className={styles.card}>
+              <div className={styles.dailyFormGrid}>
+                <label className={styles.dailyField}>
+                  <span>이름</span>
+                  <input className={styles.filterInput} value={dailyName} onChange={(e) => setDailyName(e.target.value)} placeholder="일일 알바 이름" />
+                </label>
+                <label className={styles.dailyField}>
+                  <span>날짜</span>
+                  <input type="date" className={styles.filterInput} value={dailyDate} onChange={(e) => setDailyDate(e.target.value)} />
+                </label>
+                <label className={styles.dailyField}>
+                  <span>출근시간</span>
+                  <input type="time" className={styles.filterInput} value={dailyStartTime} onChange={(e) => setDailyStartTime(e.target.value)} />
+                </label>
+                <label className={styles.dailyField}>
+                  <span>퇴근시간</span>
+                  <input type="time" className={styles.filterInput} value={dailyEndTime} onChange={(e) => setDailyEndTime(e.target.value)} />
+                </label>
+              </div>
+              {dailyError && <div className={styles.errorMsg}>{dailyError}</div>}
+              <button className={styles.addBtn} onClick={addDailyWorker} disabled={dailyLoading}>
+                {dailyLoading ? '저장 중...' : '일일 알바 기록 추가'}
+              </button>
+            </div>
+
+            <div className={styles.card}>
+              <div className={styles.dailyListHeader}>
+                <strong>일일 알바 기록</strong>
+                <span>{dailyWorkers.length}명</span>
+              </div>
+              {dailyLoading && dailyWorkers.length === 0 ? (
+                <div className={styles.loadingMsg}>불러오는 중...</div>
+              ) : dailyWorkers.length === 0 ? (
+                <div className={styles.emptyMsg}>등록된 일일 알바 기록이 없습니다.</div>
+              ) : (
+                <div className={styles.dailyWorkerScroll}>
+                  {dailyWorkers.map((entry) => (
+                    <article key={entry.id} className={styles.dailyWorkerCard}>
+                      <div>
+                        <strong>{entry.name}</strong>
+                        <span>{entry.date}</span>
+                      </div>
+                      <div className={styles.dailyWorkerTime}>
+                        <span>{entry.startTime} ~ {entry.endTime}</span>
+                        <small>{calcDuration({ timestamp: entry.checkInTimestamp }, { timestamp: entry.checkOutTimestamp })}</small>
+                      </div>
+                      <button className={styles.delBtn} onClick={() => deleteDailyWorker(entry)}>삭제</button>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
         )}
       </div>
 
