@@ -58,8 +58,13 @@ from api.pastelco_routes import build_pastelco_router
 from api.ably_minus_routes import build_ably_minus_router
 from api.accident_cargo_routes import build_accident_cargo_router
 from api.delivery_anomaly_routes import build_delivery_anomaly_router
+from api.client_cancel_soldout_routes import build_client_cancel_soldout_router
+from api.exchange_return_anomaly_routes import build_exchange_return_anomaly_router
+from api.return_anomaly_routes import build_return_anomaly_router
 from api.daily_checklist_routes import build_daily_checklist_router
 from services.delivery_anomaly_store import init_delivery_anomaly_tables
+from services.exchange_return_anomaly_store import init_exchange_return_anomaly_tables
+from services.return_anomaly_store import init_return_anomaly_tables
 from api.collaboration_tools_routes import build_collaboration_tools_router
 from api.attendance_routes import build_attendance_router
 from api.guidebook_routes import build_guidebook_router
@@ -1341,6 +1346,15 @@ app.include_router(
 )
 
 app.include_router(
+    build_client_cancel_soldout_router(
+        get_current_user=_get_current_user,
+        get_setting=_get_setting,
+        get_db=_get_shared_db,
+        cost_base_path=SHARED_COST_BASE_PATH,
+    )
+)
+
+app.include_router(
     build_collab_router(
         get_current_user=_get_current_user,
         require_admin=_require_admin,
@@ -1543,10 +1557,33 @@ app.include_router(
     )
 )
 
+init_exchange_return_anomaly_tables(_get_shared_db)
+
+app.include_router(
+    build_exchange_return_anomaly_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        get_setting=_get_setting,
+        set_setting=_set_setting,
+    )
+)
+
+init_return_anomaly_tables(_get_shared_db)
+
+app.include_router(
+    build_return_anomaly_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        get_setting=_get_setting,
+        set_setting=_set_setting,
+    )
+)
+
 app.include_router(
     build_daily_checklist_router(
         get_current_user=_get_current_user,
         get_setting=_get_setting,
+        set_setting=_set_setting,
     )
 )
 
