@@ -51,6 +51,16 @@ _CANCEL_REASON_TEXT = {
 }
 
 
+def _remove_return_queue_ids(state, remove_ids: set) -> None:
+    for attr in (
+        "queue_seller", "queue_customer", "queue_unmatched",
+        "queue_exchange_seller", "queue_exchange_customer",
+        "queue_exchange", "all_items",
+    ):
+        queue = getattr(state, attr)
+        setattr(state, attr, [it for it in queue if it.get("id") not in remove_ids])
+
+
 def build_returns_router(
     *,
     get_current_user,
@@ -1492,6 +1502,16 @@ def build_returns_router(
         state.customer_export_df = pd.DataFrame()
         state.last_type = "-"
         return {"ok": True}
+
+    @router.post("/returns/delete-items")
+    def returns_delete_items(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        state = get_return_state(user)
+        raw_ids = payload.get("ids") or []
+        remove_ids = {int(i) for i in raw_ids}
+        if not remove_ids:
+            raise HTTPException(status_code=400, detail="삭제할 항목이 없습니다.")
+        _remove_return_queue_ids(state, remove_ids)
+        return {"ok": True, "queues": return_queue_payload(state)}
 
     @router.post("/returns/onebe/build")
     def returns_build_onebe(payload: dict = Body(None), user: str = Depends(get_current_user)):
