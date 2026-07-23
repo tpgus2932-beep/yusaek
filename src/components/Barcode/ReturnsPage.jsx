@@ -65,6 +65,12 @@ const ReturnsPage = () => {
     const [costBatchOpen, setCostBatchOpen] = useState(false);
     const [costBatchText, setCostBatchText] = useState('');
     const [selectedCustomer, setSelectedCustomer] = useState(new Set());
+    const [selectedAll, setSelectedAll] = useState(new Set());
+    const [selectedSeller, setSelectedSeller] = useState(new Set());
+    const [selectedUnmatched, setSelectedUnmatched] = useState(new Set());
+    const [selectedExchangeSeller, setSelectedExchangeSeller] = useState(new Set());
+    const [selectedExchangeCustomer, setSelectedExchangeCustomer] = useState(new Set());
+    const [deleteLoading, setDeleteLoading] = useState(false);
     const [refundLoading, setRefundLoading] = useState(false);
     const [refundResults, setRefundResults] = useState(null);
     const [singleCancelSno, setSingleCancelSno] = useState('');
@@ -568,6 +574,17 @@ const ReturnsPage = () => {
         return data;
     };
 
+    const deleteReturnItems = async (ids) => {
+        const res = await fetch(`${API}/returns/delete-items`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({ ids }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.detail || '삭제 실패');
+        return data;
+    };
+
     const addRelatedItem = async (source, invoice) => {
         const res = await fetch(`${API}/returns/scan-related`, {
             method: 'POST',
@@ -636,6 +653,22 @@ const ReturnsPage = () => {
             setLastType(data.last_type || '-');
         } catch (err) {
             setMessage(err.message || '삭제 실패');
+        }
+    };
+
+    const handleDeleteSelected = async (selectedIds, setSelectedIds) => {
+        const ids = Array.from(selectedIds);
+        if (ids.length === 0) return;
+        if (!window.confirm(`선택한 ${ids.length}개 항목을 삭제할까요?`)) return;
+        setDeleteLoading(true);
+        try {
+            const data = await deleteReturnItems(ids);
+            setQueues(normalizeQueues(data.queues));
+            setSelectedIds(new Set());
+        } catch (err) {
+            setMessage(err.message || '삭제 실패');
+        } finally {
+            setDeleteLoading(false);
         }
     };
 
@@ -855,7 +888,7 @@ const ReturnsPage = () => {
         }
     };
 
-    const renderTable = (items) => {
+    const renderTable = (items, selectedIds, onToggleOne, onToggleAll) => {
         if (!items || items.length === 0) {
             return <div className={pageStyles.empty}>데이터가 없습니다.</div>;
         }
@@ -865,11 +898,15 @@ const ReturnsPage = () => {
         const hasEzadminInfo = items.some((item) =>
             item.ezadmin_seq || item.old_product_id || item.new_product_id || item.ezadmin_error || item.change_product_done
         );
+        const allChecked = items.length > 0 && items.every((item) => selectedIds.has(item.id));
         return (
             <div className={pageStyles.tableWrap}>
                 <table className={pageStyles.table}>
                     <thead>
                         <tr>
+                            <th style={{ width: '32px', textAlign: 'center' }}>
+                                <input type="checkbox" checked={allChecked} onChange={onToggleAll} />
+                            </th>
                             <th>스캔송장</th>
                             <th>요청메모</th>
                             <th>가공데이터</th>
@@ -887,7 +924,14 @@ const ReturnsPage = () => {
                     </thead>
                     <tbody>
                         {items.map((item) => (
-                            <tr key={item.id}>
+                            <tr key={item.id} style={selectedIds.has(item.id) ? { background: 'var(--bg-secondary)' } : undefined}>
+                                <td style={{ textAlign: 'center' }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={selectedIds.has(item.id)}
+                                        onChange={() => onToggleOne(item.id)}
+                                    />
+                                </td>
                                 <td>{item.scan}</td>
                                 <td>{item.match}</td>
                                 <td>{item.item_text}</td>
@@ -912,6 +956,37 @@ const ReturnsPage = () => {
                     </tbody>
                 </table>
             </div>
+        );
+    };
+
+    const renderQueueTab = (items, selectedIds, setSelectedIds) => {
+        const handleToggleOne = (id) => {
+            setSelectedIds((prev) => {
+                const next = new Set(prev);
+                next.has(id) ? next.delete(id) : next.add(id);
+                return next;
+            });
+        };
+        const handleToggleAll = () => {
+            const allChecked = items.length > 0 && items.every((item) => selectedIds.has(item.id));
+            setSelectedIds(allChecked ? new Set() : new Set(items.map((item) => item.id)));
+        };
+        return (
+            <>
+                {items.length > 0 && (
+                    <div className={`${pageStyles.uploadRow} ${styles.compactActions}`}>
+                        <button
+                            type="button"
+                            className={pageStyles.secondaryBtn}
+                            onClick={() => handleDeleteSelected(selectedIds, setSelectedIds)}
+                            disabled={deleteLoading || selectedIds.size === 0}
+                        >
+                            선택 삭제 ({selectedIds.size})
+                        </button>
+                    </div>
+                )}
+                {renderTable(items, selectedIds, handleToggleOne, handleToggleAll)}
+            </>
         );
     };
 
@@ -1097,8 +1172,8 @@ const ReturnsPage = () => {
 
                     {activeTab !== 'onebe' && (
                         <>
-                            {activeTab === 'all' && renderTable(queues.all)}
-                            {activeTab === 'seller' && renderTable(queues.seller)}
+                            {activeTab === 'all' && renderQueueTab(queues.all, selectedAll, setSelectedAll)}
+                            {activeTab === 'seller' && renderQueueTab(queues.seller, selectedSeller, setSelectedSeller)}
                             {activeTab === 'customer' && (() => {
                                 const items = queues.customer;
                                 if (!items || items.length === 0) return <div className={pageStyles.empty}>데이터가 없습니다.</div>;
@@ -1106,7 +1181,18 @@ const ReturnsPage = () => {
                                 const hasDetailReason = items.some((i) => i.detail_reason);
                                 const hasUserComment = items.some((i) => i.user_comment);
                                 return (
-                                    <div className={pageStyles.tableWrap}>
+                                    <>
+                                        <div className={`${pageStyles.uploadRow} ${styles.compactActions}`}>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.secondaryBtn}
+                                                onClick={() => handleDeleteSelected(selectedCustomer, setSelectedCustomer)}
+                                                disabled={deleteLoading || selectedCustomer.size === 0}
+                                            >
+                                                선택 삭제 ({selectedCustomer.size})
+                                            </button>
+                                        </div>
+                                        <div className={pageStyles.tableWrap}>
                                         <table className={pageStyles.table}>
                                             <thead>
                                                 <tr>
@@ -1159,13 +1245,14 @@ const ReturnsPage = () => {
                                                 ))}
                                             </tbody>
                                         </table>
-                                    </div>
+                                        </div>
+                                    </>
                                 );
                             })()}
-                            {activeTab === 'exchange_seller' && renderTable(queues.exchange_seller)}
+                            {activeTab === 'exchange_seller' && renderQueueTab(queues.exchange_seller, selectedExchangeSeller, setSelectedExchangeSeller)}
                             {activeTab === 'exchange_customer' && (
                                 <>
-                                    {renderTable(queues.exchange_customer)}
+                                    {renderQueueTab(queues.exchange_customer, selectedExchangeCustomer, setSelectedExchangeCustomer)}
                                     {queues.exchange_customer.length > 0 && (
                                         <div className={`${pageStyles.uploadRow} ${styles.compactActions}`}>
                                             <button
@@ -1190,7 +1277,7 @@ const ReturnsPage = () => {
                                     )}
                                 </>
                             )}
-                            {activeTab === 'unmatched' && renderTable(queues.unmatched)}
+                            {activeTab === 'unmatched' && renderQueueTab(queues.unmatched, selectedUnmatched, setSelectedUnmatched)}
                         </>
                     )}
 
