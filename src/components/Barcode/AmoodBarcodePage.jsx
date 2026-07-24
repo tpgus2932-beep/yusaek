@@ -885,10 +885,12 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
                   </span>
                 )}
               </div>
-              {ezadminHistory.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem", marginTop: "0.4rem" }}>
-                  <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>최근 불러온 이력</span>
-                  {ezadminHistory.map((h) => (
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem", marginTop: "0.4rem" }}>
+                <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>최근 불러온 이력</span>
+                {ezadminHistory.length === 0 ? (
+                  <span style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>불러온 이력이 없습니다.</span>
+                ) : (
+                  ezadminHistory.map((h) => (
                     <div
                       key={h.id}
                       style={{
@@ -916,9 +918,9 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
                         {restoringId === h.id ? "복원 중..." : "복원"}
                       </button>
                     </div>
-                  ))}
-                </div>
-              )}
+                  ))
+                )}
+              </div>
               <div className={styles.uploadRow}>
                 <label className={styles.fileInput} style={{ flex: 1, justifyContent: "flex-start" }}>
                   <input
