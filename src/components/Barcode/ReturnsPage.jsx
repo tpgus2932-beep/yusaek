@@ -120,38 +120,22 @@ const ReturnsPage = () => {
         [queues, onebeRows]
     );
 
-    const exchangeCustomerAllReady = useMemo(() => {
-        const items = queues.exchange_customer;
-        if (!items.length) return false;
-        return items.every((item) =>
-            item.change_product_done ||
-            (item.ezadmin_seq && item.ezadmin_prd_seq && item.old_product_id && item.new_product_id && !item.ezadmin_error)
-        );
-    }, [queues.exchange_customer]);
-
-    const exchangeCustomerHasPending = useMemo(
+    const exchangeCustomerSelectedReady = useMemo(
         () => queues.exchange_customer.some((item) =>
+            selectedExchangeCustomer.has(item.id) &&
             !item.change_product_done &&
             item.ezadmin_seq && item.ezadmin_prd_seq && item.old_product_id && item.new_product_id && !item.ezadmin_error
         ),
-        [queues.exchange_customer]
+        [queues.exchange_customer, selectedExchangeCustomer]
     );
 
-    const exchangeSellerAllReady = useMemo(() => {
-        const items = queues.exchange_seller;
-        if (!items.length) return false;
-        return items.every((item) =>
-            item.change_product_done ||
-            (item.ezadmin_seq && item.ezadmin_prd_seq && item.old_product_id && item.new_product_id && !item.ezadmin_error)
-        );
-    }, [queues.exchange_seller]);
-
-    const exchangeSellerHasPending = useMemo(
+    const exchangeSellerSelectedReady = useMemo(
         () => queues.exchange_seller.some((item) =>
+            selectedExchangeSeller.has(item.id) &&
             !item.change_product_done &&
             item.ezadmin_seq && item.ezadmin_prd_seq && item.old_product_id && item.new_product_id && !item.ezadmin_error
         ),
-        [queues.exchange_seller]
+        [queues.exchange_seller, selectedExchangeSeller]
     );
 
     const playSound = useCallback((key) => {
@@ -818,7 +802,8 @@ body { background: #fff; font-family: sans-serif; }
         }
     };
 
-    const handleExecuteExchangeChangeProduct = async (queue = 'customer') => {
+    const handleExecuteExchangeChangeProduct = async (queue = 'customer', ids = []) => {
+        if (!ids.length) { setMessage('선택된 항목이 없습니다.'); return; }
         if (!window.confirm('이지어드민에서 실제로 상품 교환처리를 실행할까요? 되돌리기 어려운 작업입니다.')) return;
         const setLoading = queue === 'seller' ? setIsExecutingChangeProductSeller : setIsExecutingChangeProduct;
         setLoading(true);
@@ -826,11 +811,12 @@ body { background: #fff; font-family: sans-serif; }
         try {
             const res = await fetch(`${API}/returns/exchange-customer/execute-change-product?queue=${queue}`, {
                 method: 'POST',
-                headers: getAuthHeaders(),
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ ids }),
             });
             const data = await res.json().catch(() => ({}));
             if (data?.need_session) {
-                openEzadminModal(() => handleExecuteExchangeChangeProduct(queue));
+                openEzadminModal(() => handleExecuteExchangeChangeProduct(queue, ids));
                 return;
             }
             if (data?.queues) setQueues(normalizeQueues(data.queues));
@@ -1885,16 +1871,14 @@ body { background: #fff; font-family: sans-serif; }
                                             >
                                                 {isResolvingEzadminSeller ? '조회 중...' : '이지어드민 정보 불러오기'}
                                             </button>
-                                            {exchangeSellerAllReady && exchangeSellerHasPending && (
-                                                <button
-                                                    type="button"
-                                                    className={pageStyles.fileInput}
-                                                    onClick={() => handleExecuteExchangeChangeProduct('seller')}
-                                                    disabled={isExecutingChangeProductSeller}
-                                                >
-                                                    {isExecutingChangeProductSeller ? '실행 중...' : '실행'}
-                                                </button>
-                                            )}
+                                            <button
+                                                type="button"
+                                                className={pageStyles.fileInput}
+                                                onClick={() => handleExecuteExchangeChangeProduct('seller', Array.from(selectedExchangeSeller))}
+                                                disabled={isExecutingChangeProductSeller || !exchangeSellerSelectedReady}
+                                            >
+                                                {isExecutingChangeProductSeller ? '실행 중...' : `실행 (${selectedExchangeSeller.size}건 선택)`}
+                                            </button>
                                         </div>
                                     )}
                                 </>
@@ -1912,16 +1896,14 @@ body { background: #fff; font-family: sans-serif; }
                                             >
                                                 {isResolvingEzadmin ? '조회 중...' : '이지어드민 정보 불러오기'}
                                             </button>
-                                            {exchangeCustomerAllReady && exchangeCustomerHasPending && (
-                                                <button
-                                                    type="button"
-                                                    className={pageStyles.fileInput}
-                                                    onClick={() => handleExecuteExchangeChangeProduct('customer')}
-                                                    disabled={isExecutingChangeProduct}
-                                                >
-                                                    {isExecutingChangeProduct ? '실행 중...' : '실행'}
-                                                </button>
-                                            )}
+                                            <button
+                                                type="button"
+                                                className={pageStyles.fileInput}
+                                                onClick={() => handleExecuteExchangeChangeProduct('customer', Array.from(selectedExchangeCustomer))}
+                                                disabled={isExecutingChangeProduct || !exchangeCustomerSelectedReady}
+                                            >
+                                                {isExecutingChangeProduct ? '실행 중...' : `실행 (${selectedExchangeCustomer.size}건 선택)`}
+                                            </button>
                                         </div>
                                     )}
                                 </>

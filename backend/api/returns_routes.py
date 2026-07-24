@@ -1019,22 +1019,32 @@ def build_returns_router(
         return {"ok": True, "resolved": resolved, "queues": return_queue_payload(state)}
 
     @router.post("/returns/exchange-customer/execute-change-product")
-    async def execute_exchange_customer_change_product(queue: str = "customer", user: str = Depends(get_current_user)):
+    async def execute_exchange_customer_change_product(
+        queue: str = "customer",
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
         """resolve-ezadmin으로 SEQ/PRD_SEQ/기존상품코드/교환상품코드가 모두 채워진
-        교환고객/교환판매자 항목들에 대해 이지어드민 change_product(E900)를 실제로 실행한다.
+        교환고객/교환판매자 항목 중, 체크박스로 선택된(``payload["ids"]``) 항목들에
+        대해서만 이지어드민 change_product(E900)를 실제로 실행한다.
 
         주문의 상품을 즉시 교체하는, 되돌리기 어려운 동작이다 - 값이 하나라도
-        비어있거나 에러가 있는 항목은 건너뛴다.
+        비어있거나 에러가 있는 항목은 건너뛴다. 선택되지 않은 항목은 처리하지 않는다.
         """
         phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
         if not phpsessid:
             return {"ok": False, "need_session": True}
 
+        selected_ids = {int(i) for i in (payload.get("ids") or [])}
         state = get_return_state(user)
+        if not selected_ids:
+            return {"ok": False, "detail": "선택된 항목이 없습니다.", "queues": return_queue_payload(state)}
+
         items = state.queue_exchange_seller if queue == "seller" else state.queue_exchange_customer
         pending = [
             item for item in items
-            if not item.get("change_product_done")
+            if item.get("id") in selected_ids
+            and not item.get("change_product_done")
             and not item.get("ezadmin_error")
             and item.get("ezadmin_seq") and item.get("ezadmin_prd_seq")
             and item.get("old_product_id") and item.get("new_product_id")
