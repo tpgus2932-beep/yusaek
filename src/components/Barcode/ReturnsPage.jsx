@@ -670,27 +670,48 @@ body { background: #fff; font-family: sans-serif; }
         return codeMap;
     };
 
+    const applyItemFlags = (flagsById) => {
+        setQueues((prev) => {
+            const next = { ...prev };
+            for (const key of Object.keys(next)) {
+                next[key] = next[key].map((item) => (
+                    flagsById[item.id] ? { ...item, ...flagsById[item.id] } : item
+                ));
+            }
+            return next;
+        });
+    };
+
     const handleSendToKimsungil = async (selectedItems) => {
         if (!selectedItems || !selectedItems.length) return;
         setKimsungilSendLoading(true);
         setMessage('');
         try {
             const codeMap = await resolveProductCodes(selectedItems);
-            const codes = Object.values(codeMap).filter(Boolean);
-            if (!codes.length) {
+            const entries = Object.entries(codeMap).filter(([, code]) => code);
+            if (!entries.length) {
                 setMessage('상품코드를 찾지 못해 김승일보내기를 할 수 없습니다.');
                 return;
             }
             let sent = 0;
-            for (const code of codes) {
+            const flagsById = {};
+            for (const [idStr, code] of entries) {
+                const id = Number(idStr);
                 const res = await fetch(`${API}/barcode/kimsungil/add`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                     body: JSON.stringify({ code }),
                 });
-                if (res.ok) sent += 1;
+                if (res.ok) {
+                    sent += 1;
+                    flagsById[id] = { kimsungil_sent: true, kimsungil_error: undefined };
+                } else {
+                    const data = await res.json().catch(() => ({}));
+                    flagsById[id] = { kimsungil_error: data?.detail || '전송 실패' };
+                }
             }
-            setMessage(`김승일보내기 완료: ${sent}/${codes.length}건`);
+            applyItemFlags(flagsById);
+            setMessage(`김승일보내기 완료: ${sent}/${entries.length}건`);
         } catch (err) {
             setMessage(err.message || '김승일보내기 실패');
         } finally {
@@ -1296,6 +1317,7 @@ body { background: #fff; font-family: sans-serif; }
         const hasImages = items.some((item) => item.images && item.images.length > 0);
         const hasRefundStatus = items.some((item) => item.ably_refund_done || item.ably_refund_error);
         const hasReasonChangeStatus = items.some((item) => item.ably_reason_changed || item.ably_reason_change_error);
+        const hasKimsungilStatus = items.some((item) => item.kimsungil_sent || item.kimsungil_error);
         const hasStockinStatus = items.some((item) => item.ezadmin_stockin_done || item.ezadmin_stockin_error);
         const hasEzadminInfo = items.some((item) =>
             item.ezadmin_seq || item.old_product_id || item.new_product_id || item.ezadmin_error || item.change_product_done
@@ -1324,6 +1346,7 @@ body { background: #fff; font-family: sans-serif; }
                             {hasImages && <th>사진</th>}
                             {hasRefundStatus && <th>환불처리</th>}
                             {hasReasonChangeStatus && <th>사유변경</th>}
+                            {hasKimsungilStatus && <th>김승일</th>}
                             {hasStockinStatus && <th>입고처리</th>}
                             {hasEzadminInfo && <th>SEQ</th>}
                             {hasEzadminInfo && <th>PRD_SEQ</th>}
@@ -1384,6 +1407,11 @@ body { background: #fff; font-family: sans-serif; }
                                 {hasReasonChangeStatus && (
                                     <td style={{ color: item.ably_reason_change_error ? '#dc2626' : '#22c55e', fontWeight: item.ably_reason_changed ? 600 : 400 }}>
                                         {item.ably_reason_changed ? '✓ 완료' : item.ably_reason_change_error || ''}
+                                    </td>
+                                )}
+                                {hasKimsungilStatus && (
+                                    <td style={{ color: item.kimsungil_error ? '#dc2626' : '#22c55e', fontWeight: item.kimsungil_sent ? 600 : 400 }}>
+                                        {item.kimsungil_sent ? '✓ 완료' : item.kimsungil_error || ''}
                                     </td>
                                 )}
                                 {hasStockinStatus && (
