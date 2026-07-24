@@ -1673,6 +1673,7 @@ def build_returns_router(
                     "refund_holder":  str(row.get("REFUND_HOLDER") or ""),
                     "refund_account": str(row.get("REFUND_ACCOUNT") or ""),
                     "refund_bank_sno": _to_int(row.get("REFUND_BANK_SNO")),
+                    "buyer_tel":      str(row.get("BUYER_TEL") or ""),
                     "order_no":       _clean_sno(row.get("ORDER_NO")),
                     "images":         list(row.get("CANCEL_IMAGES") or []),
                     "option_code":    str(row.get("OPTION_CODE") or ""),
