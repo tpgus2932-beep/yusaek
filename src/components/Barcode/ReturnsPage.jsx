@@ -769,8 +769,13 @@ body { background: #fff; font-family: sans-serif; }
             }
             if (data?.queues) setQueues(normalizeQueues(data.queues));
             if (!res.ok) throw new Error(data?.detail || '오회수 처리 실패');
-            const ok = (data.results || []).filter((r) => r.ok).length;
-            let msg = `오회수 처리 완료: ${ok}/${data.results.length}건 성공`;
+            const results = data.results || [];
+            const ok = results.filter((r) => r.ok).length;
+            let msg = `오회수 처리 완료: ${ok}/${results.length}건 성공`;
+            const failed = results.filter((r) => !r.ok);
+            if (failed.length) {
+                msg += ' — ' + failed.map((r) => `${r.invoice || r.id}: ${r.error || '알 수 없는 오류'}`).join(', ');
+            }
             if (data.need_ezdesk_session) msg += ' — 이지데스크 세션이 만료되어 중단했습니다. 테스트 > 자동화 대시보드에서 세션을 재설정해주세요.';
             setMessage(msg);
             fetchRegatherItems();

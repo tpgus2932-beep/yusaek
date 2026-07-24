@@ -81,8 +81,8 @@ def build_return_regathering_router(
             if session_expired:
                 break
             item_id = item.get("id")
-            result = {"id": item_id, "ok": False, "error": None}
             invoice = str(item.get("match") or "").strip()
+            result = {"id": item_id, "invoice": invoice, "ok": False, "error": None}
             phone = _clean_phone(item.get("buyer_tel"))
             try:
                 if not invoice:
