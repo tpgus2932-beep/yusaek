@@ -1635,6 +1635,12 @@ body { background: #fff; font-family: sans-serif; }
                         </div>
                     </div>
 
+                    {message && (
+                        <div className={pageStyles.statusMsg} style={{ marginBottom: '0.75rem' }}>
+                            <strong>{message}</strong>
+                        </div>
+                    )}
+
                     {activeTab !== 'onebe' && (
                         <>
                             {activeTab === 'all' && renderQueueTab(queues.all, selectedAll, setSelectedAll)}
