@@ -1,7 +1,32 @@
 from __future__ import annotations
 from typing import Any
+import re
 import httpx
 from . import config
+
+
+def _strip_html(text: str) -> str:
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    return re.sub(r"<[^>]+>", "", text)
+
+
+def _contact_message_text(row: dict) -> str:
+    """CS문의 메시지 한 건에서 표시할 텍스트를 뽑는다.
+
+    구매자/판매자가 직접 입력한 메시지는 content에 그대로 들어있지만,
+    자동응답/시스템 카드 메시지는 content가 null이고 card.sections 안의
+    HTML 텍스트에 실제 내용이 있다 (실제 브라우저 캡처로 확인됨).
+    """
+    content = row.get("content")
+    if content:
+        return str(content)
+    card = row.get("card") or {}
+    texts = [
+        _strip_html(str((section.get("contents") or {}).get("text") or ""))
+        for section in (card.get("sections") or [])
+        if section.get("type") == "HTML"
+    ]
+    return "\n".join(t for t in texts if t)
 
 
 class AblyClient:
@@ -33,6 +58,73 @@ class AblyClient:
                 response = await client.request(method, f"{config.ABLY_BASE}{path}", headers=self.headers(token, origin=origin), json=json, params=params)
         return response
 
+    # CS문의(contact_rooms) 목록 화면에서 실제로 쓰는 카테고리 전체 목록
+    # (진행중/완료 탭 공통, 실제 브라우저 검색 요청 캡처로 확인됨).
+    _CONTACT_ROOM_CATEGORIES = [
+        2, 101, 120, 3, 102, 121, 4, 103, 122, 5, 104, 123, 9, 11, 106, 125,
+        12, 107, 126, 13, 108, 127, 14, 109, 128, 15, 110, 129, 16, 111, 130,
+        19, 153, 172,
+    ]
+
+    async def count_contact_rooms_by_mobile(self, mobile: str, *, start_date: str, end_date: str) -> int:
+        """구매자 전화번호로 CS문의방 개수를 조회 (진행중 status=1,2 + 완료 status=3,4,5 통합).
+
+        셀러어드민 CS문의 화면에서 진행중/완료 탭을 각각 status 다르게 조회하는
+        것과 동일한 요청이며, status를 한 번에 합쳐서 호출한다 (실제 브라우저
+        검색 요청 캡처로 확인됨).
+        """
+        response = await self.request(
+            "GET", "/seller/contact_rooms/total_count/",
+            params={
+                "start_date": start_date,
+                "end_date": end_date,
+                "order": "-updated_latest_message_at",
+                "category[]": self._CONTACT_ROOM_CATEGORIES,
+                "mobile": mobile,
+                "status[]": [1, 2, 3, 4, 5],
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+        return int(data.get("total_count") or 0)
+
+    async def list_contact_rooms_by_mobile(self, mobile: str, *, start_date: str, end_date: str) -> list[dict]:
+        """구매자 전화번호로 CS문의방 목록(최신순)을 조회. count_contact_rooms_by_mobile와 동일한 파라미터."""
+        response = await self.request(
+            "GET", "/seller/contact_rooms/",
+            params={
+                "start_date": start_date,
+                "end_date": end_date,
+                "order": "-updated_latest_message_at",
+                "category[]": self._CONTACT_ROOM_CATEGORIES,
+                "mobile": mobile,
+                "status[]": [1, 2, 3, 4, 5],
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get("contact_rooms") or []
+
+    async def get_contact_room_messages(self, sno: int | str) -> dict:
+        """CS문의방 하나의 전체 대화 내용을 {status_display, market_name, messages}로 정규화해서 반환."""
+        response = await self.request("GET", f"/seller/contact_rooms/{sno}/")
+        response.raise_for_status()
+        data = response.json()
+        room = data.get("contact_room") or {}
+        messages = []
+        for row in data.get("contact_messages") or []:
+            text = _contact_message_text(row)
+            if not text:
+                continue
+            member_type = row.get("member_type") or ""
+            sender = "구매자" if member_type == "USER" else "판매자" if member_type == "SELLER" else (member_type or "시스템")
+            messages.append({"sender": sender, "content": text, "created_at": row.get("created_at")})
+        return {
+            "status_display": room.get("get_status_display"),
+            "market_name": (room.get("market") or {}).get("name"),
+            "messages": messages,
+        }
+
     async def rollback_order_items_to_prepare(self, sno_list: list[int]) -> httpx.Response:
         return await self.request("PUT", "/seller/order_items/rollback_to_prepare/", json={"sno_list": sno_list}, origin="my.a-bly.com")
 
@@ -45,6 +137,33 @@ class AblyClient:
         response = await self.request("GET", f"/seller/goods/{sno}/")
         response.raise_for_status()
         return response.json().get("goods", {})
+
+    async def get_goods_statistics(self, *, start_date: str, end_date: str, per_page: int = 100) -> list[dict]:
+        """상품별 판매 통계 전체 페이지 조회 (인기재고 랭킹 등 상품 단위 집계에 사용)."""
+        all_goods: list[dict] = []
+        page = 1
+        while True:
+            response = await self.request(
+                "GET", "/seller/statistics/goods/",
+                params={
+                    "page": page,
+                    "per_page": per_page,
+                    "option_enable": "true",
+                    "start_date": start_date,
+                    "end_date": end_date,
+                },
+                origin="my.a-bly.com",
+            )
+            response.raise_for_status()
+            data = response.json()
+            goods = ((data.get("results") or {}).get("statistics")) or []
+            if not goods:
+                break
+            all_goods.extend(goods)
+            if page >= data.get("max_page_number", 1):
+                break
+            page += 1
+        return all_goods
 
     async def list_exchanges(self, *, status: int | list[int], start_date: str, end_date: str, per_page: int = 30) -> list[dict]:
         """상태별 교환 목록 전체 페이지 조회.

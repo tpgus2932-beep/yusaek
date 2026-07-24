@@ -1,9 +1,24 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import styles from "../Barcode/BarcodePage.module.css";
+import pageStyles from "./OrderPage.module.css";
 import * as XLSX from "xlsx";
 import XLSXStyle from "xlsx-js-style";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
+
+const formatDateLocal = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
+const defaultPopularEndDate = () => formatDateLocal(new Date());
+const defaultPopularStartDate = () => {
+  const d = new Date();
+  d.setDate(d.getDate() - 4);
+  return formatDateLocal(d);
+};
 
 const stickyThStyle = {
   position: "sticky",
@@ -19,6 +34,67 @@ export default function OrderPage() {
   const lizardFileInputRef = useRef(null);
 
   const { openModal: openEzadminModal } = useEzadminSession();
+
+  const [popularStartDate, setPopularStartDate] = useState(defaultPopularStartDate);
+  const [popularEndDate, setPopularEndDate] = useState(defaultPopularEndDate);
+  const [popularItems, setPopularItems] = useState([]);
+  const [popularLoading, setPopularLoading] = useState(false);
+  const [popularMessage, setPopularMessage] = useState("");
+  const [popularNeedEzadminSession, setPopularNeedEzadminSession] = useState(false);
+  const [popularLiveFetchEnabled, setPopularLiveFetchEnabled] = useState(true);
+  const [popularUpdatedAt, setPopularUpdatedAt] = useState(null);
+
+  useEffect(() => {
+    const loadSaved = async () => {
+      try {
+        const res = await fetch(`${API}/order/popular-goods/saved`, {
+          headers: { ...getAuthHeaders() },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data?.ok) return;
+        setPopularLiveFetchEnabled(data.live_fetch_enabled !== false);
+        if (data.saved) {
+          setPopularItems(data.items || []);
+          setPopularNeedEzadminSession(!!data.need_ezadmin_session);
+          setPopularUpdatedAt(data.updated_at || null);
+          setPopularMessage(`저장된 데이터 (${data.start_date} ~ ${data.end_date}, ${data.count ?? 0}건)`);
+        }
+      } catch {
+        // 저장된 데이터 로드 실패는 조용히 무시 - 조회 버튼으로 다시 시도 가능
+      }
+    };
+    loadSaved();
+  }, []);
+
+  const fetchPopularGoods = async () => {
+    try {
+      setPopularLoading(true);
+      setPopularMessage("");
+      setPopularNeedEzadminSession(false);
+      const params = new URLSearchParams({
+        start_date: popularStartDate,
+        end_date: popularEndDate,
+      });
+      const res = await fetch(`${API}/order/popular-goods?${params.toString()}`, {
+        headers: { ...getAuthHeaders() },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        setPopularMessage(data?.detail || data?.error || "인기재고 조회 실패");
+        setPopularItems([]);
+        return;
+      }
+      setPopularItems(data.items || []);
+      setPopularNeedEzadminSession(!!data.need_ezadmin_session);
+      setPopularUpdatedAt(new Date().toISOString());
+      setPopularMessage(`조회 완료: ${data.count ?? 0}건`);
+    } catch (err) {
+      setPopularMessage(err.message || "인기재고 조회 실패");
+    } finally {
+      setPopularLoading(false);
+    }
+  };
+
   const [mainOrderItems, setMainOrderItems] = useState([]);
   const [mainOrderLoading, setMainOrderLoading] = useState(false);
   const [mainOrderMessage, setMainOrderMessage] = useState("");
@@ -506,6 +582,12 @@ export default function OrderPage() {
         >
           메인발주
         </button>
+        <button
+          className={`${styles.tabBtn} ${activeTab === "popular-goods" ? styles.tabActive : ""}`}
+          onClick={() => setActiveTab("popular-goods")}
+        >
+          인기재고
+        </button>
       </div>
 
       {activeTab === "standard" && (
@@ -664,6 +746,105 @@ export default function OrderPage() {
                       </td>
                     </tr>
                   ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+
+      {activeTab === "popular-goods" && (
+        <section className={styles.card}>
+          <div className={styles.cardHeader}>
+            <h3 className={styles.cardTitle}>인기재고 (판매수량 상위 50개)</h3>
+          </div>
+          {popularLiveFetchEnabled ? (
+            <div className={pageStyles.dateRow}>
+              <input
+                type="date"
+                className={pageStyles.dateInput}
+                value={popularStartDate}
+                onChange={(e) => setPopularStartDate(e.target.value)}
+              />
+              <span className={pageStyles.dateSep}>~</span>
+              <input
+                type="date"
+                className={pageStyles.dateInput}
+                value={popularEndDate}
+                onChange={(e) => setPopularEndDate(e.target.value)}
+              />
+              <button className={styles.primaryBtn} onClick={fetchPopularGoods} disabled={popularLoading}>
+                {popularLoading ? "조회 중..." : "조회"}
+              </button>
+            </div>
+          ) : (
+            <div className={styles.statusMsg}>
+              배포 환경에서는 실시간 조회를 지원하지 않습니다. 로컬에서 마지막으로 조회해 저장된 데이터만 볼 수 있습니다.
+            </div>
+          )}
+          {popularMessage && (
+            <div className={styles.statusMsg}>
+              <strong>{popularMessage}</strong>
+              {popularUpdatedAt && <span> (마지막 조회: {new Date(popularUpdatedAt).toLocaleString("ko-KR")})</span>}
+            </div>
+          )}
+          {popularNeedEzadminSession && (
+            <div className={styles.statusMsg}>
+              <strong>EZAdmin 세션이 만료되어 재고/접수 수량을 불러오지 못했습니다.</strong>{" "}
+              <button
+                className={styles.secondaryBtn}
+                onClick={() => openEzadminModal(fetchPopularGoods)}
+              >
+                EZAdmin 세션 입력 후 재조회
+              </button>
+            </div>
+          )}
+          {popularItems.length === 0 ? (
+            <div className={styles.statusMsg}>
+              {popularLiveFetchEnabled
+                ? "조회 버튼을 눌러 기간 내 판매수량 상위 상품을 불러오세요."
+                : "저장된 데이터가 없습니다. 로컬에서 먼저 조회해주세요."}
+            </div>
+          ) : (
+            <div className={styles.tableWrap} style={{ maxHeight: "85vh", overflowY: "auto" }}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={stickyThStyle}>순위</th>
+                    <th style={stickyThStyle}>상품명</th>
+                    <th style={stickyThStyle}>옵션명</th>
+                    <th style={stickyThStyle}>옵션번호</th>
+                    <th style={stickyThStyle}>상품코드</th>
+                    <th style={stickyThStyle}>재고</th>
+                    <th style={stickyThStyle}>접수</th>
+                    <th style={stickyThStyle}>일평균 판매수량</th>
+                    <th style={stickyThStyle}>미송수량</th>
+                    <th style={stickyThStyle}>매출액</th>
+                    <th style={stickyThStyle}>장바구니</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {popularItems.map((item, idx) => {
+                    const isGrouped = idx > 0 && popularItems[idx - 1].goods_sno === item.goods_sno;
+                    return (
+                      <tr key={item.goods_option_sno ?? idx}>
+                        <td>{item.rank ?? idx + 1}</td>
+                        <td className={isGrouped ? pageStyles.groupedNameCell : undefined}>
+                          {isGrouped ? "└ " : ""}
+                          {item.goods_name}
+                        </td>
+                        <td>{item.goods_option_name}</td>
+                        <td>{item.goods_option_sno}</td>
+                        <td>{item.product_id || "-"}</td>
+                        <td>{item.stock ?? "-"}</td>
+                        <td>{item.pending ?? "-"}</td>
+                        <td>{(item.avg_order_count ?? 0).toLocaleString()}</td>
+                        <td>{(item.misong_qty ?? 0).toLocaleString()}</td>
+                        <td>{(item.order_amount ?? 0).toLocaleString()}원</td>
+                        <td>{(item.cart_count ?? 0).toLocaleString()}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

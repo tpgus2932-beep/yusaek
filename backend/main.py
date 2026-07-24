@@ -1513,6 +1513,8 @@ app.include_router(
         get_db=_get_db,
         order_cost_base_path=SHARED_COST_BASE_PATH,
         get_setting=_get_setting,
+        get_shared_db=_get_shared_db,
+        is_render=_IS_RENDER,
     )
 )
 app.include_router(

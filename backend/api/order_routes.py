@@ -1,5 +1,7 @@
 from pathlib import Path
 from datetime import datetime, timedelta
+import asyncio
+import json
 import tempfile
 import io
 import re
@@ -15,6 +17,9 @@ from openpyxl import load_workbook, Workbook
 import xlwt
 
 from services.top90_client import execute_main_orders, Top90Error
+from sdk.ably import AblyClient
+from sdk.ezadmin import EzAdminClient, EzAdminSessionExpired
+from api.wonbe_routes import load_wonbe_option_sno_map
 
 _EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
@@ -26,6 +31,8 @@ def build_order_router(
     get_db,
     order_cost_base_path: Path,
     get_setting,
+    get_shared_db,
+    is_render: bool = False,
 ):
     router = APIRouter()
     COST_BASE_CODE_COL = 0
@@ -632,6 +639,217 @@ def build_order_router(
             include_col3=True,
             admin=admin,
         )
+
+    # ── 인기재고 (에이블리 상품별 판매 통계 랭킹) ────────────────────────────────
+    POPULAR_GOODS_SNAPSHOT_KEY = "order_popular_goods"
+
+    def _load_misong_qty_by_code() -> dict[str, int]:
+        """상품코드 → 미송수량(노예김승일 미송관리, misong_items 테이블) 합계. 실패 시 빈 매핑."""
+        conn = get_shared_db()
+        try:
+            rows = conn.execute(
+                "SELECT original_f, SUM(F) AS qty FROM misong_items "
+                "WHERE TRIM(original_f) != '' GROUP BY original_f"
+            ).fetchall()
+            return {
+                " ".join(str(r["original_f"] or "").split()): int(r["qty"] or 0)
+                for r in rows
+                if " ".join(str(r["original_f"] or "").split())
+            }
+        except Exception:
+            return {}
+        finally:
+            conn.close()
+
+    def _init_popular_goods_snapshot_table(conn):
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS order_popular_goods_snapshot (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                items_json TEXT NOT NULL,
+                need_ezadmin_session INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        conn.commit()
+
+    def _save_popular_goods_snapshot(*, start_date: str, end_date: str, items: list[dict], need_ezadmin_session: bool, updated_by: str):
+        conn = get_shared_db()
+        try:
+            _init_popular_goods_snapshot_table(conn)
+            conn.execute("""
+                INSERT INTO order_popular_goods_snapshot (id, start_date, end_date, items_json, need_ezadmin_session, updated_at, updated_by)
+                VALUES (1, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    start_date = excluded.start_date,
+                    end_date = excluded.end_date,
+                    items_json = excluded.items_json,
+                    need_ezadmin_session = excluded.need_ezadmin_session,
+                    updated_at = CURRENT_TIMESTAMP,
+                    updated_by = excluded.updated_by
+            """, (start_date, end_date, json.dumps(items, ensure_ascii=False), 1 if need_ezadmin_session else 0, updated_by))
+            conn.commit()
+        finally:
+            conn.close()
+
+    @router.get("/order/popular-goods/saved")
+    def order_popular_goods_saved(admin: str = Depends(require_admin)):
+        """마지막으로 로컬에서 조회해 저장해둔 인기재고 스냅샷을 읽기만 한다 (외부 API 호출 없음 - 배포 환경에서도 동작)."""
+        conn = get_shared_db()
+        try:
+            _init_popular_goods_snapshot_table(conn)
+            row = conn.execute(
+                "SELECT start_date, end_date, items_json, need_ezadmin_session, updated_at FROM order_popular_goods_snapshot WHERE id = 1"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        if not row:
+            return {"ok": True, "saved": False, "live_fetch_enabled": not is_render}
+
+        try:
+            items = json.loads(row["items_json"])
+        except (TypeError, json.JSONDecodeError):
+            items = []
+        return {
+            "ok": True,
+            "saved": True,
+            "start_date": row["start_date"],
+            "end_date": row["end_date"],
+            "count": len(items),
+            "items": items,
+            "need_ezadmin_session": bool(row["need_ezadmin_session"]),
+            "updated_at": row["updated_at"],
+            "live_fetch_enabled": not is_render,
+        }
+
+    @router.get("/order/popular-goods")
+    async def order_popular_goods(
+        start_date: str | None = None,
+        end_date: str | None = None,
+        limit: int = 50,
+        admin: str = Depends(require_admin),
+    ):
+        if is_render:
+            raise HTTPException(
+                status_code=403,
+                detail="배포 환경에서는 실시간 조회를 지원하지 않습니다. 저장된 데이터를 확인하세요.",
+            )
+
+        now = datetime.now()
+        if not end_date:
+            end_date = now.strftime("%Y-%m-%d")
+        if not start_date:
+            start_date = (now - timedelta(days=4)).strftime("%Y-%m-%d")
+        if limit <= 0 or limit > 200:
+            limit = 50
+
+        try:
+            days = (datetime.strptime(end_date, "%Y-%m-%d") - datetime.strptime(start_date, "%Y-%m-%d")).days + 1
+        except ValueError:
+            days = 1
+        days = max(days, 1)
+
+        try:
+            goods = await AblyClient().get_goods_statistics(start_date=start_date, end_date=end_date)
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 판매 통계 조회 실패 (HTTP {e.response.status_code})")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 판매 통계 조회 실패: {e}")
+
+        # 옵션(재고) 단위로 한 개의 상품처럼 취급 - 같은 상품이라도 옵션마다 별도 랭킹.
+        options: list[dict] = []
+        for g in goods:
+            for opt in g.get("goods_options") or []:
+                options.append(
+                    {
+                        "goods_sno": g.get("goods_sno"),
+                        "goods_name": g.get("goods_name"),
+                        "goods_option_sno": opt.get("goods_option_sno"),
+                        "goods_option_name": opt.get("goods_option_name"),
+                        "order_count": opt.get("order_count") or 0,
+                        "order_amount": opt.get("order_amount") or 0,
+                        "cart_count": opt.get("cart_count") or 0,
+                    }
+                )
+
+        # 랭킹은 기간 전체 판매수량 기준(기간이 모든 항목에 동일해 순서는 바뀌지 않음),
+        # 화면 표시는 일평균 판매수량(판매수량 / 기간 일수)으로 보여준다.
+        items = sorted(options, key=lambda o: o["order_count"], reverse=True)[:limit]
+        for rank, item in enumerate(items, start=1):
+            item["rank"] = rank
+            item["avg_order_count"] = round(item["order_count"] / days, 1)
+
+        # 같은 상품(goods_sno)의 옵션들을 묶어서, 그 상품의 최고 순위 옵션 바로 밑에 붙인다.
+        # items가 이미 판매수량 내림차순이라 그룹 내부 순서도 그대로 유지된다.
+        grouped: dict[int, list[dict]] = {}
+        group_order: list[int] = []
+        for item in items:
+            sno = item["goods_sno"]
+            if sno not in grouped:
+                grouped[sno] = []
+                group_order.append(sno)
+            grouped[sno].append(item)
+        items = [item for sno in group_order for item in grouped[sno]]
+
+        # 옵션번호 → 상품코드(DB관리 원가베이스유) → 재고/접수(EZAdmin I100) 매칭.
+        option_to_product_id = load_wonbe_option_sno_map()
+        for item in items:
+            item["product_id"] = option_to_product_id.get(str(item.get("goods_option_sno") or ""))
+
+        # 상품코드 → 미송수량(노예김승일 미송관리). 없으면 0.
+        misong_qty_by_code = _load_misong_qty_by_code()
+        for item in items:
+            item["misong_qty"] = misong_qty_by_code.get(item.get("product_id") or "", 0)
+
+        unique_product_ids = sorted({item["product_id"] for item in items if item.get("product_id")})
+        need_ezadmin_session = False
+        stock_cache: dict[str, dict] = {}
+        if unique_product_ids:
+            ez = EzAdminClient(get_setting)
+            sem = asyncio.Semaphore(6)
+
+            async def _lookup(product_id: str) -> tuple[str, dict]:
+                async with sem:
+                    try:
+                        result = await ez.get_stock_and_pending(product_id)
+                        return product_id, {**result, "_session_expired": False}
+                    except EzAdminSessionExpired:
+                        return product_id, {"stock": None, "pending": None, "_session_expired": True}
+                    except Exception:
+                        return product_id, {"stock": None, "pending": None, "_session_expired": False}
+
+            results = await asyncio.gather(*[_lookup(pid) for pid in unique_product_ids])
+            for product_id, result in results:
+                if result.pop("_session_expired", False):
+                    need_ezadmin_session = True
+                stock_cache[product_id] = result
+
+        for item in items:
+            product_id = item.get("product_id")
+            result = stock_cache.get(product_id) if product_id else None
+            item["stock"] = result["stock"] if result else None
+            item["pending"] = result["pending"] if result else None
+
+        try:
+            _save_popular_goods_snapshot(
+                start_date=start_date, end_date=end_date, items=items,
+                need_ezadmin_session=need_ezadmin_session, updated_by=admin,
+            )
+        except Exception:
+            pass  # 스냅샷 저장 실패는 이번 조회 결과 응답을 막지 않는다.
+
+        return {
+            "ok": True,
+            "start_date": start_date,
+            "end_date": end_date,
+            "days": days,
+            "count": len(items),
+            "items": items,
+            "need_ezadmin_session": need_ezadmin_session,
+        }
 
     # ── 메인발주 목록 (EZAdmin IO30 미출고/부족 상품 조회) ───────────────────────
     @router.post("/order/main-order/list")

@@ -1,0 +1,22 @@
+.dateRow {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.dateInput {
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.dateSep {
+  color: var(--text-secondary);
+}
+
+.groupedNameCell {
+  color: var(--text-secondary);
+}

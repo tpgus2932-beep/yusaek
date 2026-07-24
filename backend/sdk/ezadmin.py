@@ -174,6 +174,23 @@ class EzAdminClient:
                 return str(pack)
         return None
 
+    async def find_order_by_invoice(self, invoice_no: str, *, start_date: str, end_date: str) -> dict | None:
+        """송장번호(super_keyword)로 EZAdmin 주문을 검색해 pack과 수취인 전화번호를 함께 반환.
+
+        query_orders 검색 결과 한 번으로 수취인 전화번호(cell.recv_tel)와,
+        packlist_json 호출(상품코드 조회)에 필요한 pack을 동시에 얻는다
+        (실제 브라우저 검색 요청 캡처로 확인됨).
+        """
+        rows = await self.query_orders(str(invoice_no), start_date=start_date, end_date=end_date, rows=10)
+        for row in rows:
+            cell = row.get("cell") if isinstance(row, dict) else None
+            pack = first_present(cell or row, ("pack",))
+            if not pack:
+                continue
+            phone = first_present(cell or row, ("recv_tel", "recv_mobile"))
+            return {"pack": str(pack), "phone": str(phone) if phone else None}
+        return None
+
     async def packlist(self, pack: str) -> dict:
         return await self.post("E900", "packlist_json", data={"_search": "false", "rows": "500", "page": "1", "sidx": "", "sord": "", "readonly": "T", "pack": pack, "stock": "0", "is_masking": "0"}, time_flag="epoch_ms")
 
@@ -321,6 +338,12 @@ class EzAdminClient:
     async def set_stock_data(self, product_id: str, qty: int, *, type_: str = "out", bad: str = "0") -> dict:
         return await self.post("I100", "set_stock_data", data={"product_id": product_id, "bad": bad, "type": type_, "stock_label": "", "move_warehouse": "0", "stock_unit": "stock_unit_ea", "qty": str(qty), "memo": ""}, time_flag="browser")
 
+    async def receive_stock(self, product_id: str, qty: int = 1, *, memo: str = "") -> dict:
+        """I100(재고관리) 입고처리. set_stock_data의 type="in" 방향 - "out"(출고)만
+        실캡처로 검증됐고 "in"은 UI의 입고/출고 토글 반대쪽 값으로 추정한 것이라
+        처음 쓸 때는 결과를 확인해보는 게 좋다."""
+        return await self.post("I100", "set_stock_data", data={"product_id": product_id, "bad": "0", "type": "in", "stock_label": "", "move_warehouse": "0", "stock_unit": "stock_unit_ea", "qty": str(qty), "memo": memo}, time_flag="browser")
+
     async def get_pending_order_count(self, product_id: str) -> int:
         """I100(현재고조회)에서 상품코드로 검색해 '접수'(출고 전 대기 주문) 수량을 가져온다.
 
@@ -352,6 +375,39 @@ class EzAdminClient:
         before_trans_html = str(cell.get("before_trans") or "")
         match = re.search(r">(\d+)</a>", before_trans_html)
         return int(match.group(1)) if match else 0
+
+    async def get_stock_and_pending(self, product_id: str) -> dict:
+        """I100(현재고조회)에서 상품코드로 검색해 재고(stock_normal)와 접수(before_trans,
+        출고 전 대기 주문) 수량을 함께 가져온다. get_pending_order_count와 동일한 조회를
+        한 번만 호출해 두 값을 같이 얻고 싶을 때 사용."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        par = (
+            "auto_search=&search_all_product=&multi_supply_group=&multi_supply=&str_supply_code=0"
+            "&tags_string=&product_tag_include_type=1"
+            f"&query_type=product_id&query_str={product_id}"
+            "&stock_type=0&stock_start=&stock_end=&notrans_day=&notrans_cnt=&notrans_status=0&stock_status=0"
+            f"&start_date={today}&start_hour=00:00:00&end_date={today}&end_hour=23:59:59"
+            "&date_period_sel=1&work_type=stockin&work_start=&work_end=&inout_type=0&product_date="
+            f"&start_date2={today}&end_date2={today}&date_period_sel2=1"
+            "&products_sort=1&category=0&except_soldout=0&temp_soldout=0&location=0"
+        )
+        data = await self.post(
+            "I100", "search",
+            data={"_search": "false", "rows": "100", "page": "1", "sidx": "", "sord": "asc", "page_code": "I100"},
+            par=par, time_flag=None,
+        )
+        rows = data.get("rows") or []
+        if not rows:
+            raise ValueError(f"상품코드 {product_id}를 찾을 수 없습니다")
+        cell = (rows[0] or {}).get("cell") or {}
+        try:
+            stock = int(float(cell.get("stock_normal") or 0))
+        except (TypeError, ValueError):
+            stock = 0
+        before_trans_html = str(cell.get("before_trans") or "")
+        match = re.search(r">(\d+)</a>", before_trans_html)
+        pending = int(match.group(1)) if match else 0
+        return {"stock": stock, "pending": pending}
 
     async def sms_chat_detail(
         self,
