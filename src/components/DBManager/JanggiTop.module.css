@@ -258,3 +258,48 @@
   font-size: 0.8rem;
   padding: 0.2rem 0;
 }
+
+.searchBar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.9rem;
+  background: #fffbeb;
+  border-bottom: 1px solid #fde68a;
+}
+
+.searchInput {
+  flex: 1;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid #fbbf24;
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  outline: none;
+}
+.searchInput:focus { border-color: #d97706; }
+
+.searchCount {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #92400e;
+  white-space: nowrap;
+}
+
+.searchClose {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: #92400e;
+  padding: 0.2rem;
+}
+.searchClose:hover { color: #78350f; }
+
+.rowSearchSelected td {
+  outline: 2px solid #f59e0b;
+  outline-offset: -2px;
+}
