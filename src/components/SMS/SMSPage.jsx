@@ -85,6 +85,7 @@ export default function SMSPage() {
   const [rtime, setRtime] = useState('');
   const [testMode, setTestMode] = useState(false);
   const [sending, setSending] = useState(false);
+  const [ezdeskSending, setEzdeskSending] = useState(false);
   const [sendResult, setSendResult] = useState(null);
 
   // ─── 잔여건수 상태 ───
@@ -382,6 +383,37 @@ export default function SMSPage() {
       setSendResult({ ok: false, msg: err.message ? `오류: ${err.message}` : '알 수 없는 오류' });
     } finally {
       setSending(false);
+    }
+  };
+
+  // ─── 이지데스크로 전송 (템플릿/작성 내용을 그대로 이지데스크로) ───
+  const handleSendEzdesk = async () => {
+    if (!receivers.length) { setSendResult({ ok: false, msg: '수신번호를 입력하세요.' }); return; }
+    if (receivers.length > 1) { setSendResult({ ok: false, msg: '이지데스크 전송은 한 번에 한 명에게만 가능합니다.' }); return; }
+    if (!msg.trim()) { setSendResult({ ok: false, msg: '메시지 내용을 입력하세요.' }); return; }
+    setEzdeskSending(true);
+    setSendResult(null);
+    try {
+      const res = await fetch(`${API}/return-automation/reply-sms`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ phone: receivers[0], msg }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_ezdesk_session) {
+        setSendResult({ ok: false, msg: '이지데스크 세션이 만료되었습니다. 테스트 > 자동화 대시보드에서 세션을 재설정해주세요.' });
+        return;
+      }
+      if (!res.ok || data?.ok === false) {
+        setSendResult({ ok: false, msg: data?.detail || '이지데스크 전송 실패' });
+        return;
+      }
+      setSendResult({ ok: true, msg: '이지데스크로 전송 완료' });
+    } catch (err) {
+      setSendResult({ ok: false, msg: err.message ? `오류: ${err.message}` : '알 수 없는 오류' });
+    } finally {
+      setEzdeskSending(false);
     }
   };
 
@@ -846,6 +878,10 @@ export default function SMSPage() {
               <button className={styles.primaryBtn} onClick={handleSend} disabled={sending}>
                 <Send size={15} />
                 {sending ? '전송 중...' : (rdate ? '예약 발송' : '발송')}
+              </button>
+              <button className={styles.secondaryBtn} onClick={handleSendEzdesk} disabled={ezdeskSending}>
+                <Send size={15} />
+                {ezdeskSending ? '전송 중...' : '이지데스크로 전송'}
               </button>
               {testMode && <span className={styles.hint}>테스트 모드 ON</span>}
             </div>
