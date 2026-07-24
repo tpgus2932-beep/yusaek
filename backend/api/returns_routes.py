@@ -18,10 +18,12 @@ from fastapi.responses import FileResponse
 
 try:
     from sdk.ezadmin import EzAdminClient, EzAdminSessionExpired
+    from sdk.ably import AblyClient
 except ModuleNotFoundError:  # package import in unit tests
     from backend.sdk.ezadmin import EzAdminClient, EzAdminSessionExpired
+    from backend.sdk.ably import AblyClient
 
-from api.wonbe_routes import load_wonbe_option_sno_map
+from api.wonbe_routes import load_wonbe_option_sno_map, _get_wonbe_db
 
 LLOGIS_LOGIN_URL  = "https://partner.alps.llogis.com/auth/login"
 LLOGIS_PID_BASE   = "https://pid.alps.llogis.com:18210"
@@ -52,13 +54,49 @@ _CANCEL_REASON_TEXT = {
 
 
 def _remove_return_queue_ids(state, remove_ids: set) -> None:
+    """큐들에서 remove_ids에 해당하는 항목을 제거한다.
+
+    scanned_barcodes는 큐와 별도로 "이번 세션에 스캔한 바코드" 기록을 유지하는데,
+    여기서 같이 정리해주지 않으면 삭제한 항목을 재스캔했을 때 다른 큐에 같은
+    바코드의 항목이 하나도 안 남았는데도 계속 "중복"으로 처리된다. 삭제 후 남은
+    바코드(all_items 기준)와 비교해서, 완전히 사라진 바코드만 scanned_barcodes에서 뺀다.
+    """
+    removed_scans = set()
     for attr in (
         "queue_seller", "queue_customer", "queue_unmatched",
         "queue_exchange_seller", "queue_exchange_customer",
         "queue_exchange", "all_items",
     ):
         queue = getattr(state, attr)
-        setattr(state, attr, [it for it in queue if it.get("id") not in remove_ids])
+        kept = []
+        for it in queue:
+            if it.get("id") in remove_ids:
+                scan = it.get("scan")
+                if scan:
+                    removed_scans.add(scan)
+            else:
+                kept.append(it)
+        setattr(state, attr, kept)
+
+    if removed_scans:
+        remaining_scans = {it.get("scan") for it in state.all_items if it.get("scan")}
+        state.scanned_barcodes -= (removed_scans - remaining_scans)
+
+
+def _wonbe_product_info(codes: list[str]) -> dict[str, dict]:
+    """상품코드 목록으로 원가베이스유(wonbe)에서 상품명/색상/사이즈를 한 번에 조회."""
+    if not codes:
+        return {}
+    conn = _get_wonbe_db()
+    try:
+        placeholders = ",".join(["?"] * len(codes))
+        rows = conn.execute(
+            f"SELECT 상품코드, 상품명, 색상, 사이즈 FROM wonbe WHERE 상품코드 IN ({placeholders})",
+            codes,
+        ).fetchall()
+        return {r["상품코드"]: dict(r) for r in rows}
+    finally:
+        conn.close()
 
 
 def build_returns_router(
@@ -563,6 +601,90 @@ def build_returns_router(
             raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
         return token
 
+    def _ably_seller_headers(token: str) -> dict:
+        return {
+            "Authorization": f"JWT {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": "https://seller-admin.a-bly.com",
+            "Referer": "https://seller-admin.a-bly.com/",
+            "User-Agent": "Mozilla/5.0",
+        }
+
+    async def _ably_receive_exchanges(token: str, exchange_snos: list[int]) -> dict:
+        """교환수거중(status=3) -> 수거완료(status=4). 실제 브라우저 캡처로 확인된 엔드포인트."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            res = await client.post(
+                f"{ABLY_BASE}/seller/exchanges/receive/",
+                headers=_ably_seller_headers(token),
+                json={"exchange_snos": exchange_snos},
+            )
+        res.raise_for_status()
+        return res.json()
+
+    async def _ably_prepare_exchanges(token: str, exchange_snos: list[int]) -> dict:
+        """수거완료(status=4) -> 교환상품준비중(status=9). 실제 브라우저 캡처로 확인된 엔드포인트."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            res = await client.post(
+                f"{ABLY_BASE}/seller/exchanges/prepare/",
+                headers=_ably_seller_headers(token),
+                json={"exchange_snos": exchange_snos},
+            )
+        res.raise_for_status()
+        return res.json()
+
+    async def _fetch_ably_exchange_sno_map(token: str) -> dict:
+        """status=3/4(수거중/수거완료) 교환건을 order_sno·수거송장 기준으로 exchange_sno에 매핑.
+
+        exchange_sno 필드를 이 기능 배포 전에 스캔해 둔 큐 항목에는 채워줄 수
+        없으므로(당시엔 저장 안 됐음), 실행 시점에 최신 목록을 다시 불러와
+        order_sno/반품송장으로 역매칭해 채운다.
+        """
+        headers = {
+            "Authorization": f"JWT {token}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+            "Origin": "https://my.a-bly.com",
+            "Referer": "https://my.a-bly.com/",
+        }
+        today_dt = datetime.now(timezone.utc).date()
+        start_dt = today_dt - timedelta(days=365)
+        by_order_sno: dict[str, int] = {}
+        by_invoice: dict[str, int] = {}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            page = 1
+            while True:
+                res = await client.get(
+                    f"{ABLY_BASE}/seller/exchanges/",
+                    headers=headers,
+                    params={
+                        "page": page,
+                        "per_page": 30,
+                        "requested_at_start": f"{start_dt.strftime('%Y-%m-%d')} 00:00:00",
+                        "requested_at_end": f"{today_dt.strftime('%Y-%m-%d')} 23:59:59",
+                        "status[]": [3, 4],
+                    },
+                )
+                res.raise_for_status()
+                data = res.json()
+                exchanges = data.get("exchanges", [])
+                if not exchanges:
+                    break
+                for ex in exchanges:
+                    sno = ex.get("exchange_sno") or ex.get("sno")
+                    if not sno:
+                        continue
+                    order_sno = str(ex.get("order_sno") or "").strip()
+                    if order_sno:
+                        by_order_sno[order_sno] = sno
+                    invoice = clean_invoice(str((ex.get("return_delivery") or {}).get("invoice_number") or ""))
+                    if invoice:
+                        by_invoice[invoice] = sno
+                if page >= data.get("max_page_number", 1):
+                    break
+                page += 1
+        return {"by_order_sno": by_order_sno, "by_invoice": by_invoice}
+
     @router.post("/returns/load-ably-api")
     async def load_ably_api(user: str = Depends(get_current_user)):
         try:
@@ -622,6 +744,11 @@ def build_returns_router(
                             # buyer_tel/receiver_tel은 order_item 단위 필드다 (cancel
                             # 최상위가 아님 - 실제 API 응답으로 확인됨, HAR 캡처 기준).
                             item["_buyer_tel"]       = str(item.get("buyer_tel") or item.get("receiver_tel") or "")
+                            # 고객이 반품 신청 시 첨부한 사진. user_comment와 마찬가지로
+                            # order_item 단위 필드다 (cancel 최상위가 아님 - cancel
+                            # 레벨에서 읽으면 항상 빈 배열이 돼서 seller 큐에 사진이 전혀
+                            # 안 뜨는 버그가 있었음).
+                            item["_cancel_images"]   = item.get("cancel_images") or cancel.get("cancel_images") or []
                             # order_id 필드는 실제로 존재하지 않는다 (order_items에는
                             # order_sno만 있음 - 직접 API 응답으로 확인됨). order_id를
                             # 쓰면 항상 빈 값이라 "같은 주문번호" 매칭이 절대 안 걸림.
@@ -662,10 +789,14 @@ def build_returns_router(
                 "REFUND_BANK_SNO": item.get("_refund_bank_sno"),
                 "BUYER_TEL":      item.get("_buyer_tel", ""),
                 "ORDER_NO":       item.get("_order_no", ""),
+                "CANCEL_IMAGES":  item.get("_cancel_images") or [],
+                "OPTION_CODE":    str(item.get("option_stock_sync_code") or ""),
+                "GOODS_NAME":     f_name,
+                "OPTION_RAW":     str(item.get("option_info") or "").strip(),
             })
 
         df = pd.DataFrame(rows) if rows else pd.DataFrame(
-            columns=["F_name", "G_opt", "QTY", "ITEM_TEXT", "REASON_TYPE", "M_clean", "DETAIL_REASON", "USER_COMMENT", "REQUEST_NO", "ITEM_SNO", "REFUND_HOLDER", "REFUND_ACCOUNT", "REFUND_BANK_SNO", "BUYER_TEL", "ORDER_NO"])
+            columns=["F_name", "G_opt", "QTY", "ITEM_TEXT", "REASON_TYPE", "M_clean", "DETAIL_REASON", "USER_COMMENT", "REQUEST_NO", "ITEM_SNO", "REFUND_HOLDER", "REFUND_ACCOUNT", "REFUND_BANK_SNO", "BUYER_TEL", "ORDER_NO", "CANCEL_IMAGES", "OPTION_CODE", "GOODS_NAME", "OPTION_RAW"])
         idx: dict[str, list[int]] = {}
         for i, v in enumerate(df["M_clean"].tolist()):
             if v:
@@ -744,10 +875,13 @@ def build_returns_router(
             reason_code   = ex.get("reason_code")
             rtype         = "판매자" if reason_code in _SELLER_EXCHANGE_CODES else "구매자"
             detail_reason = ex.get("detail_reason") or ""
+            reason_images = ex.get("exchange_reason_image_urls") or []
             t_clean       = clean_invoice(str(t_raw))
             # order_sno는 exchange 최상위 필드가 신뢰 가능 (order_item.order_sno는
             # 자주 비어 있음 - exchange_return_routes.py에서 이미 검증된 패턴).
             order_sno     = ex.get("order_sno")
+            exchange_sno  = ex.get("exchange_sno") or ex.get("sno")
+            ex_status     = ex.get("status")
 
             for exchange_item in items_list:
                 order_item = exchange_item.get("order_item") or {}
@@ -780,11 +914,17 @@ def build_returns_router(
                     "ORDER_SNO":           order_sno,
                     "ORDER_ITEM_SNO":      order_item_sno,
                     "EXCHANGE_OPTION_SNO": exchange_option_sno,
+                    "EXCHANGE_SNO":        exchange_sno,
+                    "EXCHANGE_STATUS":     ex_status,
+                    "REASON_IMAGES":       reason_images,
+                    "GOODS_NAME":          f_name,
+                    "OPTION_RAW":          option_str,
                 })
 
         df = pd.DataFrame(rows) if rows else pd.DataFrame(
             columns=["F_name", "G_opt", "QTY", "ITEM_TEXT", "EXCHANGE_REASON", "T_clean", "DETAIL_REASON",
-                     "ORDER_SNO", "ORDER_ITEM_SNO", "EXCHANGE_OPTION_SNO"])
+                     "ORDER_SNO", "ORDER_ITEM_SNO", "EXCHANGE_OPTION_SNO", "EXCHANGE_SNO", "EXCHANGE_STATUS", "REASON_IMAGES",
+                     "GOODS_NAME", "OPTION_RAW"])
         idx: dict[str, list[int]] = {}
         for i, v in enumerate(df["T_clean"].tolist()):
             if v:
@@ -796,8 +936,8 @@ def build_returns_router(
         return {"ok": True, "loaded": len(rows), "index_count": len(idx), "status": return_status(state)}
 
     @router.post("/returns/exchange-customer/resolve-ezadmin")
-    async def resolve_exchange_customer_ezadmin(user: str = Depends(get_current_user)):
-        """교환고객 큐 각 항목의 order_sno로 이지어드민 SEQ/PRD_SEQ/기존상품코드를,
+    async def resolve_exchange_customer_ezadmin(queue: str = "customer", user: str = Depends(get_current_user)):
+        """교환고객/교환판매자 큐 각 항목의 order_sno로 이지어드민 SEQ/PRD_SEQ/기존상품코드를,
         exchange_option_sno로 원가베이스유의 옵션번호를 대조해 교환할 신규상품코드를 찾는다.
 
         반품송장 → LOGIS 원송장조회 → CS검색을 거치지 않고, 에이블리 교환
@@ -808,7 +948,7 @@ def build_returns_router(
             return {"ok": False, "need_session": True}
 
         state = get_return_state(user)
-        items = state.queue_exchange_customer
+        items = state.queue_exchange_seller if queue == "seller" else state.queue_exchange_customer
         if not items:
             return {"ok": True, "resolved": 0, "queues": return_queue_payload(state)}
 
@@ -879,9 +1019,9 @@ def build_returns_router(
         return {"ok": True, "resolved": resolved, "queues": return_queue_payload(state)}
 
     @router.post("/returns/exchange-customer/execute-change-product")
-    async def execute_exchange_customer_change_product(user: str = Depends(get_current_user)):
+    async def execute_exchange_customer_change_product(queue: str = "customer", user: str = Depends(get_current_user)):
         """resolve-ezadmin으로 SEQ/PRD_SEQ/기존상품코드/교환상품코드가 모두 채워진
-        교환고객 항목들에 대해 이지어드민 change_product(E900)를 실제로 실행한다.
+        교환고객/교환판매자 항목들에 대해 이지어드민 change_product(E900)를 실제로 실행한다.
 
         주문의 상품을 즉시 교체하는, 되돌리기 어려운 동작이다 - 값이 하나라도
         비어있거나 에러가 있는 항목은 건너뛴다.
@@ -891,7 +1031,7 @@ def build_returns_router(
             return {"ok": False, "need_session": True}
 
         state = get_return_state(user)
-        items = state.queue_exchange_customer
+        items = state.queue_exchange_seller if queue == "seller" else state.queue_exchange_customer
         pending = [
             item for item in items
             if not item.get("change_product_done")
@@ -899,7 +1039,14 @@ def build_returns_router(
             and item.get("ezadmin_seq") and item.get("ezadmin_prd_seq")
             and item.get("old_product_id") and item.get("new_product_id")
         ]
-        if not pending:
+        # 이미 change_product_done인데 에이블리 상태 전환이 아직 안 된 항목도 있을 수
+        # 있다 (이 기능 배포 전에 이지어드민 교환처리만 끝난 건). pending이 비어도
+        # 그런 항목이 있으면 바로 끝내지 않고 아래 에이블리 전환 단계까지 진행한다.
+        already_needing_advance = [
+            item for item in items
+            if item.get("change_product_done") and not item.get("ably_advance_done")
+        ]
+        if not pending and not already_needing_advance:
             return {"ok": False, "detail": "실행 가능한(모든 값이 채워진) 항목이 없습니다.", "queues": return_queue_payload(state)}
 
         ez = EzAdminClient(get_setting)
@@ -930,7 +1077,65 @@ def build_returns_router(
             except Exception as e:
                 item["ezadmin_error"] = str(e)[:200]
 
-        return {"ok": True, "executed": executed, "queues": return_queue_payload(state)}
+        # 이지어드민 상품교환처리가 끝난 건(이번 배치 + 예전에 이미 끝나 있던 건 모두)은
+        # 에이블리 교환 상태도 같이 넘겨준다. 수거중(3)이면 수거완료(4)를 거쳐, 수거완료(4)면
+        # 바로 교환상품준비중(9)으로 보낸다. exchange_sno가 없는 항목(이 기능 배포 전에
+        # 스캔된 건)은 order_sno/반품송장으로 최신 목록에서 역매칭해 채운다.
+        ably_advanced = {"received": 0, "prepared": 0}
+        ably_error = None
+        advance_candidates = [
+            item for item in items
+            if item.get("change_product_done") and not item.get("ably_advance_done")
+        ]
+        if advance_candidates:
+            try:
+                token = await _ably_login()
+            except Exception as e:
+                ably_error = f"에이블리 로그인 실패: {str(e)[:200]}"
+                token = None
+
+            if token:
+                missing = [item for item in advance_candidates if not item.get("exchange_sno")]
+                if missing:
+                    try:
+                        sno_map = await _fetch_ably_exchange_sno_map(token)
+                        for item in missing:
+                            order_sno = str(item.get("order_sno") or "").strip()
+                            invoice = clean_invoice(str(item.get("match") or item.get("scan") or ""))
+                            found = sno_map["by_order_sno"].get(order_sno) or sno_map["by_invoice"].get(invoice)
+                            if found:
+                                item["exchange_sno"] = str(found)
+                    except Exception as e:
+                        ably_error = f"에이블리 교환건 조회 실패: {str(e)[:200]}"
+
+                resolved = [item for item in advance_candidates if item.get("exchange_sno")]
+                unresolved_count = len(advance_candidates) - len(resolved)
+                exchange_snos = sorted({int(item["exchange_sno"]) for item in resolved})
+
+                if exchange_snos:
+                    try:
+                        receive_result = await _ably_receive_exchanges(token, exchange_snos)
+                        ably_advanced["received"] = receive_result.get("success_count") or 0
+                    except Exception:
+                        pass  # 이미 수거완료 이후 상태인 항목이 섞여 있으면 실패할 수 있음 - prepare로 계속 진행
+                    try:
+                        prepare_result = await _ably_prepare_exchanges(token, exchange_snos)
+                        ably_advanced["prepared"] = prepare_result.get("success_count") or 0
+                        for item in resolved:
+                            item["ably_advance_done"] = True
+                    except Exception as e:
+                        ably_error = f"교환상품준비중 처리 실패: {str(e)[:200]}"
+
+                if unresolved_count and not ably_error:
+                    ably_error = f"exchange_sno를 찾지 못해 에이블리 상태 전환을 건너뛴 항목 {unresolved_count}건"
+
+        return {
+            "ok": True,
+            "executed": executed,
+            "ably_advanced": ably_advanced,
+            "ably_error": ably_error,
+            "queues": return_queue_payload(state),
+        }
 
     @router.post("/returns/exchange")
     def returns_upload_exchange(
@@ -1236,6 +1441,11 @@ def build_returns_router(
                     "order_sno": _clean_sno(row.get("ORDER_SNO")),
                     "order_item_sno": _clean_sno(row.get("ORDER_ITEM_SNO")),
                     "exchange_option_sno": _clean_sno(row.get("EXCHANGE_OPTION_SNO")),
+                    "exchange_sno": _clean_sno(row.get("EXCHANGE_SNO")),
+                    "ably_status": _clean_sno(row.get("EXCHANGE_STATUS")),
+                    "images": list(row.get("REASON_IMAGES") or []),
+                    "goods_name": str(row.get("GOODS_NAME") or ""),
+                    "option_raw": str(row.get("OPTION_RAW") or ""),
                 }
                 state.next_id += 1
                 state.last_added_ids.append(item["id"])
@@ -1334,6 +1544,10 @@ def build_returns_router(
                 "refund_bank_sno": _to_int(row.get("REFUND_BANK_SNO")),
                 "buyer_tel":      str(row.get("BUYER_TEL") or ""),
                 "order_no":       _clean_sno(row.get("ORDER_NO")),
+                "images":         list(row.get("CANCEL_IMAGES") or []),
+                "option_code":    str(row.get("OPTION_CODE") or ""),
+                "goods_name":     str(row.get("GOODS_NAME") or ""),
+                "option_raw":     str(row.get("OPTION_RAW") or ""),
             }
             state.next_id += 1
             state.last_added_ids.append(item["id"])
@@ -1417,6 +1631,11 @@ def build_returns_router(
                     "order_sno": _clean_sno(row.get("ORDER_SNO")),
                     "order_item_sno": _clean_sno(row.get("ORDER_ITEM_SNO")),
                     "exchange_option_sno": _clean_sno(row.get("EXCHANGE_OPTION_SNO")),
+                    "exchange_sno": _clean_sno(row.get("EXCHANGE_SNO")),
+                    "ably_status": _clean_sno(row.get("EXCHANGE_STATUS")),
+                    "images": list(row.get("REASON_IMAGES") or []),
+                    "goods_name": str(row.get("GOODS_NAME") or ""),
+                    "option_raw": str(row.get("OPTION_RAW") or ""),
                 }
                 state.next_id += 1
                 state.last_added_ids.append(item["id"])
@@ -1455,6 +1674,10 @@ def build_returns_router(
                     "refund_account": str(row.get("REFUND_ACCOUNT") or ""),
                     "refund_bank_sno": _to_int(row.get("REFUND_BANK_SNO")),
                     "order_no":       _clean_sno(row.get("ORDER_NO")),
+                    "images":         list(row.get("CANCEL_IMAGES") or []),
+                    "option_code":    str(row.get("OPTION_CODE") or ""),
+                    "goods_name":     str(row.get("GOODS_NAME") or ""),
+                    "option_raw":     str(row.get("OPTION_RAW") or ""),
                 }
                 state.next_id += 1
                 state.last_added_ids.append(item["id"])
@@ -1481,13 +1704,7 @@ def build_returns_router(
             raise HTTPException(status_code=400, detail="삭제할 최근 스캔 기록이 없습니다.")
 
         remove_ids = set(state.last_added_ids)
-        state.queue_seller = [it for it in state.queue_seller if it.get("id") not in remove_ids]
-        state.queue_customer = [it for it in state.queue_customer if it.get("id") not in remove_ids]
-        state.queue_unmatched = [it for it in state.queue_unmatched if it.get("id") not in remove_ids]
-        state.queue_exchange = [it for it in state.queue_exchange if it.get("id") not in remove_ids]
-        state.queue_exchange_seller = [it for it in state.queue_exchange_seller if it.get("id") not in remove_ids]
-        state.queue_exchange_customer = [it for it in state.queue_exchange_customer if it.get("id") not in remove_ids]
-        state.all_items = [it for it in state.all_items if it.get("id") not in remove_ids]
+        _remove_return_queue_ids(state, remove_ids)
         state.last_added_ids = []
         state.last_type = "-"
         return {"ok": True, "queues": return_queue_payload(state), "last_type": state.last_type}
@@ -1508,6 +1725,13 @@ def build_returns_router(
         state.last_type = "-"
         return {"ok": True}
 
+    @router.post("/returns/onebe/reset")
+    def returns_onebe_reset(user: str = Depends(get_current_user)):
+        """원베양식(고객대기) 데이터만 초기화한다 - 판매자/고객/미매칭 대기 큐는 건드리지 않는다."""
+        state = get_return_state(user)
+        state.customer_export_df = pd.DataFrame()
+        return {"ok": True, "onebe": {"rows": return_rows(state.customer_export_df)}}
+
     @router.post("/returns/delete-items")
     def returns_delete_items(payload: dict = Body(...), user: str = Depends(get_current_user)):
         state = get_return_state(user)
@@ -1517,6 +1741,224 @@ def build_returns_router(
             raise HTTPException(status_code=400, detail="삭제할 항목이 없습니다.")
         _remove_return_queue_ids(state, remove_ids)
         return {"ok": True, "queues": return_queue_payload(state)}
+
+    @router.post("/returns/unmatched/lookup-cs")
+    async def returns_unmatched_lookup_cs(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """미매칭 항목의 원송장번호로 이지어드민에서 구매자 전화번호와 상품코드를 찾고,
+        그 전화번호로 에이블리 CS문의(진행중+완료)가 있는지 확인한다.
+
+        이지어드민 CS 화면에서 송장번호로 검색해 전화번호를 확인한 뒤,
+        그 번호로 에이블리 CS창에서 다시 검색하던 수작업을 대체한다. 같은
+        검색(query_json)으로 얻은 pack을 그대로 packlist_json에 넘겨 상품코드도
+        같이 확보해둔다 - 나중에 "입고처리" 버튼이 재검색 없이 바로 쓴다.
+
+        이지어드민 E900 검색은 반품송장(스캔값)이 아니라 원송장번호로 해야
+        한다 - item["match"]가 반품송장→원송장 매핑(map_d_to_e/map_lotte)을
+        거친 e_val이고, item["scan"]은 고객이 반품 보낼 때 붙인 반품송장이라
+        이지어드민에 없다 (반품송장 → LOGIS 원송장조회 → CS검색 순서를
+        그대로 반영한 것).
+        """
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        state = get_return_state(user)
+        raw_ids = payload.get("ids") or []
+        target_ids = {int(i) for i in raw_ids}
+        if not target_ids:
+            raise HTTPException(status_code=400, detail="조회할 항목이 없습니다.")
+
+        items = [it for it in state.queue_unmatched if it.get("id") in target_ids]
+        if not items:
+            return {"ok": True, "checked": 0, "queues": return_queue_payload(state)}
+
+        ez = EzAdminClient(get_setting)
+        ably = AblyClient()
+
+        now = datetime.now(_KST)
+        start_date = (now - timedelta(days=90)).strftime("%Y-%m-%d")
+        end_date = now.strftime("%Y-%m-%d")
+
+        checked = 0
+        for item in items:
+            original_invoice = str(item.get("match") or "").strip()
+            if not original_invoice:
+                item["cs_error"] = "원송장번호 없음 (반품송장 매핑 실패)"
+                item["cs_products"] = []
+                item["cs_product_error"] = "원송장번호 없음"
+                checked += 1
+                continue
+            try:
+                order = await ez.find_order_by_invoice(original_invoice, start_date=start_date, end_date=end_date)
+            except EzAdminSessionExpired:
+                return {"ok": False, "need_session": True, "checked": checked, "queues": return_queue_payload(state)}
+
+            if not order:
+                item["cs_phone"] = ""
+                item["cs_ably_exists"] = None
+                item["cs_error"] = "이지어드민 미조회"
+                item["cs_products"] = []
+                item["cs_product_error"] = "이지어드민 미조회"
+                checked += 1
+                continue
+
+            phone = order.get("phone")
+            item["cs_phone"] = phone or ""
+            item.pop("cs_error", None)
+
+            try:
+                line_items = await ez.packlist_items(order["pack"])
+                product_qty: dict[str, float] = {}
+                for line in line_items:
+                    code = str(line.get("product_id") or "").strip()
+                    if not code:
+                        continue
+                    try:
+                        qty = float(line.get("qty") or 0)
+                    except (TypeError, ValueError):
+                        qty = 0
+                    product_qty[code] = product_qty.get(code, 0) + qty
+                info_map = _wonbe_product_info(list(product_qty.keys()))
+                item["cs_products"] = [
+                    {
+                        "product_id": code,
+                        "qty": qty,
+                        "name": info_map.get(code, {}).get("상품명", ""),
+                        "color": info_map.get(code, {}).get("색상", ""),
+                        "size": info_map.get(code, {}).get("사이즈", ""),
+                    }
+                    for code, qty in product_qty.items()
+                ]
+                if item["cs_products"]:
+                    item.pop("cs_product_error", None)
+                else:
+                    item["cs_product_error"] = "패킹리스트에 상품코드 없음"
+            except EzAdminSessionExpired:
+                return {"ok": False, "need_session": True, "checked": checked, "queues": return_queue_payload(state)}
+            except Exception as e:
+                item["cs_products"] = []
+                item["cs_product_error"] = f"상품코드 조회 실패: {str(e)[:200]}"
+
+            if phone:
+                try:
+                    count = await ably.count_contact_rooms_by_mobile(phone, start_date=start_date, end_date=end_date)
+                    item["cs_ably_exists"] = count > 0
+                except Exception as e:
+                    item["cs_ably_exists"] = None
+                    item["cs_error"] = f"에이블리 조회 실패: {str(e)[:200]}"
+            else:
+                item["cs_ably_exists"] = None
+            checked += 1
+
+        return {"ok": True, "checked": checked, "queues": return_queue_payload(state)}
+
+    @router.post("/returns/unmatched/receive-stock")
+    async def returns_unmatched_receive_stock(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """미매칭 항목을 이지어드민 입고처리(I100)한다.
+
+        상품코드는 /returns/unmatched/lookup-cs가 원송장번호로 이미 조회해둔
+        item["cs_products"]를 그대로 쓴다 (재검색 없음) - 먼저 CS 조회를
+        실행해야 한다. 메모는 "반품입고 <원송장번호>"로 남긴다. 원송장번호는
+        item["match"](반품송장→원송장 매핑을 거친 e_val)이며, item["scan"]
+        (고객이 반품 보낼 때 붙인 반품송장)이 아니다.
+        """
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        state = get_return_state(user)
+        raw_ids = payload.get("ids") or []
+        target_ids = {int(i) for i in raw_ids}
+        if not target_ids:
+            raise HTTPException(status_code=400, detail="처리할 항목이 없습니다.")
+
+        items = [it for it in state.queue_unmatched if it.get("id") in target_ids]
+        if not items:
+            return {"ok": True, "results": [], "queues": return_queue_payload(state)}
+
+        ez = EzAdminClient(get_setting)
+        results = []
+        for item in items:
+            original_invoice = str(item.get("match") or "").strip()
+            products = item.get("cs_products") or []
+            result = {"id": item.get("id"), "ok": False, "error": None}
+            if not original_invoice:
+                result["error"] = "원송장번호 없음"
+                item["ezadmin_stockin_error"] = result["error"]
+                results.append(result)
+                continue
+            if not products:
+                result["error"] = "상품코드 없음 (먼저 CS 조회를 실행하세요)"
+                item["ezadmin_stockin_error"] = result["error"]
+                results.append(result)
+                continue
+
+            memo = f"반품입고 {original_invoice}"
+            done_codes = []
+            try:
+                for product in products:
+                    product_id = str(product.get("product_id") or "").strip()
+                    if not product_id:
+                        continue
+                    qty = product.get("qty") or 1
+                    try:
+                        qty = int(float(qty)) or 1
+                    except (TypeError, ValueError):
+                        qty = 1
+                    await ez.receive_stock(product_id, qty, memo=memo)
+                    done_codes.append(product_id)
+                result["ok"] = True
+                result["product_ids"] = done_codes
+                item["ezadmin_stockin_done"] = True
+                item["ezadmin_stockin_product_id"] = ", ".join(done_codes)
+                item.pop("ezadmin_stockin_error", None)
+            except EzAdminSessionExpired:
+                return {"ok": False, "need_session": True, "results": results, "queues": return_queue_payload(state)}
+            except Exception as e:
+                result["error"] = str(e)[:200]
+                item["ezadmin_stockin_error"] = result["error"]
+            results.append(result)
+
+        return {"ok": True, "results": results, "queues": return_queue_payload(state)}
+
+    @router.post("/returns/unmatched/cs-detail")
+    async def returns_unmatched_cs_detail(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """전화번호로 에이블리 CS문의방 목록을 찾아 각 방의 전체 대화 내용을 가져온다.
+
+        lookup-cs로 "있음"이 확인된 뒤, 실제 내용을 확인하고 싶을 때 클릭 시점에
+        불러온다 (일괄조회 단계에서는 개수만 확인하고 내용은 조회하지 않음).
+        """
+        phone = str(payload.get("phone") or "").strip()
+        if not phone:
+            raise HTTPException(status_code=400, detail="전화번호가 필요합니다.")
+
+        ably = AblyClient()
+        now = datetime.now(_KST)
+        start_date = (now - timedelta(days=90)).strftime("%Y-%m-%d")
+        end_date = now.strftime("%Y-%m-%d")
+
+        try:
+            rooms = await ably.list_contact_rooms_by_mobile(phone, start_date=start_date, end_date=end_date)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 CS 목록 조회 실패: {str(e)[:200]}")
+
+        result_rooms = []
+        for room in rooms[:5]:
+            sno = room.get("sno")
+            if not sno:
+                continue
+            try:
+                detail = await ably.get_contact_room_messages(sno)
+            except Exception as e:
+                detail = {
+                    "status_display": room.get("get_status_display"),
+                    "market_name": (room.get("market") or {}).get("name"),
+                    "messages": [],
+                    "error": f"대화 내용 조회 실패: {str(e)[:200]}",
+                }
+            result_rooms.append(detail)
+
+        return {"ok": True, "rooms": result_rooms}
 
     @router.post("/returns/onebe/build")
     def returns_build_onebe(payload: dict = Body(None), user: str = Depends(get_current_user)):
@@ -2077,6 +2519,12 @@ def build_returns_router(
         if not items:
             raise HTTPException(status_code=400, detail="선택된 항목이 없습니다.")
 
+        # 테이블에 완료 표시를 남기기 위해, 요청으로 넘어온 항목(사본)이 아니라
+        # 서버가 들고 있는 실제 큐 항목을 id로 찾아 그 자리에서 상태를 갱신한다.
+        state = get_return_state(user)
+        by_id = {it.get("id"): it for it in state.queue_seller}
+        by_id.update({it.get("id"): it for it in state.queue_customer})
+
         token = await _ably_login()
         hdrs = {
             "Authorization": f"JWT {token}",
@@ -2090,6 +2538,7 @@ def build_returns_router(
         async with httpx.AsyncClient(timeout=30.0) as client:
             for item in items:
                 result = {"id": item.get("id"), "scan": item.get("scan"), "ok": False, "error": None}
+                state_item = by_id.get(item.get("id"))
                 try:
                     cancel_sno = int(item.get("request_no") or 0)
                     item_sno   = int(item.get("item_sno") or 0)
@@ -2119,11 +2568,175 @@ def build_returns_router(
                     )
                     r2.raise_for_status()
                     result["ok"] = True
+                    if state_item is not None:
+                        state_item["ably_refund_done"] = True
+                        state_item.pop("ably_refund_error", None)
                 except Exception as e:
                     result["error"] = str(e)
+                    if state_item is not None:
+                        state_item["ably_refund_error"] = str(e)[:200]
                 results.append(result)
 
-        return {"results": results}
+        return {"results": results, "queues": return_queue_payload(state)}
+
+    @router.post("/returns/ably-change-reason-submit")
+    async def returns_ably_change_reason_submit(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        """선택된 반품 건의 사유를 일반사유(코드 31)로 변경한 뒤, 기존 환불 요청과
+        동일하게 환불계좌를 재저장하고 환불을 확정한다 (HAR로 캡처한 3단계 순서 재현).
+        """
+        items = payload.get("items", [])
+        if not items:
+            raise HTTPException(status_code=400, detail="선택된 항목이 없습니다.")
+
+        state = get_return_state(user)
+        by_id = {it.get("id"): it for it in state.queue_seller}
+        by_id.update({it.get("id"): it for it in state.queue_customer})
+
+        token = await _ably_login()
+        hdrs = {
+            "Authorization": f"JWT {token}",
+            "Content-Type": "application/json",
+            "Origin": "https://my.a-bly.com",
+            "Referer": "https://my.a-bly.com/",
+            "User-Agent": "Mozilla/5.0",
+        }
+
+        results = []
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for item in items:
+                result = {"id": item.get("id"), "scan": item.get("scan"), "ok": False, "error": None}
+                state_item = by_id.get(item.get("id"))
+                try:
+                    cancel_sno = int(item.get("request_no") or 0)
+                    item_sno   = int(item.get("item_sno") or 0)
+                    if not cancel_sno or not item_sno:
+                        raise ValueError("cancel_sno 또는 item_sno 없음")
+
+                    r0 = await client.put(
+                        f"{ABLY_BASE}/seller/order_cancels/update_fields/",
+                        headers=hdrs,
+                        json={
+                            "data_list": [{
+                                "sno_list": [cancel_sno],
+                                "update_list": [{"field": "cancel_reason", "value": 31}],
+                            }]
+                        },
+                    )
+                    r0.raise_for_status()
+
+                    r1 = await client.put(
+                        f"{ABLY_BASE}/seller/order_cancels/update_fields/",
+                        headers=hdrs,
+                        json={
+                            "data_list": [{
+                                "sno_list": [cancel_sno],
+                                "update_list": [
+                                    {"field": "refund_bank_account_holder", "value": item.get("refund_holder", "")},
+                                    {"field": "refund_bank_account_number", "value": item.get("refund_account", "")},
+                                    {"field": "refund_bank_sno", "value": item.get("refund_bank_sno")},
+                                ],
+                            }]
+                        },
+                    )
+                    r1.raise_for_status()
+
+                    r2 = await client.put(
+                        f"{ABLY_BASE}/seller/order_items/request_confirm/",
+                        headers=hdrs,
+                        json={"sno_list": [item_sno]},
+                    )
+                    r2.raise_for_status()
+                    result["ok"] = True
+                    if state_item is not None:
+                        state_item["ably_reason_changed"] = True
+                        state_item.pop("ably_reason_change_error", None)
+                except Exception as e:
+                    result["error"] = str(e)
+                    if state_item is not None:
+                        state_item["ably_reason_change_error"] = str(e)[:200]
+                results.append(result)
+
+        return {"results": results, "queues": return_queue_payload(state)}
+
+    @router.post("/returns/ezadmin-receive-stock")
+    async def returns_ezadmin_receive_stock(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        """선택된 반품/교환 항목을 이지어드민 입고처리(I100)한다.
+
+        반품 항목은 item.option_code(에이블리 option_stock_sync_code), 교환 항목은
+        item.exchange_option_sno를 원가베이스유의 옵션번호와 매칭해 상품코드를
+        찾고, 그 상품코드로 입고처리한다.
+        """
+        items = payload.get("items", [])
+        if not items:
+            raise HTTPException(status_code=400, detail="선택된 항목이 없습니다.")
+
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        state = get_return_state(user)
+        by_id = {it.get("id"): it for it in state.queue_seller}
+        by_id.update({it.get("id"): it for it in state.queue_customer})
+        by_id.update({it.get("id"): it for it in state.queue_exchange_seller})
+        by_id.update({it.get("id"): it for it in state.queue_exchange_customer})
+
+        option_sno_map = load_wonbe_option_sno_map()
+        ez = EzAdminClient(get_setting)
+
+        results = []
+        for item in items:
+            result = {"id": item.get("id"), "scan": item.get("scan"), "ok": False, "error": None}
+            state_item = by_id.get(item.get("id"))
+            try:
+                option_code = str(item.get("option_code") or item.get("exchange_option_sno") or "").strip()
+                if not option_code:
+                    raise ValueError("option_stock_sync_code 없음")
+                product_id = option_sno_map.get(option_code)
+                if not product_id:
+                    raise ValueError(f"원가베이스유에서 옵션번호 매칭 실패 (option_code={option_code})")
+                try:
+                    qty = int(float(item.get("qty") or 1))
+                except (TypeError, ValueError):
+                    qty = 1
+                order_no = str(item.get("order_no") or item.get("order_sno") or "").strip()
+                memo = f"반품입고 {order_no}".strip()
+                await ez.receive_stock(product_id, qty, memo=memo)
+                result["ok"] = True
+                result["product_id"] = product_id
+                if state_item is not None:
+                    state_item["ezadmin_stockin_done"] = True
+                    state_item["ezadmin_stockin_product_id"] = product_id
+                    state_item.pop("ezadmin_stockin_error", None)
+            except EzAdminSessionExpired:
+                return {"ok": False, "need_session": True, "results": results, "queues": return_queue_payload(state)}
+            except Exception as e:
+                result["error"] = str(e)[:200]
+                if state_item is not None:
+                    state_item["ezadmin_stockin_error"] = str(e)[:200]
+            results.append(result)
+
+        return {"ok": True, "results": results, "queues": return_queue_payload(state)}
+
+    @router.post("/returns/resolve-product-codes")
+    async def returns_resolve_product_codes(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """item.option_code(반품, 에이블리 option_stock_sync_code) 또는
+        item.exchange_option_sno(교환)를 원가베이스유 옵션번호와 매칭해
+        상품코드만 돌려준다 (재고 변경 없음) - 김승일보내기처럼 입고처리 없이
+        상품코드만 필요한 곳에서 재사용."""
+        items = payload.get("items", [])
+        option_sno_map = load_wonbe_option_sno_map()
+        results = []
+        for item in items:
+            option_code = str(item.get("option_code") or item.get("exchange_option_sno") or "").strip()
+            product_id = option_sno_map.get(option_code) if option_code else None
+            results.append({"id": item.get("id"), "product_id": product_id})
+        return {"ok": True, "results": results}
 
     @router.post("/returns/ably-refund-single")
     async def returns_ably_refund_single(
