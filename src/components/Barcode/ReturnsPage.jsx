@@ -80,6 +80,9 @@ const ReturnsPage = () => {
     const [stockinLoading, setStockinLoading] = useState(false);
     const [stockinResults, setStockinResults] = useState(null);
     const [kimsungilSendLoading, setKimsungilSendLoading] = useState(false);
+    const [regatherExecuteLoading, setRegatherExecuteLoading] = useState(false);
+    const [regatherItems, setRegatherItems] = useState([]);
+    const [regatherLoading, setRegatherLoading] = useState(false);
     const [labelPrintLoading, setLabelPrintLoading] = useState(false);
     const [singleCancelSno, setSingleCancelSno] = useState('');
     const [singleRefundLoading, setSingleRefundLoading] = useState(false);
@@ -200,6 +203,10 @@ const ReturnsPage = () => {
         refreshState();
         setTimeout(() => scanRef.current?.focus(), 50);
     }, [refreshState]);
+
+    useEffect(() => {
+        if (activeTab === 'regather') fetchRegatherItems();
+    }, [activeTab]);
 
     useEffect(() => {
         if (!soundsRef.current) {
@@ -716,6 +723,61 @@ body { background: #fff; font-family: sans-serif; }
             setMessage(err.message || '김승일보내기 실패');
         } finally {
             setKimsungilSendLoading(false);
+        }
+    };
+
+    const fetchRegatherItems = async () => {
+        setRegatherLoading(true);
+        try {
+            const res = await fetch(`${API}/return-regathering/list`, { headers: getAuthHeaders() });
+            const data = await res.json().catch(() => ({}));
+            setRegatherItems(Array.isArray(data?.items) ? data.items : []);
+        } catch {
+            setRegatherItems([]);
+        } finally {
+            setRegatherLoading(false);
+        }
+    };
+
+    const handleCompleteRegather = async (id) => {
+        try {
+            const res = await fetch(`${API}/return-regathering/${id}/complete`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            if (!res.ok) throw new Error('완료처리 실패');
+            setRegatherItems((prev) => prev.filter((r) => r.id !== id));
+        } catch (err) {
+            setMessage(err.message || '완료처리 실패');
+        }
+    };
+
+    const handleRegatherExecute = async (selectedItems) => {
+        if (!selectedItems || !selectedItems.length) return;
+        setRegatherExecuteLoading(true);
+        setMessage('');
+        try {
+            const res = await fetch(`${API}/return-regathering/execute`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ items: selectedItems }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.need_session) {
+                openEzadminModal(() => handleRegatherExecute(selectedItems));
+                return;
+            }
+            if (data?.queues) setQueues(normalizeQueues(data.queues));
+            if (!res.ok) throw new Error(data?.detail || '오회수 처리 실패');
+            const ok = (data.results || []).filter((r) => r.ok).length;
+            let msg = `오회수 처리 완료: ${ok}/${data.results.length}건 성공`;
+            if (data.need_ezdesk_session) msg += ' — 이지데스크 세션이 만료되어 중단했습니다. 테스트 > 자동화 대시보드에서 세션을 재설정해주세요.';
+            setMessage(msg);
+            fetchRegatherItems();
+        } catch (err) {
+            setMessage(err.message || '오회수 처리 실패');
+        } finally {
+            setRegatherExecuteLoading(false);
         }
     };
 
@@ -1648,6 +1710,7 @@ body { background: #fff; font-family: sans-serif; }
                                 ['exchange_seller', '교환판매자'],
                                 ['exchange_customer', '교환고객'],
                                 ['unmatched', '미매칭 대기'],
+                                ['regather', '오회수'],
                                 ['onebe', '원베양식(고객대기)'],
                             ].map(([key, label]) => (
                                 <button
@@ -1772,6 +1835,14 @@ body { background: #fff; font-family: sans-serif; }
                                             >
                                                 {labelPrintLoading ? '처리 중...' : `바코드 출력 (${selectedCustomer.size}건 선택)`}
                                             </button>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.primaryBtn}
+                                                onClick={() => handleRegatherExecute(items.filter((i) => selectedCustomer.has(i.id)))}
+                                                disabled={regatherExecuteLoading || selectedCustomer.size === 0}
+                                            >
+                                                {regatherExecuteLoading ? '처리 중...' : `오회수 (${selectedCustomer.size}건 선택)`}
+                                            </button>
                                         </div>
                                         <div className={pageStyles.tableWrap}>
                                         <table className={pageStyles.table}>
@@ -1865,6 +1936,46 @@ body { background: #fff; font-family: sans-serif; }
                                     </>
                                 );
                             })()}
+                            {activeTab === 'regather' && (
+                                <div className={pageStyles.tableWrap}>
+                                    {regatherLoading ? (
+                                        <div className={pageStyles.empty}>불러오는 중...</div>
+                                    ) : regatherItems.length === 0 ? (
+                                        <div className={pageStyles.empty}>오회수 처리된 건이 없습니다.</div>
+                                    ) : (
+                                        <table className={pageStyles.table}>
+                                            <thead>
+                                                <tr>
+                                                    <th>송장번호</th>
+                                                    <th>상품명</th>
+                                                    <th>전화번호</th>
+                                                    <th>신청일시</th>
+                                                    <th>완료처리</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {regatherItems.map((r) => (
+                                                    <tr key={r.id}>
+                                                        <td>{r.invoice}</td>
+                                                        <td>{r.goods_name}</td>
+                                                        <td>{r.buyer_tel}</td>
+                                                        <td>{r.requested_at}</td>
+                                                        <td>
+                                                            <button
+                                                                type="button"
+                                                                className={pageStyles.secondaryBtn}
+                                                                onClick={() => handleCompleteRegather(r.id)}
+                                                            >
+                                                                완료처리
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    )}
+                                </div>
+                            )}
                             {activeTab === 'exchange_seller' && (
                                 <>
                                     {renderQueueTab(queues.exchange_seller, selectedExchangeSeller, setSelectedExchangeSeller, (
