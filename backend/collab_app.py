@@ -33,6 +33,8 @@ from api.guidebook_routes import build_guidebook_router
 from api.amood_settlement_routes import build_amood_settlement_router
 from api.ably_settlement_routes import build_ably_settlement_router
 from api.misong_routes import build_misong_router
+from api.order_routes import build_order_router
+from api.amood_hapbae import SHARED_COST_BASE_PATH
 from main import (
     ALLOWED_REQUEST_EXTS,
     ALLOWED_SHARED_EXTS,
@@ -175,6 +177,17 @@ app.include_router(
         get_current_user=_get_current_user,
         get_db=_get_shared_db,
         get_setting=_get_setting,
+    )
+)
+
+app.include_router(
+    build_order_router(
+        require_admin=_require_admin,
+        get_db=_get_db,
+        order_cost_base_path=SHARED_COST_BASE_PATH,
+        get_setting=_get_setting,
+        get_shared_db=_get_shared_db,
+        is_render=bool(os.environ.get("RENDER", "")),
     )
 )
 
