@@ -262,6 +262,62 @@ def _restore_amood_ezadmin_file_from_db():
     })
 
 
+def _init_amood_ezadmin_history_table(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS amood_ezadmin_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_name TEXT NOT NULL,
+            file_blob BLOB NOT NULL,
+            saved_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+
+
+def _add_amood_ezadmin_history(file_name: str, file_bytes: bytes):
+    conn = _get_shared_db()
+    try:
+        _init_amood_ezadmin_history_table(conn)
+        saved_at = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "INSERT INTO amood_ezadmin_history (file_name, file_blob, saved_at) VALUES (?, ?, ?)",
+            (file_name, file_bytes, saved_at),
+        )
+        conn.execute(
+            "DELETE FROM amood_ezadmin_history WHERE id NOT IN (SELECT id FROM amood_ezadmin_history ORDER BY id DESC LIMIT 3)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _list_amood_ezadmin_history() -> list[dict]:
+    conn = _get_shared_db()
+    try:
+        _init_amood_ezadmin_history_table(conn)
+        rows = conn.execute(
+            "SELECT id, file_name, saved_at FROM amood_ezadmin_history ORDER BY id DESC LIMIT 3"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [{"id": r["id"], "file_name": r["file_name"], "saved_at": r["saved_at"]} for r in rows]
+
+
+def _get_amood_ezadmin_history_blob(history_id: int):
+    conn = _get_shared_db()
+    try:
+        _init_amood_ezadmin_history_table(conn)
+        row = conn.execute(
+            "SELECT file_name, file_blob FROM amood_ezadmin_history WHERE id = ?",
+            (history_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return row["file_name"], row["file_blob"]
+
+
 def _get_amood_state(user: str) -> AmoodState:
     state = AMOOD_STATES.get(user)
     if not state:
@@ -1417,6 +1473,9 @@ app.include_router(
         set_shared_incoming_counts=_set_shared_incoming_counts,
         get_shared_defect_counts=_get_shared_defect_counts,
         set_shared_amood_ezadmin_file=_set_shared_amood_ezadmin_file,
+        add_amood_ezadmin_history=_add_amood_ezadmin_history,
+        list_amood_ezadmin_history=_list_amood_ezadmin_history,
+        get_amood_ezadmin_history_blob=_get_amood_ezadmin_history_blob,
     )
 )
 app.include_router(
