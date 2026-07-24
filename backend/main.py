@@ -58,6 +58,7 @@ from api.exchange_return_routes import build_exchange_return_router
 from api.pastelco_routes import build_pastelco_router
 from api.ably_minus_routes import build_ably_minus_router
 from api.accident_cargo_routes import build_accident_cargo_router
+from api.return_regathering_routes import build_return_regathering_router
 from api.delivery_anomaly_routes import build_delivery_anomaly_router
 from api.client_cancel_soldout_routes import build_client_cancel_soldout_router
 from api.exchange_return_anomaly_routes import build_exchange_return_anomaly_router
@@ -1608,6 +1609,41 @@ app.include_router(
     build_accident_cargo_router(
         get_current_user=_get_current_user,
         get_db=_get_shared_db,
+    )
+)
+
+
+def _init_return_regathering():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS return_regathering (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice TEXT NOT NULL,
+            order_no TEXT NOT NULL DEFAULT '',
+            item_sno TEXT NOT NULL DEFAULT '',
+            request_no TEXT NOT NULL DEFAULT '',
+            buyer_tel TEXT NOT NULL DEFAULT '',
+            goods_name TEXT NOT NULL DEFAULT '',
+            option_raw TEXT NOT NULL DEFAULT '',
+            requested_by TEXT NOT NULL DEFAULT '',
+            requested_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_return_regathering()
+
+app.include_router(
+    build_return_regathering_router(
+        get_current_user=_get_current_user,
+        get_return_state=_get_return_state,
+        get_shared_db=_get_shared_db,
+        get_setting=_get_setting,
+        return_queue_payload=_return_queue_payload,
     )
 )
 
