@@ -91,9 +91,7 @@ def build_return_regathering_router(
 
                 if not phone:
                     raise ValueError("전화번호 없음")
-                sms_result = await ez.send_sms(phone, config.EZDESK_SMS_SENDER, template_msg)
-                if sms_result.get("error") not in (0, "0"):
-                    raise RuntimeError(f"이지데스크 전송 실패: {sms_result}")
+                await ez.send_sms(phone, config.EZDESK_SMS_SENDER, template_msg)
 
                 conn = get_shared_db()
                 try:

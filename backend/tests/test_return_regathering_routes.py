@@ -102,8 +102,11 @@ def test_execute_moves_item_to_regathering_on_full_success():
     respx.post("https://ga80.ezadmin.co.kr/function.htm").mock(
         return_value=httpx.Response(200, json={"error": 0})
     )
+    # EzDesk's send_sms response has no reliable "error" field (unlike EzAdmin's
+    # DS00 actions) - this shape (no "error" key at all) previously made the
+    # route wrongly treat a successful send as a failure. Regression check.
     respx.post("https://ezdesk.ezadmin.co.kr/function.php").mock(
-        return_value=httpx.Response(200, json={"error": 0})
+        return_value=httpx.Response(200, json={"result": "sent"})
     )
 
     client, state, db_holder = _make_client(
