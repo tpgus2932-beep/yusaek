@@ -619,6 +619,9 @@ def build_returns_router(
                             item["_refund_holder"]   = refund_holder
                             item["_refund_account"]  = refund_account
                             item["_refund_bank_sno"] = refund_bank_sno
+                            # buyer_tel/receiver_tel은 order_item 단위 필드다 (cancel
+                            # 최상위가 아님 - 실제 API 응답으로 확인됨, HAR 캡처 기준).
+                            item["_buyer_tel"]       = str(item.get("buyer_tel") or item.get("receiver_tel") or "")
                             # order_id 필드는 실제로 존재하지 않는다 (order_items에는
                             # order_sno만 있음 - 직접 API 응답으로 확인됨). order_id를
                             # 쓰면 항상 빈 값이라 "같은 주문번호" 매칭이 절대 안 걸림.
@@ -657,11 +660,12 @@ def build_returns_router(
                 "REFUND_HOLDER":  item.get("_refund_holder", ""),
                 "REFUND_ACCOUNT": item.get("_refund_account", ""),
                 "REFUND_BANK_SNO": item.get("_refund_bank_sno"),
+                "BUYER_TEL":      item.get("_buyer_tel", ""),
                 "ORDER_NO":       item.get("_order_no", ""),
             })
 
         df = pd.DataFrame(rows) if rows else pd.DataFrame(
-            columns=["F_name", "G_opt", "QTY", "ITEM_TEXT", "REASON_TYPE", "M_clean", "DETAIL_REASON", "USER_COMMENT", "REQUEST_NO", "ITEM_SNO", "REFUND_HOLDER", "REFUND_ACCOUNT", "REFUND_BANK_SNO", "ORDER_NO"])
+            columns=["F_name", "G_opt", "QTY", "ITEM_TEXT", "REASON_TYPE", "M_clean", "DETAIL_REASON", "USER_COMMENT", "REQUEST_NO", "ITEM_SNO", "REFUND_HOLDER", "REFUND_ACCOUNT", "REFUND_BANK_SNO", "BUYER_TEL", "ORDER_NO"])
         idx: dict[str, list[int]] = {}
         for i, v in enumerate(df["M_clean"].tolist()):
             if v:
@@ -1328,6 +1332,7 @@ def build_returns_router(
                 "refund_holder":  str(row.get("REFUND_HOLDER") or ""),
                 "refund_account": str(row.get("REFUND_ACCOUNT") or ""),
                 "refund_bank_sno": _to_int(row.get("REFUND_BANK_SNO")),
+                "buyer_tel":      str(row.get("BUYER_TEL") or ""),
                 "order_no":       _clean_sno(row.get("ORDER_NO")),
             }
             state.next_id += 1
