@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import styles from "./BarcodePage.module.css";
 import { getDownloadFilename } from "../../lib/download";
-import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
+import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
 const HANGUL_BASE = 0xac00;
 const HANGUL_LAST = 0xd7a3;
@@ -199,6 +199,7 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
   const refreshEzadminHistory = async () => {
     try {
       const res = await fetch(`${API}/amood/ezadmin-history`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
       if (!res.ok) return;
       const data = await res.json();
       setEzadminHistory(data.history || []);
