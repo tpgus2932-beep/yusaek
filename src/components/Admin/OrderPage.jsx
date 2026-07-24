@@ -20,6 +20,15 @@ const defaultPopularStartDate = () => {
   return formatDateLocal(d);
 };
 
+// DB(Turso/SQLite)의 CURRENT_TIMESTAMP는 "YYYY-MM-DD HH:MM:SS" UTC로 오고 타임존 표기가 없어
+// new Date()가 로컬시간으로 잘못 해석한다 - 타임존 표기가 없으면 UTC로 간주해 명시적으로 붙여준다.
+const formatUtcTimestamp = (raw) => {
+  if (!raw) return "";
+  const hasTimezone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(raw);
+  const isoLike = hasTimezone ? raw : `${raw.replace(" ", "T")}Z`;
+  return new Date(isoLike).toLocaleString("ko-KR");
+};
+
 const stickyThStyle = {
   position: "sticky",
   top: 0,
@@ -785,7 +794,7 @@ export default function OrderPage() {
           {popularMessage && (
             <div className={styles.statusMsg}>
               <strong>{popularMessage}</strong>
-              {popularUpdatedAt && <span> (마지막 조회: {new Date(popularUpdatedAt).toLocaleString("ko-KR")})</span>}
+              {popularUpdatedAt && <span> (마지막 조회: {formatUtcTimestamp(popularUpdatedAt)})</span>}
             </div>
           )}
           {popularNeedEzadminSession && (
@@ -819,7 +828,6 @@ export default function OrderPage() {
                     <th style={stickyThStyle}>접수</th>
                     <th style={stickyThStyle}>일평균 판매수량</th>
                     <th style={stickyThStyle}>미송수량</th>
-                    <th style={stickyThStyle}>매출액</th>
                     <th style={stickyThStyle}>장바구니</th>
                   </tr>
                 </thead>
@@ -840,7 +848,6 @@ export default function OrderPage() {
                         <td>{item.pending ?? "-"}</td>
                         <td>{(item.avg_order_count ?? 0).toLocaleString()}</td>
                         <td>{(item.misong_qty ?? 0).toLocaleString()}</td>
-                        <td>{(item.order_amount ?? 0).toLocaleString()}원</td>
                         <td>{(item.cart_count ?? 0).toLocaleString()}</td>
                       </tr>
                     );
