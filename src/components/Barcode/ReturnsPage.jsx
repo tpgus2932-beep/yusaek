@@ -447,6 +447,52 @@ const ReturnsPage = () => {
         }
     };
 
+    const [smsComposeItem, setSmsComposeItem] = useState(null);
+    const [smsComposePhone, setSmsComposePhone] = useState('');
+    const [smsComposeText, setSmsComposeText] = useState('');
+    const [smsSendLoading, setSmsSendLoading] = useState(false);
+
+    const openSmsCompose = (item) => {
+        setSmsComposeItem(item);
+        setSmsComposePhone(item.buyer_tel || '');
+        setSmsComposeText('');
+    };
+
+    const closeSmsCompose = () => {
+        setSmsComposeItem(null);
+        setSmsComposePhone('');
+        setSmsComposeText('');
+    };
+
+    const handleSendEzdeskSms = async () => {
+        const phone = smsComposePhone.trim();
+        const msg = smsComposeText.trim();
+        if (!phone || !msg) {
+            setMessage('전화번호와 문자 내용을 입력하세요.');
+            return;
+        }
+        setSmsSendLoading(true);
+        try {
+            const res = await fetch(`${API}/return-automation/reply-sms`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ phone, msg }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.need_ezdesk_session) {
+                setMessage('이지데스크 세션이 만료되었습니다. 테스트 > 자동화 대시보드에서 세션을 재설정해주세요.');
+                return;
+            }
+            if (!res.ok || data?.ok === false) throw new Error(data?.detail || '문자 전송 실패');
+            setMessage('이지데스크 문자 전송 완료');
+            closeSmsCompose();
+        } catch (err) {
+            setMessage(err.message || '이지데스크 문자 전송 실패');
+        } finally {
+            setSmsSendLoading(false);
+        }
+    };
+
     const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
         { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
     ));
@@ -1181,7 +1227,7 @@ body { background: #fff; font-family: sans-serif; }
         }
     };
 
-    const renderTable = (items, selectedIds, onToggleOne, onToggleAll) => {
+    const renderTable = (items, selectedIds, onToggleOne, onToggleAll, showSmsAction) => {
         if (!items || items.length === 0) {
             return <div className={pageStyles.empty}>데이터가 없습니다.</div>;
         }
@@ -1228,6 +1274,7 @@ body { background: #fff; font-family: sans-serif; }
                             {hasCsLookup && <th>구매자전화번호</th>}
                             {hasCsLookup && <th>상품코드</th>}
                             {hasCsLookup && <th>에이블리CS</th>}
+                            {showSmsAction && <th>문자</th>}
                         </tr>
                     </thead>
                     <tbody>
@@ -1321,6 +1368,17 @@ body { background: #fff; font-family: sans-serif; }
                                         ) : item.cs_ably_exists === false ? '없음' : ''}
                                     </td>
                                 )}
+                                {showSmsAction && (
+                                    <td>
+                                        <button
+                                            type="button"
+                                            className={pageStyles.secondaryBtn}
+                                            onClick={() => openSmsCompose(item)}
+                                        >
+                                            문자
+                                        </button>
+                                    </td>
+                                )}
                             </tr>
                         ))}
                     </tbody>
@@ -1329,7 +1387,7 @@ body { background: #fff; font-family: sans-serif; }
         );
     };
 
-    const renderQueueTab = (items, selectedIds, setSelectedIds, extraActions) => {
+    const renderQueueTab = (items, selectedIds, setSelectedIds, extraActions, showSmsAction) => {
         const handleToggleOne = (id) => {
             setSelectedIds((prev) => {
                 const next = new Set(prev);
@@ -1356,7 +1414,7 @@ body { background: #fff; font-family: sans-serif; }
                         {extraActions}
                     </div>
                 )}
-                {renderTable(items, selectedIds, handleToggleOne, handleToggleAll)}
+                {renderTable(items, selectedIds, handleToggleOne, handleToggleAll, showSmsAction)}
             </>
         );
     };
@@ -1564,7 +1622,7 @@ body { background: #fff; font-family: sans-serif; }
                                         {labelPrintLoading ? '처리 중...' : `바코드 출력 (${selectedSeller.size}건 선택)`}
                                     </button>
                                 </>
-                            ))}
+                            ), true)}
                             {activeTab === 'customer' && (() => {
                                 const items = queues.customer;
                                 if (!items || items.length === 0) return <div className={pageStyles.empty}>데이터가 없습니다.</div>;
@@ -2185,6 +2243,60 @@ body { background: #fff; font-family: sans-serif; }
                                     ))}
                                 </div>
                             ))}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {smsComposeItem && (
+                <div
+                    onClick={closeSmsCompose}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0,0,0,0.5)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 1000,
+                    }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                            background: 'var(--bg-primary, #fff)',
+                            borderRadius: 8,
+                            width: 'min(420px, 90vw)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                        }}
+                    >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border-color, #e5e7eb)' }}>
+                            <strong>이지데스크 문자 보내기</strong>
+                            <button type="button" onClick={closeSmsCompose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>×</button>
+                        </div>
+                        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            <input
+                                value={smsComposePhone}
+                                onChange={(e) => setSmsComposePhone(e.target.value)}
+                                placeholder="수신 전화번호"
+                                style={{ padding: '8px 10px', border: '1px solid var(--border-color, #e5e7eb)', borderRadius: 6 }}
+                            />
+                            <textarea
+                                value={smsComposeText}
+                                onChange={(e) => setSmsComposeText(e.target.value)}
+                                placeholder="문자 내용을 입력하세요"
+                                rows={4}
+                                style={{ padding: '8px 10px', border: '1px solid var(--border-color, #e5e7eb)', borderRadius: 6, resize: 'vertical', font: 'inherit' }}
+                            />
+                            <button
+                                type="button"
+                                className={pageStyles.primaryBtn}
+                                onClick={handleSendEzdeskSms}
+                                disabled={smsSendLoading}
+                            >
+                                {smsSendLoading ? '전송 중...' : '전송'}
+                            </button>
                         </div>
                     </div>
                 </div>
