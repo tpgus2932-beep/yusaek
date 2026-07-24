@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import JsBarcode from 'jsbarcode';
 import pageStyles from './BarcodePage.module.css';
 import styles from './ReturnsPage.module.css';
 import { getDownloadFilename } from '../../lib/download';
@@ -50,6 +51,8 @@ const ReturnsPage = () => {
     const [isLoadingAllApis, setIsLoadingAllApis] = useState(false);
     const [isResolvingEzadmin, setIsResolvingEzadmin] = useState(false);
     const [isExecutingChangeProduct, setIsExecutingChangeProduct] = useState(false);
+    const [isResolvingEzadminSeller, setIsResolvingEzadminSeller] = useState(false);
+    const [isExecutingChangeProductSeller, setIsExecutingChangeProductSeller] = useState(false);
     const [lotteDateFr, setLotteDateFr] = useState(
         new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10)
     );
@@ -60,10 +63,6 @@ const ReturnsPage = () => {
     const [onebeFormat, setOnebeFormat] = useState('xls');
     const [exportFormat, setExportFormat] = useState('xlsx');
     const [onebeHeaders, setOnebeHeaders] = useState(() => ({}));
-    const [costAddName, setCostAddName] = useState('');
-    const [costAddCode, setCostAddCode] = useState('');
-    const [costBatchOpen, setCostBatchOpen] = useState(false);
-    const [costBatchText, setCostBatchText] = useState('');
     const [selectedCustomer, setSelectedCustomer] = useState(new Set());
     const [selectedAll, setSelectedAll] = useState(new Set());
     const [selectedSeller, setSelectedSeller] = useState(new Set());
@@ -71,8 +70,17 @@ const ReturnsPage = () => {
     const [selectedExchangeSeller, setSelectedExchangeSeller] = useState(new Set());
     const [selectedExchangeCustomer, setSelectedExchangeCustomer] = useState(new Set());
     const [deleteLoading, setDeleteLoading] = useState(false);
+    const [csLookupLoading, setCsLookupLoading] = useState(false);
+    const [csDetailModal, setCsDetailModal] = useState(null);
+    const [zoomImage, setZoomImage] = useState(null);
     const [refundLoading, setRefundLoading] = useState(false);
     const [refundResults, setRefundResults] = useState(null);
+    const [reasonChangeLoading, setReasonChangeLoading] = useState(false);
+    const [reasonChangeResults, setReasonChangeResults] = useState(null);
+    const [stockinLoading, setStockinLoading] = useState(false);
+    const [stockinResults, setStockinResults] = useState(null);
+    const [kimsungilSendLoading, setKimsungilSendLoading] = useState(false);
+    const [labelPrintLoading, setLabelPrintLoading] = useState(false);
     const [singleCancelSno, setSingleCancelSno] = useState('');
     const [singleRefundLoading, setSingleRefundLoading] = useState(false);
     const [singleRefundResult, setSingleRefundResult] = useState(null);
@@ -91,7 +99,6 @@ const ReturnsPage = () => {
         분류: false,
         원가베이스매칭: false,
     }));
-    const isAdmin = useMemo(() => localStorage.getItem('isAdmin') === 'true', []);
     const scanRef = useRef(null);
     const soundsRef = useRef(null);
     const soundIndexRef = useRef({ seller: 0, customer: 0, unmatched: 0 });
@@ -128,6 +135,23 @@ const ReturnsPage = () => {
             item.ezadmin_seq && item.ezadmin_prd_seq && item.old_product_id && item.new_product_id && !item.ezadmin_error
         ),
         [queues.exchange_customer]
+    );
+
+    const exchangeSellerAllReady = useMemo(() => {
+        const items = queues.exchange_seller;
+        if (!items.length) return false;
+        return items.every((item) =>
+            item.change_product_done ||
+            (item.ezadmin_seq && item.ezadmin_prd_seq && item.old_product_id && item.new_product_id && !item.ezadmin_error)
+        );
+    }, [queues.exchange_seller]);
+
+    const exchangeSellerHasPending = useMemo(
+        () => queues.exchange_seller.some((item) =>
+            !item.change_product_done &&
+            item.ezadmin_seq && item.ezadmin_prd_seq && item.old_product_id && item.new_product_id && !item.ezadmin_error
+        ),
+        [queues.exchange_seller]
     );
 
     const playSound = useCallback((key) => {
@@ -375,9 +399,8 @@ const ReturnsPage = () => {
         }
     };
 
-    const handleAblyRefundSubmit = async () => {
-        const selectedItems = queues.customer.filter((item) => selectedCustomer.has(item.id));
-        if (!selectedItems.length) return;
+    const handleAblyRefundSubmit = async (selectedItems) => {
+        if (!selectedItems || !selectedItems.length) return;
         setRefundLoading(true);
         setRefundResults(null);
         setMessage('');
@@ -388,6 +411,7 @@ const ReturnsPage = () => {
                 body: JSON.stringify({ items: selectedItems }),
             });
             const data = await res.json().catch(() => ({}));
+            if (data?.queues) setQueues(normalizeQueues(data.queues));
             if (!res.ok) throw new Error(data?.detail || '처리 실패');
             setRefundResults(data.results);
             const ok = data.results.filter((r) => r.ok).length;
@@ -396,6 +420,204 @@ const ReturnsPage = () => {
             setMessage(err.message || '에이블리 반품 넘기기 실패');
         } finally {
             setRefundLoading(false);
+        }
+    };
+
+    const handleAblyChangeReasonSubmit = async (selectedItems) => {
+        if (!selectedItems || !selectedItems.length) return;
+        setReasonChangeLoading(true);
+        setReasonChangeResults(null);
+        setMessage('');
+        try {
+            const res = await fetch(`${API}/returns/ably-change-reason-submit`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ items: selectedItems }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.queues) setQueues(normalizeQueues(data.queues));
+            if (!res.ok) throw new Error(data?.detail || '처리 실패');
+            setReasonChangeResults(data.results);
+            const ok = data.results.filter((r) => r.ok).length;
+            setMessage(`일반사유 변경 완료: ${ok}/${data.results.length}건 성공`);
+        } catch (err) {
+            setMessage(err.message || '일반사유 변경 실패');
+        } finally {
+            setReasonChangeLoading(false);
+        }
+    };
+
+    const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+
+    const buildBarcodeSvgMarkup = (text) => {
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        try {
+            JsBarcode(svg, String(text), {
+                format: 'CODE128',
+                width: 2.3,
+                height: 40,
+                displayValue: false,
+                margin: 0,
+            });
+        } catch {
+            return '';
+        }
+        return svg.outerHTML;
+    };
+
+    // 상품명 / [옵션] / 상품코드 바코드 라벨 인쇄 (image.png 레이아웃 참고)
+    const printProductLabels = (labels) => {
+        const valid = labels.filter((l) => l.code);
+        if (!valid.length) return;
+        const cardsHtml = valid.map((l) => `
+            <div class="card">
+                <div class="title">${escapeHtml(l.title)}</div>
+                ${l.option ? `<div class="option">${escapeHtml(l.option)}</div>` : ''}
+                <div class="barcode">${buildBarcodeSvgMarkup(l.code)}</div>
+            </div>
+        `).join('\n');
+
+        const win = window.open('', '_blank', 'width=900,height=700');
+        win.document.write(`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>바코드 인쇄</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+@page { size: 40mm 30mm; margin: 0; }
+body { background: #fff; font-family: sans-serif; }
+.card {
+  width: 40mm; height: 30mm;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; overflow: hidden; padding: 1.5mm;
+  page-break-after: always; break-after: page;
+}
+.card:last-child { page-break-after: auto; break-after: auto; }
+.title { font-size: 9pt; font-weight: 700; line-height: 1.2; color: #111; }
+.option { font-size: 8pt; margin-top: 0.8mm; color: #111; }
+.barcode { margin-top: 1.5mm; width: 100%; }
+.barcode svg { width: 100%; height: 8mm; display: block; }
+</style>
+</head>
+<body>${cardsHtml}</body>
+</html>`);
+        win.document.close();
+        win.focus();
+        setTimeout(() => { win.print(); win.close(); }, 600);
+    };
+
+    const handleEzadminReceiveStock = async (selectedItems) => {
+        if (!selectedItems || !selectedItems.length) return;
+        setStockinLoading(true);
+        setStockinResults(null);
+        setMessage('');
+        try {
+            const res = await fetch(`${API}/returns/ezadmin-receive-stock`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ items: selectedItems }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.queues) setQueues(normalizeQueues(data.queues));
+            if (data?.need_session) {
+                openEzadminModal(() => handleEzadminReceiveStock(selectedItems));
+                return;
+            }
+            if (!res.ok || !data?.ok) throw new Error(data?.detail || '처리 실패');
+            setStockinResults(data.results);
+            const okResults = data.results.filter((r) => r.ok);
+            setMessage(`이지어드민 입고처리 완료: ${okResults.length}/${data.results.length}건 성공`);
+            const labels = okResults.map((r) => {
+                const src = selectedItems.find((i) => i.id === r.id);
+                return {
+                    title: src?.goods_name || src?.item_text || '',
+                    option: src?.option_raw ? `[${src.option_raw.replace(/\//g, '-')}]` : '',
+                    code: r.product_id || '',
+                };
+            });
+            printProductLabels(labels);
+        } catch (err) {
+            setMessage(err.message || '이지어드민 입고처리 실패');
+        } finally {
+            setStockinLoading(false);
+        }
+    };
+
+    // 이미 입고처리로 상품코드가 확인된 건은 그 값을 그대로 쓰고, 아직 안 된
+    // 건만 원가베이스유 매칭을 새로 요청한다 (재고 변경 없이 상품코드만 조회).
+    const resolveProductCodes = async (selectedItems) => {
+        const needResolve = selectedItems.filter((i) => !i.ezadmin_stockin_product_id);
+        const resolvedMap = {};
+        if (needResolve.length) {
+            const res = await fetch(`${API}/returns/resolve-product-codes`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ items: needResolve }),
+            });
+            const data = await res.json().catch(() => ({}));
+            (data.results || []).forEach((r) => { resolvedMap[r.id] = r.product_id; });
+        }
+        const codeMap = {};
+        selectedItems.forEach((i) => {
+            codeMap[i.id] = i.ezadmin_stockin_product_id || resolvedMap[i.id] || null;
+        });
+        return codeMap;
+    };
+
+    const handleSendToKimsungil = async (selectedItems) => {
+        if (!selectedItems || !selectedItems.length) return;
+        setKimsungilSendLoading(true);
+        setMessage('');
+        try {
+            const codeMap = await resolveProductCodes(selectedItems);
+            const codes = Object.values(codeMap).filter(Boolean);
+            if (!codes.length) {
+                setMessage('상품코드를 찾지 못해 김승일보내기를 할 수 없습니다.');
+                return;
+            }
+            let sent = 0;
+            for (const code of codes) {
+                const res = await fetch(`${API}/barcode/kimsungil/add`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                    body: JSON.stringify({ code }),
+                });
+                if (res.ok) sent += 1;
+            }
+            setMessage(`김승일보내기 완료: ${sent}/${codes.length}건`);
+        } catch (err) {
+            setMessage(err.message || '김승일보내기 실패');
+        } finally {
+            setKimsungilSendLoading(false);
+        }
+    };
+
+    const handlePrintBarcodesOnly = async (selectedItems) => {
+        if (!selectedItems || !selectedItems.length) return;
+        setLabelPrintLoading(true);
+        setMessage('');
+        try {
+            const codeMap = await resolveProductCodes(selectedItems);
+            const labels = selectedItems
+                .map((i) => ({
+                    title: i.goods_name || i.item_text || '',
+                    option: i.option_raw ? `[${i.option_raw.replace(/\//g, '-')}]` : '',
+                    code: codeMap[i.id] || '',
+                }))
+                .filter((l) => l.code);
+            if (!labels.length) {
+                setMessage('상품코드를 찾지 못해 바코드를 출력할 수 없습니다.');
+                return;
+            }
+            printProductLabels(labels);
+            setMessage(`바코드 출력: ${labels.length}건`);
+        } catch (err) {
+            setMessage(err.message || '바코드 출력 실패');
+        } finally {
+            setLabelPrintLoading(false);
         }
     };
 
@@ -453,17 +675,18 @@ const ReturnsPage = () => {
         }
     };
 
-    const handleResolveExchangeCustomerEzadmin = async () => {
-        setIsResolvingEzadmin(true);
+    const handleResolveExchangeEzadmin = async (queue = 'customer') => {
+        const setLoading = queue === 'seller' ? setIsResolvingEzadminSeller : setIsResolvingEzadmin;
+        setLoading(true);
         setMessage('');
         try {
-            const res = await fetch(`${API}/returns/exchange-customer/resolve-ezadmin`, {
+            const res = await fetch(`${API}/returns/exchange-customer/resolve-ezadmin?queue=${queue}`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
             });
             const data = await res.json().catch(() => ({}));
             if (data?.need_session) {
-                openEzadminModal(handleResolveExchangeCustomerEzadmin);
+                openEzadminModal(() => handleResolveExchangeEzadmin(queue));
                 return;
             }
             if (!res.ok || !data?.ok) throw new Error(data?.detail || '이지어드민 조회 실패');
@@ -472,31 +695,35 @@ const ReturnsPage = () => {
         } catch (err) {
             setMessage(err.message || '이지어드민 조회 실패');
         } finally {
-            setIsResolvingEzadmin(false);
+            setLoading(false);
         }
     };
 
-    const handleExecuteExchangeChangeProduct = async () => {
+    const handleExecuteExchangeChangeProduct = async (queue = 'customer') => {
         if (!window.confirm('이지어드민에서 실제로 상품 교환처리를 실행할까요? 되돌리기 어려운 작업입니다.')) return;
-        setIsExecutingChangeProduct(true);
+        const setLoading = queue === 'seller' ? setIsExecutingChangeProductSeller : setIsExecutingChangeProduct;
+        setLoading(true);
         setMessage('');
         try {
-            const res = await fetch(`${API}/returns/exchange-customer/execute-change-product`, {
+            const res = await fetch(`${API}/returns/exchange-customer/execute-change-product?queue=${queue}`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
             });
             const data = await res.json().catch(() => ({}));
             if (data?.need_session) {
-                openEzadminModal(handleExecuteExchangeChangeProduct);
+                openEzadminModal(() => handleExecuteExchangeChangeProduct(queue));
                 return;
             }
             if (data?.queues) setQueues(normalizeQueues(data.queues));
             if (!res.ok || !data?.ok) throw new Error(data?.detail || '교환 실행 실패');
-            setMessage(`이지어드민 교환처리 ${data.executed}건 완료`);
+            const adv = data.ably_advanced || {};
+            let msg = `이지어드민 교환처리 ${data.executed}건 완료 · 에이블리 수거완료 ${adv.received || 0}건, 교환상품준비중 ${adv.prepared || 0}건`;
+            if (data.ably_error) msg += ` (${data.ably_error})`;
+            setMessage(msg);
         } catch (err) {
             setMessage(err.message || '교환 실행 실패');
         } finally {
-            setIsExecutingChangeProduct(false);
+            setLoading(false);
         }
     };
 
@@ -518,49 +745,6 @@ const ReturnsPage = () => {
         } finally {
             setLoading(false);
         }
-    };
-
-    const handleCostBaseAddSingle = async () => {
-        const name = (costAddName || '').trim();
-        const code = (costAddCode || '').trim();
-        if (!name && !code) {
-            setMessage('A열 또는 I열 값을 입력하세요.');
-            return;
-        }
-        try {
-            const res = await fetch(`${API}/returns/cost-base/add-row`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                body: JSON.stringify({ name, code }),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '개별상품추가 실패');
-            setStatus(data.status || status);
-            setCostAddName('');
-            setCostAddCode('');
-            setMessage('개별상품추가 완료');
-            await refreshState();
-        } catch (err) {
-            setMessage(err.message || '개별상품추가 실패');
-        }
-    };
-
-    const handleCostBaseAppendBatch = async () => {
-        const text = costBatchText.trim();
-        if (!text) { setMessage('추가할 데이터를 붙여넣으세요.'); return; }
-        try {
-            const res = await fetch(`${API}/returns/cost-base/append-rows`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                body: JSON.stringify({ text }),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '원가베이스 추가 실패');
-            setCostBatchText('');
-            setCostBatchOpen(false);
-            setMessage(`원가베이스 ${data.appended || 0}행 추가 완료`);
-            await refreshState();
-        } catch (err) { setMessage(err.message || '원가베이스 추가 실패'); }
     };
 
     const scanBarcode = async (value) => {
@@ -672,6 +856,100 @@ const ReturnsPage = () => {
         }
     };
 
+    const handleCsLookup = async (selectedIds) => {
+        const ids = Array.from(selectedIds);
+        if (ids.length === 0) return;
+        setCsLookupLoading(true);
+        setMessage('');
+        try {
+            const res = await fetch(`${API}/returns/unmatched/lookup-cs`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ ids }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.need_session) {
+                openEzadminModal(() => handleCsLookup(selectedIds));
+                return;
+            }
+            if (!res.ok || !data?.ok) throw new Error(data?.detail || 'CS 조회 실패');
+            setQueues(normalizeQueues(data.queues));
+            setMessage(`CS 조회 ${data.checked}건 완료`);
+        } catch (err) {
+            setMessage(err.message || 'CS 조회 실패');
+        } finally {
+            setCsLookupLoading(false);
+        }
+    };
+
+    const handleUnmatchedReceiveStock = async (selectedIds) => {
+        const ids = Array.from(selectedIds);
+        if (ids.length === 0) return;
+        if (!window.confirm(`선택한 ${ids.length}건을 이지어드민에 입고처리할까요? (먼저 "CS 조회"로 상품코드를 확인한 항목만 처리됩니다)`)) return;
+        setStockinLoading(true);
+        setMessage('');
+        try {
+            const res = await fetch(`${API}/returns/unmatched/receive-stock`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ ids }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.queues) setQueues(normalizeQueues(data.queues));
+            if (data?.need_session) {
+                openEzadminModal(() => handleUnmatchedReceiveStock(selectedIds));
+                return;
+            }
+            if (!res.ok || !data?.ok) throw new Error(data?.detail || '입고처리 실패');
+            const okCount = (data.results || []).filter((r) => r.ok).length;
+            setMessage(`이지어드민 입고처리 완료: ${okCount}/${data.results.length}건 성공`);
+        } catch (err) {
+            setMessage(err.message || '입고처리 실패');
+        } finally {
+            setStockinLoading(false);
+        }
+    };
+
+    // 미매칭 항목은 원가베이스유 매칭이 안 돼 resolveProductCodes를 못 쓰므로,
+    // CS 조회(lookup-cs)가 이미 캐싱해둔 item.cs_products로 바로 라벨을 만든다.
+    const handleUnmatchedPrintBarcodes = (selectedIds) => {
+        const ids = Array.from(selectedIds);
+        if (ids.length === 0) return;
+        const items = queues.unmatched.filter((i) => ids.includes(i.id));
+        const labels = items.flatMap((item) =>
+            (item.cs_products || []).map((p) => {
+                const optionRaw = [p.color, p.size].filter(Boolean).join('/');
+                return {
+                    title: p.name || p.product_id,
+                    option: optionRaw ? `[${optionRaw.replace(/\//g, '-')}]` : '',
+                    code: p.product_id,
+                };
+            })
+        );
+        if (!labels.length) {
+            setMessage('상품코드를 찾지 못해 바코드를 출력할 수 없습니다. 먼저 "CS 조회"를 실행하세요.');
+            return;
+        }
+        printProductLabels(labels);
+        setMessage(`바코드 출력: ${labels.length}건`);
+    };
+
+    const openCsDetail = async (phone) => {
+        setCsDetailModal({ phone, loading: true, rooms: [], error: '' });
+        try {
+            const res = await fetch(`${API}/returns/unmatched/cs-detail`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ phone }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data?.ok) throw new Error(data?.detail || 'CS 내용 조회 실패');
+            setCsDetailModal({ phone, loading: false, rooms: data.rooms || [], error: '' });
+        } catch (err) {
+            setCsDetailModal({ phone, loading: false, rooms: [], error: err.message || 'CS 내용 조회 실패' });
+        }
+    };
+
     const handleSaveSnapshot = async () => {
         try {
             const res = await fetch(`${API}/returns/save`, {
@@ -717,6 +995,21 @@ const ReturnsPage = () => {
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data?.detail || '초기화 실패');
             await refreshState();
+        } catch (err) {
+            setMessage(err.message || '초기화 실패');
+        }
+    };
+
+    const handleResetOnebe = async () => {
+        if (!window.confirm('원베양식(고객대기)을 초기화할까요?')) return;
+        try {
+            const res = await fetch(`${API}/returns/onebe/reset`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '초기화 실패');
+            setOnebeRows(data.onebe?.rows || []);
         } catch (err) {
             setMessage(err.message || '초기화 실패');
         }
@@ -895,8 +1188,16 @@ const ReturnsPage = () => {
         const hasReason = items.some((item) => item.reason);
         const hasDetailReason = items.some((item) => item.detail_reason);
         const hasUserComment = items.some((item) => item.user_comment);
+        const hasImages = items.some((item) => item.images && item.images.length > 0);
+        const hasRefundStatus = items.some((item) => item.ably_refund_done || item.ably_refund_error);
+        const hasReasonChangeStatus = items.some((item) => item.ably_reason_changed || item.ably_reason_change_error);
+        const hasStockinStatus = items.some((item) => item.ezadmin_stockin_done || item.ezadmin_stockin_error);
         const hasEzadminInfo = items.some((item) =>
             item.ezadmin_seq || item.old_product_id || item.new_product_id || item.ezadmin_error || item.change_product_done
+        );
+        const hasCsLookup = items.some((item) =>
+            item.cs_phone !== undefined || item.cs_ably_exists !== undefined || item.cs_error
+            || item.cs_products !== undefined || item.cs_product_error
         );
         const allChecked = items.length > 0 && items.every((item) => selectedIds.has(item.id));
         return (
@@ -915,16 +1216,28 @@ const ReturnsPage = () => {
                             {hasReason && <th>사유</th>}
                             {hasDetailReason && <th>상세사유</th>}
                             {hasUserComment && <th>고객메모</th>}
+                            {hasImages && <th>사진</th>}
+                            {hasRefundStatus && <th>환불처리</th>}
+                            {hasReasonChangeStatus && <th>사유변경</th>}
+                            {hasStockinStatus && <th>입고처리</th>}
                             {hasEzadminInfo && <th>SEQ</th>}
                             {hasEzadminInfo && <th>PRD_SEQ</th>}
                             {hasEzadminInfo && <th>기존상품코드</th>}
                             {hasEzadminInfo && <th>교환상품코드</th>}
                             {hasEzadminInfo && <th>상태</th>}
+                            {hasCsLookup && <th>구매자전화번호</th>}
+                            {hasCsLookup && <th>상품코드</th>}
+                            {hasCsLookup && <th>에이블리CS</th>}
                         </tr>
                     </thead>
                     <tbody>
                         {items.map((item) => (
-                            <tr key={item.id} style={selectedIds.has(item.id) ? { background: 'var(--bg-secondary)' } : undefined}>
+                            <tr
+                                key={item.id}
+                                style={item.ably_refund_done
+                                    ? { background: '#e5e7eb', color: '#9ca3af' }
+                                    : (selectedIds.has(item.id) ? { background: 'var(--bg-secondary)' } : undefined)}
+                            >
                                 <td style={{ textAlign: 'center' }}>
                                     <input
                                         type="checkbox"
@@ -940,6 +1253,38 @@ const ReturnsPage = () => {
                                 {hasReason && <td>{item.reason || ''}</td>}
                                 {hasDetailReason && <td>{item.detail_reason || ''}</td>}
                                 {hasUserComment && <td>{item.user_comment || ''}</td>}
+                                {hasImages && (
+                                    <td>
+                                        {(item.images || []).length === 0 ? '' : (
+                                            <div style={{ display: 'flex', gap: 4 }}>
+                                                {item.images.map((src, i) => (
+                                                    <img
+                                                        key={i}
+                                                        src={src}
+                                                        alt={`사진 ${i + 1}`}
+                                                        style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 4, cursor: 'zoom-in' }}
+                                                        onClick={() => setZoomImage(src)}
+                                                    />
+                                                ))}
+                                            </div>
+                                        )}
+                                    </td>
+                                )}
+                                {hasRefundStatus && (
+                                    <td style={{ color: item.ably_refund_error ? '#dc2626' : '#22c55e', fontWeight: item.ably_refund_done ? 600 : 400 }}>
+                                        {item.ably_refund_done ? '✓ 완료' : item.ably_refund_error || ''}
+                                    </td>
+                                )}
+                                {hasReasonChangeStatus && (
+                                    <td style={{ color: item.ably_reason_change_error ? '#dc2626' : '#22c55e', fontWeight: item.ably_reason_changed ? 600 : 400 }}>
+                                        {item.ably_reason_changed ? '✓ 완료' : item.ably_reason_change_error || ''}
+                                    </td>
+                                )}
+                                {hasStockinStatus && (
+                                    <td style={{ color: item.ezadmin_stockin_error ? '#dc2626' : '#22c55e', fontWeight: item.ezadmin_stockin_done ? 600 : 400 }}>
+                                        {item.ezadmin_stockin_done ? `✓ 완료 (${item.ezadmin_stockin_product_id || ''})` : item.ezadmin_stockin_error || ''}
+                                    </td>
+                                )}
                                 {hasEzadminInfo && <td>{item.ezadmin_seq || ''}</td>}
                                 {hasEzadminInfo && <td>{item.ezadmin_prd_seq || ''}</td>}
                                 {hasEzadminInfo && <td>{item.old_product_id || ''}</td>}
@@ -951,6 +1296,31 @@ const ReturnsPage = () => {
                                             : item.ezadmin_error || (item.ezadmin_seq ? '완료' : '')}
                                     </td>
                                 )}
+                                {hasCsLookup && <td>{item.cs_phone || ''}</td>}
+                                {hasCsLookup && (
+                                    <td style={{ color: item.cs_product_error ? '#dc2626' : undefined }}>
+                                        {item.cs_product_error || (item.cs_products || [])
+                                            .map((p) => {
+                                                const option = [p.color, p.size].filter(Boolean).join('/');
+                                                const label = p.name ? `${p.name}${option ? ` [${option}]` : ''}` : p.product_id;
+                                                return `${label} (${p.product_id}) x${p.qty}`;
+                                            })
+                                            .join(', ')}
+                                    </td>
+                                )}
+                                {hasCsLookup && (
+                                    <td style={{ color: item.cs_error ? '#dc2626' : (item.cs_ably_exists ? '#22c55e' : undefined) }}>
+                                        {item.cs_error ? item.cs_error : item.cs_ably_exists === true ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => openCsDetail(item.cs_phone)}
+                                                style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}
+                                            >
+                                                있음
+                                            </button>
+                                        ) : item.cs_ably_exists === false ? '없음' : ''}
+                                    </td>
+                                )}
                             </tr>
                         ))}
                     </tbody>
@@ -959,7 +1329,7 @@ const ReturnsPage = () => {
         );
     };
 
-    const renderQueueTab = (items, selectedIds, setSelectedIds) => {
+    const renderQueueTab = (items, selectedIds, setSelectedIds, extraActions) => {
         const handleToggleOne = (id) => {
             setSelectedIds((prev) => {
                 const next = new Set(prev);
@@ -983,6 +1353,7 @@ const ReturnsPage = () => {
                         >
                             선택 삭제 ({selectedIds.size})
                         </button>
+                        {extraActions}
                     </div>
                 )}
                 {renderTable(items, selectedIds, handleToggleOne, handleToggleAll)}
@@ -1081,29 +1452,6 @@ const ReturnsPage = () => {
                         </button>
                     </div>
                     {savedAt && <div className={pageStyles.metaLabel}>마지막 임시저장: {savedAt}</div>}
-                    {isAdmin && (
-                        <div className={`${pageStyles.uploadRow} ${styles.adminRow}`}>
-                            <input
-                                className={pageStyles.cellInput}
-                                style={{ maxWidth: 220 }}
-                                value={costAddCode}
-                                onChange={(e) => setCostAddCode(e.target.value)}
-                                placeholder="A열 상품코드"
-                            />
-                            <input
-                                className={pageStyles.searchInput}
-                                value={costAddName}
-                                onChange={(e) => setCostAddName(e.target.value)}
-                                placeholder="I열 상품명 색상 사이즈"
-                            />
-                            <button className={pageStyles.primaryBtn} onClick={handleCostBaseAddSingle}>
-                                개별상품추가
-                            </button>
-                            <button className={pageStyles.primaryBtn} onClick={() => setCostBatchOpen(true)}>
-                                원가베이스 추가
-                            </button>
-                        </div>
-                    )}
 
                     {message && (
                         <div className={pageStyles.statusMsg}>
@@ -1173,13 +1521,59 @@ const ReturnsPage = () => {
                     {activeTab !== 'onebe' && (
                         <>
                             {activeTab === 'all' && renderQueueTab(queues.all, selectedAll, setSelectedAll)}
-                            {activeTab === 'seller' && renderQueueTab(queues.seller, selectedSeller, setSelectedSeller)}
+                            {activeTab === 'seller' && renderQueueTab(queues.seller, selectedSeller, setSelectedSeller, (
+                                <>
+                                    <button
+                                        type="button"
+                                        className={pageStyles.primaryBtn}
+                                        onClick={() => handleAblyRefundSubmit(queues.seller.filter((i) => selectedSeller.has(i.id)))}
+                                        disabled={refundLoading || selectedSeller.size === 0}
+                                    >
+                                        {refundLoading ? '처리 중...' : `에이블리 환불 요청 (${selectedSeller.size}건 선택)`}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={pageStyles.primaryBtn}
+                                        onClick={() => handleAblyChangeReasonSubmit(queues.seller.filter((i) => selectedSeller.has(i.id)))}
+                                        disabled={reasonChangeLoading || selectedSeller.size === 0}
+                                    >
+                                        {reasonChangeLoading ? '처리 중...' : `일반사유로변경 (${selectedSeller.size}건 선택)`}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={pageStyles.primaryBtn}
+                                        onClick={() => handleEzadminReceiveStock(queues.seller.filter((i) => selectedSeller.has(i.id)))}
+                                        disabled={stockinLoading || selectedSeller.size === 0}
+                                    >
+                                        {stockinLoading ? '처리 중...' : `이지어드민 입고처리 (${selectedSeller.size}건 선택)`}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={pageStyles.primaryBtn}
+                                        onClick={() => handleSendToKimsungil(queues.seller.filter((i) => selectedSeller.has(i.id)))}
+                                        disabled={kimsungilSendLoading || selectedSeller.size === 0}
+                                    >
+                                        {kimsungilSendLoading ? '처리 중...' : `김승일보내기 (${selectedSeller.size}건 선택)`}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={pageStyles.primaryBtn}
+                                        onClick={() => handlePrintBarcodesOnly(queues.seller.filter((i) => selectedSeller.has(i.id)))}
+                                        disabled={labelPrintLoading || selectedSeller.size === 0}
+                                    >
+                                        {labelPrintLoading ? '처리 중...' : `바코드 출력 (${selectedSeller.size}건 선택)`}
+                                    </button>
+                                </>
+                            ))}
                             {activeTab === 'customer' && (() => {
                                 const items = queues.customer;
                                 if (!items || items.length === 0) return <div className={pageStyles.empty}>데이터가 없습니다.</div>;
                                 const allChecked = items.length > 0 && items.every((i) => selectedCustomer.has(i.id));
                                 const hasDetailReason = items.some((i) => i.detail_reason);
                                 const hasUserComment = items.some((i) => i.user_comment);
+                                const hasImages = items.some((i) => i.images && i.images.length > 0);
+                                const hasRefundStatus = items.some((i) => i.ably_refund_done || i.ably_refund_error);
+                                const hasStockinStatus = items.some((i) => i.ezadmin_stockin_done || i.ezadmin_stockin_error);
                                 return (
                                     <>
                                         <div className={`${pageStyles.uploadRow} ${styles.compactActions}`}>
@@ -1190,6 +1584,42 @@ const ReturnsPage = () => {
                                                 disabled={deleteLoading || selectedCustomer.size === 0}
                                             >
                                                 선택 삭제 ({selectedCustomer.size})
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.primaryBtn}
+                                                onClick={() => handleAblyRefundSubmit(items.filter((i) => selectedCustomer.has(i.id)))}
+                                                disabled={refundLoading || selectedCustomer.size === 0}
+                                            >
+                                                {refundLoading ? '처리 중...' : `에이블리 환불 요청 (${selectedCustomer.size}건 선택)`}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.primaryBtn}
+                                                onClick={() => handleEzadminReceiveStock(items.filter((i) => selectedCustomer.has(i.id)))}
+                                                disabled={stockinLoading || selectedCustomer.size === 0}
+                                            >
+                                                {stockinLoading ? '처리 중...' : `이지어드민 입고처리 (${selectedCustomer.size}건 선택)`}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.primaryBtn}
+                                                onClick={() => handleSendToKimsungil(items.filter((i) => selectedCustomer.has(i.id)))}
+                                                disabled={kimsungilSendLoading || selectedCustomer.size === 0}
+                                            >
+                                                {kimsungilSendLoading ? '처리 중...' : `김승일보내기 (${selectedCustomer.size}건 선택)`}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.primaryBtn}
+                                                onClick={() => handlePrintBarcodesOnly(
+                                                    items
+                                                        .filter((i) => selectedCustomer.has(i.id))
+                                                        .sort((a, b) => (b.item_text || '').localeCompare(a.item_text || '', 'ko'))
+                                                )}
+                                                disabled={labelPrintLoading || selectedCustomer.size === 0}
+                                            >
+                                                {labelPrintLoading ? '처리 중...' : `바코드 출력 (${selectedCustomer.size}건 선택)`}
                                             </button>
                                         </div>
                                         <div className={pageStyles.tableWrap}>
@@ -1216,11 +1646,19 @@ const ReturnsPage = () => {
                                                     <th>분류</th>
                                                     {hasDetailReason && <th>상세사유</th>}
                                                     {hasUserComment && <th>고객메모</th>}
+                                                    {hasImages && <th>사진</th>}
+                                                    {hasRefundStatus && <th>환불처리</th>}
+                                                    {hasStockinStatus && <th>입고처리</th>}
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 {items.map((item) => (
-                                                    <tr key={item.id} style={selectedCustomer.has(item.id) ? { background: 'var(--bg-secondary)' } : undefined}>
+                                                    <tr
+                                                        key={item.id}
+                                                        style={item.ably_refund_done
+                                                            ? { background: '#e5e7eb', color: '#9ca3af' }
+                                                            : (selectedCustomer.has(item.id) ? { background: 'var(--bg-secondary)' } : undefined)}
+                                                    >
                                                         <td style={{ textAlign: 'center' }}>
                                                             <input
                                                                 type="checkbox"
@@ -1241,6 +1679,33 @@ const ReturnsPage = () => {
                                                         <td>{item.type}</td>
                                                         {hasDetailReason && <td>{item.detail_reason || ''}</td>}
                                                         {hasUserComment && <td>{item.user_comment || ''}</td>}
+                                                        {hasImages && (
+                                                            <td>
+                                                                {(item.images || []).length === 0 ? '' : (
+                                                                    <div style={{ display: 'flex', gap: 4 }}>
+                                                                        {item.images.map((src, i) => (
+                                                                            <img
+                                                                                key={i}
+                                                                                src={src}
+                                                                                alt={`사진 ${i + 1}`}
+                                                                                style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 4, cursor: 'zoom-in' }}
+                                                                                onClick={() => setZoomImage(src)}
+                                                                            />
+                                                                        ))}
+                                                                    </div>
+                                                                )}
+                                                            </td>
+                                                        )}
+                                                        {hasRefundStatus && (
+                                                            <td style={{ color: item.ably_refund_error ? '#dc2626' : '#22c55e', fontWeight: item.ably_refund_done ? 600 : 400 }}>
+                                                                {item.ably_refund_done ? '✓ 완료' : item.ably_refund_error || ''}
+                                                            </td>
+                                                        )}
+                                                        {hasStockinStatus && (
+                                                            <td style={{ color: item.ezadmin_stockin_error ? '#dc2626' : '#22c55e', fontWeight: item.ezadmin_stockin_done ? 600 : 400 }}>
+                                                                {item.ezadmin_stockin_done ? `✓ 완료 (${item.ezadmin_stockin_product_id || ''})` : item.ezadmin_stockin_error || ''}
+                                                            </td>
+                                                        )}
                                                     </tr>
                                                 ))}
                                             </tbody>
@@ -1249,7 +1714,60 @@ const ReturnsPage = () => {
                                     </>
                                 );
                             })()}
-                            {activeTab === 'exchange_seller' && renderQueueTab(queues.exchange_seller, selectedExchangeSeller, setSelectedExchangeSeller)}
+                            {activeTab === 'exchange_seller' && (
+                                <>
+                                    {renderQueueTab(queues.exchange_seller, selectedExchangeSeller, setSelectedExchangeSeller, (
+                                        <>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.primaryBtn}
+                                                onClick={() => handleEzadminReceiveStock(queues.exchange_seller.filter((i) => selectedExchangeSeller.has(i.id)))}
+                                                disabled={stockinLoading || selectedExchangeSeller.size === 0}
+                                            >
+                                                {stockinLoading ? '처리 중...' : `이지어드민 입고처리 (${selectedExchangeSeller.size}건 선택)`}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.primaryBtn}
+                                                onClick={() => handleSendToKimsungil(queues.exchange_seller.filter((i) => selectedExchangeSeller.has(i.id)))}
+                                                disabled={kimsungilSendLoading || selectedExchangeSeller.size === 0}
+                                            >
+                                                {kimsungilSendLoading ? '처리 중...' : `김승일보내기 (${selectedExchangeSeller.size}건 선택)`}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.primaryBtn}
+                                                onClick={() => handlePrintBarcodesOnly(queues.exchange_seller.filter((i) => selectedExchangeSeller.has(i.id)))}
+                                                disabled={labelPrintLoading || selectedExchangeSeller.size === 0}
+                                            >
+                                                {labelPrintLoading ? '처리 중...' : `바코드 출력 (${selectedExchangeSeller.size}건 선택)`}
+                                            </button>
+                                        </>
+                                    ))}
+                                    {queues.exchange_seller.length > 0 && (
+                                        <div className={`${pageStyles.uploadRow} ${styles.compactActions}`}>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.secondaryBtn}
+                                                onClick={() => handleResolveExchangeEzadmin('seller')}
+                                                disabled={isResolvingEzadminSeller}
+                                            >
+                                                {isResolvingEzadminSeller ? '조회 중...' : '이지어드민 정보 불러오기'}
+                                            </button>
+                                            {exchangeSellerAllReady && exchangeSellerHasPending && (
+                                                <button
+                                                    type="button"
+                                                    className={pageStyles.fileInput}
+                                                    onClick={() => handleExecuteExchangeChangeProduct('seller')}
+                                                    disabled={isExecutingChangeProductSeller}
+                                                >
+                                                    {isExecutingChangeProductSeller ? '실행 중...' : '실행'}
+                                                </button>
+                                            )}
+                                        </div>
+                                    )}
+                                </>
+                            )}
                             {activeTab === 'exchange_customer' && (
                                 <>
                                     {renderQueueTab(queues.exchange_customer, selectedExchangeCustomer, setSelectedExchangeCustomer)}
@@ -1258,7 +1776,7 @@ const ReturnsPage = () => {
                                             <button
                                                 type="button"
                                                 className={pageStyles.secondaryBtn}
-                                                onClick={handleResolveExchangeCustomerEzadmin}
+                                                onClick={() => handleResolveExchangeEzadmin('customer')}
                                                 disabled={isResolvingEzadmin}
                                             >
                                                 {isResolvingEzadmin ? '조회 중...' : '이지어드민 정보 불러오기'}
@@ -1267,7 +1785,7 @@ const ReturnsPage = () => {
                                                 <button
                                                     type="button"
                                                     className={pageStyles.fileInput}
-                                                    onClick={handleExecuteExchangeChangeProduct}
+                                                    onClick={() => handleExecuteExchangeChangeProduct('customer')}
                                                     disabled={isExecutingChangeProduct}
                                                 >
                                                     {isExecutingChangeProduct ? '실행 중...' : '실행'}
@@ -1277,7 +1795,37 @@ const ReturnsPage = () => {
                                     )}
                                 </>
                             )}
-                            {activeTab === 'unmatched' && renderQueueTab(queues.unmatched, selectedUnmatched, setSelectedUnmatched)}
+                            {activeTab === 'unmatched' && renderQueueTab(
+                                queues.unmatched,
+                                selectedUnmatched,
+                                setSelectedUnmatched,
+                                <>
+                                    <button
+                                        type="button"
+                                        className={pageStyles.secondaryBtn}
+                                        onClick={() => handleCsLookup(selectedUnmatched)}
+                                        disabled={csLookupLoading || selectedUnmatched.size === 0}
+                                    >
+                                        {csLookupLoading ? '조회 중...' : `CS 조회 (${selectedUnmatched.size})`}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={pageStyles.secondaryBtn}
+                                        onClick={() => handleUnmatchedReceiveStock(selectedUnmatched)}
+                                        disabled={stockinLoading || selectedUnmatched.size === 0}
+                                    >
+                                        {stockinLoading ? '처리 중...' : `입고처리 (${selectedUnmatched.size})`}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={pageStyles.secondaryBtn}
+                                        onClick={() => handleUnmatchedPrintBarcodes(selectedUnmatched)}
+                                        disabled={selectedUnmatched.size === 0}
+                                    >
+                                        {`바코드 출력 (${selectedUnmatched.size})`}
+                                    </button>
+                                </>
+                            )}
                         </>
                     )}
 
@@ -1442,8 +1990,8 @@ const ReturnsPage = () => {
                         >
                             추출 저장
                         </button>
-                        <button className={pageStyles.secondaryBtn} onClick={handleReset}>
-                            대기 리스트 초기화
+                        <button className={pageStyles.secondaryBtn} onClick={handleResetOnebe}>
+                            원배양식 초기화
                         </button>
                     </div>
                 </section>
@@ -1507,20 +2055,6 @@ const ReturnsPage = () => {
                         )}
                     </div>
 
-                    {/* 일괄 처리 */}
-                    <div className={pageStyles.uploadRow}>
-                        <button
-                            className={pageStyles.primaryBtn}
-                            onClick={handleAblyRefundSubmit}
-                            disabled={refundLoading || selectedCustomer.size === 0}
-                        >
-                            {refundLoading ? '처리 중...' : `에이블리 환불 요청 (${selectedCustomer.size}건 선택)`}
-                        </button>
-                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                            고객 대기 탭에서 항목을 체크 후 클릭하세요
-                        </span>
-                    </div>
-
                     {/* 엑셀 파일로 환불 */}
                     <div className={pageStyles.uploadRow} style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem', marginTop: '0.25rem' }}>
                         <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>추출 엑셀로 넘기기</span>
@@ -1554,39 +2088,103 @@ const ReturnsPage = () => {
                             ))}
                         </div>
                     )}
+                    {stockinResults && (
+                        <div style={{ padding: '0.5rem 1rem 0.75rem' }}>
+                            {stockinResults.map((r, i) => (
+                                <div key={i} style={{ fontSize: '0.8rem', color: r.ok ? 'var(--text-muted)' : '#ef4444', marginBottom: '2px' }}>
+                                    {r.ok ? `✓ ${r.scan} (${r.product_id || ''})` : `✗ ${r.scan} — ${r.error || ''}`}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    {reasonChangeResults && (
+                        <div style={{ padding: '0.5rem 1rem 0.75rem' }}>
+                            {reasonChangeResults.map((r, i) => (
+                                <div key={i} style={{ fontSize: '0.8rem', color: r.ok ? 'var(--text-muted)' : '#ef4444', marginBottom: '2px' }}>
+                                    {r.ok ? '✓' : '✗'} {r.scan} {r.error ? `— ${r.error}` : ''}
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </section>
 
             </div>
 
-            {costBatchOpen && (
-                <div className={pageStyles.modalOverlay} onClick={() => setCostBatchOpen(false)}>
-                    <div className={pageStyles.modal} onClick={(e) => e.stopPropagation()}>
-                        <div className={pageStyles.modalHeader}>
-                            <h3 className={pageStyles.modalTitle}>원가베이스 추가</h3>
-                            <button className={pageStyles.secondaryBtn} onClick={() => setCostBatchOpen(false)}>
-                                닫기
-                            </button>
+            {zoomImage && (
+                <div
+                    onClick={() => setZoomImage(null)}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0,0,0,0.85)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 1000,
+                        cursor: 'zoom-out',
+                    }}
+                >
+                    <img
+                        src={zoomImage}
+                        alt="확대 사진"
+                        style={{ maxWidth: '90vw', maxHeight: '90vh', objectFit: 'contain', borderRadius: 8 }}
+                    />
+                </div>
+            )}
+
+            {csDetailModal && (
+                <div
+                    onClick={() => setCsDetailModal(null)}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0,0,0,0.5)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 1000,
+                    }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                            background: 'var(--bg-primary, #fff)',
+                            borderRadius: 8,
+                            width: 'min(560px, 90vw)',
+                            maxHeight: '80vh',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            overflow: 'hidden',
+                        }}
+                    >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border-color, #e5e7eb)' }}>
+                            <strong>에이블리 CS 내용 ({csDetailModal.phone})</strong>
+                            <button type="button" onClick={() => setCsDetailModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>×</button>
                         </div>
-                        <div className={pageStyles.tableWrap}>
-                            <textarea
-                                className={pageStyles.scanInput}
-                                value={costBatchText}
-                                onChange={(e) => setCostBatchText(e.target.value)}
-                                placeholder="상품코드\t상품명 색상 사이즈 형식으로 붙여넣으세요"
-                                rows={10}
-                                style={{ width: '100%', resize: 'vertical' }}
-                            />
-                            <div className={pageStyles.metaLabel}>
-                                A열 상품코드 / I열 상품명 색상 사이즈
-                            </div>
-                        </div>
-                        <div className={pageStyles.uploadRow}>
-                            <button className={pageStyles.primaryBtn} onClick={handleCostBaseAppendBatch}>
-                                추가
-                            </button>
-                            <button className={pageStyles.secondaryBtn} onClick={() => setCostBatchOpen(false)}>
-                                취소
-                            </button>
+                        <div style={{ padding: 16, overflowY: 'auto' }}>
+                            {csDetailModal.loading && <div>불러오는 중...</div>}
+                            {!csDetailModal.loading && csDetailModal.error && (
+                                <div style={{ color: '#dc2626' }}>{csDetailModal.error}</div>
+                            )}
+                            {!csDetailModal.loading && !csDetailModal.error && csDetailModal.rooms.length === 0 && (
+                                <div>CS문의 내용을 찾을 수 없습니다.</div>
+                            )}
+                            {!csDetailModal.loading && csDetailModal.rooms.map((room, i) => (
+                                <div key={i} style={{ marginBottom: 20 }}>
+                                    <div style={{ fontWeight: 600, marginBottom: 8 }}>
+                                        {room.market_name} · {room.status_display}
+                                    </div>
+                                    {room.error && <div style={{ color: '#dc2626' }}>{room.error}</div>}
+                                    {(room.messages || []).map((msg, j) => (
+                                        <div key={j} style={{ marginBottom: 10, paddingLeft: 8, borderLeft: '3px solid var(--border-color, #e5e7eb)' }}>
+                                            <div style={{ fontSize: 12, color: 'var(--text-secondary, #6b7280)' }}>
+                                                {msg.sender} · {msg.created_at}
+                                            </div>
+                                            <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            ))}
                         </div>
                     </div>
                 </div>
