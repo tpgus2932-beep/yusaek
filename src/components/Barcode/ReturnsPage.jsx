@@ -438,8 +438,8 @@ const ReturnsPage = () => {
         setReasonChangeTemplatesLoading(true);
         try {
             const res = await fetch(`${API}/sms/templates`, { headers: getAuthHeaders() });
-            const data = await res.json().catch(() => ([]));
-            const list = Array.isArray(data) ? data : [];
+            const data = await res.json().catch(() => ({}));
+            const list = Array.isArray(data?.templates) ? data.templates : [];
             setReasonChangeTemplates(list);
             if (list.length) setReasonChangeSelectedTemplateId(list[0].id);
         } catch {
