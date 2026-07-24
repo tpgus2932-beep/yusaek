@@ -423,27 +423,100 @@ const ReturnsPage = () => {
         }
     };
 
-    const handleAblyChangeReasonSubmit = async (selectedItems) => {
+    const [reasonChangeModalOpen, setReasonChangeModalOpen] = useState(false);
+    const [reasonChangeTemplates, setReasonChangeTemplates] = useState([]);
+    const [reasonChangeTemplatesLoading, setReasonChangeTemplatesLoading] = useState(false);
+    const [reasonChangeSelectedTemplateId, setReasonChangeSelectedTemplateId] = useState('');
+    const [reasonChangePendingItems, setReasonChangePendingItems] = useState([]);
+    const [reasonChangeConfirmLoading, setReasonChangeConfirmLoading] = useState(false);
+
+    const openReasonChangeTemplateModal = async (selectedItems) => {
         if (!selectedItems || !selectedItems.length) return;
-        setReasonChangeLoading(true);
-        setReasonChangeResults(null);
+        setReasonChangePendingItems(selectedItems);
+        setReasonChangeModalOpen(true);
+        setReasonChangeSelectedTemplateId('');
+        setReasonChangeTemplatesLoading(true);
+        try {
+            const res = await fetch(`${API}/sms/templates`, { headers: getAuthHeaders() });
+            const data = await res.json().catch(() => ([]));
+            const list = Array.isArray(data) ? data : [];
+            setReasonChangeTemplates(list);
+            if (list.length) setReasonChangeSelectedTemplateId(list[0].id);
+        } catch {
+            setReasonChangeTemplates([]);
+        } finally {
+            setReasonChangeTemplatesLoading(false);
+        }
+    };
+
+    const closeReasonChangeTemplateModal = () => {
+        setReasonChangeModalOpen(false);
+        setReasonChangePendingItems([]);
+        setReasonChangeSelectedTemplateId('');
+    };
+
+    const handleConfirmReasonChangeWithSms = async () => {
+        const template = reasonChangeTemplates.find((t) => t.id === reasonChangeSelectedTemplateId);
+        if (!template) {
+            setMessage('템플릿을 선택하세요.');
+            return;
+        }
+        const items = reasonChangePendingItems;
+        setReasonChangeConfirmLoading(true);
         setMessage('');
         try {
+            setReasonChangeLoading(true);
+            setReasonChangeResults(null);
             const res = await fetch(`${API}/returns/ably-change-reason-submit`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                body: JSON.stringify({ items: selectedItems }),
+                body: JSON.stringify({ items }),
             });
             const data = await res.json().catch(() => ({}));
             if (data?.queues) setQueues(normalizeQueues(data.queues));
-            if (!res.ok) throw new Error(data?.detail || '처리 실패');
+            if (!res.ok) throw new Error(data?.detail || '사유변경 처리 실패');
             setReasonChangeResults(data.results);
-            const ok = data.results.filter((r) => r.ok).length;
-            setMessage(`일반사유 변경 완료: ${ok}/${data.results.length}건 성공`);
+            const reasonOk = data.results.filter((r) => r.ok).length;
+
+            let smsOk = 0;
+            let smsSkipped = 0;
+            let sessionExpired = false;
+            for (const item of items) {
+                const phone = (item.buyer_tel || '').trim();
+                if (!phone) {
+                    smsSkipped += 1;
+                    continue;
+                }
+                try {
+                    const smsRes = await fetch(`${API}/return-automation/reply-sms`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                        body: JSON.stringify({ phone, msg: template.msg }),
+                    });
+                    const smsData = await smsRes.json().catch(() => ({}));
+                    if (smsData?.need_ezdesk_session) {
+                        sessionExpired = true;
+                        break;
+                    }
+                    if (smsRes.ok && smsData?.ok !== false) {
+                        smsOk += 1;
+                    }
+                } catch {
+                    // 개별 전송 실패는 무시하고 다음 건으로 진행 (실패 건수는 smsOk와의 차이로 드러남)
+                }
+            }
+
+            const smsAttempted = items.length - smsSkipped;
+            let summary = `일반사유 변경 완료: ${reasonOk}/${data.results.length}건 성공. 문자 전송: ${smsOk}/${smsAttempted}건 성공`;
+            if (smsSkipped) summary += ` (전화번호 없음 ${smsSkipped}건 제외)`;
+            if (sessionExpired) summary += ' — 이지데스크 세션이 만료되어 이후 발송은 중단했습니다. 테스트 > 자동화 대시보드에서 세션을 재설정해주세요.';
+            setMessage(summary);
+            closeReasonChangeTemplateModal();
         } catch (err) {
             setMessage(err.message || '일반사유 변경 실패');
         } finally {
             setReasonChangeLoading(false);
+            setReasonChangeConfirmLoading(false);
         }
     };
 
@@ -1592,7 +1665,7 @@ body { background: #fff; font-family: sans-serif; }
                                     <button
                                         type="button"
                                         className={pageStyles.primaryBtn}
-                                        onClick={() => handleAblyChangeReasonSubmit(queues.seller.filter((i) => selectedSeller.has(i.id)))}
+                                        onClick={() => openReasonChangeTemplateModal(queues.seller.filter((i) => selectedSeller.has(i.id)))}
                                         disabled={reasonChangeLoading || selectedSeller.size === 0}
                                     >
                                         {reasonChangeLoading ? '처리 중...' : `일반사유로변경 (${selectedSeller.size}건 선택)`}
@@ -2296,6 +2369,67 @@ body { background: #fff; font-family: sans-serif; }
                                 disabled={smsSendLoading}
                             >
                                 {smsSendLoading ? '전송 중...' : '전송'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {reasonChangeModalOpen && (
+                <div
+                    onClick={closeReasonChangeTemplateModal}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0,0,0,0.5)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 1000,
+                    }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                            background: 'var(--bg-primary, #fff)',
+                            borderRadius: 8,
+                            width: 'min(480px, 90vw)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                        }}
+                    >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border-color, #e5e7eb)' }}>
+                            <strong>일반사유로변경 — 문자 템플릿 선택 ({reasonChangePendingItems.length}건)</strong>
+                            <button type="button" onClick={closeReasonChangeTemplateModal} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>×</button>
+                        </div>
+                        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            {reasonChangeTemplatesLoading ? (
+                                <div>템플릿 불러오는 중...</div>
+                            ) : reasonChangeTemplates.length === 0 ? (
+                                <div>등록된 템플릿이 없습니다. 사이드메뉴 "문자 발송"에서 템플릿을 먼저 만들어주세요.</div>
+                            ) : (
+                                <>
+                                    <select
+                                        value={reasonChangeSelectedTemplateId}
+                                        onChange={(e) => setReasonChangeSelectedTemplateId(e.target.value)}
+                                        style={{ padding: '8px 10px', border: '1px solid var(--border-color, #e5e7eb)', borderRadius: 6 }}
+                                    >
+                                        {reasonChangeTemplates.map((t) => (
+                                            <option key={t.id} value={t.id}>{t.name}</option>
+                                        ))}
+                                    </select>
+                                    <div style={{ whiteSpace: 'pre-wrap', fontSize: '0.85rem', color: 'var(--text-secondary, #6b7280)', border: '1px solid var(--border-color, #e5e7eb)', borderRadius: 6, padding: 10, minHeight: 60 }}>
+                                        {reasonChangeTemplates.find((t) => t.id === reasonChangeSelectedTemplateId)?.msg || ''}
+                                    </div>
+                                </>
+                            )}
+                            <button
+                                type="button"
+                                className={pageStyles.primaryBtn}
+                                onClick={handleConfirmReasonChangeWithSms}
+                                disabled={reasonChangeConfirmLoading || reasonChangeTemplatesLoading || !reasonChangeSelectedTemplateId}
+                            >
+                                {reasonChangeConfirmLoading ? '처리 중...' : '진행'}
                             </button>
                         </div>
                     </div>
