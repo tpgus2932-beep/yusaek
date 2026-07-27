@@ -120,7 +120,9 @@ function getKoreanDateString() {
 
 function getRecordHours(inRecord, outRecord) {
   if (!inRecord?.timestamp || !outRecord?.timestamp) return 0;
-  const diff = new Date(outRecord.timestamp) - new Date(inRecord.timestamp);
+  if (inRecord.payrollEligible === false || outRecord.payrollEligible === false) return 0;
+  const diff = new Date(outRecord.normalizedTimestamp || outRecord.timestamp)
+    - new Date(inRecord.normalizedTimestamp || inRecord.timestamp);
   return diff > 0 ? diff / 3600000 : 0;
 }
 
@@ -139,7 +141,14 @@ function buildActualHoursMap(records) {
   const map = {};
   Object.entries(grouped).forEach(([key, { checkIn, checkOut }]) => {
     if (!checkIn || !checkOut) { map[key] = null; return; }
-    const hours = (new Date(checkOut.timestamp) - new Date(checkIn.timestamp)) / 3600000;
+    if (checkIn.payrollEligible === false || checkOut.payrollEligible === false) {
+      map[key] = null;
+      return;
+    }
+    const hours = (
+      new Date(checkOut.normalizedTimestamp || checkOut.timestamp)
+      - new Date(checkIn.normalizedTimestamp || checkIn.timestamp)
+    ) / 3600000;
     map[key] = hours > 0 ? hours : null;
   });
   return map;
@@ -250,7 +259,7 @@ export default function ScheduleTab({ pin, members }) {
     if (hours <= 0) return null;
     return {
       hoursLabel: formatHours(hours),
-      timeRange: `${formatRecordTime(actual.inRecord.timestamp)}~${formatRecordTime(actual.outRecord.timestamp)}`,
+      timeRange: `${formatRecordTime(actual.inRecord.normalizedTimestamp || actual.inRecord.timestamp)}~${formatRecordTime(actual.outRecord.normalizedTimestamp || actual.outRecord.timestamp)}`,
     };
   };
 
