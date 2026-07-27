@@ -1,10 +1,46 @@
 from datetime import datetime, timezone, timedelta
+import re
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 KST = timezone(timedelta(hours=9))
 
 ATTENDANCE_ADMIN_PIN_KEY = "attendance_admin_pin"
+ATTENDANCE_DEFAULT_SCHEDULE_KEY = "attendance_default_schedule_20260720_v1"
+ATTENDANCE_DEFAULT_RECORDS_KEY = "attendance_default_records_20260720_v2"
+
+# 2026-07-20 주차 근무표를 기준으로 한 기본 고정 스케줄.
+# DB가 PC마다 따로 있어도 최초 실행 시 동일한 직원과 근무시간을 복원한다.
+DEFAULT_ATTENDANCE_SCHEDULE = {
+    "가희": [(3, "09:00", "14:00"), (4, "09:00", "14:00"), (5, "09:00", "13:30")],
+    "미진": [(1, "09:00", "14:00"), (2, "09:00", "14:00"), (5, "09:00", "13:30")],
+    "영아": [(1, "09:30", "14:00"), (2, "09:30", "14:00"), (3, "09:30", "14:00")],
+    "은영": [(1, "09:00", "14:00"), (2, "09:00", "14:00"), (3, "09:00", "13:30")],
+    "은진": [(1, "10:00", "15:00"), (3, "09:00", "14:00"), (5, "09:30", "14:00")],
+    "이정": [(1, "09:00", "14:00"), (2, "09:00", "14:00"), (5, "09:30", "14:00")],
+    "정란": [(2, "09:00", "14:00"), (3, "09:30", "14:00"), (4, "09:00", "14:00")],
+    "정아": [(1, "10:00", "15:00"), (2, "10:00", "14:00"), (4, "10:00", "14:00")],
+    "지선": [(1, "09:30", "14:30"), (2, "09:30", "14:00"), (4, "09:00", "14:00")],
+    "혜주": [(4, "10:00", "14:00"), (5, "10:00", "14:00")],
+}
+
+# 사진에 기록된 2026-07-20~21 실제 출퇴근 시간.
+DEFAULT_ATTENDANCE_RECORDS = [
+    ("미진", "2026-07-20", "08:59", "13:58"),
+    ("미진", "2026-07-21", "09:00", "12:49"),
+    ("영아", "2026-07-20", "09:27", "13:58"),
+    ("영아", "2026-07-21", "09:30", "12:50"),
+    ("은영", "2026-07-20", "08:54", "13:58"),
+    ("은영", "2026-07-21", "08:53", "12:48"),
+    ("은진", "2026-07-20", "09:01", "13:58"),
+    ("이정", "2026-07-20", "08:52", "13:59"),
+    ("이정", "2026-07-21", "08:54", "12:49"),
+    ("정란", "2026-07-21", "08:53", "12:49"),
+    ("정아", "2026-07-20", "09:52", "13:58"),
+    ("정아", "2026-07-21", "09:53", "12:49"),
+    ("지선", "2026-07-20", "08:56", "13:59"),
+    ("지선", "2026-07-21", "09:25", "12:49"),
+]
 
 
 def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verify_pin):
@@ -46,6 +82,10 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
                 end_time            TEXT NOT NULL,
                 check_in_record_id  INTEGER NOT NULL,
                 check_out_record_id INTEGER NOT NULL,
+                bank_name           TEXT NOT NULL DEFAULT '',
+                account_holder      TEXT NOT NULL DEFAULT '',
+                account_number      TEXT NOT NULL DEFAULT '',
+                payment_completed   INTEGER NOT NULL DEFAULT 0,
                 created_at          TEXT NOT NULL,
                 UNIQUE(name, date)
             )
@@ -54,6 +94,17 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_daily_workers_date ON attendance_daily_workers(date)"
         )
+        daily_worker_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(attendance_daily_workers)").fetchall()
+        }
+        for column, ddl in (
+            ("bank_name", "ALTER TABLE attendance_daily_workers ADD COLUMN bank_name TEXT NOT NULL DEFAULT ''"),
+            ("account_holder", "ALTER TABLE attendance_daily_workers ADD COLUMN account_holder TEXT NOT NULL DEFAULT ''"),
+            ("account_number", "ALTER TABLE attendance_daily_workers ADD COLUMN account_number TEXT NOT NULL DEFAULT ''"),
+            ("payment_completed", "ALTER TABLE attendance_daily_workers ADD COLUMN payment_completed INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if column not in daily_worker_cols:
+                conn.execute(ddl)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS attendance_schedule_fixed_rules (
@@ -109,10 +160,110 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             conn.execute(
                 "ALTER TABLE attendance_members ADD COLUMN include_in_schedule INTEGER NOT NULL DEFAULT 1"
             )
+        for column, ddl in (
+            ("bank_name", "ALTER TABLE attendance_members ADD COLUMN bank_name TEXT NOT NULL DEFAULT ''"),
+            ("account_holder", "ALTER TABLE attendance_members ADD COLUMN account_holder TEXT NOT NULL DEFAULT ''"),
+            ("account_number", "ALTER TABLE attendance_members ADD COLUMN account_number TEXT NOT NULL DEFAULT ''"),
+        ):
+            if column not in member_cols:
+                conn.execute(ddl)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance_fixed_worker_payments (
+                member_id          INTEGER NOT NULL,
+                year               INTEGER NOT NULL,
+                month              INTEGER NOT NULL,
+                payment_completed  INTEGER NOT NULL DEFAULT 0,
+                updated_at         TEXT NOT NULL,
+                PRIMARY KEY(member_id, year, month)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance_checkin_alerts (
+                member_name TEXT NOT NULL,
+                date        TEXT NOT NULL,
+                request_id  INTEGER,
+                created_at  TEXT NOT NULL,
+                PRIMARY KEY(member_name, date)
+            )
+            """
+        )
         conn.commit()
         conn.close()
 
     _init()
+
+    # Git에는 로컬 DB가 포함되지 않으므로, 새 PC/새 DB에도 기본 근무표를 한 번만 구성한다.
+    try:
+        if get_setting(ATTENDANCE_DEFAULT_SCHEDULE_KEY) != "done":
+            conn = get_db()
+            now = datetime.now(KST).isoformat()
+            for name, shifts in DEFAULT_ATTENDANCE_SCHEDULE.items():
+                conn.execute(
+                    "INSERT OR IGNORE INTO attendance_members (name, created_at, include_in_schedule) "
+                    "VALUES (?, ?, 1)",
+                    (name, now),
+                )
+                member = conn.execute(
+                    "SELECT id FROM attendance_members WHERE name = ?",
+                    (name,),
+                ).fetchone()
+                if not member:
+                    continue
+                existing_count = conn.execute(
+                    "SELECT COUNT(*) AS count FROM attendance_schedule_fixed_rules WHERE member_id = ?",
+                    (member["id"],),
+                ).fetchone()["count"]
+                if existing_count:
+                    continue
+                for weekday, start_time, end_time in shifts:
+                    conn.execute(
+                        "INSERT INTO attendance_schedule_fixed_rules "
+                        "(member_id, weekday, start_time, end_time, effective_from, status, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, 'scheduled', ?)",
+                        (member["id"], weekday, start_time, end_time, "2026-07-20", now),
+                    )
+            conn.commit()
+            conn.close()
+            set_setting(ATTENDANCE_DEFAULT_SCHEDULE_KEY, "done")
+    except Exception:
+        # 원격 DB가 일시적으로 unavailable이어도 앱 시작 자체는 막지 않는다.
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    # 사진으로 확인된 실제 출퇴근 기록도 새 PC/새 DB에 한 번만 복원한다.
+    try:
+        if get_setting(ATTENDANCE_DEFAULT_RECORDS_KEY) != "done":
+            conn = get_db()
+            for name, date_str, check_in, check_out in DEFAULT_ATTENDANCE_RECORDS:
+                for record_type, time_str in (("출근", check_in), ("퇴근", check_out)):
+                    exists = conn.execute(
+                        "SELECT 1 FROM attendance_records "
+                        "WHERE member_name = ? AND date = ? AND type = ? LIMIT 1",
+                        (name, date_str, record_type),
+                    ).fetchone()
+                    if exists:
+                        continue
+                    dt_kst = datetime.strptime(
+                        f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
+                    ).replace(tzinfo=KST)
+                    conn.execute(
+                        "INSERT INTO attendance_records (member_name, type, timestamp, date) "
+                        "VALUES (?, ?, ?, ?)",
+                        (name, record_type, dt_kst.astimezone(timezone.utc).isoformat(), date_str),
+                    )
+            conn.commit()
+            conn.close()
+            set_setting(ATTENDANCE_DEFAULT_RECORDS_KEY, "done")
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     # 시작 시 기본 PIN 저장 시도 — 실패해도 앱 구동은 계속
     try:
@@ -148,6 +299,137 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
     def _now_kst():
         return datetime.now(KST)
 
+    def _scheduled_start_for(conn, member_name: str, date_str: str) -> str | None:
+        member = conn.execute(
+            "SELECT id FROM attendance_members WHERE name = ?", (member_name,)
+        ).fetchone()
+        if not member:
+            return None
+        override = conn.execute(
+            "SELECT start_time, status FROM attendance_schedule_overrides "
+            "WHERE member_id = ? AND date = ? ORDER BY id DESC LIMIT 1",
+            (member["id"], date_str),
+        ).fetchone()
+        if override:
+            return override["start_time"] if override["status"] == "scheduled" else None
+        weekday = datetime.strptime(date_str, "%Y-%m-%d").isoweekday()
+        fixed = conn.execute(
+            "SELECT start_time, status FROM attendance_schedule_fixed_rules "
+            "WHERE member_id = ? AND weekday = ? AND effective_from <= ? "
+            "ORDER BY effective_from DESC, id DESC LIMIT 1",
+            (member["id"], weekday, date_str),
+        ).fetchone()
+        return fixed["start_time"] if fixed and fixed["status"] == "scheduled" else None
+
+    def _round_kst_to_half_hour(dt_kst: datetime) -> datetime:
+        rounded_minutes = ((dt_kst.hour * 60 + dt_kst.minute + 15) // 30) * 30
+        day_offset, minute_of_day = divmod(rounded_minutes, 24 * 60)
+        return dt_kst.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+            days=day_offset, minutes=minute_of_day
+        )
+
+    def _create_checkin_alert_once(
+        conn, member_name: str, date_str: str, actual_kst: datetime
+    ) -> None:
+        exists = conn.execute(
+            "SELECT 1 FROM attendance_checkin_alerts WHERE member_name = ? AND date = ?",
+            (member_name, date_str),
+        ).fetchone()
+        if exists:
+            return
+        try:
+            assignee = conn.execute(
+                "SELECT username, display_name FROM users WHERE display_name = ? LIMIT 1",
+                ("김승일",),
+            ).fetchone()
+            if not assignee:
+                return
+            text = (
+                f"{member_name} / {actual_kst.strftime('%H시 %M분')} 출근 "
+                "출근 시간 확인필요"
+            )
+            created_at = datetime.now(timezone.utc).isoformat()
+            cursor = conn.execute(
+                "INSERT INTO requests "
+                "(requester_username, requester_display, assignee_username, assignee_display, "
+                "text, status, created_at) VALUES (?, ?, ?, ?, ?, 'open', ?)",
+                (
+                    "attendance_system",
+                    "출퇴근 자동알림",
+                    assignee["username"],
+                    (assignee["display_name"] or "").strip() or "김승일",
+                    text,
+                    created_at,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO attendance_checkin_alerts "
+                "(member_name, date, request_id, created_at) VALUES (?, ?, ?, ?)",
+                (member_name, date_str, cursor.lastrowid, created_at),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+    def _check_checkin_exception(
+        conn, member_name: str, date_str: str, timestamp: str
+    ) -> tuple[bool, str | None, str | None]:
+        scheduled_start = _scheduled_start_for(conn, member_name, date_str)
+        if not scheduled_start:
+            return False, None, None
+        actual_in = datetime.fromisoformat(timestamp).astimezone(KST)
+        hour, minute = map(int, scheduled_start.split(":"))
+        scheduled_dt = actual_in.replace(
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+        is_exception = abs((actual_in - scheduled_dt).total_seconds()) > 15 * 60
+        if is_exception:
+            _create_checkin_alert_once(conn, member_name, date_str, actual_in)
+            return True, scheduled_start, None
+        return False, scheduled_start, scheduled_dt.astimezone(timezone.utc).isoformat()
+
+    def _normalize_attendance_rows(conn, rows) -> list[dict]:
+        grouped: dict[tuple[str, str], list] = {}
+        for row in rows:
+            grouped.setdefault((row["member_name"], row["date"]), []).append(row)
+
+        result = []
+        for (member_name, date_str), day_rows in grouped.items():
+            scheduled_start = _scheduled_start_for(conn, member_name, date_str)
+            check_in = next((row for row in day_rows if row["type"] == "출근"), None)
+            check_in_exception = False
+            normalized_check_in = None
+            if check_in:
+                check_in_exception, scheduled_start, normalized_check_in = (
+                    _check_checkin_exception(
+                        conn, member_name, date_str, check_in["timestamp"]
+                    )
+                )
+
+            for row in day_rows:
+                normalized_timestamp = row["timestamp"]
+                if row["type"] == "출근" and normalized_check_in:
+                    normalized_timestamp = normalized_check_in
+                elif row["type"] == "퇴근":
+                    actual_out = datetime.fromisoformat(row["timestamp"]).astimezone(KST)
+                    normalized_timestamp = _round_kst_to_half_hour(
+                        actual_out
+                    ).astimezone(timezone.utc).isoformat()
+                result.append(
+                    {
+                        "id": row["id"],
+                        "name": row["member_name"],
+                        "type": row["type"],
+                        "timestamp": row["timestamp"],
+                        "date": row["date"],
+                        "normalizedTimestamp": normalized_timestamp,
+                        "payrollEligible": not check_in_exception,
+                        "checkInException": check_in_exception,
+                        "scheduledStartTime": scheduled_start,
+                    }
+                )
+        return result
+
     # ── Pydantic 모델 ──────────────────────────────────
     class MemberCreate(BaseModel):
         name: str
@@ -163,6 +445,18 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
     class MemberScheduleVisibility(BaseModel):
         pin: str
         includeInSchedule: bool
+
+    class MemberAccountUpdate(BaseModel):
+        pin: str
+        bankName: str
+        accountHolder: str
+        accountNumber: str
+
+    class FixedWorkerPaymentUpdate(BaseModel):
+        pin: str
+        year: int
+        month: int
+        completed: bool
 
     class RecordCreate(BaseModel):
         member_name: str
@@ -196,9 +490,22 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         date: str
         startTime: str
         endTime: str
+        bankName: str = ""
+        accountHolder: str = ""
+        accountNumber: str = ""
+
+    class DailyWorkerAccountUpdate(BaseModel):
+        pin: str
+        bankName: str = ""
+        accountHolder: str = ""
+        accountNumber: str = ""
 
     class DailyWorkerDelete(BaseModel):
         pin: str
+
+    class DailyWorkerPaymentUpdate(BaseModel):
+        pin: str
+        completed: bool
 
     # ── 직원 목록 (인증 불필요) ─────────────────────────
     @router.get("/members")
@@ -212,6 +519,78 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             {"id": r["id"], "name": r["name"], "includeInSchedule": bool(r["include_in_schedule"])}
             for r in rows
         ]
+
+    @router.get("/members/accounts")
+    def list_member_accounts(pin: str = ""):
+        _check_pin(pin)
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT id, bank_name, account_holder, account_number FROM attendance_members ORDER BY name"
+        ).fetchall()
+        conn.close()
+        return [
+            {
+                "id": row["id"],
+                "bankName": row["bank_name"],
+                "accountHolder": row["account_holder"],
+                "accountNumber": row["account_number"],
+            }
+            for row in rows
+        ]
+
+    @router.patch("/members/{member_id}/account")
+    def update_member_account(member_id: int, body: MemberAccountUpdate):
+        _check_pin(body.pin)
+        bank_name = body.bankName.strip()
+        account_holder = body.accountHolder.strip()
+        account_number = re.sub(r"[^0-9]", "", body.accountNumber)
+        if not all((bank_name, account_holder, account_number)):
+            raise HTTPException(status_code=400, detail="은행, 예금주, 계좌번호를 모두 입력하세요.")
+        conn = get_db()
+        row = conn.execute("SELECT id FROM attendance_members WHERE id = ?", (member_id,)).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="직원을 찾을 수 없습니다.")
+        conn.execute(
+            "UPDATE attendance_members SET bank_name = ?, account_holder = ?, account_number = ? WHERE id = ?",
+            (bank_name, account_holder, account_number, member_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+
+    @router.get("/fixed-worker-payments")
+    def list_fixed_worker_payments(year: int, month: int, pin: str = ""):
+        _check_pin(pin)
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT member_id, payment_completed FROM attendance_fixed_worker_payments "
+            "WHERE year = ? AND month = ?",
+            (year, month),
+        ).fetchall()
+        conn.close()
+        return {str(row["member_id"]): bool(row["payment_completed"]) for row in rows}
+
+    @router.patch("/fixed-worker-payments/{member_id}")
+    def update_fixed_worker_payment(member_id: int, body: FixedWorkerPaymentUpdate):
+        _check_pin(body.pin)
+        if body.month < 1 or body.month > 12:
+            raise HTTPException(status_code=400, detail="월 형식이 올바르지 않습니다.")
+        conn = get_db()
+        member = conn.execute("SELECT id FROM attendance_members WHERE id = ?", (member_id,)).fetchone()
+        if not member:
+            conn.close()
+            raise HTTPException(status_code=404, detail="직원을 찾을 수 없습니다.")
+        conn.execute(
+            "INSERT INTO attendance_fixed_worker_payments "
+            "(member_id, year, month, payment_completed, updated_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(member_id, year, month) DO UPDATE SET "
+            "payment_completed = excluded.payment_completed, updated_at = excluded.updated_at",
+            (member_id, body.year, body.month, 1 if body.completed else 0, _now_kst().isoformat()),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "paymentCompleted": body.completed}
 
     # ── 근무표 포함 여부 변경 (PIN 필요) ─────────────────
     @router.patch("/members/{member_id}/schedule-visibility")
@@ -256,6 +635,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.execute("DELETE FROM attendance_schedule_fixed_rules WHERE member_id = ?", (member_id,))
         conn.execute("DELETE FROM attendance_schedule_overrides WHERE member_id = ?", (member_id,))
         conn.execute("DELETE FROM attendance_schedule_memos WHERE member_id = ?", (member_id,))
+        conn.execute("DELETE FROM attendance_fixed_worker_payments WHERE member_id = ?", (member_id,))
         conn.commit()
         conn.close()
         return {"ok": True}
@@ -309,6 +689,10 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             (body.member_name.strip(), att_type, now_utc.isoformat(), date_str),
         )
         conn.commit()
+        if att_type == "출근":
+            _check_checkin_exception(
+                conn, body.member_name.strip(), date_str, now_utc.isoformat()
+            )
         conn.close()
         return {"ok": True, "timestamp": now_utc.isoformat()}
 
@@ -332,6 +716,10 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             (body.member_name.strip(), att_type, dt_utc.isoformat(), body.date),
         )
         conn.commit()
+        if att_type == "출근":
+            _check_checkin_exception(
+                conn, body.member_name.strip(), body.date, dt_utc.isoformat()
+            )
         conn.close()
         return {"ok": True, "timestamp": dt_utc.isoformat()}
 
@@ -345,6 +733,10 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             "endTime": row["end_time"],
             "checkInTimestamp": row["check_in_timestamp"],
             "checkOutTimestamp": row["check_out_timestamp"],
+            "bankName": row["bank_name"],
+            "accountHolder": row["account_holder"],
+            "accountNumber": row["account_number"],
+            "paymentCompleted": bool(row["payment_completed"]),
         }
 
     @router.get("/daily-workers")
@@ -353,6 +745,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn = get_db()
         query = (
             "SELECT d.id, d.name, d.date, d.start_time, d.end_time, "
+            "d.bank_name, d.account_holder, d.account_number, d.payment_completed, "
             "i.timestamp AS check_in_timestamp, o.timestamp AS check_out_timestamp "
             "FROM attendance_daily_workers d "
             "LEFT JOIN attendance_records i ON i.id = d.check_in_record_id "
@@ -376,6 +769,11 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         name = body.name.strip()
         if not name:
             raise HTTPException(status_code=400, detail="이름을 입력하세요.")
+        bank_name = body.bankName.strip()
+        account_holder = body.accountHolder.strip()
+        account_number = re.sub(r"[^0-9]", "", body.accountNumber)
+        if any((bank_name, account_holder, account_number)) and not all((bank_name, account_holder, account_number)):
+            raise HTTPException(status_code=400, detail="계좌정보를 입력할 때는 은행, 예금주, 계좌번호를 모두 입력하세요.")
         try:
             start_kst = datetime.strptime(
                 f"{body.date} {body.startTime}", "%Y-%m-%d %H:%M"
@@ -400,9 +798,14 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             )
             conn.execute(
                 "INSERT INTO attendance_daily_workers "
-                "(name, date, start_time, end_time, check_in_record_id, check_out_record_id, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (name, body.date, body.startTime, body.endTime, in_cursor.lastrowid, out_cursor.lastrowid, _now_kst().isoformat()),
+                "(name, date, start_time, end_time, check_in_record_id, check_out_record_id, "
+                "bank_name, account_holder, account_number, payment_completed, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+                (
+                    name, body.date, body.startTime, body.endTime,
+                    in_cursor.lastrowid, out_cursor.lastrowid,
+                    bank_name, account_holder, account_number, _now_kst().isoformat(),
+                ),
             )
             conn.commit()
         except Exception as exc:
@@ -413,6 +816,47 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         finally:
             conn.close()
         return {"ok": True}
+
+    @router.patch("/daily-workers/{entry_id}/account")
+    def update_daily_worker_account(entry_id: int, body: DailyWorkerAccountUpdate):
+        _check_pin(body.pin)
+        bank_name = body.bankName.strip()
+        account_holder = body.accountHolder.strip()
+        account_number = re.sub(r"[^0-9]", "", body.accountNumber)
+        if any((bank_name, account_holder, account_number)) and not all((bank_name, account_holder, account_number)):
+            raise HTTPException(status_code=400, detail="계좌정보를 수정할 때는 은행, 예금주, 계좌번호를 모두 입력하세요.")
+        conn = get_db()
+        row = conn.execute(
+            "SELECT id FROM attendance_daily_workers WHERE id = ?", (entry_id,)
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="일일 알바 기록을 찾을 수 없습니다.")
+        conn.execute(
+            "UPDATE attendance_daily_workers SET bank_name = ?, account_holder = ?, account_number = ? WHERE id = ?",
+            (bank_name, account_holder, account_number, entry_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+
+    @router.patch("/daily-workers/{entry_id}/payment")
+    def update_daily_worker_payment(entry_id: int, body: DailyWorkerPaymentUpdate):
+        _check_pin(body.pin)
+        conn = get_db()
+        row = conn.execute(
+            "SELECT id FROM attendance_daily_workers WHERE id = ?", (entry_id,)
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="일일 알바 기록을 찾을 수 없습니다.")
+        conn.execute(
+            "UPDATE attendance_daily_workers SET payment_completed = ? WHERE id = ?",
+            (1 if body.completed else 0, entry_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "paymentCompleted": body.completed}
 
     @router.delete("/daily-workers/{entry_id}")
     def delete_daily_worker(entry_id: int, body: DailyWorkerDelete):
@@ -479,12 +923,9 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             params.append(name)
         query += " ORDER BY date DESC, member_name ASC, timestamp ASC"
         rows = conn.execute(query, params).fetchall()
+        normalized = _normalize_attendance_rows(conn, rows)
         conn.close()
-        return [
-            {"id": r["id"], "name": r["member_name"], "type": r["type"],
-             "timestamp": r["timestamp"], "date": r["date"]}
-            for r in rows
-        ]
+        return normalized
 
     # ── 기록 시간 수정 (PIN 필요) ───────────────────────
     @router.patch("/records/{record_id}")
@@ -498,11 +939,19 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         except ValueError:
             raise HTTPException(status_code=400, detail="날짜/시간 형식이 올바르지 않습니다.")
         conn = get_db()
+        existing = conn.execute(
+            "SELECT member_name, type FROM attendance_records WHERE id = ?",
+            (record_id,),
+        ).fetchone()
         conn.execute(
             "UPDATE attendance_records SET timestamp = ?, date = ? WHERE id = ?",
             (dt_utc.isoformat(), body.date, record_id),
         )
         conn.commit()
+        if existing and existing["type"] == "출근":
+            _check_checkin_exception(
+                conn, existing["member_name"], body.date, dt_utc.isoformat()
+            )
         conn.close()
         return {"ok": True}
 

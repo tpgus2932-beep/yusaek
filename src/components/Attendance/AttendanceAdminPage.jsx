@@ -9,6 +9,14 @@ const todayStr = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
+const DAILY_BANK_CODES = {
+  국민: '004', 산업: '002', 하나: '081', 케이뱅크: '089', 경남: '039', 저축: '050',
+  우리: '020', 카카오: '090', 광주: '034', 새마을금고: '045', 우체국: '071', 토스뱅크: '092',
+  기업: '003', 수협: '007', 전북: '037', 농협: '011', 신한: '088', SC: '023',
+  아이엠뱅크: '031', 신협: '048', 제주: '035', 부산: '032', 씨티: '027', HSBC: '054',
+};
+const DAILY_BANK_OPTIONS = [...Object.keys(DAILY_BANK_CODES), '직접입력:'];
+
 const copySalaryCardImage = async (element) => {
   if (!element) throw new Error('복사할 급여명세서를 찾을 수 없습니다.');
   if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
@@ -111,6 +119,7 @@ export default function AttendanceAdminPage() {
   const [pinError, setPinError] = useState('');
   const [pinBusy, setPinBusy] = useState(false);
   const [tab, setTab] = useState('members');
+  const [payrollMode, setPayrollMode] = useState('fixed');
 
   // 직원 관리
   const [members, setMembers] = useState([]);
@@ -120,6 +129,9 @@ export default function AttendanceAdminPage() {
   const [memberEditName, setMemberEditName] = useState('');
   const [memberEditError, setMemberEditError] = useState('');
   const [memberEditSaving, setMemberEditSaving] = useState(false);
+  const [memberAccounts, setMemberAccounts] = useState({});
+  const [editingMemberAccount, setEditingMemberAccount] = useState(null);
+  const [memberAccountError, setMemberAccountError] = useState('');
 
   // 기록 조회
   const [records, setRecords] = useState([]);
@@ -154,12 +166,30 @@ export default function AttendanceAdminPage() {
 
   // 일일 알바
   const [dailyWorkers, setDailyWorkers] = useState([]);
+  const [showDailyWorkerForm, setShowDailyWorkerForm] = useState(false);
   const [dailyName, setDailyName] = useState('');
   const [dailyDate, setDailyDate] = useState(todayStr);
   const [dailyStartTime, setDailyStartTime] = useState('09:00');
   const [dailyEndTime, setDailyEndTime] = useState('14:00');
+  const [dailyBank, setDailyBank] = useState('국민');
+  const [dailyCustomBank, setDailyCustomBank] = useState('');
+  const [dailyAccountHolder, setDailyAccountHolder] = useState('');
+  const [dailyAccountNumber, setDailyAccountNumber] = useState('');
   const [dailyLoading, setDailyLoading] = useState(false);
   const [dailyError, setDailyError] = useState('');
+  const [dailyCopyMessage, setDailyCopyMessage] = useState('');
+  const [dailyFilterFrom, setDailyFilterFrom] = useState(todayStr);
+  const [dailyFilterTo, setDailyFilterTo] = useState(todayStr);
+  const [editingDailyAccount, setEditingDailyAccount] = useState(null);
+  const [fixedPayrollYear, setFixedPayrollYear] = useState(() => new Date().getFullYear());
+  const [fixedPayrollMonth, setFixedPayrollMonth] = useState(() => new Date().getMonth() + 1);
+  const [fixedPayrollRows, setFixedPayrollRows] = useState([]);
+  const [fixedPayrollLoading, setFixedPayrollLoading] = useState(false);
+  const [fixedPayrollError, setFixedPayrollError] = useState('');
+  const [fixedCopyMessage, setFixedCopyMessage] = useState('');
+  const [pendingTransferCopy, setPendingTransferCopy] = useState(null);
+  const [transferConfirmBusy, setTransferConfirmBusy] = useState(false);
+  const [transferConfirmError, setTransferConfirmError] = useState('');
 
   // 시간 수정
   const [editingRecord, setEditingRecord] = useState(null);
@@ -215,6 +245,65 @@ export default function AttendanceAdminPage() {
     if (pinAuth) loadMembers();
   }, [pinAuth, loadMembers]);
 
+  const loadMemberAccounts = useCallback(async () => {
+    try {
+      const params = new URLSearchParams({ pin });
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/members/accounts?${params}`);
+      if (!res.ok) return;
+      const accounts = await res.json();
+      setMemberAccounts(Object.fromEntries(accounts.map((account) => [account.id, account])));
+    } catch {
+      // 관리자 화면을 다시 열 때 재조회한다.
+    }
+  }, [pin]);
+
+  useEffect(() => {
+    if (pinAuth) loadMemberAccounts();
+  }, [pinAuth, loadMemberAccounts]);
+
+  const openMemberAccountEdit = (member) => {
+    const account = memberAccounts[member.id] || {};
+    const listedBank = Boolean(DAILY_BANK_CODES[account.bankName]);
+    setEditingMemberAccount({
+      id: member.id,
+      name: member.name,
+      hasAccount: Boolean(account.accountNumber),
+      bank: listedBank ? account.bankName : (account.bankName ? '직접입력:' : '국민'),
+      customBank: listedBank ? '' : (account.bankName || ''),
+      accountHolder: account.accountHolder || '',
+      accountNumber: account.accountNumber || '',
+    });
+    setMemberAccountError('');
+  };
+
+  const saveMemberAccount = async () => {
+    if (!editingMemberAccount) return;
+    const bankName = editingMemberAccount.bank === '직접입력:'
+      ? editingMemberAccount.customBank.trim()
+      : editingMemberAccount.bank;
+    if (!bankName || !editingMemberAccount.accountHolder.trim() || !editingMemberAccount.accountNumber.trim()) {
+      setMemberAccountError('은행, 예금주, 계좌번호를 모두 입력하세요.');
+      return;
+    }
+    const res = await fetch(`${COLLAB_API_BASE}/attendance/members/${editingMemberAccount.id}/account`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pin,
+        bankName,
+        accountHolder: editingMemberAccount.accountHolder.trim(),
+        accountNumber: editingMemberAccount.accountNumber.trim(),
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setMemberAccountError(data.detail || '계좌정보 저장에 실패했습니다.');
+      return;
+    }
+    setEditingMemberAccount(null);
+    await loadMemberAccounts();
+  };
+
   const loadRecords = useCallback(async () => {
     setRecLoading(true);
     try {
@@ -239,6 +328,8 @@ export default function AttendanceAdminPage() {
     setDailyError('');
     try {
       const params = new URLSearchParams({ pin });
+      if (dailyFilterFrom) params.append('date_from', dailyFilterFrom);
+      if (dailyFilterTo) params.append('date_to', dailyFilterTo);
       const res = await fetch(`${COLLAB_API_BASE}/attendance/daily-workers?${params}`);
       const data = await res.json().catch(() => []);
       if (!res.ok) throw new Error(data?.detail || '일일 알바 기록 조회에 실패했습니다.');
@@ -248,16 +339,22 @@ export default function AttendanceAdminPage() {
     } finally {
       setDailyLoading(false);
     }
-  }, [pin]);
+  }, [pin, dailyFilterFrom, dailyFilterTo]);
 
   useEffect(() => {
-    if (pinAuth && tab === 'daily') loadDailyWorkers();
-  }, [pinAuth, tab, loadDailyWorkers]);
+    if (pinAuth && tab === 'payroll' && payrollMode === 'daily') loadDailyWorkers();
+  }, [pinAuth, tab, payrollMode, loadDailyWorkers]);
 
   const addDailyWorker = async () => {
     const name = dailyName.trim();
+    const hasAccountInput = Boolean(dailyAccountHolder.trim() || dailyAccountNumber.trim() || dailyCustomBank.trim());
+    const bankName = hasAccountInput ? (dailyBank === '직접입력:' ? dailyCustomBank.trim() : dailyBank) : '';
     if (!name) {
       setDailyError('이름을 입력하세요.');
+      return;
+    }
+    if (hasAccountInput && (!bankName || !dailyAccountHolder.trim() || !dailyAccountNumber.trim())) {
+      setDailyError('계좌정보를 입력하려면 은행, 예금주, 계좌번호를 모두 입력하세요. 입력하지 않고 등록해도 됩니다.');
       return;
     }
     setDailyLoading(true);
@@ -266,17 +363,80 @@ export default function AttendanceAdminPage() {
       const res = await fetch(`${COLLAB_API_BASE}/attendance/daily-workers`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin, name, date: dailyDate, startTime: dailyStartTime, endTime: dailyEndTime }),
+        body: JSON.stringify({
+          pin, name, date: dailyDate, startTime: dailyStartTime, endTime: dailyEndTime,
+          bankName, accountHolder: dailyAccountHolder.trim(), accountNumber: dailyAccountNumber.trim(),
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || '일일 알바 등록에 실패했습니다.');
       setDailyName('');
+      setDailyAccountHolder('');
+      setDailyAccountNumber('');
+      setShowDailyWorkerForm(false);
       await loadDailyWorkers();
     } catch (error) {
       setDailyError(error.message || '일일 알바 등록에 실패했습니다.');
     } finally {
       setDailyLoading(false);
     }
+  };
+
+  const startDailyAccountEdit = (entry) => {
+    const listedBank = Boolean(DAILY_BANK_CODES[entry.bankName]);
+    setEditingDailyAccount({
+      id: entry.id,
+      bank: listedBank ? entry.bankName : (entry.bankName ? '직접입력:' : '국민'),
+      customBank: listedBank ? '' : entry.bankName,
+      accountHolder: entry.accountHolder || '',
+      accountNumber: entry.accountNumber || '',
+    });
+    setDailyError('');
+  };
+
+  const saveDailyAccount = async () => {
+    if (!editingDailyAccount) return;
+    const bankName = editingDailyAccount.bank === '직접입력:'
+      ? editingDailyAccount.customBank.trim()
+      : editingDailyAccount.bank;
+    if (!bankName || !editingDailyAccount.accountHolder.trim() || !editingDailyAccount.accountNumber.trim()) {
+      setDailyError('수정할 은행, 예금주, 계좌번호를 모두 입력하세요.');
+      return;
+    }
+    const res = await fetch(`${COLLAB_API_BASE}/attendance/daily-workers/${editingDailyAccount.id}/account`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pin,
+        bankName,
+        accountHolder: editingDailyAccount.accountHolder.trim(),
+        accountNumber: editingDailyAccount.accountNumber.trim(),
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setDailyError(data.detail || '계좌정보 수정에 실패했습니다.');
+      return;
+    }
+    setEditingDailyAccount(null);
+    await loadDailyWorkers();
+  };
+
+  const toggleDailyPayment = async (entry) => {
+    setDailyError('');
+    const res = await fetch(`${COLLAB_API_BASE}/attendance/daily-workers/${entry.id}/payment`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin, completed: !entry.paymentCompleted }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setDailyError(data.detail || '입금 상태 변경에 실패했습니다.');
+      return;
+    }
+    setDailyWorkers((current) => current.map((item) => (
+      item.id === entry.id ? { ...item, paymentCompleted: !entry.paymentCompleted } : item
+    )));
   };
 
   const deleteDailyWorker = async (entry) => {
@@ -510,6 +670,212 @@ export default function AttendanceAdminPage() {
     };
   };
 
+  const copyUnpaidDailyWorkers = async () => {
+    setDailyCopyMessage('');
+    const unpaid = dailyWorkers.filter((entry) => !entry.paymentCompleted);
+    if (unpaid.length === 0) {
+      setDailyCopyMessage('복사할 미입금 기록이 없습니다.');
+      return;
+    }
+    const missing = unpaid.filter((entry) => !entry.bankName || !entry.accountHolder || !entry.accountNumber);
+    if (missing.length > 0) {
+      const message = `계좌정보 미등록: ${missing.map((entry) => entry.name).join(', ')}`;
+      setDailyCopyMessage(message);
+      window.alert(message);
+      return;
+    }
+    const unmatched = [...new Set(unpaid.filter((entry) => !DAILY_BANK_CODES[entry.bankName]).map((entry) => entry.bankName))];
+    if (unmatched.length > 0) {
+      const message = `은행코드 미매칭: ${unmatched.join(', ')}`;
+      setDailyCopyMessage(message);
+      window.alert(message);
+      return;
+    }
+    const rows = unpaid.map((entry) => {
+      const year = Number(entry.date.slice(0, 4));
+      const month = Number(entry.date.slice(5, 7));
+      const salary = calcSalaryData([
+        { date: entry.date, type: '출근', timestamp: entry.checkInTimestamp },
+        { date: entry.date, type: '퇴근', timestamp: entry.checkOutTimestamp },
+      ], {
+        hourlyRate: salaryHourlyRate,
+        holidayMin: salaryHolidayMin,
+        workDays: salaryWorkDays,
+        deductPct: salaryDeductPct,
+        memberName: entry.name,
+        year,
+        month,
+        allowances: [],
+      });
+      return {
+        id: entry.id,
+        name: entry.name,
+        amount: salary.netPay,
+        excel: [
+          DAILY_BANK_CODES[entry.bankName], entry.accountNumber, salary.netPay,
+          entry.accountHolder, '주식회사유색', '일일알바',
+        ].join('\t'),
+      };
+    });
+    setTransferConfirmError('');
+    setPendingTransferCopy({ type: 'daily', title: '일일 알바 미입금 정보', rows });
+  };
+
+  const loadFixedPayroll = async () => {
+    setFixedPayrollLoading(true);
+    setFixedPayrollError('');
+    setFixedCopyMessage('');
+    try {
+      const dateFrom = `${fixedPayrollYear}-${String(fixedPayrollMonth).padStart(2, '0')}-01`;
+      const lastDay = new Date(fixedPayrollYear, fixedPayrollMonth, 0).getDate();
+      const dateTo = `${fixedPayrollYear}-${String(fixedPayrollMonth).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+      const paymentParams = new URLSearchParams({
+        pin, year: String(fixedPayrollYear), month: String(fixedPayrollMonth),
+      });
+      const [paymentRes, ...recordResponses] = await Promise.all([
+        fetch(`${COLLAB_API_BASE}/attendance/fixed-worker-payments?${paymentParams}`),
+        ...members.map((member) => {
+          const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, name: member.name });
+          return fetch(`${COLLAB_API_BASE}/attendance/records?${params}`);
+        }),
+      ]);
+      if (!paymentRes.ok || recordResponses.some((res) => !res.ok)) {
+        throw new Error('고정 알바 급여 조회에 실패했습니다.');
+      }
+      const payments = await paymentRes.json();
+      const recordSets = await Promise.all(recordResponses.map((res) => res.json()));
+      const rows = members.map((member, index) => {
+        const salary = calcSalaryData(recordSets[index], {
+          hourlyRate: salaryHourlyRate,
+          holidayMin: salaryHolidayMin,
+          workDays: salaryWorkDays,
+          deductPct: salaryDeductPct,
+          memberName: member.name,
+          year: fixedPayrollYear,
+          month: fixedPayrollMonth,
+          allowances: [],
+        });
+        return {
+          ...member,
+          ...(memberAccounts[member.id] || {}),
+          salary,
+          paymentCompleted: Boolean(payments[String(member.id)]),
+        };
+      });
+      setFixedPayrollRows(rows);
+    } catch (error) {
+      setFixedPayrollError(error.message || '고정 알바 급여 조회에 실패했습니다.');
+    } finally {
+      setFixedPayrollLoading(false);
+    }
+  };
+
+  const toggleFixedPayment = async (row) => {
+    const res = await fetch(`${COLLAB_API_BASE}/attendance/fixed-worker-payments/${row.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pin,
+        year: fixedPayrollYear,
+        month: fixedPayrollMonth,
+        completed: !row.paymentCompleted,
+      }),
+    });
+    if (!res.ok) {
+      setFixedPayrollError('입금 상태 변경에 실패했습니다.');
+      return;
+    }
+    setFixedPayrollRows((current) => current.map((item) => (
+      item.id === row.id ? { ...item, paymentCompleted: !row.paymentCompleted } : item
+    )));
+  };
+
+  const copyUnpaidFixedWorkers = async () => {
+    setFixedCopyMessage('');
+    const unpaid = fixedPayrollRows.filter((row) => !row.paymentCompleted && row.salary.netPay > 0);
+    if (unpaid.length === 0) {
+      setFixedCopyMessage('복사할 미입금 급여가 없습니다.');
+      return;
+    }
+    const missing = unpaid.filter((row) => !row.bankName || !row.accountHolder || !row.accountNumber);
+    if (missing.length > 0) {
+      const message = `계좌정보 미등록: ${missing.map((row) => row.name).join(', ')}`;
+      setFixedCopyMessage(message);
+      window.alert(message);
+      return;
+    }
+    const unmatched = unpaid.filter((row) => !DAILY_BANK_CODES[row.bankName]);
+    if (unmatched.length > 0) {
+      const message = `은행코드 미매칭: ${unmatched.map((row) => `${row.name}(${row.bankName})`).join(', ')}`;
+      setFixedCopyMessage(message);
+      window.alert(message);
+      return;
+    }
+    const rows = unpaid.map((row) => ({
+      id: row.id,
+      name: row.name,
+      amount: row.salary.netPay,
+      excel: [
+        DAILY_BANK_CODES[row.bankName],
+        row.accountNumber,
+        row.salary.netPay,
+        row.accountHolder,
+        '주식회사유색',
+        `${fixedPayrollMonth}월 급여`,
+      ].join('\t'),
+    }));
+    setTransferConfirmError('');
+    setPendingTransferCopy({ type: 'fixed', title: `${fixedPayrollMonth}월 고정 알바 미입금 정보`, rows });
+  };
+
+  const confirmTransferCopy = async () => {
+    if (!pendingTransferCopy || transferConfirmBusy) return;
+    setTransferConfirmBusy(true);
+    setTransferConfirmError('');
+    try {
+      await navigator.clipboard.writeText(pendingTransferCopy.rows.map((row) => row.excel).join('\n'));
+      const responses = await Promise.all(pendingTransferCopy.rows.map((row) => (
+        pendingTransferCopy.type === 'daily'
+          ? fetch(`${COLLAB_API_BASE}/attendance/daily-workers/${row.id}/payment`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ pin, completed: true }),
+            })
+          : fetch(`${COLLAB_API_BASE}/attendance/fixed-worker-payments/${row.id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                pin,
+                year: fixedPayrollYear,
+                month: fixedPayrollMonth,
+                completed: true,
+              }),
+            })
+      )));
+      if (responses.some((response) => !response.ok)) {
+        throw new Error('복사는 완료됐지만 일부 입금 상태를 변경하지 못했습니다. 다시 조회해 확인해 주세요.');
+      }
+      const copiedCount = pendingTransferCopy.rows.length;
+      const completedIds = new Set(pendingTransferCopy.rows.map((row) => row.id));
+      if (pendingTransferCopy.type === 'daily') {
+        setDailyWorkers((current) => current.map((entry) => (
+          completedIds.has(entry.id) ? { ...entry, paymentCompleted: true } : entry
+        )));
+        setDailyCopyMessage(`${copiedCount}건을 복사하고 입금완료 처리했습니다.`);
+      } else {
+        setFixedPayrollRows((current) => current.map((row) => (
+          completedIds.has(row.id) ? { ...row, paymentCompleted: true } : row
+        )));
+        setFixedCopyMessage(`${copiedCount}건을 복사하고 입금완료 처리했습니다.`);
+      }
+      setPendingTransferCopy(null);
+    } catch (error) {
+      setTransferConfirmError(error.message || '복사 및 입금완료 처리에 실패했습니다.');
+    } finally {
+      setTransferConfirmBusy(false);
+    }
+  };
+
   const loadSalary = async () => {
     setSalaryError('');
     setSalaryResult(null);
@@ -605,7 +971,9 @@ export default function AttendanceAdminPage() {
   /** 출근~퇴근 차이를 시간(소수)으로 반환. 미기록이면 null */
   const calcHours = (inRec, outRec) => {
     if (!inRec || !outRec) return null;
-    const diff = new Date(outRec.timestamp) - new Date(inRec.timestamp);
+    if (inRec.payrollEligible === false || outRec.payrollEligible === false) return null;
+    const diff = new Date(outRec.normalizedTimestamp || outRec.timestamp)
+      - new Date(inRec.normalizedTimestamp || inRec.timestamp);
     if (diff <= 0) return null;
     return diff / 3_600_000;
   };
@@ -742,24 +1110,32 @@ export default function AttendanceAdminPage() {
             📋 출퇴근 기록
           </button>
           <button
-            className={`${styles.tabBtn} ${tab === 'salary' ? styles.tabActive : ''}`}
-            onClick={() => setTab('salary')}
-          >
-            💰 급여명세서
-          </button>
-          <button
             className={`${styles.tabBtn} ${tab === 'schedule' ? styles.tabActive : ''}`}
             onClick={() => setTab('schedule')}
           >
             📅 스케줄관리
           </button>
           <button
-            className={`${styles.tabBtn} ${tab === 'daily' ? styles.tabActive : ''}`}
-            onClick={() => setTab('daily')}
+            className={`${styles.tabBtn} ${tab === 'payroll' ? styles.tabActive : ''}`}
+            onClick={() => setTab('payroll')}
           >
-            🧑‍🔧 일일 알바
+            🧾 급여 계산
           </button>
         </div>
+
+        {tab === 'payroll' && (
+          <div className={styles.payrollSubTabs}>
+            <button className={`${styles.payrollSubBtn} ${payrollMode === 'fixed' ? styles.payrollSubActive : ''}`} onClick={() => setPayrollMode('fixed')}>
+              고정 알바
+            </button>
+            <button className={`${styles.payrollSubBtn} ${payrollMode === 'daily' ? styles.payrollSubActive : ''}`} onClick={() => setPayrollMode('daily')}>
+              일일 알바
+            </button>
+            <button className={`${styles.payrollSubBtn} ${payrollMode === 'salary' ? styles.payrollSubActive : ''}`} onClick={() => setPayrollMode('salary')}>
+              급여 명세서
+            </button>
+          </div>
+        )}
 
         {/* ── 직원 관리 탭 ── */}
         {tab === 'members' && (
@@ -796,6 +1172,12 @@ export default function AttendanceAdminPage() {
                   </button>
                   <button className={styles.delBtn} onClick={() => deleteMember(m.id, m.name)}>
                     삭제
+                  </button>
+                  <button
+                    className={`${styles.memberAccountBtn} ${memberAccounts[m.id]?.accountNumber ? styles.memberAccountRegistered : styles.memberAccountUnregistered}`}
+                    onClick={() => openMemberAccountEdit(m)}
+                  >
+                    {memberAccounts[m.id]?.accountNumber ? '계좌조회' : '계좌등록'}
                   </button>
                 </li>
               ))}
@@ -917,7 +1299,7 @@ export default function AttendanceAdminPage() {
           </>
         )}
         {/* ── 급여명세서 탭 ── */}
-        {tab === 'salary' && (
+        {tab === 'payroll' && payrollMode === 'salary' && (
           <>
             <div className={styles.card}>
               <div className={styles.filterRow}>
@@ -1147,10 +1529,23 @@ export default function AttendanceAdminPage() {
           <ScheduleTab pin={pin} members={members.filter((m) => m.includeInSchedule)} />
         )}
 
-        {/* ── 일일 알바 탭 ── */}
-        {tab === 'daily' && (
+        {/* ── 급여 계산 탭 ── */}
+        {tab === 'payroll' && (
           <>
+            {payrollMode === 'daily' && (
+              <>
             <div className={styles.card}>
+              <div className={styles.dailyActionRow}>
+                <button className={styles.addBtn} onClick={() => { setShowDailyWorkerForm(true); setDailyError(''); }}>
+                  일일 알바 기록 추가
+                </button>
+                <button className={styles.copyUnpaidBtn} onClick={copyUnpaidDailyWorkers} disabled={dailyLoading}>
+                  미입금 정보 복사
+                </button>
+              </div>
+              {dailyCopyMessage && <div className={styles.dailyCopyMessage}>{dailyCopyMessage}</div>}
+              {showDailyWorkerForm && (
+                <div className={styles.dailyFormDetails}>
               <div className={styles.dailyFormGrid}>
                 <label className={styles.dailyField}>
                   <span>이름</span>
@@ -1169,16 +1564,56 @@ export default function AttendanceAdminPage() {
                   <input type="time" className={styles.filterInput} value={dailyEndTime} onChange={(e) => setDailyEndTime(e.target.value)} />
                 </label>
               </div>
+              <div className={styles.dailyAccountGrid}>
+                <label className={styles.dailyField}>
+                  <span>은행</span>
+                  <select className={styles.filterInput} value={dailyBank} onChange={(e) => setDailyBank(e.target.value)}>
+                    {DAILY_BANK_OPTIONS.map((bank) => <option key={bank} value={bank}>{bank}</option>)}
+                  </select>
+                </label>
+                {dailyBank === '직접입력:' && (
+                  <label className={styles.dailyField}>
+                    <span>은행명 직접입력</span>
+                    <input className={styles.filterInput} value={dailyCustomBank} onChange={(e) => setDailyCustomBank(e.target.value)} placeholder="은행명" />
+                  </label>
+                )}
+                <label className={styles.dailyField}>
+                  <span>예금주</span>
+                  <input className={styles.filterInput} value={dailyAccountHolder} onChange={(e) => setDailyAccountHolder(e.target.value)} placeholder="예금주" />
+                </label>
+                <label className={styles.dailyField}>
+                  <span>계좌번호</span>
+                  <input className={styles.filterInput} type="text" inputMode="numeric" value={dailyAccountNumber} onChange={(e) => setDailyAccountNumber(e.target.value)} placeholder="숫자만 입력" />
+                </label>
+              </div>
               {dailyError && <div className={styles.errorMsg}>{dailyError}</div>}
-              <button className={styles.addBtn} onClick={addDailyWorker} disabled={dailyLoading}>
-                {dailyLoading ? '저장 중...' : '일일 알바 기록 추가'}
-              </button>
+              <div className={styles.dailyActionRow}>
+                <button className={styles.addBtn} onClick={addDailyWorker} disabled={dailyLoading}>
+                  {dailyLoading ? '저장 중...' : '등록 저장'}
+                </button>
+                <button className={styles.resetBtn} onClick={() => { setShowDailyWorkerForm(false); setDailyError(''); }} disabled={dailyLoading}>
+                  닫기
+                </button>
+              </div>
+                </div>
+              )}
             </div>
 
             <div className={styles.card}>
               <div className={styles.dailyListHeader}>
                 <strong>일일 알바 기록</strong>
                 <span>{dailyWorkers.length}명</span>
+              </div>
+              <div className={styles.dailyFilterRow}>
+                <label className={styles.dailyField}>
+                  <span>날짜 설정</span>
+                  <div className={styles.dailyDateControl}>
+                    <input type="date" className={styles.filterInput} value={dailyFilterFrom} onChange={(e) => setDailyFilterFrom(e.target.value)} />
+                    <span className={styles.dateRangeSeparator}>~</span>
+                    <input type="date" className={styles.filterInput} value={dailyFilterTo} onChange={(e) => setDailyFilterTo(e.target.value)} />
+                  </div>
+                </label>
+                <button className={`${styles.searchBtn} ${styles.dailySearchBtn}`} onClick={loadDailyWorkers}>조회</button>
               </div>
               {dailyLoading && dailyWorkers.length === 0 ? (
                 <div className={styles.loadingMsg}>불러오는 중...</div>
@@ -1187,7 +1622,7 @@ export default function AttendanceAdminPage() {
               ) : (
                 <div className={styles.dailyWorkerScroll}>
                   {dailyWorkers.map((entry) => (
-                    <article key={entry.id} className={styles.dailyWorkerCard}>
+                    <article key={entry.id} className={`${styles.dailyWorkerCard} ${entry.paymentCompleted ? styles.dailyWorkerCardPaid : ''}`}>
                       <div>
                         <strong>{entry.name}</strong>
                         <span>{entry.date}</span>
@@ -1196,12 +1631,105 @@ export default function AttendanceAdminPage() {
                         <span>{entry.startTime} ~ {entry.endTime}</span>
                         <small>{calcDuration({ timestamp: entry.checkInTimestamp }, { timestamp: entry.checkOutTimestamp })}</small>
                       </div>
-                      <button className={styles.delBtn} onClick={() => deleteDailyWorker(entry)}>삭제</button>
+                      {editingDailyAccount?.id === entry.id ? (
+                        <div className={styles.dailyAccountEditor}>
+                          <select className={styles.filterInput} value={editingDailyAccount.bank} onChange={(e) => setEditingDailyAccount((current) => ({ ...current, bank: e.target.value }))}>
+                            {DAILY_BANK_OPTIONS.map((bank) => <option key={bank} value={bank}>{bank}</option>)}
+                          </select>
+                          {editingDailyAccount.bank === '직접입력:' && (
+                            <input className={styles.filterInput} value={editingDailyAccount.customBank} onChange={(e) => setEditingDailyAccount((current) => ({ ...current, customBank: e.target.value }))} placeholder="은행명" />
+                          )}
+                          <input className={styles.filterInput} value={editingDailyAccount.accountHolder} onChange={(e) => setEditingDailyAccount((current) => ({ ...current, accountHolder: e.target.value }))} placeholder="예금주" />
+                          <input className={styles.filterInput} inputMode="numeric" value={editingDailyAccount.accountNumber} onChange={(e) => setEditingDailyAccount((current) => ({ ...current, accountNumber: e.target.value }))} placeholder="계좌번호" />
+                        </div>
+                      ) : (
+                        <div className={styles.dailyWorkerAccount}>
+                          {entry.bankName ? (
+                            <><strong>{entry.bankName}</strong><span>예금주 {entry.accountHolder}</span><span>{entry.accountNumber}</span></>
+                          ) : <span className={styles.accountMissing}>계좌정보 미등록</span>}
+                        </div>
+                      )}
+                      <div className={styles.dailyWorkerActions}>
+                        {editingDailyAccount?.id === entry.id ? (
+                          <>
+                            <button className={styles.accountEditBtn} onClick={saveDailyAccount}>저장</button>
+                            <button className={styles.resetBtn} onClick={() => setEditingDailyAccount(null)}>취소</button>
+                          </>
+                        ) : (
+                          <button className={styles.accountEditBtn} onClick={() => startDailyAccountEdit(entry)}>계좌수정</button>
+                        )}
+                        <button className={`${styles.paymentBtn} ${entry.paymentCompleted ? styles.paymentBtnActive : ''}`} onClick={() => toggleDailyPayment(entry)}>
+                          {entry.paymentCompleted ? '입금완료 해제' : '입금완료'}
+                        </button>
+                        <button className={styles.delBtn} onClick={() => deleteDailyWorker(entry)}>삭제</button>
+                      </div>
                     </article>
                   ))}
                 </div>
               )}
             </div>
+              </>
+            )}
+
+            {payrollMode === 'fixed' && (
+              <>
+                <div className={styles.card}>
+                  <div className={styles.fixedPayrollFilters}>
+                    <label className={styles.dailyField}>
+                      <span>급여 연도</span>
+                      <select className={styles.filterInput} value={fixedPayrollYear} onChange={(e) => setFixedPayrollYear(Number(e.target.value))}>
+                        {[2024, 2025, 2026, 2027].map((year) => <option key={year} value={year}>{year}년</option>)}
+                      </select>
+                    </label>
+                    <label className={styles.dailyField}>
+                      <span>급여 월</span>
+                      <select className={styles.filterInput} value={fixedPayrollMonth} onChange={(e) => setFixedPayrollMonth(Number(e.target.value))}>
+                        {Array.from({ length: 12 }, (_, index) => index + 1).map((month) => <option key={month} value={month}>{month}월</option>)}
+                      </select>
+                    </label>
+                    <button className={`${styles.searchBtn} ${styles.dailySearchBtn}`} onClick={loadFixedPayroll} disabled={fixedPayrollLoading}>
+                      {fixedPayrollLoading ? '계산 중...' : '급여 조회'}
+                    </button>
+                    <button className={styles.copyUnpaidBtn} onClick={copyUnpaidFixedWorkers} disabled={fixedPayrollLoading || fixedPayrollRows.length === 0}>
+                      미입금 정보 복사
+                    </button>
+                  </div>
+                  {fixedPayrollError && <div className={styles.errorMsg}>{fixedPayrollError}</div>}
+                  {fixedCopyMessage && <div className={styles.dailyCopyMessage}>{fixedCopyMessage}</div>}
+                </div>
+                <div className={styles.card}>
+                  <div className={styles.dailyListHeader}>
+                    <strong>고정 알바 급여 기록</strong>
+                    <span>{fixedPayrollYear}년 {fixedPayrollMonth}월 · {fixedPayrollRows.length}명</span>
+                  </div>
+                  {fixedPayrollRows.length === 0 ? (
+                    <div className={styles.emptyMsg}>급여 조회를 눌러 월별 급여를 계산하세요.</div>
+                  ) : (
+                    <div className={styles.dailyWorkerScroll}>
+                      {fixedPayrollRows.map((row) => (
+                        <article key={row.id} className={`${styles.dailyWorkerCard} ${row.paymentCompleted ? styles.dailyWorkerCardPaid : ''}`}>
+                          <div><strong>{row.name}</strong><span>{fixedPayrollYear}년 {fixedPayrollMonth}월</span></div>
+                          <div className={styles.dailyWorkerTime}>
+                            <span>{row.salary.monthlyHours.toFixed(1)}H</span>
+                            <small>실지급액 {row.salary.netPay.toLocaleString()}원</small>
+                          </div>
+                          <div className={styles.dailyWorkerAccount}>
+                            {row.bankName ? (
+                              <><strong>{row.bankName}</strong><span>예금주 {row.accountHolder}</span><span>{row.accountNumber}</span></>
+                            ) : <span className={styles.accountMissing}>계좌정보 미등록</span>}
+                          </div>
+                          <div className={styles.dailyWorkerActions}>
+                            <button className={`${styles.paymentBtn} ${row.paymentCompleted ? styles.paymentBtnActive : ''}`} onClick={() => toggleFixedPayment(row)}>
+                              {row.paymentCompleted ? '입금완료 해제' : '입금완료'}
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
@@ -1266,6 +1794,81 @@ export default function AttendanceAdminPage() {
                 {memberEditSaving ? '저장 중...' : '저장'}
               </button>
               <button className={styles.backLink} onClick={() => setEditingMember(null)}>취소</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 직원 계좌 등록 모달 */}
+      {editingMemberAccount && (
+        <div className={styles.modalOverlay} onClick={() => setEditingMemberAccount(null)}>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <h3 className={styles.modalTitle}>
+              {editingMemberAccount.name} {editingMemberAccount.hasAccount ? '계좌조회 및 수정' : '계좌등록'}
+            </h3>
+            <div className={styles.memberAccountFields}>
+              <label className={styles.editLabel}>
+                은행
+                <select className={styles.editInput} value={editingMemberAccount.bank} onChange={(e) => setEditingMemberAccount((current) => ({ ...current, bank: e.target.value }))}>
+                  {DAILY_BANK_OPTIONS.map((bank) => <option key={bank} value={bank}>{bank}</option>)}
+                </select>
+              </label>
+              {editingMemberAccount.bank === '직접입력:' && (
+                <label className={styles.editLabel}>
+                  은행명 직접입력
+                  <input className={styles.editInput} value={editingMemberAccount.customBank} onChange={(e) => setEditingMemberAccount((current) => ({ ...current, customBank: e.target.value }))} />
+                </label>
+              )}
+              <label className={styles.editLabel}>
+                예금주
+                <input className={styles.editInput} value={editingMemberAccount.accountHolder} onChange={(e) => setEditingMemberAccount((current) => ({ ...current, accountHolder: e.target.value }))} />
+              </label>
+              <label className={styles.editLabel}>
+                계좌번호
+                <input className={styles.editInput} inputMode="numeric" value={editingMemberAccount.accountNumber} onChange={(e) => setEditingMemberAccount((current) => ({ ...current, accountNumber: e.target.value }))} />
+              </label>
+            </div>
+            {memberAccountError && <div className={styles.pinError}>{memberAccountError}</div>}
+            <div className={styles.modalBtns}>
+              <button className={styles.pinSubmit} onClick={saveMemberAccount}>저장</button>
+              <button className={styles.backLink} onClick={() => setEditingMemberAccount(null)}>취소</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 미입금 이체정보 복사 확인 */}
+      {pendingTransferCopy && (
+        <div className={styles.modalOverlay} onClick={() => !transferConfirmBusy && setPendingTransferCopy(null)}>
+          <div className={`${styles.modal} ${styles.transferConfirmModal}`} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.transferConfirmHeader}>
+              <div>
+                <span className={styles.transferConfirmEyebrow}>이체 전 최종 확인</span>
+                <h3 className={styles.modalTitle}>{pendingTransferCopy.title}</h3>
+              </div>
+              <span className={styles.transferCountBadge}>{pendingTransferCopy.rows.length}명</span>
+            </div>
+            <p className={styles.transferConfirmNotice}>
+              확인을 누르면 Excel용 정보가 복사되고 아래 인원이 자동으로 입금완료 처리됩니다.
+            </p>
+            <div className={styles.transferPreviewList}>
+              {pendingTransferCopy.rows.map((row) => (
+                <div key={row.id} className={styles.transferPreviewRow}>
+                  <span>{row.name}</span>
+                  <strong>{row.amount.toLocaleString()}원</strong>
+                </div>
+              ))}
+            </div>
+            <div className={styles.transferTotalRow}>
+              <span>총 이체금액</span>
+              <strong>{pendingTransferCopy.rows.reduce((sum, row) => sum + row.amount, 0).toLocaleString()}원</strong>
+            </div>
+            {transferConfirmError && <div className={styles.pinError}>{transferConfirmError}</div>}
+            <div className={styles.transferConfirmActions}>
+              <button className={styles.transferCancelBtn} onClick={() => setPendingTransferCopy(null)} disabled={transferConfirmBusy}>취소</button>
+              <button className={styles.transferConfirmBtn} onClick={confirmTransferCopy} disabled={transferConfirmBusy}>
+                {transferConfirmBusy ? '처리 중...' : '확인 후 복사'}
+              </button>
             </div>
           </div>
         </div>
