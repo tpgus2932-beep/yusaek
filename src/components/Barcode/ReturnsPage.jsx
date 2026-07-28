@@ -102,6 +102,13 @@ const ReturnsPage = () => {
     const [singleItemResult, setSingleItemResult] = useState(null);
     const [excelRefundLoading, setExcelRefundLoading] = useState(false);
     const [excelRefundResults, setExcelRefundResults] = useState(null);
+    const [processingLog, setProcessingLog] = useState([]);
+    const [processingLogLoading, setProcessingLogLoading] = useState(false);
+    const [logFilterQueue, setLogFilterQueue] = useState('');
+    const [logFilterAction, setLogFilterAction] = useState('');
+    const [logFilterDateFrom, setLogFilterDateFrom] = useState('');
+    const [logFilterDateTo, setLogFilterDateTo] = useState('');
+    const [logFilterSearch, setLogFilterSearch] = useState('');
     const [selectedCols, setSelectedCols] = useState(() => ({
         상품코드: true,
         요청수량: true,
@@ -217,6 +224,32 @@ const ReturnsPage = () => {
     useEffect(() => {
         if (activeTab === 'regather') fetchRegatherItems();
     }, [activeTab]);
+
+    useEffect(() => {
+        if (activeTab === 'processing_log') fetchProcessingLog();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab]);
+
+    const fetchProcessingLog = async () => {
+        setProcessingLogLoading(true);
+        try {
+            const params = new URLSearchParams();
+            if (logFilterQueue) params.set('queue', logFilterQueue);
+            if (logFilterAction) params.set('action', logFilterAction);
+            if (logFilterDateFrom) params.set('date_from', logFilterDateFrom);
+            if (logFilterDateTo) params.set('date_to', logFilterDateTo);
+            if (logFilterSearch) params.set('q', logFilterSearch);
+            const res = await fetch(`${API}/returns/processing-log?${params.toString()}`, {
+                headers: getAuthHeaders(),
+            });
+            const data = await res.json().catch(() => ({}));
+            setProcessingLog(Array.isArray(data?.items) ? data.items : []);
+        } catch {
+            setProcessingLog([]);
+        } finally {
+            setProcessingLogLoading(false);
+        }
+    };
 
     useEffect(() => {
         if (!soundsRef.current) {
@@ -1793,6 +1826,7 @@ body { background: #fff; font-family: sans-serif; }
                                 ['unmatched', '미매칭 대기'],
                                 ['regather', '오회수'],
                                 ['onebe', '원베양식(고객대기)'],
+                                ['processing_log', '처리기록'],
                             ].map(([key, label]) => (
                                 <button
                                     key={key}
@@ -1813,7 +1847,7 @@ body { background: #fff; font-family: sans-serif; }
                         </div>
                     )}
 
-                    {activeTab !== 'onebe' && (
+                    {activeTab !== 'onebe' && activeTab !== 'processing_log' && (
                         <>
                             {activeTab === 'all' && renderQueueTab(queues.all, selectedAll, setSelectedAll)}
                             {activeTab === 'seller' && renderQueueTab(queues.seller, selectedSeller, setSelectedSeller, (
@@ -2289,6 +2323,106 @@ body { background: #fff; font-family: sans-serif; }
                                     <div className={pageStyles.empty}>원베양식 데이터가 없습니다.</div>
                                 )}
                             </div>
+                        </div>
+                    )}
+
+                    {activeTab === 'processing_log' && (
+                        <div className={pageStyles.stack}>
+                            <div className={`${pageStyles.uploadRow} ${styles.compactActions}`}>
+                                <select value={logFilterQueue} onChange={(e) => setLogFilterQueue(e.target.value)}>
+                                    <option value="">전체 유형</option>
+                                    <option value="seller">판매자 대기</option>
+                                    <option value="exchange_seller">교환판매자</option>
+                                </select>
+                                <select value={logFilterAction} onChange={(e) => setLogFilterAction(e.target.value)}>
+                                    <option value="">전체 버튼</option>
+                                    {PROCESSING_LOG_ACTIONS.map(([key, label]) => (
+                                        <option key={key} value={key}>{label}</option>
+                                    ))}
+                                </select>
+                                <input
+                                    type="date"
+                                    value={logFilterDateFrom}
+                                    onChange={(e) => setLogFilterDateFrom(e.target.value)}
+                                />
+                                <input
+                                    type="date"
+                                    value={logFilterDateTo}
+                                    onChange={(e) => setLogFilterDateTo(e.target.value)}
+                                />
+                                <input
+                                    className={pageStyles.searchInput}
+                                    placeholder="가공데이터/SEQ 검색"
+                                    value={logFilterSearch}
+                                    onChange={(e) => setLogFilterSearch(e.target.value)}
+                                />
+                                <button
+                                    type="button"
+                                    className={pageStyles.secondaryBtn}
+                                    onClick={fetchProcessingLog}
+                                    disabled={processingLogLoading}
+                                >
+                                    {processingLogLoading ? '조회 중...' : '조회'}
+                                </button>
+                            </div>
+                            {processingLogLoading ? (
+                                <div className={pageStyles.empty}>불러오는 중...</div>
+                            ) : processingLog.length === 0 ? (
+                                <div className={pageStyles.empty}>처리기록이 없습니다.</div>
+                            ) : (
+                                <div className={pageStyles.tableWrap}>
+                                    <table className={pageStyles.table}>
+                                        <thead>
+                                            <tr>
+                                                <th>일시</th>
+                                                <th>유형</th>
+                                                <th>버튼</th>
+                                                <th>가공데이터</th>
+                                                <th>입고수량</th>
+                                                <th>분류</th>
+                                                <th>사유</th>
+                                                <th>상세사유</th>
+                                                <th>사진</th>
+                                                <th>SEQ</th>
+                                                <th>상태</th>
+                                                <th>처리자</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {processingLog.map((row) => (
+                                                <tr key={row.id}>
+                                                    <td>{row.created_at}</td>
+                                                    <td>{row.queue === 'seller' ? '판매자 대기' : '교환판매자'}</td>
+                                                    <td>{row.action_label}</td>
+                                                    <td>{row.item_text}</td>
+                                                    <td>{row.qty}</td>
+                                                    <td>{row.type}</td>
+                                                    <td>{row.reason}</td>
+                                                    <td>{row.detail_reason}</td>
+                                                    <td>
+                                                        {(row.images || []).length === 0 ? '' : (
+                                                            <div style={{ display: 'flex', gap: 4 }}>
+                                                                {row.images.map((src, i) => (
+                                                                    <img
+                                                                        key={i}
+                                                                        src={src}
+                                                                        alt={`사진 ${i + 1}`}
+                                                                        style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 4, cursor: 'zoom-in' }}
+                                                                        onClick={() => setZoomImage(src)}
+                                                                    />
+                                                                ))}
+                                                            </div>
+                                                        )}
+                                                    </td>
+                                                    <td>{row.ezadmin_seq}</td>
+                                                    <td>{row.status}</td>
+                                                    <td>{row.username}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
                         </div>
                     )}
                 </section>
