@@ -37,6 +37,16 @@ const EMPTY_QUEUES = {
 
 const normalizeQueues = (queues) => ({ ...EMPTY_QUEUES, ...(queues || {}) });
 
+const PROCESSING_LOG_ACTIONS = [
+    ['ably_refund', '에이블리 환불요청'],
+    ['reason_change_sms', '일반사유변경(문자)'],
+    ['reason_change_no_sms', '일반사유변경(문자없이)'],
+    ['ezadmin_stockin', '이지어드민 입고처리'],
+    ['kimsungil_send', '김승일보내기'],
+    ['exchange_change_product', '교환처리 실행'],
+    ['delete', '선택삭제'],
+];
+
 const ReturnsPage = () => {
     const [message, setMessage] = useState('');
     const [status, setStatus] = useState(null);
@@ -390,6 +400,30 @@ const ReturnsPage = () => {
         }
     };
 
+    const buildLogEntry = (item, status) => ({
+        item_text: item?.item_text || '',
+        qty: item?.qty || '',
+        type: item?.type || '',
+        reason: item?.reason || '',
+        detail_reason: item?.detail_reason || '',
+        images: item?.images || [],
+        ezadmin_seq: item?.ezadmin_seq || '',
+        status,
+    });
+
+    const logProcessingActions = async (queue, action, actionLabel, entries) => {
+        if (!entries || !entries.length) return;
+        try {
+            await fetch(`${API}/returns/processing-log`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ queue, action, action_label: actionLabel, entries }),
+            });
+        } catch {
+            // 로깅 실패는 조용히 무시 (사용자 플로우를 막지 않음)
+        }
+    };
+
     const handleAblyRefundSubmit = async (selectedItems) => {
         if (!selectedItems || !selectedItems.length) return;
         setRefundLoading(true);
@@ -405,6 +439,11 @@ const ReturnsPage = () => {
             if (data?.queues) setQueues(normalizeQueues(data.queues));
             if (!res.ok) throw new Error(data?.detail || '처리 실패');
             setRefundResults(data.results);
+            const logEntries = data.results.map((r) => {
+                const src = selectedItems.find((i) => i.id === r.id) || {};
+                return buildLogEntry(src, r.ok ? '완료' : `실패: ${r.error || ''}`);
+            });
+            logProcessingActions('seller', 'ably_refund', '에이블리 환불요청', logEntries);
             const ok = data.results.filter((r) => r.ok).length;
             setMessage(`에이블리 반품 넘기기 완료: ${ok}/${data.results.length}건 성공`);
         } catch (err) {
@@ -467,6 +506,11 @@ const ReturnsPage = () => {
             if (data?.queues) setQueues(normalizeQueues(data.queues));
             if (!res.ok) throw new Error(data?.detail || '사유변경 처리 실패');
             setReasonChangeResults(data.results);
+            const logEntries = data.results.map((r) => {
+                const src = items.find((i) => i.id === r.id) || {};
+                return buildLogEntry(src, r.ok ? '완료' : `실패: ${r.error || ''}`);
+            });
+            logProcessingActions('seller', 'reason_change_sms', '일반사유변경(문자)', logEntries);
             const reasonOk = data.results.filter((r) => r.ok).length;
 
             let smsOk = 0;
@@ -619,7 +663,7 @@ body { background: #fff; font-family: sans-serif; }
         setTimeout(() => { win.print(); win.close(); }, 600);
     };
 
-    const handleEzadminReceiveStock = async (selectedItems) => {
+    const handleEzadminReceiveStock = async (selectedItems, queue) => {
         if (!selectedItems || !selectedItems.length) return;
         setStockinLoading(true);
         setStockinResults(null);
@@ -633,11 +677,18 @@ body { background: #fff; font-family: sans-serif; }
             const data = await res.json().catch(() => ({}));
             if (data?.queues) setQueues(normalizeQueues(data.queues));
             if (data?.need_session) {
-                openEzadminModal(() => handleEzadminReceiveStock(selectedItems));
+                openEzadminModal(() => handleEzadminReceiveStock(selectedItems, queue));
                 return;
             }
             if (!res.ok || !data?.ok) throw new Error(data?.detail || '처리 실패');
             setStockinResults(data.results);
+            if (queue === 'seller' || queue === 'exchange_seller') {
+                const logEntries = data.results.map((r) => {
+                    const src = selectedItems.find((i) => i.id === r.id) || {};
+                    return buildLogEntry(src, r.ok ? `완료 (${r.product_id || ''})` : `실패: ${r.error || ''}`);
+                });
+                logProcessingActions(queue, 'ezadmin_stockin', '이지어드민 입고처리', logEntries);
+            }
             const okResults = data.results.filter((r) => r.ok);
             setMessage(`이지어드민 입고처리 완료: ${okResults.length}/${data.results.length}건 성공`);
             const labels = okResults.map((r) => {
@@ -689,7 +740,7 @@ body { background: #fff; font-family: sans-serif; }
         });
     };
 
-    const handleSendToKimsungil = async (selectedItems) => {
+    const handleSendToKimsungil = async (selectedItems, queue) => {
         if (!selectedItems || !selectedItems.length) return;
         setKimsungilSendLoading(true);
         setMessage('');
@@ -702,8 +753,10 @@ body { background: #fff; font-family: sans-serif; }
             }
             let sent = 0;
             const flagsById = {};
+            const logEntries = [];
             for (const [idStr, code] of entries) {
                 const id = Number(idStr);
+                const src = selectedItems.find((i) => i.id === id) || {};
                 const res = await fetch(`${API}/barcode/kimsungil/add`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -712,12 +765,18 @@ body { background: #fff; font-family: sans-serif; }
                 if (res.ok) {
                     sent += 1;
                     flagsById[id] = { kimsungil_sent: true, kimsungil_error: undefined };
+                    logEntries.push(buildLogEntry(src, '완료'));
                 } else {
                     const data = await res.json().catch(() => ({}));
-                    flagsById[id] = { kimsungil_error: data?.detail || '전송 실패' };
+                    const errMsg = data?.detail || '전송 실패';
+                    flagsById[id] = { kimsungil_error: errMsg };
+                    logEntries.push(buildLogEntry(src, `실패: ${errMsg}`));
                 }
             }
             applyItemFlags(flagsById);
+            if (queue === 'seller' || queue === 'exchange_seller') {
+                logProcessingActions(queue, 'kimsungil_send', '김승일보내기', logEntries);
+            }
             setMessage(`김승일보내기 완료: ${sent}/${entries.length}건`);
         } catch (err) {
             setMessage(err.message || '김승일보내기 실패');
@@ -909,6 +968,17 @@ body { background: #fff; font-family: sans-serif; }
             }
             if (data?.queues) setQueues(normalizeQueues(data.queues));
             if (!res.ok || !data?.ok) throw new Error(data?.detail || '교환 실행 실패');
+            if (queue === 'seller') {
+                const updatedItems = data.queues?.exchange_seller || [];
+                const logEntries = ids
+                    .map((id) => updatedItems.find((i) => i.id === id))
+                    .filter(Boolean)
+                    .map((item) => buildLogEntry(
+                        item,
+                        item.change_product_done ? '교환처리완료' : (item.ezadmin_error || '처리 실패')
+                    ));
+                logProcessingActions('exchange_seller', 'exchange_change_product', '교환처리 실행', logEntries);
+            }
             const adv = data.ably_advanced || {};
             let msg = `이지어드민 교환처리 ${data.executed}건 완료 · 에이블리 수거완료 ${adv.received || 0}건, 교환상품준비중 ${adv.prepared || 0}건`;
             if (data.ably_error) msg += ` (${data.ably_error})`;
@@ -1033,13 +1103,19 @@ body { background: #fff; font-family: sans-serif; }
         }
     };
 
-    const handleDeleteSelected = async (selectedIds, setSelectedIds) => {
+    const handleDeleteSelected = async (selectedIds, setSelectedIds, queueKey, items) => {
         const ids = Array.from(selectedIds);
         if (ids.length === 0) return;
         if (!window.confirm(`선택한 ${ids.length}개 항목을 삭제할까요?`)) return;
         setDeleteLoading(true);
         try {
             const data = await deleteReturnItems(ids);
+            if (queueKey === 'seller' || queueKey === 'exchange_seller') {
+                const logEntries = (items || [])
+                    .filter((i) => selectedIds.has(i.id))
+                    .map((item) => buildLogEntry(item, '삭제됨'));
+                logProcessingActions(queueKey, 'delete', '선택삭제', logEntries);
+            }
             setQueues(normalizeQueues(data.queues));
             setSelectedIds(new Set());
         } catch (err) {
@@ -1541,7 +1617,7 @@ body { background: #fff; font-family: sans-serif; }
         );
     };
 
-    const renderQueueTab = (items, selectedIds, setSelectedIds, extraActions, showSmsAction) => {
+    const renderQueueTab = (items, selectedIds, setSelectedIds, extraActions, showSmsAction, queueKey) => {
         const handleToggleOne = (id) => {
             setSelectedIds((prev) => {
                 const next = new Set(prev);
@@ -1560,7 +1636,7 @@ body { background: #fff; font-family: sans-serif; }
                         <button
                             type="button"
                             className={pageStyles.secondaryBtn}
-                            onClick={() => handleDeleteSelected(selectedIds, setSelectedIds)}
+                            onClick={() => handleDeleteSelected(selectedIds, setSelectedIds, queueKey, items)}
                             disabled={deleteLoading || selectedIds.size === 0}
                         >
                             선택 삭제 ({selectedIds.size})
@@ -1769,7 +1845,7 @@ body { background: #fff; font-family: sans-serif; }
                                     <button
                                         type="button"
                                         className={pageStyles.primaryBtn}
-                                        onClick={() => handleSendToKimsungil(queues.seller.filter((i) => selectedSeller.has(i.id)))}
+                                        onClick={() => handleSendToKimsungil(queues.seller.filter((i) => selectedSeller.has(i.id)), 'seller')}
                                         disabled={kimsungilSendLoading || selectedSeller.size === 0}
                                     >
                                         {kimsungilSendLoading ? '처리 중...' : `김승일보내기 (${selectedSeller.size}건 선택)`}
@@ -1783,7 +1859,7 @@ body { background: #fff; font-family: sans-serif; }
                                         {labelPrintLoading ? '처리 중...' : `바코드 출력 (${selectedSeller.size}건 선택)`}
                                     </button>
                                 </>
-                            ), true)}
+                            ), true, 'seller')}
                             {activeTab === 'customer' && (() => {
                                 const items = queues.customer;
                                 if (!items || items.length === 0) return <div className={pageStyles.empty}>데이터가 없습니다.</div>;
@@ -1988,7 +2064,7 @@ body { background: #fff; font-family: sans-serif; }
                                             <button
                                                 type="button"
                                                 className={pageStyles.primaryBtn}
-                                                onClick={() => handleEzadminReceiveStock(queues.exchange_seller.filter((i) => selectedExchangeSeller.has(i.id)))}
+                                                onClick={() => handleEzadminReceiveStock(queues.exchange_seller.filter((i) => selectedExchangeSeller.has(i.id)), 'exchange_seller')}
                                                 disabled={stockinLoading || selectedExchangeSeller.size === 0}
                                             >
                                                 {stockinLoading ? '처리 중...' : `이지어드민 입고처리 (${selectedExchangeSeller.size}건 선택)`}
@@ -1996,7 +2072,7 @@ body { background: #fff; font-family: sans-serif; }
                                             <button
                                                 type="button"
                                                 className={pageStyles.primaryBtn}
-                                                onClick={() => handleSendToKimsungil(queues.exchange_seller.filter((i) => selectedExchangeSeller.has(i.id)))}
+                                                onClick={() => handleSendToKimsungil(queues.exchange_seller.filter((i) => selectedExchangeSeller.has(i.id)), 'exchange_seller')}
                                                 disabled={kimsungilSendLoading || selectedExchangeSeller.size === 0}
                                             >
                                                 {kimsungilSendLoading ? '처리 중...' : `김승일보내기 (${selectedExchangeSeller.size}건 선택)`}
@@ -2010,7 +2086,7 @@ body { background: #fff; font-family: sans-serif; }
                                                 {labelPrintLoading ? '처리 중...' : `바코드 출력 (${selectedExchangeSeller.size}건 선택)`}
                                             </button>
                                         </>
-                                    ))}
+                                    ), undefined, 'exchange_seller')}
                                     {queues.exchange_seller.length > 0 && (
                                         <div className={`${pageStyles.uploadRow} ${styles.compactActions}`}>
                                             <button
