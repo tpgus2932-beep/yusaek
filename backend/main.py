@@ -59,6 +59,7 @@ from api.pastelco_routes import build_pastelco_router
 from api.ably_minus_routes import build_ably_minus_router
 from api.accident_cargo_routes import build_accident_cargo_router
 from api.return_regathering_routes import build_return_regathering_router
+from api.return_processing_log_routes import build_return_processing_log_router
 from api.delivery_anomaly_routes import build_delivery_anomaly_router
 from api.client_cancel_soldout_routes import build_client_cancel_soldout_router
 from api.exchange_return_anomaly_routes import build_exchange_return_anomaly_router
@@ -1646,6 +1647,42 @@ app.include_router(
         get_shared_db=_get_shared_db,
         get_setting=_get_setting,
         return_queue_payload=_return_queue_payload,
+    )
+)
+
+
+def _init_return_processing_log():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS return_processing_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            username TEXT NOT NULL DEFAULT '',
+            queue TEXT NOT NULL,
+            action TEXT NOT NULL,
+            action_label TEXT NOT NULL,
+            item_text TEXT NOT NULL DEFAULT '',
+            qty TEXT NOT NULL DEFAULT '',
+            type TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            detail_reason TEXT NOT NULL DEFAULT '',
+            images TEXT NOT NULL DEFAULT '[]',
+            ezadmin_seq TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_return_processing_log()
+
+app.include_router(
+    build_return_processing_log_router(
+        get_current_user=_get_current_user,
+        get_shared_db=_get_shared_db,
     )
 )
 
