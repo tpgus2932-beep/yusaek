@@ -1294,6 +1294,17 @@ body { background: #fff; font-family: sans-serif; }
         }
     };
 
+    const [loadSnapshotModalOpen, setLoadSnapshotModalOpen] = useState(false);
+    const [snapshotList, setSnapshotList] = useState([]);
+    const [snapshotListLoading, setSnapshotListLoading] = useState(false);
+
+    const formatSnapshotTime = (iso) => {
+        if (!iso) return '';
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return iso;
+        return d.toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    };
+
     const handleSaveSnapshot = async () => {
         try {
             const res = await fetch(`${API}/returns/save`, {
@@ -1309,11 +1320,31 @@ body { background: #fff; font-family: sans-serif; }
         }
     };
 
-    const handleLoadSnapshot = async () => {
+    const openLoadSnapshotModal = async () => {
+        setLoadSnapshotModalOpen(true);
+        setSnapshotListLoading(true);
+        try {
+            const res = await fetch(`${API}/returns/saves`, { headers: getAuthHeaders() });
+            const data = await res.json().catch(() => ({}));
+            setSnapshotList(Array.isArray(data?.items) ? data.items : []);
+        } catch {
+            setSnapshotList([]);
+        } finally {
+            setSnapshotListLoading(false);
+        }
+    };
+
+    const closeLoadSnapshotModal = () => {
+        setLoadSnapshotModalOpen(false);
+        setSnapshotList([]);
+    };
+
+    const loadSnapshotById = async (id) => {
         try {
             const res = await fetch(`${API}/returns/load`, {
                 method: 'POST',
-                headers: getAuthHeaders(),
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ id }),
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data?.detail || '불러오기 실패');
@@ -1324,6 +1355,7 @@ body { background: #fff; font-family: sans-serif; }
             setLastType(data.last_type || '-');
             lastTypeRef.current = data.last_type || '-';
             setMessage('임시저장된 반품 스캔 상태를 불러왔습니다.');
+            closeLoadSnapshotModal();
         } catch (err) {
             setMessage(err.message || '불러오기 실패');
         }
@@ -1807,7 +1839,7 @@ body { background: #fff; font-family: sans-serif; }
                         <button className={pageStyles.secondaryBtn} onClick={handleSaveSnapshot} disabled={loading}>
                             임시저장
                         </button>
-                        <button className={pageStyles.secondaryBtn} onClick={handleLoadSnapshot} disabled={loading}>
+                        <button className={pageStyles.secondaryBtn} onClick={openLoadSnapshotModal} disabled={loading}>
                             불러오기
                         </button>
                         <button className={pageStyles.secondaryBtn} onClick={handleReset}>
@@ -2827,6 +2859,54 @@ body { background: #fff; font-family: sans-serif; }
                             >
                                 {reasonChangeConfirmLoading ? '처리 중...' : '진행'}
                             </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {loadSnapshotModalOpen && (
+                <div
+                    onClick={closeLoadSnapshotModal}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0,0,0,0.4)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 1000,
+                    }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                            background: 'var(--bg-primary, #fff)',
+                            borderRadius: 8,
+                            width: 'min(360px, 90vw)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                        }}
+                    >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border-color, #e5e7eb)' }}>
+                            <strong>임시저장 불러오기</strong>
+                            <button type="button" onClick={closeLoadSnapshotModal} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>×</button>
+                        </div>
+                        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {snapshotListLoading ? (
+                                <div>목록 불러오는 중...</div>
+                            ) : snapshotList.length === 0 ? (
+                                <div>임시저장된 기록이 없습니다.</div>
+                            ) : (
+                                snapshotList.map((item) => (
+                                    <button
+                                        key={item.id}
+                                        type="button"
+                                        className={pageStyles.secondaryBtn}
+                                        onClick={() => loadSnapshotById(item.id)}
+                                    >
+                                        {formatSnapshotTime(item.updated_at)}
+                                    </button>
+                                ))
+                            )}
                         </div>
                     </div>
                 </div>
