@@ -4,6 +4,7 @@ from fastapi import APIRouter, Body, Depends
 
 from services.order_recommendation_calc import compute_all
 from services.order_recommendation_collect import run_collectors
+from services.order_recommendation_evaluate import aggregate_forecast_accuracy, evaluate_all
 from services.order_recommendation_store import ensure_row, list_rows, now_kst_iso, today_kst
 
 
@@ -35,6 +36,25 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting):
             return {"ok": True, "date": target_date, "items": [_row_to_dict(r) for r in rows]}
         finally:
             conn.close()
+
+    @router.post("/evaluate")
+    def evaluate(date: str | None = None, user: str = Depends(get_current_user)):
+        target_date = date or today_kst()
+        count = evaluate_all(get_db, target_date)
+        return {"ok": True, "date": target_date, "evaluated": count}
+
+    @router.get("/forecast-accuracy")
+    def forecast_accuracy(
+        days: int = 7,
+        yusas_code: str | None = None,
+        user: str = Depends(get_current_user),
+    ):
+        conn = get_db()
+        try:
+            result = aggregate_forecast_accuracy(conn, days, yusas_code)
+        finally:
+            conn.close()
+        return {"ok": True, "days": days, "yusas_code": yusas_code, **result}
 
     @router.post("/{date}/{yusas_code}/confirm")
     def confirm(
