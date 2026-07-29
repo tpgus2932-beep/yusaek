@@ -176,7 +176,7 @@ def calc_expected_sales_today(
 - `compute_row` 통합 테스트를 새 공식에 맞게 재작성 — `previous_day_sales_qty`
   복사, 날짜 순서 무관성, NULL 재정규화, 전체 파이프라인 테스트는 유지하되 새
   공식의 기대값으로 재계산.
-- `calc_recommended_qty` 테스트 8개는 변경 없음(공식 자체가 안 바뀜).
+- `calc_recommended_qty` 테스트 6개는 변경 없음(공식 자체가 안 바뀜).
 
 ## 테스트 계획
 
