@@ -8,8 +8,6 @@ from services.order_recommendation_store import get_row, previous_date
 WEEKDAY_LOOKBACK_WEEKS = 8
 WEEKDAY_MIN_WEEKS = 4
 FALLBACK_WINDOW_DAYS = 14
-RATIO_MIN = 0.5
-RATIO_MAX = 2.0
 
 
 def _date_minus(date: str, days: int) -> str:
@@ -62,28 +60,36 @@ def calc_weekday_average_sales(conn, yusas_code: str, as_of_date: str):
     return sum(values) / len(values)
 
 
-def calc_previous_day_sales_ratio(conn, yusas_code: str, date: str, previous_day_sales_qty):
-    prev_date = previous_date(date)
-    prev_row = get_row(conn, prev_date, yusas_code)
-    if prev_row is None:
-        return 1.0
-
-    prev_avg = prev_row["weekday_average_sales"]
-    if prev_avg is None:
-        prev_avg = calc_weekday_average_sales(conn, yusas_code, prev_date)
-
-    if not prev_avg or previous_day_sales_qty is None:
-        return 1.0
-
-    ratio = previous_day_sales_qty / prev_avg
-    return max(RATIO_MIN, min(RATIO_MAX, ratio))
+DEFAULT_WEIGHT_WEEKDAY_AVERAGE = 0.35
+DEFAULT_WEIGHT_PREVIOUS_DAY = 0.25
+DEFAULT_WEIGHT_AVG_7D = 0.25
+DEFAULT_WEIGHT_AVG_14D = 0.15
 
 
-def calc_expected_sales_today(weekday_average_sales, previous_day_sales_ratio: float, blend_ratio: float):
-    if weekday_average_sales is None:
+def calc_expected_sales_today(
+    weekday_average_sales,
+    previous_day_sales_qty,
+    avg_sales_7d,
+    avg_sales_14d,
+    weight_weekday_average: float,
+    weight_previous_day: float,
+    weight_avg_7d: float,
+    weight_avg_14d: float,
+):
+    weighted_sum = 0.0
+    weight_sum = 0.0
+    for value, weight in (
+        (weekday_average_sales, weight_weekday_average),
+        (previous_day_sales_qty, weight_previous_day),
+        (avg_sales_7d, weight_avg_7d),
+        (avg_sales_14d, weight_avg_14d),
+    ):
+        if value is not None:
+            weighted_sum += value * weight
+            weight_sum += weight
+    if weight_sum == 0:
         return None
-    flow_adjustment = 1 + (previous_day_sales_ratio - 1) * blend_ratio
-    return weekday_average_sales * flow_adjustment
+    return weighted_sum / weight_sum
 
 
 def calc_recommended_qty(expected_sales_today, stock_qty, incoming_qty, coverage_days: float, safety_stock_qty: float):
@@ -102,7 +108,6 @@ def calc_change_and_rate(today_value, previous_value):
     return change, change / previous_value
 
 
-DEFAULT_BLEND_RATIO = 0.4
 DEFAULT_COVERAGE_DAYS = 1.0
 DEFAULT_SAFETY_STOCK_QTY = 0.0
 
@@ -112,6 +117,19 @@ def _setting_float(get_setting, key: str, default: float) -> float:
     if raw is None or str(raw).strip() == "":
         return default
     return float(raw)
+
+
+def _setting_weight(get_setting, key: str, default: float) -> float:
+    raw = get_setting(key)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value) or value < 0:
+        return default
+    return value
 
 
 def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
@@ -124,17 +142,28 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
     previous_day_sales_qty = prev_row["sales_qty"] if prev_row is not None else None
 
     sales_7d, count_7d = calc_sales_window(conn, yusas_code, date, 7)
-    sales_14d, _count_14d = calc_sales_window(conn, yusas_code, date, 14)
+    sales_14d, count_14d = calc_sales_window(conn, yusas_code, date, 14)
     avg_sales_7d = (sales_7d / count_7d) if sales_7d is not None and count_7d else None
+    avg_sales_14d = (sales_14d / count_14d) if sales_14d is not None and count_14d else None
 
     weekday_average_sales = calc_weekday_average_sales(conn, yusas_code, date)
-    previous_day_sales_ratio = calc_previous_day_sales_ratio(conn, yusas_code, date, previous_day_sales_qty)
 
-    blend_ratio = _setting_float(get_setting, "order_recommendation_blend_ratio", DEFAULT_BLEND_RATIO)
+    weight_weekday_average = _setting_weight(
+        get_setting, "order_recommendation_weight_weekday_average", DEFAULT_WEIGHT_WEEKDAY_AVERAGE
+    )
+    weight_previous_day = _setting_weight(
+        get_setting, "order_recommendation_weight_previous_day", DEFAULT_WEIGHT_PREVIOUS_DAY
+    )
+    weight_avg_7d = _setting_weight(get_setting, "order_recommendation_weight_avg_7d", DEFAULT_WEIGHT_AVG_7D)
+    weight_avg_14d = _setting_weight(get_setting, "order_recommendation_weight_avg_14d", DEFAULT_WEIGHT_AVG_14D)
+
     coverage_days = _setting_float(get_setting, "order_recommendation_coverage_days", DEFAULT_COVERAGE_DAYS)
     safety_stock_qty = _setting_float(get_setting, "order_recommendation_safety_stock_qty", DEFAULT_SAFETY_STOCK_QTY)
 
-    expected_sales_today = calc_expected_sales_today(weekday_average_sales, previous_day_sales_ratio, blend_ratio)
+    expected_sales_today = calc_expected_sales_today(
+        weekday_average_sales, previous_day_sales_qty, avg_sales_7d, avg_sales_14d,
+        weight_weekday_average, weight_previous_day, weight_avg_7d, weight_avg_14d,
+    )
     recommended_qty = calc_recommended_qty(
         expected_sales_today, row["stock_qty"], row["incoming_qty"], coverage_days, safety_stock_qty
     )
@@ -150,8 +179,8 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
         """
         UPDATE order_recommendation_daily SET
             previous_day_sales_qty = ?,
-            sales_7d = ?, sales_14d = ?, avg_sales_7d = ?,
-            weekday_average_sales = ?, previous_day_sales_ratio = ?, expected_sales_today = ?,
+            sales_7d = ?, sales_14d = ?, avg_sales_7d = ?, avg_sales_14d = ?,
+            weekday_average_sales = ?, expected_sales_today = ?,
             recommended_qty = ?,
             ad_budget_change = ?, ad_budget_change_rate = ?,
             wish_count_change = ?, wish_count_change_rate = ?,
@@ -160,8 +189,8 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
         """,
         (
             previous_day_sales_qty,
-            sales_7d, sales_14d, avg_sales_7d,
-            weekday_average_sales, previous_day_sales_ratio, expected_sales_today,
+            sales_7d, sales_14d, avg_sales_7d, avg_sales_14d,
+            weekday_average_sales, expected_sales_today,
             recommended_qty,
             ad_budget_change, ad_budget_change_rate,
             wish_count_change, wish_count_change_rate,
