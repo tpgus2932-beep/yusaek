@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+WEEKDAY_LOOKBACK_WEEKS = 8
+WEEKDAY_MIN_WEEKS = 4
+FALLBACK_WINDOW_DAYS = 14
+
+
+def _date_minus(date: str, days: int) -> str:
+    return (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def calc_sales_window(conn, yusas_code: str, date: str, days: int):
+    start = _date_minus(date, days)
+    rows = conn.execute(
+        """
+        SELECT sales_qty FROM order_recommendation_daily
+        WHERE yusas_code = ? AND date >= ? AND date < ? AND sales_qty IS NOT NULL
+        """,
+        (yusas_code, start, date),
+    ).fetchall()
+    values = [r["sales_qty"] for r in rows]
+    if not values:
+        return None, 0
+    return sum(values), len(values)
+
+
+def calc_weekday_average_sales(conn, yusas_code: str, as_of_date: str):
+    candidates = []
+    for week in range(1, WEEKDAY_LOOKBACK_WEEKS + 1):
+        candidate_date = _date_minus(as_of_date, week * 7)
+        row = conn.execute(
+            """
+            SELECT sales_qty FROM order_recommendation_daily
+            WHERE yusas_code = ? AND date = ? AND excluded_from_avg = 0 AND sales_qty IS NOT NULL
+            """,
+            (yusas_code, candidate_date),
+        ).fetchone()
+        if row is not None:
+            candidates.append(row["sales_qty"])
+
+    if len(candidates) >= WEEKDAY_MIN_WEEKS:
+        return sum(candidates) / len(candidates)
+
+    start = _date_minus(as_of_date, FALLBACK_WINDOW_DAYS)
+    rows = conn.execute(
+        """
+        SELECT sales_qty FROM order_recommendation_daily
+        WHERE yusas_code = ? AND date >= ? AND date < ? AND excluded_from_avg = 0 AND sales_qty IS NOT NULL
+        """,
+        (yusas_code, start, as_of_date),
+    ).fetchall()
+    values = [r["sales_qty"] for r in rows]
+    if not values:
+        return None
+    return sum(values) / len(values)
