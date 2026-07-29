@@ -223,3 +223,47 @@ def test_ratio_clamped_to_lower_bound():
     ratio = calc_previous_day_sales_ratio(conn, code, "2026-07-29", 10)
     assert ratio == 0.5
     conn.close()
+
+
+from services.order_recommendation_calc import (
+    calc_expected_sales_today,
+    calc_recommended_qty,
+)
+
+
+def test_expected_sales_today_none_when_weekday_average_none():
+    assert calc_expected_sales_today(None, 1.3, 0.4) is None
+
+
+def test_expected_sales_today_applies_flow_adjustment():
+    result = calc_expected_sales_today(10.0, 1.5, 0.4)
+    assert result == 12.0  # 1 + (1.5-1)*0.4 = 1.2, 10 * 1.2 = 12.0
+
+
+def test_recommended_qty_none_when_expected_sales_missing():
+    assert calc_recommended_qty(None, 0, 0, 1, 0) is None
+
+
+def test_recommended_qty_none_when_stock_missing():
+    assert calc_recommended_qty(10.0, None, 0, 1, 0) is None
+
+
+def test_recommended_qty_none_when_incoming_missing():
+    assert calc_recommended_qty(10.0, 0, None, 1, 0) is None
+
+
+def test_recommended_qty_uses_ceil_not_round():
+    # target_sales=10.1 -> round()면 10, ceil()이면 11. 발주 부족 방지용 회귀 테스트.
+    result = calc_recommended_qty(10.1, 0, 0, 1, 0)
+    assert result == 11
+
+
+def test_recommended_qty_never_negative():
+    result = calc_recommended_qty(5.0, 100, 50, 1, 0)
+    assert result == 0
+
+
+def test_recommended_qty_applies_coverage_days_and_safety_stock():
+    # target_sales = 10 * 3 = 30, ceil(30+5)=35, 35-2-1=32
+    result = calc_recommended_qty(10.0, 2, 1, 3, 5)
+    assert result == 32

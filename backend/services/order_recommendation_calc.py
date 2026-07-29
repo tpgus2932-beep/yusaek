@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta
 
 from services.order_recommendation_store import get_row, previous_date
@@ -76,3 +77,17 @@ def calc_previous_day_sales_ratio(conn, yusas_code: str, date: str, previous_day
 
     ratio = previous_day_sales_qty / prev_avg
     return max(RATIO_MIN, min(RATIO_MAX, ratio))
+
+
+def calc_expected_sales_today(weekday_average_sales, previous_day_sales_ratio: float, blend_ratio: float):
+    if weekday_average_sales is None:
+        return None
+    flow_adjustment = 1 + (previous_day_sales_ratio - 1) * blend_ratio
+    return weekday_average_sales * flow_adjustment
+
+
+def calc_recommended_qty(expected_sales_today, stock_qty, incoming_qty, coverage_days: float, safety_stock_qty: float):
+    if expected_sales_today is None or stock_qty is None or incoming_qty is None:
+        return None
+    target_sales = expected_sales_today * coverage_days
+    return max(0, math.ceil(target_sales + safety_stock_qty) - stock_qty - incoming_qty)
