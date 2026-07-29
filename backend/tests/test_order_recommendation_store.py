@@ -36,8 +36,8 @@ EXPECTED_COLUMNS = {
     "ad_budget_change", "ad_budget_change_rate",
     "wish_count_change", "wish_count_change_rate",
     "cart_count_change", "cart_count_change_rate",
-    "sales_7d", "sales_14d", "avg_sales_7d",
-    "weekday_average_sales", "previous_day_sales_ratio", "expected_sales_today",
+    "sales_7d", "sales_14d", "avg_sales_7d", "avg_sales_14d",
+    "weekday_average_sales", "expected_sales_today",
     "recommended_qty",
     "confirmed_qty", "override_reason", "updated_by", "updated_at",
     "excluded_from_avg", "created_at",
@@ -112,3 +112,39 @@ def test_today_kst_returns_iso_date_format():
 
 def test_now_kst_iso_includes_seoul_offset():
     assert now_kst_iso().endswith("+09:00")
+
+
+def test_init_adds_avg_sales_14d_column_to_legacy_table_missing_it():
+    get_db, _keep_alive = _make_db_factory()
+    conn = get_db()
+    conn.execute(
+        """
+        CREATE TABLE order_recommendation_daily (
+            date TEXT NOT NULL,
+            yusas_code TEXT NOT NULL,
+            sales_qty INTEGER,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (date, yusas_code)
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    init_order_recommendation_tables(get_db)
+
+    conn = get_db()
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()}
+    assert "avg_sales_14d" in cols
+    conn.close()
+
+
+def test_init_is_idempotent_when_avg_sales_14d_already_present():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    init_order_recommendation_tables(get_db)  # 두 번째 호출도 에러 없이 통과해야 함
+
+    conn = get_db()
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()}
+    assert "avg_sales_14d" in cols
+    conn.close()

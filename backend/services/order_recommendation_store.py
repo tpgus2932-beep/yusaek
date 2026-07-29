@@ -45,8 +45,8 @@ def init_order_recommendation_tables(get_db) -> None:
             sales_7d INTEGER,
             sales_14d INTEGER,
             avg_sales_7d REAL,
+            avg_sales_14d REAL,
             weekday_average_sales REAL,
-            previous_day_sales_ratio REAL,
             expected_sales_today REAL,
 
             recommended_qty INTEGER,
@@ -63,8 +63,15 @@ def init_order_recommendation_tables(get_db) -> None:
         )
         """
     )
+    _ensure_avg_sales_14d_column(conn)
     conn.commit()
     conn.close()
+
+
+def _ensure_avg_sales_14d_column(conn) -> None:
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()]
+    if "avg_sales_14d" not in cols:
+        conn.execute("ALTER TABLE order_recommendation_daily ADD COLUMN avg_sales_14d REAL")
 
 
 def get_row(conn, date: str, yusas_code: str):
