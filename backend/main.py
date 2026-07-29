@@ -1062,6 +1062,26 @@ def _init_client_schedule_db():
 _init_client_schedule_db()
 
 
+def _init_client_schedule_export_log():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS client_schedule_export_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_code TEXT NOT NULL,
+            note_date TEXT NOT NULL,
+            exported_at TEXT NOT NULL,
+            UNIQUE(product_code, note_date)
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_client_schedule_export_log()
+
+
 def _ensure_client_schedule_column(column: str, ddl: str):
     conn = _get_shared_db()
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(client_schedule_db)").fetchall()]
@@ -1385,6 +1405,7 @@ app.include_router(
         get_setting=_get_setting,
         set_setting=_set_setting,
         get_user_display=_get_user_display,
+        get_shared_db=_get_shared_db,
     )
 )
 app.include_router(

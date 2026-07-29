@@ -5,7 +5,8 @@ import uuid
 import warnings
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 import json
 import re
@@ -27,6 +28,8 @@ _ABLY_PASSWORD = "!Glqgkqdldi1126"
 
 _EZADMIN_BASE        = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+_KST = ZoneInfo("Asia/Seoul")
+_SCHEDULE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 from api.wonbe_routes import _get_wonbe_db as _get_wonbe_db, record_defect_process_logs
 
@@ -51,6 +54,7 @@ def build_barcode_router(
     get_setting,
     set_setting,
     get_user_display,
+    get_shared_db,
 ):
     router = APIRouter()
     _DEFECT_BASE_HEADERS = ["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]
@@ -3104,15 +3108,49 @@ def build_barcode_router(
             return {"ok": False, "need_session": True}
 
         import io as _io
-        rows = payload.get("rows") or []
+        today = datetime.now(_KST).date()
+
+        def _classify(note_text: str):
+            """Returns (output_note, is_tracked_date)."""
+            if _SCHEDULE_DATE_RE.match(note_text):
+                parsed = date.fromisoformat(note_text)
+                return ("" if parsed <= today else note_text), True
+            return note_text, False
+
+        scheduled_rows = []
+        for row in payload.get("rows") or []:
+            code = str(row.get("productCode", ""))
+            output_note, is_tracked = _classify(str(row.get("note", "")))
+            scheduled_rows.append({"productCode": code, "note": output_note, "is_tracked": is_tracked})
+
+        current_codes = {row["productCode"] for row in scheduled_rows}
+
+        conn = get_shared_db()
+        try:
+            stale = conn.execute(
+                "SELECT DISTINCT product_code FROM client_schedule_export_log WHERE note_date <= ?",
+                (today.isoformat(),),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        cleanup_rows = [
+            {"productCode": r["product_code"], "note": "", "is_tracked": True}
+            for r in stale
+            if r["product_code"] not in current_codes
+        ]
+
+        all_rows = scheduled_rows + cleanup_rows
+        if not all_rows:
+            return {"ok": True, "count": 0}
 
         wb = xlwt.Workbook()
         ws = wb.add_sheet("Sheet1")
         ws.write(0, 0, "상품코드")
         ws.write(0, 1, "상품메모")
-        for ri, row in enumerate(rows, 1):
-            ws.write(ri, 0, str(row.get("productCode", "")))
-            ws.write(ri, 1, str(row.get("note", "")))
+        for ri, row in enumerate(all_rows, 1):
+            ws.write(ri, 0, row["productCode"])
+            ws.write(ri, 1, row["note"])
 
         buf = _io.BytesIO()
         wb.save(buf)
@@ -3147,6 +3185,27 @@ def build_barcode_router(
         m = re.search(r'alert\("(\d+)\s*개 변경 완료 되었습니다\."\)', html)
         if not m:
             return {"ok": False, "error": "응답에서 변경 완료 문구를 찾지 못했습니다", "raw_snippet": html[:300]}
+
+        now_iso = datetime.now(_KST).isoformat()
+        conn = get_shared_db()
+        try:
+            for row in all_rows:
+                if not row["is_tracked"]:
+                    continue
+                conn.execute(
+                    "DELETE FROM client_schedule_export_log WHERE product_code = ?",
+                    (row["productCode"],),
+                )
+                if row["note"]:
+                    conn.execute(
+                        "INSERT INTO client_schedule_export_log (product_code, note_date, exported_at) "
+                        "VALUES (?, ?, ?)",
+                        (row["productCode"], row["note"], now_iso),
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+
         return {"ok": True, "count": int(m.group(1))}
 
     return router
