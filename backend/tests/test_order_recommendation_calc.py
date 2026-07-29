@@ -142,3 +142,84 @@ def test_calc_weekday_average_sales_returns_none_when_no_data_at_all():
     avg = calc_weekday_average_sales(conn, "YUSAS00001", "2026-07-29")
     assert avg is None
     conn.close()
+
+
+from services.order_recommendation_calc import calc_previous_day_sales_ratio
+
+
+def test_ratio_defaults_to_1_when_no_previous_row():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    ratio = calc_previous_day_sales_ratio(conn, "YUSAS00001", "2026-07-29", 50)
+    assert ratio == 1.0
+    conn.close()
+
+
+def test_ratio_reuses_cached_weekday_average_when_present():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+    ensure_row(conn, "2026-07-28", code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET weekday_average_sales = 20 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-28", code),
+    )
+    conn.commit()
+
+    ratio = calc_previous_day_sales_ratio(conn, code, "2026-07-29", 30)
+    assert ratio == 1.5
+    conn.close()
+
+
+def test_ratio_computes_on_the_fly_when_cache_missing_and_clamps_upper_bound():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+
+    # 전날(2026-07-28, 화요일) 캐시는 비어있지만, 즉석 계산에 쓸 과거 화요일 4주치는 있다
+    for date in ["2026-07-21", "2026-07-14", "2026-07-07", "2026-06-30"]:
+        _seed(conn, date, code, sales_qty=8)
+    ensure_row(conn, "2026-07-28", code)  # weekday_average_sales는 NULL인 채로 둠
+    conn.commit()
+
+    # 전날 실제 판매 16, 즉석 계산 요일평균 8 => 원래 비율 2.0(상한 경계)
+    ratio = calc_previous_day_sales_ratio(conn, code, "2026-07-29", 16)
+    assert ratio == 2.0
+    conn.close()
+
+
+def test_ratio_defaults_to_1_when_previous_day_sales_qty_is_none():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+    ensure_row(conn, "2026-07-28", code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET weekday_average_sales = 20 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-28", code),
+    )
+    conn.commit()
+
+    ratio = calc_previous_day_sales_ratio(conn, code, "2026-07-29", None)
+    assert ratio == 1.0
+    conn.close()
+
+
+def test_ratio_clamped_to_lower_bound():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+    ensure_row(conn, "2026-07-28", code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET weekday_average_sales = 100 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-28", code),
+    )
+    conn.commit()
+
+    ratio = calc_previous_day_sales_ratio(conn, code, "2026-07-29", 10)
+    assert ratio == 0.5
+    conn.close()

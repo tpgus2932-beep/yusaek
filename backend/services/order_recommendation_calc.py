@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from services.order_recommendation_store import get_row, previous_date
+
 WEEKDAY_LOOKBACK_WEEKS = 8
 WEEKDAY_MIN_WEEKS = 4
 FALLBACK_WINDOW_DAYS = 14
+RATIO_MIN = 0.5
+RATIO_MAX = 2.0
 
 
 def _date_minus(date: str, days: int) -> str:
@@ -55,3 +59,20 @@ def calc_weekday_average_sales(conn, yusas_code: str, as_of_date: str):
     if not values:
         return None
     return sum(values) / len(values)
+
+
+def calc_previous_day_sales_ratio(conn, yusas_code: str, date: str, previous_day_sales_qty):
+    prev_date = previous_date(date)
+    prev_row = get_row(conn, prev_date, yusas_code)
+    if prev_row is None:
+        return 1.0
+
+    prev_avg = prev_row["weekday_average_sales"]
+    if prev_avg is None:
+        prev_avg = calc_weekday_average_sales(conn, yusas_code, prev_date)
+
+    if not prev_avg or previous_day_sales_qty is None:
+        return 1.0
+
+    ratio = previous_day_sales_qty / prev_avg
+    return max(RATIO_MIN, min(RATIO_MAX, ratio))
