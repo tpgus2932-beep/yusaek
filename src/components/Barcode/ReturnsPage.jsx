@@ -492,12 +492,14 @@ const ReturnsPage = () => {
     const [reasonChangeSelectedTemplateId, setReasonChangeSelectedTemplateId] = useState('');
     const [reasonChangePendingItems, setReasonChangePendingItems] = useState([]);
     const [reasonChangeConfirmLoading, setReasonChangeConfirmLoading] = useState(false);
+    const [reasonChangeSkipSms, setReasonChangeSkipSms] = useState(false);
 
     const openReasonChangeTemplateModal = async (selectedItems) => {
         if (!selectedItems || !selectedItems.length) return;
         setReasonChangePendingItems(selectedItems);
         setReasonChangeModalOpen(true);
         setReasonChangeSelectedTemplateId('');
+        setReasonChangeSkipSms(false);
         setReasonChangeTemplatesLoading(true);
         try {
             const res = await fetch(`${API}/sms/templates`, { headers: getAuthHeaders() });
@@ -516,15 +518,48 @@ const ReturnsPage = () => {
         setReasonChangeModalOpen(false);
         setReasonChangePendingItems([]);
         setReasonChangeSelectedTemplateId('');
+        setReasonChangeSkipSms(false);
     };
 
-    const handleConfirmReasonChangeWithSms = async () => {
+    const handleConfirmReasonChange = async () => {
+        const items = reasonChangePendingItems;
+        if (reasonChangeSkipSms) {
+            setReasonChangeConfirmLoading(true);
+            setMessage('');
+            try {
+                setReasonChangeLoading(true);
+                setReasonChangeResults(null);
+                const res = await fetch(`${API}/returns/ably-change-reason-submit`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                    body: JSON.stringify({ items }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (data?.queues) setQueues(normalizeQueues(data.queues));
+                if (!res.ok) throw new Error(data?.detail || '사유변경 처리 실패');
+                setReasonChangeResults(data.results);
+                const logEntries = data.results.map((r) => {
+                    const src = items.find((i) => i.id === r.id) || {};
+                    return buildLogEntry(src, r.ok ? '완료' : `실패: ${r.error || ''}`);
+                });
+                logProcessingActions('seller', 'reason_change_no_sms', '일반사유변경(문자없이)', logEntries);
+                const reasonOk = data.results.filter((r) => r.ok).length;
+                setMessage(`일반사유 변경 완료(문자 미발송): ${reasonOk}/${data.results.length}건 성공`);
+                closeReasonChangeTemplateModal();
+            } catch (err) {
+                setMessage(err.message || '일반사유 변경 실패');
+            } finally {
+                setReasonChangeLoading(false);
+                setReasonChangeConfirmLoading(false);
+            }
+            return;
+        }
+
         const template = reasonChangeTemplates.find((t) => t.id === reasonChangeSelectedTemplateId);
         if (!template) {
             setMessage('템플릿을 선택하세요.');
             return;
         }
-        const items = reasonChangePendingItems;
         setReasonChangeConfirmLoading(true);
         setMessage('');
         try {
@@ -2745,6 +2780,14 @@ body { background: #fff; font-family: sans-serif; }
                             <button type="button" onClick={closeReasonChangeTemplateModal} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>×</button>
                         </div>
                         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.9rem' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={reasonChangeSkipSms}
+                                    onChange={(e) => setReasonChangeSkipSms(e.target.checked)}
+                                />
+                                문자 보내지 않기
+                            </label>
                             {reasonChangeTemplatesLoading ? (
                                 <div>템플릿 불러오는 중...</div>
                             ) : reasonChangeTemplates.length === 0 ? (
@@ -2754,13 +2797,14 @@ body { background: #fff; font-family: sans-serif; }
                                     <select
                                         value={reasonChangeSelectedTemplateId}
                                         onChange={(e) => setReasonChangeSelectedTemplateId(e.target.value)}
-                                        style={{ padding: '8px 10px', border: '1px solid var(--border-color, #e5e7eb)', borderRadius: 6 }}
+                                        disabled={reasonChangeSkipSms}
+                                        style={{ padding: '8px 10px', border: '1px solid var(--border-color, #e5e7eb)', borderRadius: 6, opacity: reasonChangeSkipSms ? 0.5 : 1 }}
                                     >
                                         {reasonChangeTemplates.map((t) => (
                                             <option key={t.id} value={t.id}>{t.name}</option>
                                         ))}
                                     </select>
-                                    <div style={{ whiteSpace: 'pre-wrap', fontSize: '0.85rem', color: 'var(--text-secondary, #6b7280)', border: '1px solid var(--border-color, #e5e7eb)', borderRadius: 6, padding: 10, minHeight: 60 }}>
+                                    <div style={{ whiteSpace: 'pre-wrap', fontSize: '0.85rem', color: 'var(--text-secondary, #6b7280)', border: '1px solid var(--border-color, #e5e7eb)', borderRadius: 6, padding: 10, minHeight: 60, opacity: reasonChangeSkipSms ? 0.5 : 1 }}>
                                         {reasonChangeTemplates.find((t) => t.id === reasonChangeSelectedTemplateId)?.msg || ''}
                                     </div>
                                 </>
@@ -2768,8 +2812,11 @@ body { background: #fff; font-family: sans-serif; }
                             <button
                                 type="button"
                                 className={pageStyles.primaryBtn}
-                                onClick={handleConfirmReasonChangeWithSms}
-                                disabled={reasonChangeConfirmLoading || reasonChangeTemplatesLoading || !reasonChangeSelectedTemplateId}
+                                onClick={handleConfirmReasonChange}
+                                disabled={
+                                    reasonChangeConfirmLoading ||
+                                    (!reasonChangeSkipSms && (reasonChangeTemplatesLoading || !reasonChangeSelectedTemplateId))
+                                }
                             >
                                 {reasonChangeConfirmLoading ? '처리 중...' : '진행'}
                             </button>
