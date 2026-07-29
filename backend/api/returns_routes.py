@@ -444,14 +444,35 @@ def build_returns_router(
         return {"ok": True, "saved_at": updated_at}
 
     @router.get("/returns/saves")
-    def returns_saves(user: str = Depends(get_current_user)):
+    def returns_saves(username: str | None = None, user: str = Depends(get_current_user)):
+        target = username or user
         conn = get_db()
         rows = conn.execute(
             "SELECT id, updated_at FROM return_saved_snapshots WHERE username = ? ORDER BY id DESC LIMIT 3",
-            (user,),
+            (target,),
         ).fetchall()
         conn.close()
         return {"ok": True, "items": [{"id": r["id"], "updated_at": r["updated_at"]} for r in rows]}
+
+    @router.get("/returns/saves-accounts")
+    def returns_saves_accounts(user: str = Depends(get_current_user)):
+        conn = get_db()
+        rows = conn.execute(
+            """
+            SELECT username, MAX(updated_at) AS latest_updated_at
+            FROM return_saved_snapshots
+            GROUP BY username
+            ORDER BY latest_updated_at DESC
+            """
+        ).fetchall()
+        conn.close()
+        return {
+            "ok": True,
+            "accounts": [
+                {"username": r["username"], "latest_updated_at": r["latest_updated_at"]}
+                for r in rows
+            ],
+        }
 
     @router.post("/returns/load")
     def returns_load(payload: dict = Body(None), user: str = Depends(get_current_user)):
@@ -459,8 +480,8 @@ def build_returns_router(
         conn = get_db()
         if snapshot_id is not None:
             row = conn.execute(
-                "SELECT payload, updated_at FROM return_saved_snapshots WHERE id = ? AND username = ?",
-                (snapshot_id, user),
+                "SELECT payload, updated_at FROM return_saved_snapshots WHERE id = ?",
+                (snapshot_id,),
             ).fetchone()
         else:
             row = conn.execute(

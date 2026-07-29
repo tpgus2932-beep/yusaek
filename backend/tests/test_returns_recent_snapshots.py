@@ -145,17 +145,19 @@ def test_load_without_id_returns_latest_snapshot():
     assert state.queue_seller == [{"id": 1, "goods_name": "item-1"}]
 
 
-def test_load_by_id_from_another_user_is_not_found():
+def test_load_by_id_from_another_user_succeeds():
     shared_db = _make_shared_db()
     client_a, state_a = _make_client(shared_db, username="alice")
-    client_b, _state_b = _make_client(shared_db, username="bob")
+    client_b, state_b = _make_client(shared_db, username="bob")
 
     state_a.queue_seller = [{"id": 1, "goods_name": "alice-item"}]
     client_a.post("/returns/save")
     saved_id = client_a.get("/returns/saves").json()["items"][0]["id"]
 
+    state_b.queue_seller = []
     res = client_b.post("/returns/load", json={"id": saved_id})
-    assert res.status_code == 404
+    assert res.status_code == 200
+    assert state_b.queue_seller == [{"id": 1, "goods_name": "alice-item"}]
 
 
 def test_state_endpoint_reports_latest_saved_at():
@@ -168,3 +170,35 @@ def test_state_endpoint_reports_latest_saved_at():
 
     res1 = client.get("/returns/state")
     assert res1.json()["saved_at"] == saved_at
+
+
+def test_saves_accounts_lists_only_accounts_with_snapshots_newest_first():
+    shared_db = _make_shared_db()
+    client_a, state_a = _make_client(shared_db, username="alice")
+    client_b, state_b = _make_client(shared_db, username="bob")
+    client_c, _state_c = _make_client(shared_db, username="carol")
+
+    state_a.queue_seller = [{"id": 1}]
+    client_a.post("/returns/save")
+    state_b.queue_seller = [{"id": 2}]
+    client_b.post("/returns/save")
+    # carol never saves anything
+
+    res = client_a.get("/returns/saves-accounts")
+    assert res.status_code == 200
+    usernames = [a["username"] for a in res.json()["accounts"]]
+    assert usernames == ["bob", "alice"]
+
+
+def test_saves_with_username_param_returns_that_accounts_items():
+    shared_db = _make_shared_db()
+    client_a, state_a = _make_client(shared_db, username="alice")
+    client_b, state_b = _make_client(shared_db, username="bob")
+
+    state_a.queue_seller = [{"id": 1, "goods_name": "alice-item"}]
+    client_a.post("/returns/save")
+
+    res = client_b.get("/returns/saves", params={"username": "alice"})
+    assert res.status_code == 200
+    items = res.json()["items"]
+    assert len(items) == 1
