@@ -45,17 +45,29 @@
 - `previous_day_sales_ratio REAL` 라인 제거.
 - `avg_sales_14d REAL` 라인 추가 (`avg_sales_7d` 바로 아래).
 
-기존 DB 호환을 위해 `_ensure_avg_sales_14d_column(get_db)`를 추가하고
-`init_order_recommendation_tables` 안에서 `CREATE TABLE` 직후 호출한다(이
-저장소의 `_ensure_column`/`_ensure_user_column` 패턴과 동일하게 idempotent):
+기존 DB 호환을 위해 `_ensure_avg_sales_14d_column(conn)`을 추가한다. 별도로
+`get_db()`를 다시 열지 않고, `init_order_recommendation_tables`가 이미 열어둔
+연결을 그대로 넘겨받아 `CREATE TABLE`과 같은 트랜잭션에서 실행하고 한 번에
+커밋한다:
 
 ```python
-def _ensure_avg_sales_14d_column(get_db) -> None:
-    conn = get_db()
+def _ensure_avg_sales_14d_column(conn) -> None:
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()]
     if "avg_sales_14d" not in cols:
         conn.execute("ALTER TABLE order_recommendation_daily ADD COLUMN avg_sales_14d REAL")
-        conn.commit()
+
+
+def init_order_recommendation_tables(get_db) -> None:
+    conn = get_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS order_recommendation_daily (
+            ...  -- avg_sales_14d 포함, previous_day_sales_ratio 제외
+        )
+        """
+    )
+    _ensure_avg_sales_14d_column(conn)
+    conn.commit()
     conn.close()
 ```
 
@@ -73,9 +85,12 @@ def _ensure_avg_sales_14d_column(get_db) -> None:
 **제거:** `calc_previous_day_sales_ratio` 함수, `RATIO_MIN`, `RATIO_MAX`,
 `DEFAULT_BLEND_RATIO` 상수.
 
-**신규 헬퍼** (가중치 전용 — 음수/숫자 변환 불가 값은 기본값으로 대체):
+**신규 헬퍼** (가중치 전용 — 음수/숫자 변환 불가/NaN/무한대 값은 기본값으로 대체):
 
 ```python
+import math
+
+
 def _setting_weight(get_setting, key: str, default: float) -> float:
     raw = get_setting(key)
     if raw is None or str(raw).strip() == "":
@@ -84,10 +99,13 @@ def _setting_weight(get_setting, key: str, default: float) -> float:
         value = float(raw)
     except (TypeError, ValueError):
         return default
-    if value < 0:
+    if not math.isfinite(value) or value < 0:
         return default
     return value
 ```
+
+`math.isfinite(value)`는 `NaN`과 `+inf`/`-inf`를 모두 걸러낸다(`float("nan")`,
+`float("inf")` 같은 설정값이 들어와도 기본값으로 대체됨).
 
 `_setting_float`(coverage_days/safety_stock_qty용)는 이번 변경과 무관하므로
 그대로 둔다.
@@ -153,7 +171,8 @@ def calc_expected_sales_today(
   `test_ratio_clamped_to_lower_bound`)와 관련 import 전부 삭제.
 - `test_expected_sales_today_*` 2개(구 시그니처 대상)를 새 시그니처 대상으로
   교체.
-- `_setting_weight` 직접 단위 테스트 5개 추가(누락/비숫자/음수/정상값/0 케이스).
+- `_setting_weight` 직접 단위 테스트 6개 추가(누락/비숫자/음수/NaN·무한대/정상값/0
+  케이스).
 - `compute_row` 통합 테스트를 새 공식에 맞게 재작성 — `previous_day_sales_qty`
   복사, 날짜 순서 무관성, NULL 재정규화, 전체 파이프라인 테스트는 유지하되 새
   공식의 기대값으로 재계산.
@@ -165,12 +184,20 @@ def calc_expected_sales_today(
   `expected_sales_today`가 NULL인지.
 - 일부 지표만 NULL일 때 재정규화된 가중평균이 수식대로 나오는지(값을 손으로
   검증 가능한 조합으로 구성).
-- `_setting_weight`가 없음/빈 문자열/숫자 아님/음수 값에 대해 기본값을, 0 이상
-  정상값에 대해 그 값을 그대로 반환하는지.
-- `compute_row`가 날짜 순서와 무관하게 같은 결과를 내는지(기존 통합 테스트를
-  새 공식으로 재계산해 유지).
+- `_setting_weight`가 없음/빈 문자열/숫자 아님/음수/NaN/무한대 값에 대해
+  기본값을, 0 이상 정상값에 대해 그 값을 그대로 반환하는지.
+- 날짜 순서 무관성: 전날(D) 행에는 `sales_qty`만 채워두고(다른 파생값은 채우지
+  않음), D+1의 요일 이력만 별도로 준비한 뒤 (A) `compute_row(D)`를 먼저 실행한
+  뒤 `compute_row(D+1)`을 실행한 결과와 (B) `compute_row(D)`를 아예 실행하지
+  않고 `compute_row(D+1)`만 실행한 결과가 동일한지 비교한다. 새 공식은 전날
+  `weekday_average_sales` 캐시에 의존하지 않고 `previous_day_sales_qty`(원본
+  `sales_qty` 그대로)만 읽으므로, 전날 `compute_row` 실행 여부와 무관하게
+  결과가 같아야 한다.
 - `avg_sales_14d`가 대상일을 제외한 직전 14일만으로 계산되는지(데이터 누수
   방지 원칙 유지).
 - `init_order_recommendation_tables`가 신규 DB에서 `previous_day_sales_ratio`
-  없이, `avg_sales_14d` 포함해서 테이블을 만드는지. `_ensure_avg_sales_14d_column`
-  이 이미 있는 컬럼엔 재실행해도 안전한지(idempotent).
+  없이, `avg_sales_14d` 포함해서 테이블을 만드는지.
+- `avg_sales_14d` 컬럼이 없는 구형 테이블(수동으로 축소된 스키마로 생성)에 대해
+  `init_order_recommendation_tables`를 실행하면 컬럼이 추가되는지.
+- 이미 `avg_sales_14d`가 있는 상태에서 `init_order_recommendation_tables`를 다시
+  실행해도 에러 없이 그대로인지(idempotent).
