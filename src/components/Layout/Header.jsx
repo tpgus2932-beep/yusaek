@@ -1,7 +1,8 @@
-import { Bell, DatabaseZap, Key, Warehouse } from 'lucide-react';
+import { Bell, CalendarDays, DatabaseZap, Key, Warehouse } from 'lucide-react';
 import { useState } from 'react';
 import styles from './Header.module.css';
 import { COLLAB_API_BASE, LOCAL_API_BASE, getAuthHeaders } from '../../lib/api';
+import EventCalendarModal from '../EventCalendar/EventCalendarModal';
 
 const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode }) => {
     const initials = displayName ? displayName.slice(0, 2) : 'JD';
@@ -16,6 +17,7 @@ const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode })
     const [ezadminLoading, setEzadminLoading] = useState(false);
     const [ezadminMsg, setEzadminMsg] = useState('');
     const [ezadminMsgType, setEzadminMsgType] = useState('');
+    const [showEventCalendar, setShowEventCalendar] = useState(false);
 
     const saveProfile = async () => {
         setError('');
@@ -132,6 +134,14 @@ const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode })
             </div>
 
             <div className={styles.profileSection}>
+                <button
+                    type="button"
+                    className={styles.eventCalendarButton}
+                    onClick={() => setShowEventCalendar(true)}
+                >
+                    <CalendarDays size={15} />
+                    행사 일정
+                </button>
                 <a
                     href="/attendance"
                     target="_blank"
@@ -255,6 +265,7 @@ const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode })
                     </div>
                 </div>
             )}
+            {showEventCalendar ? <EventCalendarModal onClose={() => setShowEventCalendar(false)} /> : null}
         </header>
     );
 };
