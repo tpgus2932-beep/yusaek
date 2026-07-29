@@ -65,6 +65,8 @@ DEFAULT_WEIGHT_PREVIOUS_DAY = 0.25
 DEFAULT_WEIGHT_AVG_7D = 0.25
 DEFAULT_WEIGHT_AVG_14D = 0.15
 
+MODEL_VERSION = "weighted_v1"
+
 
 def calc_expected_sales_today(
     weekday_average_sales,
@@ -181,6 +183,8 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
             previous_day_sales_qty = ?,
             sales_7d = ?, sales_14d = ?, avg_sales_7d = ?, avg_sales_14d = ?,
             weekday_average_sales = ?, expected_sales_today = ?,
+            model_version = ?, model_weight_weekday = ?, model_weight_previous_day = ?,
+            model_weight_avg_7d = ?, model_weight_avg_14d = ?,
             recommended_qty = ?,
             ad_budget_change = ?, ad_budget_change_rate = ?,
             wish_count_change = ?, wish_count_change_rate = ?,
@@ -191,6 +195,8 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
             previous_day_sales_qty,
             sales_7d, sales_14d, avg_sales_7d, avg_sales_14d,
             weekday_average_sales, expected_sales_today,
+            MODEL_VERSION, weight_weekday_average, weight_previous_day,
+            weight_avg_7d, weight_avg_14d,
             recommended_qty,
             ad_budget_change, ad_budget_change_rate,
             wish_count_change, wish_count_change_rate,

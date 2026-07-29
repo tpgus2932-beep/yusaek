@@ -308,6 +308,11 @@ def test_compute_row_full_pipeline_with_default_settings():
     assert row["previous_day_sales_qty"] == 20
     assert row["expected_sales_today"] == pytest.approx(13.15)
     assert row["recommended_qty"] == 6  # ceil(13.15)-5-3
+    assert row["model_version"] == "weighted_v1"
+    assert row["model_weight_weekday"] == pytest.approx(0.35)
+    assert row["model_weight_previous_day"] == pytest.approx(0.25)
+    assert row["model_weight_avg_7d"] == pytest.approx(0.25)
+    assert row["model_weight_avg_14d"] == pytest.approx(0.15)
     conn.close()
 
 
@@ -340,6 +345,11 @@ def test_compute_row_respects_custom_weight_and_recommendation_settings():
     assert row["expected_sales_today"] == pytest.approx(15.0)
     # target=15*2=30, ceil(30+1)=31, 31-5-3=23
     assert row["recommended_qty"] == 23
+    assert row["model_version"] == "weighted_v1"
+    assert row["model_weight_weekday"] == pytest.approx(0.5)
+    assert row["model_weight_previous_day"] == pytest.approx(0.5)
+    assert row["model_weight_avg_7d"] == pytest.approx(0.0)
+    assert row["model_weight_avg_14d"] == pytest.approx(0.0)
     conn.close()
 
 
