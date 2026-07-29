@@ -82,6 +82,7 @@ from services.returns_utils import (
     _clean_qty,
     _load_return_state_from_payload,
     _lowercase_size_words,
+    _migrate_return_saved_states_to_snapshots,
     _normalize_key,
     _normalize_spaces,
     _option_slash_to_space,
@@ -1007,6 +1008,15 @@ def _init_return_saved_snapshots():
 
 
 _init_return_saved_snapshots()
+
+
+def _run_return_saved_states_migration():
+    conn = _get_shared_db()
+    _migrate_return_saved_states_to_snapshots(conn)
+    conn.close()
+
+
+_run_return_saved_states_migration()
 
 
 def _init_delivery_memos():

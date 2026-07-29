@@ -207,6 +207,27 @@ def _load_return_state_from_payload(state: ReturnState, payload: dict | None):
         state.next_id = 1
 
 
+def _migrate_return_saved_states_to_snapshots(conn):
+    """Copy each user's old single-slot snapshot (return_saved_states) into
+    the new multi-snapshot table, skipping users who already have at least
+    one snapshot there. Idempotent — safe to call on every startup."""
+    old_rows = conn.execute(
+        "SELECT username, payload, updated_at FROM return_saved_states"
+    ).fetchall()
+    for row in old_rows:
+        exists = conn.execute(
+            "SELECT 1 FROM return_saved_snapshots WHERE username = ? LIMIT 1",
+            (row["username"],),
+        ).fetchone()
+        if exists:
+            continue
+        conn.execute(
+            "INSERT INTO return_saved_snapshots (username, payload, updated_at) VALUES (?, ?, ?)",
+            (row["username"], row["payload"], row["updated_at"]),
+        )
+    conn.commit()
+
+
 def _return_status(state: ReturnState) -> dict:
     path = state.cost_base_path
     exists = path.exists()
