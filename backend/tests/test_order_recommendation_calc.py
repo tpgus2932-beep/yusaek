@@ -9,7 +9,7 @@ from services.order_recommendation_calc import (
     calc_sales_window,
     calc_weekday_average_sales,
 )
-from services.order_recommendation_store import ensure_row, init_order_recommendation_tables
+from services.order_recommendation_store import ensure_row, get_row, init_order_recommendation_tables
 
 
 def _make_db_factory():
@@ -292,3 +292,173 @@ def test_change_rate_none_when_previous_is_zero():
     change, rate = calc_change_and_rate(5, 0)
     assert change == 5
     assert rate is None
+
+
+from services.order_recommendation_calc import compute_all, compute_row
+
+
+def _seed_weekday_history(conn, code, dates_and_qty):
+    for date, qty in dates_and_qty:
+        _seed(conn, date, code, sales_qty=qty)
+
+
+def test_compute_row_full_pipeline_with_default_settings():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+
+    _seed_weekday_history(conn, code, [
+        ("2026-07-22", 10), ("2026-07-15", 10), ("2026-07-08", 10), ("2026-07-01", 10),
+    ])
+    ensure_row(conn, "2026-07-28", code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = 12, weekday_average_sales = 8 "
+        "WHERE date = ? AND yusas_code = ?",
+        ("2026-07-28", code),
+    )
+    ensure_row(conn, "2026-07-29", code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET stock_qty = 5, incoming_qty = 3 "
+        "WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", code),
+    )
+    conn.commit()
+
+    compute_row(conn, code, "2026-07-29", get_setting=lambda key: None)
+
+    row = get_row(conn, "2026-07-29", code)
+    assert row["weekday_average_sales"] == 10.0
+    assert row["previous_day_sales_qty"] == 12
+    assert row["previous_day_sales_ratio"] == 1.5
+    assert row["expected_sales_today"] == 12.0  # 10 * 1.2
+    assert row["recommended_qty"] == 4  # ceil(12)-5-3
+    conn.close()
+
+
+def test_compute_row_respects_custom_settings():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+
+    _seed_weekday_history(conn, code, [
+        ("2026-07-22", 10), ("2026-07-15", 10), ("2026-07-08", 10), ("2026-07-01", 10),
+    ])
+    ensure_row(conn, "2026-07-28", code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = 12, weekday_average_sales = 8 "
+        "WHERE date = ? AND yusas_code = ?",
+        ("2026-07-28", code),
+    )
+    ensure_row(conn, "2026-07-29", code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET stock_qty = 5, incoming_qty = 3 "
+        "WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", code),
+    )
+    conn.commit()
+
+    settings = {
+        "order_recommendation_blend_ratio": "0.5",
+        "order_recommendation_coverage_days": "2",
+        "order_recommendation_safety_stock_qty": "1",
+    }
+    compute_row(conn, code, "2026-07-29", get_setting=lambda key: settings.get(key))
+
+    row = get_row(conn, "2026-07-29", code)
+    assert row["expected_sales_today"] == 12.5  # 10 * (1 + 0.5*0.5)
+    assert row["recommended_qty"] == 18  # ceil(25+1)-5-3
+    conn.close()
+
+
+def test_compute_row_recommended_qty_null_when_stock_missing():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+    _seed_weekday_history(conn, code, [
+        ("2026-07-22", 10), ("2026-07-15", 10), ("2026-07-08", 10), ("2026-07-01", 10),
+    ])
+    ensure_row(conn, "2026-07-29", code)  # stock_qty/incoming_qty 둘 다 NULL
+    conn.commit()
+
+    compute_row(conn, code, "2026-07-29", get_setting=lambda key: None)
+
+    row = get_row(conn, "2026-07-29", code)
+    assert row["expected_sales_today"] == 10.0  # ratio 기본 1.0 -> flow_adjustment 1.0
+    assert row["recommended_qty"] is None
+    conn.close()
+
+
+def test_compute_row_does_nothing_when_row_missing():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    compute_row(conn, "YUSAS_NOT_SEEDED", "2026-07-29", get_setting=lambda key: None)
+    assert get_row(conn, "2026-07-29", "YUSAS_NOT_SEEDED") is None
+    conn.close()
+
+
+def test_compute_all_processes_every_code_for_the_date():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    ensure_row(conn, "2026-07-29", "YUSAS00001")
+    ensure_row(conn, "2026-07-29", "YUSAS00002")
+    conn.commit()
+    conn.close()
+
+    count = compute_all(get_db, "2026-07-29", get_setting=lambda key: None)
+    assert count == 2
+
+
+def test_compute_row_is_order_independent():
+    """D+1을 계산하기 전에 D를 먼저 계산했는지 여부와 무관하게, D+1의 결과는
+    항상 같아야 한다 (previous_day_sales_ratio가 캐시에만 의존하면 깨지는 시나리오)."""
+    code = "YUSAS00001"
+
+    def _seed_both_days(conn):
+        # D=2026-07-29(수) 요일 이력
+        _seed_weekday_history(conn, code, [
+            ("2026-07-22", 10), ("2026-07-15", 10), ("2026-07-08", 10), ("2026-07-01", 10),
+        ])
+        # D+1=2026-07-30(목) 요일 이력
+        _seed_weekday_history(conn, code, [
+            ("2026-07-23", 6), ("2026-07-16", 6), ("2026-07-09", 6), ("2026-07-02", 6),
+        ])
+        ensure_row(conn, "2026-07-29", code)
+        conn.execute(
+            "UPDATE order_recommendation_daily SET sales_qty = 12, stock_qty = 1, incoming_qty = 0 "
+            "WHERE date = ? AND yusas_code = ?",
+            ("2026-07-29", code),
+        )
+        ensure_row(conn, "2026-07-30", code)
+        conn.execute(
+            "UPDATE order_recommendation_daily SET stock_qty = 1, incoming_qty = 0 "
+            "WHERE date = ? AND yusas_code = ?",
+            ("2026-07-30", code),
+        )
+        conn.commit()
+
+    # Run A: D를 먼저 계산한 뒤 D+1 계산
+    get_db_a, _keep_alive_a = _make_db_factory()
+    init_order_recommendation_tables(get_db_a)
+    conn_a = get_db_a()
+    _seed_both_days(conn_a)
+    compute_row(conn_a, code, "2026-07-29", get_setting=lambda key: None)
+    compute_row(conn_a, code, "2026-07-30", get_setting=lambda key: None)
+    row_a = get_row(conn_a, "2026-07-30", code)
+
+    # Run B: D는 계산하지 않고 D+1만 바로 계산
+    get_db_b, _keep_alive_b = _make_db_factory()
+    init_order_recommendation_tables(get_db_b)
+    conn_b = get_db_b()
+    _seed_both_days(conn_b)
+    compute_row(conn_b, code, "2026-07-30", get_setting=lambda key: None)
+    row_b = get_row(conn_b, "2026-07-30", code)
+
+    assert row_a["expected_sales_today"] == row_b["expected_sales_today"] == 6.48
+    assert row_a["recommended_qty"] == row_b["recommended_qty"] == 6
+    conn_a.close()
+    conn_b.close()

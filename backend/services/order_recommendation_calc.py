@@ -100,3 +100,89 @@ def calc_change_and_rate(today_value, previous_value):
     if previous_value == 0:
         return change, None
     return change, change / previous_value
+
+
+DEFAULT_BLEND_RATIO = 0.4
+DEFAULT_COVERAGE_DAYS = 1.0
+DEFAULT_SAFETY_STOCK_QTY = 0.0
+
+
+def _setting_float(get_setting, key: str, default: float) -> float:
+    raw = get_setting(key)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return float(raw)
+
+
+def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
+    row = get_row(conn, date, yusas_code)
+    if row is None:
+        return
+
+    prev_date_str = previous_date(date)
+    prev_row = get_row(conn, prev_date_str, yusas_code)
+    previous_day_sales_qty = prev_row["sales_qty"] if prev_row is not None else None
+
+    sales_7d, count_7d = calc_sales_window(conn, yusas_code, date, 7)
+    sales_14d, _count_14d = calc_sales_window(conn, yusas_code, date, 14)
+    avg_sales_7d = (sales_7d / count_7d) if sales_7d is not None and count_7d else None
+
+    weekday_average_sales = calc_weekday_average_sales(conn, yusas_code, date)
+    previous_day_sales_ratio = calc_previous_day_sales_ratio(conn, yusas_code, date, previous_day_sales_qty)
+
+    blend_ratio = _setting_float(get_setting, "order_recommendation_blend_ratio", DEFAULT_BLEND_RATIO)
+    coverage_days = _setting_float(get_setting, "order_recommendation_coverage_days", DEFAULT_COVERAGE_DAYS)
+    safety_stock_qty = _setting_float(get_setting, "order_recommendation_safety_stock_qty", DEFAULT_SAFETY_STOCK_QTY)
+
+    expected_sales_today = calc_expected_sales_today(weekday_average_sales, previous_day_sales_ratio, blend_ratio)
+    recommended_qty = calc_recommended_qty(
+        expected_sales_today, row["stock_qty"], row["incoming_qty"], coverage_days, safety_stock_qty
+    )
+
+    prev_ad_budget = prev_row["ad_budget"] if prev_row is not None else None
+    prev_wish_count = prev_row["wish_count"] if prev_row is not None else None
+    prev_cart_count = prev_row["cart_count"] if prev_row is not None else None
+    ad_budget_change, ad_budget_change_rate = calc_change_and_rate(row["ad_budget"], prev_ad_budget)
+    wish_count_change, wish_count_change_rate = calc_change_and_rate(row["wish_count"], prev_wish_count)
+    cart_count_change, cart_count_change_rate = calc_change_and_rate(row["cart_count"], prev_cart_count)
+
+    conn.execute(
+        """
+        UPDATE order_recommendation_daily SET
+            previous_day_sales_qty = ?,
+            sales_7d = ?, sales_14d = ?, avg_sales_7d = ?,
+            weekday_average_sales = ?, previous_day_sales_ratio = ?, expected_sales_today = ?,
+            recommended_qty = ?,
+            ad_budget_change = ?, ad_budget_change_rate = ?,
+            wish_count_change = ?, wish_count_change_rate = ?,
+            cart_count_change = ?, cart_count_change_rate = ?
+        WHERE date = ? AND yusas_code = ?
+        """,
+        (
+            previous_day_sales_qty,
+            sales_7d, sales_14d, avg_sales_7d,
+            weekday_average_sales, previous_day_sales_ratio, expected_sales_today,
+            recommended_qty,
+            ad_budget_change, ad_budget_change_rate,
+            wish_count_change, wish_count_change_rate,
+            cart_count_change, cart_count_change_rate,
+            date, yusas_code,
+        ),
+    )
+    conn.commit()
+
+
+def compute_all(get_db, date: str, get_setting) -> int:
+    conn = get_db()
+    try:
+        codes = [
+            r["yusas_code"]
+            for r in conn.execute(
+                "SELECT yusas_code FROM order_recommendation_daily WHERE date = ?", (date,)
+            ).fetchall()
+        ]
+        for code in codes:
+            compute_row(conn, code, date, get_setting)
+        return len(codes)
+    finally:
+        conn.close()
