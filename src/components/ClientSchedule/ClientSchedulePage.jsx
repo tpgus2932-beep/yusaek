@@ -724,10 +724,6 @@ export default function ClientSchedulePage() {
 
   const handleExportScheduleToEzadmin = async () => {
     const scheduled = sheet2Rows.filter((row) => toDisplayText(row.D));
-    if (scheduled.length === 0) {
-      setStatus('내보낼 일정이 없습니다.');
-      return;
-    }
 
     const missingCode = scheduled.filter((row) => !toDisplayText(row.productCode));
     if (missingCode.length > 0) {
