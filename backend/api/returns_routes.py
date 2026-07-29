@@ -404,7 +404,7 @@ def build_returns_router(
         state = get_return_state(user)
         conn = get_db()
         row = conn.execute(
-            "SELECT updated_at FROM return_saved_states WHERE username = ?",
+            "SELECT updated_at FROM return_saved_snapshots WHERE username = ? ORDER BY id DESC LIMIT 1",
             (user,),
         ).fetchone()
         conn.close()
@@ -427,32 +427,52 @@ def build_returns_router(
         updated_at = datetime.now(timezone.utc).isoformat()
         conn = get_db()
         conn.execute(
-            """
-            INSERT INTO return_saved_states (username, payload, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(username) DO UPDATE SET
-                payload = excluded.payload,
-                updated_at = excluded.updated_at
-            """,
+            "INSERT INTO return_saved_snapshots (username, payload, updated_at) VALUES (?, ?, ?)",
             (user, payload, updated_at),
+        )
+        conn.execute(
+            """
+            DELETE FROM return_saved_snapshots
+            WHERE username = ? AND id NOT IN (
+                SELECT id FROM return_saved_snapshots WHERE username = ? ORDER BY id DESC LIMIT 3
+            )
+            """,
+            (user, user),
         )
         conn.commit()
         conn.close()
         return {"ok": True, "saved_at": updated_at}
 
-    @router.post("/returns/load")
-    def returns_load(user: str = Depends(get_current_user)):
+    @router.get("/returns/saves")
+    def returns_saves(user: str = Depends(get_current_user)):
         conn = get_db()
-        row = conn.execute(
-            "SELECT payload, updated_at FROM return_saved_states WHERE username = ?",
+        rows = conn.execute(
+            "SELECT id, updated_at FROM return_saved_snapshots WHERE username = ? ORDER BY id DESC LIMIT 3",
             (user,),
-        ).fetchone()
+        ).fetchall()
+        conn.close()
+        return {"ok": True, "items": [{"id": r["id"], "updated_at": r["updated_at"]} for r in rows]}
+
+    @router.post("/returns/load")
+    def returns_load(payload: dict = Body(None), user: str = Depends(get_current_user)):
+        snapshot_id = (payload or {}).get("id")
+        conn = get_db()
+        if snapshot_id is not None:
+            row = conn.execute(
+                "SELECT payload, updated_at FROM return_saved_snapshots WHERE id = ? AND username = ?",
+                (snapshot_id, user),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT payload, updated_at FROM return_saved_snapshots WHERE username = ? ORDER BY id DESC LIMIT 1",
+                (user,),
+            ).fetchone()
         conn.close()
         if not row:
             raise HTTPException(status_code=404, detail="임시저장된 반품 상태가 없습니다.")
         state = get_return_state(user)
-        payload = json.loads(row["payload"])
-        load_return_state_from_payload(state, payload)
+        stored_payload = json.loads(row["payload"])
+        load_return_state_from_payload(state, stored_payload)
         return {
             "ok": True,
             "saved_at": row["updated_at"],

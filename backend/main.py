@@ -990,6 +990,25 @@ def _init_return_saved_states():
 _init_return_saved_states()
 
 
+def _init_return_saved_snapshots():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS return_saved_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_return_saved_snapshots()
+
+
 def _init_delivery_memos():
     conn = _get_db()
     conn.execute(
