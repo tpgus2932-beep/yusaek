@@ -46,6 +46,8 @@ from api.auth_admin_routes import build_auth_admin_router
 from api.collab_routes import build_collab_router
 from api.barcode_routes import build_barcode_router
 from api.inventory_dashboard_routes import build_inventory_dashboard_router
+from api.order_recommendation_routes import build_order_recommendation_router
+from services.order_recommendation_store import init_order_recommendation_tables
 from api.amood_routes import build_amood_router
 from api.returns_routes import build_returns_router
 from api.order_routes import build_order_router
@@ -840,6 +842,8 @@ def _init_request_attachments():
 
 _init_request_attachments()
 
+init_order_recommendation_tables(_get_shared_db)
+
 
 def _init_shared_files():
     conn = _get_db()
@@ -1414,6 +1418,13 @@ app.include_router(
         get_setting=_get_setting,
         normalize_to_yusas=normalize_to_yusas,
         get_shared_incoming_counts=_get_shared_incoming_counts,
+    )
+)
+app.include_router(
+    build_order_recommendation_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        get_setting=_get_setting,
     )
 )
 
