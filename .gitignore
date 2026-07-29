@@ -64,3 +64,6 @@ backend/out.txt
 
 # Runtime uploads
 backend/uploads/
+
+# Git worktrees (superpowers:using-git-worktrees)
+.worktrees/
