@@ -91,3 +91,12 @@ def calc_recommended_qty(expected_sales_today, stock_qty, incoming_qty, coverage
         return None
     target_sales = expected_sales_today * coverage_days
     return max(0, math.ceil(target_sales + safety_stock_qty) - stock_qty - incoming_qty)
+
+
+def calc_change_and_rate(today_value, previous_value):
+    if today_value is None or previous_value is None:
+        return None, None
+    change = today_value - previous_value
+    if previous_value == 0:
+        return change, None
+    return change, change / previous_value

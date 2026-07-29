@@ -267,3 +267,28 @@ def test_recommended_qty_applies_coverage_days_and_safety_stock():
     # target_sales = 10 * 3 = 30, ceil(30+5)=35, 35-2-1=32
     result = calc_recommended_qty(10.0, 2, 1, 3, 5)
     assert result == 32
+
+
+from services.order_recommendation_calc import calc_change_and_rate
+
+
+def test_change_and_rate_normal_increase():
+    assert calc_change_and_rate(15, 10) == (5, 0.5)
+
+
+def test_change_and_rate_allows_negative_change():
+    assert calc_change_and_rate(5, 10) == (-5, -0.5)
+
+
+def test_change_and_rate_none_when_today_missing():
+    assert calc_change_and_rate(None, 10) == (None, None)
+
+
+def test_change_and_rate_none_when_previous_missing():
+    assert calc_change_and_rate(10, None) == (None, None)
+
+
+def test_change_rate_none_when_previous_is_zero():
+    change, rate = calc_change_and_rate(5, 0)
+    assert change == 5
+    assert rate is None
