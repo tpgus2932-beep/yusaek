@@ -1297,6 +1297,9 @@ body { background: #fff; font-family: sans-serif; }
     const [loadSnapshotModalOpen, setLoadSnapshotModalOpen] = useState(false);
     const [snapshotList, setSnapshotList] = useState([]);
     const [snapshotListLoading, setSnapshotListLoading] = useState(false);
+    const [snapshotAccounts, setSnapshotAccounts] = useState([]);
+    const [snapshotAccountsLoading, setSnapshotAccountsLoading] = useState(false);
+    const [activeSnapshotAccount, setActiveSnapshotAccount] = useState('');
 
     const formatSnapshotTime = (iso) => {
         if (!iso) return '';
@@ -1320,11 +1323,10 @@ body { background: #fff; font-family: sans-serif; }
         }
     };
 
-    const openLoadSnapshotModal = async () => {
-        setLoadSnapshotModalOpen(true);
+    const fetchSnapshotsForAccount = async (username) => {
         setSnapshotListLoading(true);
         try {
-            const res = await fetch(`${API}/returns/saves`, { headers: getAuthHeaders() });
+            const res = await fetch(`${API}/returns/saves?username=${encodeURIComponent(username)}`, { headers: getAuthHeaders() });
             const data = await res.json().catch(() => ({}));
             setSnapshotList(Array.isArray(data?.items) ? data.items : []);
         } catch {
@@ -1334,9 +1336,36 @@ body { background: #fff; font-family: sans-serif; }
         }
     };
 
+    const selectSnapshotAccount = (username) => {
+        setActiveSnapshotAccount(username);
+        fetchSnapshotsForAccount(username);
+    };
+
+    const openLoadSnapshotModal = async () => {
+        setLoadSnapshotModalOpen(true);
+        setSnapshotAccountsLoading(true);
+        setSnapshotList([]);
+        setActiveSnapshotAccount('');
+        try {
+            const res = await fetch(`${API}/returns/saves-accounts`, { headers: getAuthHeaders() });
+            const data = await res.json().catch(() => ({}));
+            const accounts = Array.isArray(data?.accounts) ? data.accounts : [];
+            setSnapshotAccounts(accounts);
+            if (accounts.length) {
+                await selectSnapshotAccount(accounts[0].username);
+            }
+        } catch {
+            setSnapshotAccounts([]);
+        } finally {
+            setSnapshotAccountsLoading(false);
+        }
+    };
+
     const closeLoadSnapshotModal = () => {
         setLoadSnapshotModalOpen(false);
         setSnapshotList([]);
+        setSnapshotAccounts([]);
+        setActiveSnapshotAccount('');
     };
 
     const loadSnapshotById = async (id) => {
@@ -2891,6 +2920,30 @@ body { background: #fff; font-family: sans-serif; }
                             <button type="button" onClick={closeLoadSnapshotModal} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>×</button>
                         </div>
                         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {snapshotAccountsLoading ? (
+                                <div>계정 목록 불러오는 중...</div>
+                            ) : snapshotAccounts.length > 1 ? (
+                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', borderBottom: '1px solid var(--border-color, #e5e7eb)', paddingBottom: 8 }}>
+                                    {snapshotAccounts.map((acc) => (
+                                        <button
+                                            key={acc.username}
+                                            type="button"
+                                            onClick={() => selectSnapshotAccount(acc.username)}
+                                            style={{
+                                                padding: '4px 10px',
+                                                borderRadius: 999,
+                                                border: '1px solid var(--border-color, #e5e7eb)',
+                                                background: acc.username === activeSnapshotAccount ? 'var(--accent-color, #2563eb)' : 'transparent',
+                                                color: acc.username === activeSnapshotAccount ? '#fff' : 'inherit',
+                                                cursor: 'pointer',
+                                                fontSize: '0.8rem',
+                                            }}
+                                        >
+                                            {acc.username}
+                                        </button>
+                                    ))}
+                                </div>
+                            ) : null}
                             {snapshotListLoading ? (
                                 <div>목록 불러오는 중...</div>
                             ) : snapshotList.length === 0 ? (
