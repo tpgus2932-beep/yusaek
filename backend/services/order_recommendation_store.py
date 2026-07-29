@@ -49,7 +49,18 @@ def init_order_recommendation_tables(get_db) -> None:
             weekday_average_sales REAL,
             expected_sales_today REAL,
 
+            model_version TEXT,
+            model_weight_weekday REAL,
+            model_weight_previous_day REAL,
+            model_weight_avg_7d REAL,
+            model_weight_avg_14d REAL,
+
             recommended_qty INTEGER,
+
+            forecast_error REAL,
+            absolute_error REAL,
+            within_20_percent INTEGER,
+            evaluated_at TEXT,
 
             confirmed_qty INTEGER,
             override_reason TEXT,
@@ -64,6 +75,7 @@ def init_order_recommendation_tables(get_db) -> None:
         """
     )
     _ensure_avg_sales_14d_column(conn)
+    _ensure_forecast_accuracy_columns(conn)
     conn.commit()
     conn.close()
 
@@ -72,6 +84,26 @@ def _ensure_avg_sales_14d_column(conn) -> None:
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()]
     if "avg_sales_14d" not in cols:
         conn.execute("ALTER TABLE order_recommendation_daily ADD COLUMN avg_sales_14d REAL")
+
+
+_FORECAST_ACCURACY_COLUMNS = [
+    ("model_version", "TEXT"),
+    ("model_weight_weekday", "REAL"),
+    ("model_weight_previous_day", "REAL"),
+    ("model_weight_avg_7d", "REAL"),
+    ("model_weight_avg_14d", "REAL"),
+    ("forecast_error", "REAL"),
+    ("absolute_error", "REAL"),
+    ("within_20_percent", "INTEGER"),
+    ("evaluated_at", "TEXT"),
+]
+
+
+def _ensure_forecast_accuracy_columns(conn) -> None:
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()]
+    for column, ddl_type in _FORECAST_ACCURACY_COLUMNS:
+        if column not in cols:
+            conn.execute(f"ALTER TABLE order_recommendation_daily ADD COLUMN {column} {ddl_type}")
 
 
 def get_row(conn, date: str, yusas_code: str):
