@@ -1995,6 +1995,14 @@ body { background: #fff; font-family: sans-serif; }
                                     >
                                         {labelPrintLoading ? '처리 중...' : `바코드 출력 (${selectedSeller.size}건 선택)`}
                                     </button>
+                                    <button
+                                        type="button"
+                                        className={pageStyles.primaryBtn}
+                                        onClick={() => handleRegatherExecute(queues.seller.filter((i) => selectedSeller.has(i.id)))}
+                                        disabled={regatherExecuteLoading || selectedSeller.size === 0}
+                                    >
+                                        {regatherExecuteLoading ? '처리 중...' : `오회수 (${selectedSeller.size}건 선택)`}
+                                    </button>
                                 </>
                             ), true, 'seller')}
                             {activeTab === 'customer' && (() => {
