@@ -229,6 +229,113 @@ def build_returns_router(
         book.save(buf)
         return buf.getvalue(), len(rows)
 
+    def _require_all_onebe_matched(df: pd.DataFrame) -> None:
+        """상품코드가 비어있는(매칭 안 된) 행이 하나라도 있으면 실입고/입고대기를
+        전체 차단한다 - 일부만 조용히 건너뛰면 재고가 덜 반영된 걸 놓치기
+        쉬우므로, 매칭을 마저 끝내야 진행할 수 있게 한다."""
+        unmatched_count = 0
+        for _, row in df.iterrows():
+            code = str(row.get("상품코드") or "").strip()
+            if not code or code.lower() in ("nan", "none"):
+                unmatched_count += 1
+        if unmatched_count:
+            raise HTTPException(
+                status_code=400,
+                detail=f"상품코드 매칭이 안 된 행이 {unmatched_count}건 있습니다. 먼저 매칭을 완료한 뒤 다시 시도해주세요.",
+            )
+
+    def _build_onebe_ingo_xls_bytes(df: pd.DataFrame) -> tuple[bytes, int]:
+        """EZAdmin I200(재고조정) 입고처리 업로드용 엑셀.
+
+        원베양식 컬럼(상품코드/입고수량/요청메모)을 EZAdmin이 요구하는
+        헤더(상품코드/작업수량/메모)로 매핑한다."""
+        if df is None or df.empty:
+            raise HTTPException(status_code=400, detail="원베양식 데이터가 없습니다.")
+        if "상품코드" not in df.columns:
+            raise HTTPException(status_code=400, detail="원베양식에 상품코드 열이 없습니다.")
+        _require_all_onebe_matched(df)
+
+        qty_col = "입고수량" if "입고수량" in df.columns else "수량" if "수량" in df.columns else "요청수량"
+        if qty_col not in df.columns:
+            raise HTTPException(status_code=400, detail="원베양식에 수량 열이 없습니다.")
+        memo_col = "요청메모" if "요청메모" in df.columns else None
+
+        rows: list[tuple[str, int, str]] = []
+        for _, row in df.iterrows():
+            code = str(row.get("상품코드") or "").strip()
+            if not code or code.lower() in ("nan", "none"):
+                continue
+
+            raw_qty = row.get(qty_col)
+            try:
+                qty = int(float(str(raw_qty).replace(",", "").strip()))
+            except Exception:
+                qty = 0
+            if qty <= 0:
+                continue
+
+            memo = str(row.get(memo_col) or "").strip() if memo_col else ""
+            if memo.lower() in ("nan", "none"):
+                memo = ""
+            rows.append((code, qty, memo))
+
+        if not rows:
+            raise HTTPException(status_code=400, detail="상품코드와 입고수량이 있는 원베양식 행이 없습니다.")
+
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("입고처리")
+        headers = ["상품코드", "작업수량", "메모"]
+        for col_idx, header in enumerate(headers):
+            sheet.write(0, col_idx, header)
+        for row_idx, (code, qty, memo) in enumerate(rows, start=1):
+            sheet.write(row_idx, 0, code)
+            sheet.write(row_idx, 1, qty)
+            sheet.write(row_idx, 2, memo)
+
+        buf = io.BytesIO()
+        book.save(buf)
+        return buf.getvalue(), len(rows)
+
+    def _onebe_real_ingo_items(df: pd.DataFrame) -> list[dict]:
+        """원베양식에서 실입고(EzAdminClient.bulk_receive_stock)용 상품 목록 추출.
+
+        _build_onebe_ingo_xls_bytes와 동일한 컬럼 규칙(상품코드/입고수량 또는
+        수량/요청메모)을 쓴다 - "입고대기"(예약재고, bad=reserve_qty)와 달리
+        여기서는 SDK가 bad="0"(실재고)으로 적용한다."""
+        if df is None or df.empty:
+            raise HTTPException(status_code=400, detail="원베양식 데이터가 없습니다.")
+        if "상품코드" not in df.columns:
+            raise HTTPException(status_code=400, detail="원베양식에 상품코드 열이 없습니다.")
+        _require_all_onebe_matched(df)
+
+        qty_col = "입고수량" if "입고수량" in df.columns else "수량" if "수량" in df.columns else "요청수량"
+        if qty_col not in df.columns:
+            raise HTTPException(status_code=400, detail="원베양식에 수량 열이 없습니다.")
+        memo_col = "요청메모" if "요청메모" in df.columns else None
+
+        items: list[dict] = []
+        for _, row in df.iterrows():
+            code = str(row.get("상품코드") or "").strip()
+            if not code or code.lower() in ("nan", "none"):
+                continue
+
+            raw_qty = row.get(qty_col)
+            try:
+                qty = int(float(str(raw_qty).replace(",", "").strip()))
+            except Exception:
+                qty = 0
+            if qty <= 0:
+                continue
+
+            memo = str(row.get(memo_col) or "").strip() if memo_col else ""
+            if memo.lower() in ("nan", "none"):
+                memo = ""
+            items.append({"product_id": code, "qty": qty, "memo": memo})
+
+        if not items:
+            raise HTTPException(status_code=400, detail="상품코드와 입고수량이 있는 원베양식 행이 없습니다.")
+        return items
+
     def _browser_time_flag(now: datetime) -> str:
         return (
             f"{_BROWSER_WEEKDAYS[now.weekday()]} "
@@ -2251,6 +2358,107 @@ def build_returns_router(
             "sheet_seq": sheet_seq,
             "uploaded_count": upload_count,
         }
+
+    @router.post("/returns/onebe/ingo-daegi")
+    async def returns_onebe_ingo_daegi(user: str = Depends(get_current_user)):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        state = get_return_state(user)
+        upload_xls, upload_count = _build_onebe_ingo_xls_bytes(state.customer_export_df)
+
+        cookies = {"PHPSESSID": phpsessid}
+        ez_headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": f"{_EZADMIN_BASE}/template40.htm?template=I210",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        base_url = f"{_EZADMIN_BASE}/function.htm"
+        now = datetime.now(_KST)
+        ts_ms = str(int(now.timestamp() * 1000))
+
+        try:
+            async with httpx.AsyncClient(timeout=600.0, verify=False, follow_redirects=True) as client:
+                upload_r = await client.post(
+                    base_url,
+                    data={"template": "I200", "action": "upload_new"},
+                    files={
+                        "_file": (
+                            f"onebe_ingodaegi_{ts_ms}.xls",
+                            upload_xls,
+                            "application/vnd.ms-excel",
+                        )
+                    },
+                    cookies=cookies, headers=ez_headers,
+                )
+                if _looks_like_ezadmin_login_page(upload_r, (upload_r.text or "").strip()):
+                    return {"ok": False, "need_session": True}
+                if upload_r.status_code >= 400:
+                    return {"ok": False, "error": f"업로드 실패 (HTTP {upload_r.status_code})"}
+
+                preview_r = await client.post(
+                    base_url,
+                    data={
+                        "_search": "false", "nd": ts_ms, "rows": "2000", "page": "1",
+                        "sidx": "", "sord": "asc", "template": "I200",
+                        "action": "load_template_data_new",
+                    },
+                    cookies=cookies, headers=ez_headers,
+                )
+                try:
+                    preview_r.json()
+                except Exception:
+                    return {"ok": False, "need_session": True}
+
+                apply_r = await client.post(
+                    base_url,
+                    data={
+                        "template": "I200", "action": "apply_new",
+                        "bad": "reserve_qty", "type": "in",
+                        "move_warehouse": "0", "save_stock": "0",
+                        "stock_tag": "", "timeFlag": _browser_time_flag(now),
+                    },
+                    cookies=cookies, headers=ez_headers,
+                )
+                try:
+                    apply_data = apply_r.json()
+                except Exception:
+                    return {"ok": False, "error": f"입고처리 응답 파싱 실패: {apply_r.text[:500]}"}
+        except httpx.HTTPError as exc:
+            return {"ok": False, "error": f"EZAdmin 요청 실패: {exc}"}
+
+        if str(apply_data.get("error")) not in ("0", ""):
+            return {"ok": False, "error": apply_data.get("msg") or "입고처리 실패", "apply_response": apply_data}
+
+        return {"ok": True, "count": upload_count, "apply_response": apply_data}
+
+    @router.post("/returns/onebe/real-ingo")
+    async def returns_onebe_real_ingo(user: str = Depends(get_current_user)):
+        """원베양식 상품을 EZAdmin I200 실입고(bad=0, 실재고) 처리한다.
+
+        위 ingo-daegi(입고대기, bad=reserve_qty)와는 별개 기능 - 예약재고가
+        아니라 실제 재고 수량을 바로 늘린다. EzAdminClient.bulk_receive_stock가
+        업로드->미리보기->확정 3단계를 대신 처리한다."""
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        state = get_return_state(user)
+        items = _onebe_real_ingo_items(state.customer_export_df)
+
+        ez = EzAdminClient(get_setting)
+        try:
+            apply_data = await ez.bulk_receive_stock(items)
+        except EzAdminSessionExpired:
+            return {"ok": False, "need_session": True}
+        except httpx.HTTPError as exc:
+            return {"ok": False, "error": f"EZAdmin 요청 실패: {exc}"}
+
+        if str(apply_data.get("error")) not in ("0", ""):
+            return {"ok": False, "error": apply_data.get("msg") or "입고처리 실패", "apply_response": apply_data}
+
+        return {"ok": True, "count": len(items), "apply_response": apply_data}
 
     @router.post("/returns/onebe/barcode-print")
     async def returns_onebe_barcode_print(payload: dict = Body(...), user=Depends(get_current_user)):
