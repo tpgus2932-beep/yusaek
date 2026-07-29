@@ -822,6 +822,7 @@ body { background: #fff; font-family: sans-serif; }
             let sent = 0;
             const flagsById = {};
             const logEntries = [];
+            const labels = [];
             for (const [idStr, code] of entries) {
                 const id = Number(idStr);
                 const src = selectedItems.find((i) => i.id === id) || {};
@@ -834,6 +835,11 @@ body { background: #fff; font-family: sans-serif; }
                     sent += 1;
                     flagsById[id] = { kimsungil_sent: true, kimsungil_error: undefined };
                     logEntries.push(buildLogEntry(src, '완료'));
+                    labels.push({
+                        title: src.goods_name || src.item_text || '',
+                        option: src.option_raw ? `[${src.option_raw.replace(/\//g, '-')}]` : '',
+                        code,
+                    });
                 } else {
                     const data = await res.json().catch(() => ({}));
                     const errMsg = data?.detail || '전송 실패';
@@ -845,6 +851,7 @@ body { background: #fff; font-family: sans-serif; }
             if (queue === 'seller' || queue === 'exchange_seller') {
                 logProcessingActions(queue, 'kimsungil_send', '김승일보내기', logEntries);
             }
+            if (labels.length) printProductLabels(labels);
             setMessage(`김승일보내기 완료: ${sent}/${entries.length}건`);
         } catch (err) {
             setMessage(err.message || '김승일보내기 실패');
