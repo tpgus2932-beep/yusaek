@@ -25,6 +25,7 @@ import GuidebookPage from './components/Guidebook/GuidebookPage';
 import AmoodSettlement from './components/AmoodSettlement/AmoodSettlement';
 import DBManagerLayout from './components/DBManager/DBManagerLayout';
 import InventoryDashboardPage from './components/InventoryDashboard/InventoryDashboardPage';
+import OrderRecommendationDashboardPage from './components/OrderRecommendation/OrderRecommendationDashboardPage';
 import { COLLAB_API_BASE } from './lib/api';
 
 
@@ -42,7 +43,7 @@ const App = () => {
   const isAttendanceAdminRoute = pathname === '/attendance-admin';
   const isGuidebookRoute = pathname === '/guidebook';
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'dashboard');
-  const [topMode, setTopMode] = useState('home'); // 'home' | 'db-manager' | 'inventory-dashboard'
+  const [topMode, setTopMode] = useState('home'); // 'home' | 'db-manager' | 'inventory-dashboard' | 'order-dashboard'
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [token, setToken] = useState(localStorage.getItem('token'));
   const [authChecked, setAuthChecked] = useState(() => !localStorage.getItem('token'));
@@ -276,6 +277,7 @@ const App = () => {
         {topMode === 'db-manager' && <DBManagerLayout />}
 
         {topMode === 'inventory-dashboard' && <InventoryDashboardPage />}
+        {topMode === 'order-dashboard' && <OrderRecommendationDashboardPage />}
 
         {topMode === 'home' && (
           <>

@@ -1,4 +1,4 @@
-import { Bell, DatabaseZap, Key, Warehouse } from 'lucide-react';
+import { Bell, ClipboardList, DatabaseZap, Key, Warehouse } from 'lucide-react';
 import { useState } from 'react';
 import styles from './Header.module.css';
 import { COLLAB_API_BASE, LOCAL_API_BASE, getAuthHeaders } from '../../lib/api';
@@ -127,6 +127,14 @@ const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode })
                     >
                         <Warehouse size={14} />
                         재고대시보드
+                    </button>
+                    <button
+                        type="button"
+                        className={`${styles.topNavItem} ${topMode === 'order-dashboard' ? styles.topNavItemActive : ''}`}
+                        onClick={() => setTopMode?.('order-dashboard')}
+                    >
+                        <ClipboardList size={14} />
+                        발주대시보드
                     </button>
                 </div>
             </div>
