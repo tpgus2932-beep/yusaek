@@ -48,6 +48,8 @@ from api.barcode_routes import build_barcode_router
 from api.inventory_dashboard_routes import build_inventory_dashboard_router
 from api.order_recommendation_routes import build_order_recommendation_router
 from services.order_recommendation_store import init_order_recommendation_tables
+from services.order_recommendation_collect import register_collector
+from services.order_recommendation_ezadmin_collectors import build_ezadmin_collectors
 from api.amood_routes import build_amood_router
 from api.returns_routes import build_returns_router
 from api.order_routes import build_order_router
@@ -1427,6 +1429,8 @@ app.include_router(
         get_setting=_get_setting,
     )
 )
+for _ez_column, _ez_fn in build_ezadmin_collectors(_get_setting).items():
+    register_collector(_ez_column, _ez_fn)
 
 _sms_router, _enqueue_sms_fn = build_sms_router(
     get_current_user=_get_current_user,
