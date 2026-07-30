@@ -240,6 +240,32 @@ def load_wonbe_option_sno_map() -> dict[str, str]:
     return sno_map
 
 
+def load_wonbe_goods_sno_map() -> dict[str, list[tuple[str, str]]]:
+    """에이블리상품번호(goods_sno) → [(옵션번호, 상품코드), ...] 매핑.
+
+    같은 goods_sno 아래 여러 옵션(색상/사이즈 등)이 서로 다른 상품코드로
+    관리되는 경우를 그룹으로 묶어, 통계 API를 goods_sno 단위로 한 번만
+    호출하면 되도록 한다."""
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute(
+            "SELECT 상품코드, 옵션번호, 에이블리상품번호 FROM wonbe "
+            "WHERE 옵션번호 != '' AND 에이블리상품번호 != ''"
+        ).fetchall()
+    finally:
+        conn.close()
+    goods_map: dict[str, list[tuple[str, str]]] = {}
+    for r in rows:
+        goods_sno = str(r["에이블리상품번호"]).strip()
+        option_sno = str(r["옵션번호"]).strip()
+        code = r["상품코드"]
+        if not goods_sno or not option_sno:
+            continue
+        goods_map.setdefault(goods_sno, []).append((option_sno, code))
+    return goods_map
+
+
 def load_wonbe_product_cost_map() -> dict[str, int]:
     """상품명합 → 원가(int) 매핑. 마진계산(아무드/에이블리 정산) 등에서 원가 조회용."""
     conn = _get_wonbe_db()
