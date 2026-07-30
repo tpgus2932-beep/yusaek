@@ -89,7 +89,13 @@ async def collect_ably_sales_history(get_db, user: str = "_default") -> int:
             # 동시에 여러 개가 기다려도 상관없다. 이렇게 네트워크 대기 중에 이벤트루프가
             # 자유로워져서 진행률 폴링 같은 다른 요청도 그 사이 처리된다.
             async with semaphore:
-                goods_options = await _fetch_goods_sno_stats(client, goods_sno, date)
+                try:
+                    goods_options = await _fetch_goods_sno_stats(client, goods_sno, date)
+                except Exception:
+                    # 네트워크 순단 등으로 이 (goods_sno, date) 하나가 실패해도 asyncio.gather
+                    # 전체를 죽이지 않는다 — 갭필 구조라 다음 실행 때 이 날짜만 자동 재시도된다.
+                    progress["done"] += 1
+                    return
             for opt in goods_options:
                 sno = str(opt.get("goods_option_sno") or "")
                 yusas_code = option_to_code.get(sno)
