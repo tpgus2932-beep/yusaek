@@ -147,6 +147,7 @@ def test_calc_weekday_average_sales_returns_none_when_no_data_at_all():
 
 from services.order_recommendation_calc import (
     calc_change_and_rate,
+    calc_expected_sales_for_coverage,
     calc_expected_sales_today,
     calc_recommended_qty,
 )
@@ -180,32 +181,117 @@ def test_expected_sales_today_equals_single_value_when_only_one_present():
 
 
 def test_recommended_qty_none_when_expected_sales_missing():
-    assert calc_recommended_qty(None, 0, 0, 1, 0) is None
+    assert calc_recommended_qty(None, 0, 0, 0) is None
 
 
 def test_recommended_qty_none_when_stock_missing():
-    assert calc_recommended_qty(10.0, None, 0, 1, 0) is None
+    assert calc_recommended_qty(10.0, None, 0, 0) is None
 
 
 def test_recommended_qty_none_when_incoming_missing():
-    assert calc_recommended_qty(10.0, 0, None, 1, 0) is None
+    assert calc_recommended_qty(10.0, 0, None, 0) is None
 
 
 def test_recommended_qty_uses_ceil_not_round():
-    # target_sales=10.1 -> round()면 10, ceil()이면 11. 발주 부족 방지용 회귀 테스트.
-    result = calc_recommended_qty(10.1, 0, 0, 1, 0)
+    # coverage_period_expected_sales=10.1 -> round()면 10, ceil()이면 11. 발주 부족 방지용 회귀 테스트.
+    result = calc_recommended_qty(10.1, 0, 0, 0)
     assert result == 11
 
 
 def test_recommended_qty_never_negative():
-    result = calc_recommended_qty(5.0, 100, 50, 1, 0)
+    result = calc_recommended_qty(5.0, 100, 50, 0)
     assert result == 0
 
 
-def test_recommended_qty_applies_coverage_days_and_safety_stock():
-    # target_sales = 10 * 3 = 30, ceil(30+5)=35, 35-2-1=32
-    result = calc_recommended_qty(10.0, 2, 1, 3, 5)
-    assert result == 32
+def test_recommended_qty_applies_safety_stock():
+    # ceil(10+5)=15, 15-2-1=12
+    result = calc_recommended_qty(10.0, 2, 1, 5)
+    assert result == 12
+
+
+def test_expected_sales_for_coverage_matches_single_day_when_coverage_is_one():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+    _seed_weekday_history(conn, code, [
+        ("2026-07-22", 10), ("2026-07-15", 10), ("2026-07-08", 10), ("2026-07-01", 10),
+    ])
+    conn.commit()
+
+    result = calc_expected_sales_for_coverage(
+        conn, code, "2026-07-29", 1,
+        previous_day_sales_qty=None, avg_sales_7d=None, avg_sales_14d=None,
+        weight_weekday_average=1.0, weight_previous_day=0.25, weight_avg_7d=0.25, weight_avg_14d=0.15,
+    )
+
+    assert result == pytest.approx(10.0)
+    conn.close()
+
+
+def test_expected_sales_for_coverage_sums_each_days_own_weekday_average():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+    # 2026-07-29(수) 요일평균 10, 2026-07-30(목) 요일평균 20 — 각각 4주치.
+    _seed_weekday_history(conn, code, [
+        ("2026-07-22", 10), ("2026-07-15", 10), ("2026-07-08", 10), ("2026-07-01", 10),
+    ])
+    _seed_weekday_history(conn, code, [
+        ("2026-07-23", 20), ("2026-07-16", 20), ("2026-07-09", 20), ("2026-07-02", 20),
+    ])
+    conn.commit()
+
+    result = calc_expected_sales_for_coverage(
+        conn, code, "2026-07-29", 2,
+        previous_day_sales_qty=None, avg_sales_7d=None, avg_sales_14d=None,
+        weight_weekday_average=1.0, weight_previous_day=0.25, weight_avg_7d=0.25, weight_avg_14d=0.15,
+    )
+
+    # 수요일 10.0 + 목요일 20.0 = 30.0 (다른 3개 신호는 전부 None이라 weekday만 남음)
+    assert result == pytest.approx(30.0)
+    conn.close()
+
+
+def test_expected_sales_for_coverage_rounds_fractional_coverage_days():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+    _seed_weekday_history(conn, code, [
+        ("2026-07-22", 10), ("2026-07-15", 10), ("2026-07-08", 10), ("2026-07-01", 10),
+    ])
+    _seed_weekday_history(conn, code, [
+        ("2026-07-23", 20), ("2026-07-16", 20), ("2026-07-09", 20), ("2026-07-02", 20),
+    ])
+    conn.commit()
+
+    # 1.6 -> round()=2일치로 취급 -> 수요일+목요일 = 30.0
+    result = calc_expected_sales_for_coverage(
+        conn, code, "2026-07-29", 1.6,
+        previous_day_sales_qty=None, avg_sales_7d=None, avg_sales_14d=None,
+        weight_weekday_average=1.0, weight_previous_day=0.25, weight_avg_7d=0.25, weight_avg_14d=0.15,
+    )
+
+    assert result == pytest.approx(30.0)
+    conn.close()
+
+
+def test_expected_sales_for_coverage_none_when_no_data_at_all():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+
+    result = calc_expected_sales_for_coverage(
+        conn, code, "2026-07-29", 2,
+        previous_day_sales_qty=None, avg_sales_7d=None, avg_sales_14d=None,
+        weight_weekday_average=0.35, weight_previous_day=0.25, weight_avg_7d=0.25, weight_avg_14d=0.15,
+    )
+
+    assert result is None
+    conn.close()
 
 
 def test_change_and_rate_normal_increase():
@@ -335,7 +421,6 @@ def test_compute_row_respects_custom_weight_and_recommendation_settings():
         "order_recommendation_weight_previous_day": "0.5",
         "order_recommendation_weight_avg_7d": "0",
         "order_recommendation_weight_avg_14d": "0",
-        "order_recommendation_coverage_days": "2",
         "order_recommendation_safety_stock_qty": "1",
     }
     compute_row(conn, code, "2026-07-29", get_setting=lambda key: settings.get(key))
@@ -343,13 +428,52 @@ def test_compute_row_respects_custom_weight_and_recommendation_settings():
     row = get_row(conn, "2026-07-29", code)
     # (10*.5 + 20*.5) / (.5+.5) = 15.0
     assert row["expected_sales_today"] == pytest.approx(15.0)
-    # target=15*2=30, ceil(30+1)=31, 31-5-3=23
-    assert row["recommended_qty"] == 23
+    # coverage_days 기본값 1이라 커버리지 합산도 15.0과 동일 -> ceil(15+1)=16, 16-5-3=8
+    assert row["recommended_qty"] == 8
     assert row["model_version"] == "weighted_v1"
     assert row["model_weight_weekday"] == pytest.approx(0.5)
     assert row["model_weight_previous_day"] == pytest.approx(0.5)
     assert row["model_weight_avg_7d"] == pytest.approx(0.0)
     assert row["model_weight_avg_14d"] == pytest.approx(0.0)
+    conn.close()
+
+
+def test_compute_row_sums_multi_day_coverage_using_each_days_own_weekday_average():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+
+    # 2026-07-29(수) 요일평균 10, 2026-07-30(목) 요일평균 20 — 각각 4주치 깔끔하게 준비.
+    _seed_weekday_history(conn, code, [
+        ("2026-07-22", 10), ("2026-07-15", 10), ("2026-07-08", 10), ("2026-07-01", 10),
+    ])
+    _seed_weekday_history(conn, code, [
+        ("2026-07-23", 20), ("2026-07-16", 20), ("2026-07-09", 20), ("2026-07-02", 20),
+    ])
+    ensure_row(conn, "2026-07-29", code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET stock_qty = 5, incoming_qty = 3 "
+        "WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", code),
+    )
+    conn.commit()
+
+    settings = {
+        "order_recommendation_weight_weekday_average": "1",
+        "order_recommendation_weight_previous_day": "0",
+        "order_recommendation_weight_avg_7d": "0",
+        "order_recommendation_weight_avg_14d": "0",
+        "order_recommendation_coverage_days": "2",
+        "order_recommendation_safety_stock_qty": "0",
+    }
+    compute_row(conn, code, "2026-07-29", get_setting=lambda key: settings.get(key))
+
+    row = get_row(conn, "2026-07-29", code)
+    # expected_sales_today는 D(수) 하루치 예측만 저장 -> 10.0 (정확도 평가용, 커버리지 합산과는 별개)
+    assert row["expected_sales_today"] == pytest.approx(10.0)
+    # 발주량은 D(수)=10.0 + D+1(목)=20.0 = 30.0 합산 기준 -> ceil(30+0)=30, 30-5-3=22
+    assert row["recommended_qty"] == 22
     conn.close()
 
 
