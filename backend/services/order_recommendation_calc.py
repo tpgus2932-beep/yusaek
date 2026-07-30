@@ -14,6 +14,10 @@ def _date_minus(date: str, days: int) -> str:
     return (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=days)).strftime("%Y-%m-%d")
 
 
+def _date_plus(date: str, days: int) -> str:
+    return (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
+
+
 def calc_sales_window(conn, yusas_code: str, date: str, days: int):
     start = _date_minus(date, days)
     rows = conn.execute(
@@ -94,11 +98,48 @@ def calc_expected_sales_today(
     return weighted_sum / weight_sum
 
 
-def calc_recommended_qty(expected_sales_today, stock_qty, incoming_qty, coverage_days: float, safety_stock_qty: float):
-    if expected_sales_today is None or stock_qty is None or incoming_qty is None:
+def calc_expected_sales_for_coverage(
+    conn,
+    yusas_code: str,
+    date: str,
+    coverage_days: float,
+    previous_day_sales_qty,
+    avg_sales_7d,
+    avg_sales_14d,
+    weight_weekday_average: float,
+    weight_previous_day: float,
+    weight_avg_7d: float,
+    weight_avg_14d: float,
+):
+    """date부터 coverage_days일치(포함, round()로 정수화) 각 날짜를 따로 예측해서 합산한다.
+
+    날짜마다 weekday_average_sales만 그 날짜 자신의 요일평균으로 새로 계산하고,
+    previous_day_sales_qty/avg_sales_7d/avg_sales_14d는 date(오늘) 시점 기준값을
+    그대로 재사용한다 — 미래 시점의 실제 최근 추세는 알 수 없기 때문."""
+    num_days = round(coverage_days)
+    if num_days <= 0:
         return None
-    target_sales = expected_sales_today * coverage_days
-    return max(0, math.ceil(target_sales + safety_stock_qty) - stock_qty - incoming_qty)
+
+    total = 0.0
+    any_value = False
+    for offset in range(num_days):
+        target_date = _date_plus(date, offset)
+        weekday_average_sales = calc_weekday_average_sales(conn, yusas_code, target_date)
+        daily_expected = calc_expected_sales_today(
+            weekday_average_sales, previous_day_sales_qty, avg_sales_7d, avg_sales_14d,
+            weight_weekday_average, weight_previous_day, weight_avg_7d, weight_avg_14d,
+        )
+        if daily_expected is not None:
+            total += daily_expected
+            any_value = True
+
+    return total if any_value else None
+
+
+def calc_recommended_qty(coverage_period_expected_sales, stock_qty, incoming_qty, safety_stock_qty: float):
+    if coverage_period_expected_sales is None or stock_qty is None or incoming_qty is None:
+        return None
+    return max(0, math.ceil(coverage_period_expected_sales + safety_stock_qty) - stock_qty - incoming_qty)
 
 
 def calc_change_and_rate(today_value, previous_value):
@@ -166,8 +207,13 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
         weekday_average_sales, previous_day_sales_qty, avg_sales_7d, avg_sales_14d,
         weight_weekday_average, weight_previous_day, weight_avg_7d, weight_avg_14d,
     )
+    coverage_period_expected_sales = calc_expected_sales_for_coverage(
+        conn, yusas_code, date, coverage_days,
+        previous_day_sales_qty, avg_sales_7d, avg_sales_14d,
+        weight_weekday_average, weight_previous_day, weight_avg_7d, weight_avg_14d,
+    )
     recommended_qty = calc_recommended_qty(
-        expected_sales_today, row["stock_qty"], row["incoming_qty"], coverage_days, safety_stock_qty
+        coverage_period_expected_sales, row["stock_qty"], row["incoming_qty"], safety_stock_qty
     )
 
     prev_ad_budget = prev_row["ad_budget"] if prev_row is not None else None
