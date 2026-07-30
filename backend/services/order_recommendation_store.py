@@ -31,6 +31,7 @@ def init_order_recommendation_tables(get_db) -> None:
             stock_qty INTEGER,
             incoming_qty INTEGER,
             actual_received_qty INTEGER,
+            ezadmin_lack_qty INTEGER,
             previous_day_sales_qty INTEGER,
             ad_budget INTEGER,
             wish_count INTEGER,
@@ -84,6 +85,7 @@ def init_order_recommendation_tables(get_db) -> None:
     _ensure_avg_sales_14d_column(conn)
     _ensure_forecast_accuracy_columns(conn)
     _ensure_order_performance_columns(conn)
+    _ensure_ezadmin_columns(conn)
     conn.commit()
     conn.close()
 
@@ -127,6 +129,18 @@ _ORDER_PERFORMANCE_COLUMNS = [
 def _ensure_order_performance_columns(conn) -> None:
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()]
     for column, ddl_type in _ORDER_PERFORMANCE_COLUMNS:
+        if column not in cols:
+            conn.execute(f"ALTER TABLE order_recommendation_daily ADD COLUMN {column} {ddl_type}")
+
+
+_EZADMIN_COLUMNS = [
+    ("ezadmin_lack_qty", "INTEGER"),
+]
+
+
+def _ensure_ezadmin_columns(conn) -> None:
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()]
+    for column, ddl_type in _EZADMIN_COLUMNS:
         if column not in cols:
             conn.execute(f"ALTER TABLE order_recommendation_daily ADD COLUMN {column} {ddl_type}")
 

@@ -32,6 +32,7 @@ def _make_db_factory():
 EXPECTED_COLUMNS = {
     "date", "yusas_code", "day_of_week",
     "sales_qty", "stock_qty", "incoming_qty", "actual_received_qty",
+    "ezadmin_lack_qty",
     "previous_day_sales_qty",
     "ad_budget", "wish_count", "cart_count",
     "ad_budget_change", "ad_budget_change_rate",
@@ -236,4 +237,40 @@ def test_init_is_idempotent_when_order_performance_columns_already_present():
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()}
     assert "actual_received_qty" in cols
     assert "order_performance_evaluated_at" in cols
+    conn.close()
+
+
+def test_init_adds_ezadmin_lack_qty_column_to_legacy_table_missing_it():
+    get_db, _keep_alive = _make_db_factory()
+    conn = get_db()
+    conn.execute(
+        """
+        CREATE TABLE order_recommendation_daily (
+            date TEXT NOT NULL,
+            yusas_code TEXT NOT NULL,
+            sales_qty INTEGER,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (date, yusas_code)
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    init_order_recommendation_tables(get_db)
+
+    conn = get_db()
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()}
+    assert "ezadmin_lack_qty" in cols
+    conn.close()
+
+
+def test_init_is_idempotent_when_ezadmin_lack_qty_already_present():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    init_order_recommendation_tables(get_db)  # 두 번째 호출도 에러 없이 통과해야 함
+
+    conn = get_db()
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()}
+    assert "ezadmin_lack_qty" in cols
     conn.close()

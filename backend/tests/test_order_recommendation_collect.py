@@ -55,7 +55,7 @@ def test_register_collector_allows_whitelisted_column():
         assert "stock_qty" in collect_mod.COLLECTORS
         assert ALLOWED_COLLECTOR_COLUMNS == {
             "sales_qty", "stock_qty", "incoming_qty", "actual_received_qty",
-            "ad_budget", "wish_count", "cart_count",
+            "ezadmin_lack_qty", "ad_budget", "wish_count", "cart_count",
         }
     finally:
         _reset_collectors()
