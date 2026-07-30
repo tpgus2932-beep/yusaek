@@ -93,6 +93,12 @@ const ReturnsPage = () => {
     const [regatherExecuteLoading, setRegatherExecuteLoading] = useState(false);
     const [regatherItems, setRegatherItems] = useState([]);
     const [regatherLoading, setRegatherLoading] = useState(false);
+    const [specialNoteModalOpen, setSpecialNoteModalOpen] = useState(false);
+    const [specialNoteList, setSpecialNoteList] = useState([]);
+    const [specialNoteListLoading, setSpecialNoteListLoading] = useState(false);
+    const [specialNoteInvoiceInput, setSpecialNoteInvoiceInput] = useState('');
+    const [specialNoteTextInput, setSpecialNoteTextInput] = useState('');
+    const [specialNoteSaving, setSpecialNoteSaving] = useState(false);
     const [labelPrintLoading, setLabelPrintLoading] = useState(false);
     const [singleCancelSno, setSingleCancelSno] = useState('');
     const [singleRefundLoading, setSingleRefundLoading] = useState(false);
@@ -1420,6 +1426,61 @@ body { background: #fff; font-family: sans-serif; }
         }
     };
 
+    const fetchSpecialNotes = async () => {
+        setSpecialNoteListLoading(true);
+        try {
+            const res = await fetch(`${API}/return-special-notes/list`, { headers: getAuthHeaders() });
+            const data = await res.json().catch(() => ({}));
+            setSpecialNoteList(Array.isArray(data?.items) ? data.items : []);
+        } catch {
+            setSpecialNoteList([]);
+        } finally {
+            setSpecialNoteListLoading(false);
+        }
+    };
+
+    const openSpecialNoteModal = () => {
+        setSpecialNoteModalOpen(true);
+        fetchSpecialNotes();
+    };
+
+    const handleAddSpecialNote = async () => {
+        const invoiceNo = specialNoteInvoiceInput.trim();
+        const note = specialNoteTextInput.trim();
+        if (!invoiceNo || !note) return;
+        setSpecialNoteSaving(true);
+        try {
+            const res = await fetch(`${API}/return-special-notes/add`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ invoice_no: invoiceNo, note }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '특이사항 등록 실패');
+            setSpecialNoteList(Array.isArray(data?.items) ? data.items : []);
+            setSpecialNoteInvoiceInput('');
+            setSpecialNoteTextInput('');
+        } catch (err) {
+            setMessage(err.message || '특이사항 등록 실패');
+        } finally {
+            setSpecialNoteSaving(false);
+        }
+    };
+
+    const handleDeleteSpecialNote = async (id) => {
+        try {
+            const res = await fetch(`${API}/return-special-notes/${id}`, {
+                method: 'DELETE',
+                headers: getAuthHeaders(),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '삭제 실패');
+            setSpecialNoteList((prev) => prev.filter((n) => n.id !== id));
+        } catch (err) {
+            setMessage(err.message || '삭제 실패');
+        }
+    };
+
     const handleBuildOnebe = async () => {
         const source = 'customer';
         try {
@@ -1873,6 +1934,9 @@ body { background: #fff; font-family: sans-serif; }
                         </button>
                         <button className={pageStyles.secondaryBtn} onClick={handleReset}>
                             초기화
+                        </button>
+                        <button type="button" className={pageStyles.secondaryBtn} onClick={openSpecialNoteModal}>
+                            특이사항
                         </button>
                     </div>
                     {savedAt && <div className={pageStyles.metaLabel}>마지막 임시저장: {savedAt}</div>}
@@ -2769,6 +2833,87 @@ body { background: #fff; font-family: sans-serif; }
                                     ))}
                                 </div>
                             ))}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {specialNoteModalOpen && (
+                <div
+                    onClick={() => setSpecialNoteModalOpen(false)}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0,0,0,0.5)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 1000,
+                    }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                            background: 'var(--bg-primary, #fff)',
+                            borderRadius: 8,
+                            width: 'min(520px, 90vw)',
+                            maxHeight: '80vh',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            overflow: 'hidden',
+                        }}
+                    >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border-color, #e5e7eb)' }}>
+                            <strong>반품 특이사항</strong>
+                            <button type="button" onClick={() => setSpecialNoteModalOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>×</button>
+                        </div>
+                        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto' }}>
+                            <input
+                                value={specialNoteInvoiceInput}
+                                onChange={(e) => setSpecialNoteInvoiceInput(e.target.value)}
+                                placeholder="원송장번호"
+                                style={{ padding: '8px 10px', border: '1px solid var(--border-color, #e5e7eb)', borderRadius: 6 }}
+                            />
+                            <textarea
+                                value={specialNoteTextInput}
+                                onChange={(e) => setSpecialNoteTextInput(e.target.value)}
+                                placeholder="특이사항 내용을 입력하세요"
+                                rows={3}
+                                style={{ padding: '8px 10px', border: '1px solid var(--border-color, #e5e7eb)', borderRadius: 6, resize: 'vertical', font: 'inherit' }}
+                            />
+                            <button
+                                type="button"
+                                className={pageStyles.primaryBtn}
+                                onClick={handleAddSpecialNote}
+                                disabled={specialNoteSaving || !specialNoteInvoiceInput.trim() || !specialNoteTextInput.trim()}
+                            >
+                                {specialNoteSaving ? '등록 중...' : '등록'}
+                            </button>
+
+                            <div style={{ borderTop: '1px solid var(--border-color, #e5e7eb)', paddingTop: 10, marginTop: 4 }}>
+                                {specialNoteListLoading && <div>불러오는 중...</div>}
+                                {!specialNoteListLoading && specialNoteList.length === 0 && (
+                                    <div style={{ color: 'var(--text-secondary, #6b7280)' }}>등록된 특이사항이 없습니다.</div>
+                                )}
+                                {!specialNoteListLoading && specialNoteList.map((n) => (
+                                    <div key={n.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--border-color, #e5e7eb)' }}>
+                                        <div>
+                                            <div style={{ fontWeight: 600 }}>{n.invoiceNo}</div>
+                                            <div style={{ whiteSpace: 'pre-wrap' }}>{n.note}</div>
+                                            <div style={{ fontSize: 12, color: 'var(--text-secondary, #6b7280)' }}>
+                                                {n.createdBy} · {n.createdAt}
+                                            </div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            className={pageStyles.secondaryBtn}
+                                            onClick={() => handleDeleteSpecialNote(n.id)}
+                                        >
+                                            삭제
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
                     </div>
                 </div>
