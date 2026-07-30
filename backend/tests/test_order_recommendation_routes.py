@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 import services.order_recommendation_collect as collect_mod
 from api.order_recommendation_routes import build_order_recommendation_router
+from sdk.ezadmin import EzAdminSessionExpired
 from services.order_recommendation_store import (
     ensure_row,
     init_order_recommendation_tables,
@@ -207,3 +208,18 @@ def test_order_performance_endpoint_returns_aggregate_metrics():
     body = res.json()
     assert body["sample_count"] == 1
     assert body["avg_confirm_deviation"] == pytest.approx(2.0)
+
+
+def test_collect_endpoint_returns_need_session_when_ezadmin_session_expired():
+    client, _get_db, _keep_alive = _make_client()
+    try:
+        async def failing_collector(date):
+            raise EzAdminSessionExpired()
+
+        collect_mod.register_collector("stock_qty", failing_collector)
+
+        res = client.post("/order-recommendation/collect", params={"date": "2026-07-29"})
+        assert res.status_code == 200
+        assert res.json() == {"ok": False, "need_session": True}
+    finally:
+        collect_mod.COLLECTORS.clear()

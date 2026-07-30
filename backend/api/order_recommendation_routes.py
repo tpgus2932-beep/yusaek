@@ -10,6 +10,7 @@ from services.order_recommendation_order_performance import (
     evaluate_order_performance_all,
 )
 from services.order_recommendation_store import ensure_row, list_rows, now_kst_iso, today_kst
+from sdk.ezadmin import EzAdminSessionExpired
 
 
 def _row_to_dict(row) -> dict:
@@ -22,7 +23,10 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting):
     @router.post("/collect")
     async def collect(date: str | None = None, user: str = Depends(get_current_user)):
         target_date = date or today_kst()
-        merged = await run_collectors(get_db, target_date)
+        try:
+            merged = await run_collectors(get_db, target_date)
+        except EzAdminSessionExpired:
+            return {"ok": False, "need_session": True}
         return {"ok": True, "date": target_date, "updated_codes": sorted(merged.keys())}
 
     @router.post("/compute")
