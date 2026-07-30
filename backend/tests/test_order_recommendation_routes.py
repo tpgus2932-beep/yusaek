@@ -3,6 +3,7 @@ import sqlite3
 import sys
 import uuid
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -223,3 +224,16 @@ def test_collect_endpoint_returns_need_session_when_ezadmin_session_expired():
         assert res.json() == {"ok": False, "need_session": True}
     finally:
         collect_mod.COLLECTORS.clear()
+
+
+def test_collect_sales_history_endpoint_returns_updated_count():
+    client, _get_db, _keep_alive = _make_client()
+
+    with patch(
+        "api.order_recommendation_routes.collect_ably_sales_history",
+        new=AsyncMock(return_value=42),
+    ):
+        res = client.post("/order-recommendation/collect-sales-history")
+
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "updated": 42}
