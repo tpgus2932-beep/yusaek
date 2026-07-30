@@ -6,7 +6,13 @@ import { useEzadminSession } from '../../lib/EzadminSessionContext';
 
 const ACTIONS = [
   { key: 'ably-stock', label: '에이블리 재고수집', path: '/order-recommendation/collect', needsSession: true },
-  { key: 'sales-history', label: '판매량 수집', path: '/order-recommendation/collect-sales-history', needsSession: false },
+  {
+    key: 'sales-history',
+    label: '판매량 수집',
+    path: '/order-recommendation/collect-sales-history',
+    needsSession: false,
+    progressPath: '/order-recommendation/collect-sales-history/progress',
+  },
   { key: 'compute', label: '예상발주 계산', path: '/order-recommendation/compute', needsSession: false },
   { key: 'evaluate', label: '수요예측 정확도 평가', path: '/order-recommendation/evaluate', needsSession: false },
   { key: 'evaluate-performance', label: '발주성과 평가', path: '/order-recommendation/evaluate-order-performance', needsSession: false },
@@ -22,11 +28,33 @@ function extractCount(data) {
 function ActionButton({ action, onSuccess }) {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const [progress, setProgress] = useState(null);
   const { openModal } = useEzadminSession();
+
+  useEffect(() => {
+    if (!loading || !action.progressPath) return undefined;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API}${action.progressPath}`, { headers: getAuthHeaders() });
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled && res.ok) setProgress(data);
+      } catch {
+        // 폴링 실패는 다음 주기에 재시도(에러로 취급하지 않음)
+      }
+    };
+    poll();
+    const intervalId = setInterval(poll, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [loading, action.progressPath]);
 
   const run = useCallback(async () => {
     setLoading(true);
     setMessage('');
+    setProgress(null);
     try {
       const res = await fetch(`${API}${action.path}`, {
         method: 'POST',
@@ -49,11 +77,15 @@ function ActionButton({ action, onSuccess }) {
     }
   }, [action, onSuccess, openModal]);
 
+  const progressText = loading && progress && progress.total > 0
+    ? ` (${progress.done}/${progress.total}건)`
+    : '';
+
   return (
     <div className={styles.actionCard}>
       <button className={styles.actionBtn} onClick={run} disabled={loading}>
         <RefreshCw size={13} className={loading ? styles.spinning : undefined} />
-        {loading ? '실행 중...' : action.label}
+        {loading ? `실행 중...${progressText}` : action.label}
       </button>
       {message && <div className={styles.actionMessage}>{message}</div>}
     </div>
