@@ -30,6 +30,7 @@ def init_order_recommendation_tables(get_db) -> None:
             sales_qty INTEGER,
             stock_qty INTEGER,
             incoming_qty INTEGER,
+            actual_received_qty INTEGER,
             previous_day_sales_qty INTEGER,
             ad_budget INTEGER,
             wish_count INTEGER,
@@ -41,6 +42,8 @@ def init_order_recommendation_tables(get_db) -> None:
             wish_count_change_rate REAL,
             cart_count_change INTEGER,
             cart_count_change_rate REAL,
+            incoming_qty_change INTEGER,
+            incoming_qty_change_rate REAL,
 
             sales_7d INTEGER,
             sales_14d INTEGER,
@@ -62,6 +65,10 @@ def init_order_recommendation_tables(get_db) -> None:
             within_20_percent INTEGER,
             evaluated_at TEXT,
 
+            confirm_deviation INTEGER,
+            fulfillment_gap INTEGER,
+            order_performance_evaluated_at TEXT,
+
             confirmed_qty INTEGER,
             override_reason TEXT,
             updated_by TEXT,
@@ -76,6 +83,7 @@ def init_order_recommendation_tables(get_db) -> None:
     )
     _ensure_avg_sales_14d_column(conn)
     _ensure_forecast_accuracy_columns(conn)
+    _ensure_order_performance_columns(conn)
     conn.commit()
     conn.close()
 
@@ -102,6 +110,23 @@ _FORECAST_ACCURACY_COLUMNS = [
 def _ensure_forecast_accuracy_columns(conn) -> None:
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()]
     for column, ddl_type in _FORECAST_ACCURACY_COLUMNS:
+        if column not in cols:
+            conn.execute(f"ALTER TABLE order_recommendation_daily ADD COLUMN {column} {ddl_type}")
+
+
+_ORDER_PERFORMANCE_COLUMNS = [
+    ("actual_received_qty", "INTEGER"),
+    ("incoming_qty_change", "INTEGER"),
+    ("incoming_qty_change_rate", "REAL"),
+    ("confirm_deviation", "INTEGER"),
+    ("fulfillment_gap", "INTEGER"),
+    ("order_performance_evaluated_at", "TEXT"),
+]
+
+
+def _ensure_order_performance_columns(conn) -> None:
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()]
+    for column, ddl_type in _ORDER_PERFORMANCE_COLUMNS:
         if column not in cols:
             conn.execute(f"ALTER TABLE order_recommendation_daily ADD COLUMN {column} {ddl_type}")
 
