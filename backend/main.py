@@ -659,6 +659,15 @@ def _get_automation_db():
     return conn
 
 
+def _get_order_recommendation_db():
+    """추천발주 전용 로컬 SQLite DB. Turso 설정 여부와 무관하게 항상 로컬을 쓴다 —
+    판매량 이력 수집이 수천~수만 건의 동기 네트워크 왕복을 유발해 Turso를 쓰면 이벤트 루프가 멈춘다."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 _restore_amood_ezadmin_file_from_db()
 
 
@@ -847,8 +856,8 @@ def _init_request_attachments():
 
 _init_request_attachments()
 
-init_order_recommendation_tables(_get_shared_db)
-init_non_ably_backorder_table(_get_shared_db)
+init_order_recommendation_tables(_get_order_recommendation_db)
+init_non_ably_backorder_table(_get_order_recommendation_db)
 
 
 def _init_shared_files():
@@ -1429,7 +1438,7 @@ app.include_router(
 app.include_router(
     build_order_recommendation_router(
         get_current_user=_get_current_user,
-        get_db=_get_shared_db,
+        get_db=_get_order_recommendation_db,
         get_setting=_get_setting,
     )
 )
@@ -1438,7 +1447,7 @@ for _ez_column, _ez_fn in build_ezadmin_collectors(_get_setting).items():
 app.include_router(
     build_non_ably_order_router(
         get_current_user=_get_current_user,
-        get_db=_get_shared_db,
+        get_db=_get_order_recommendation_db,
         get_setting=_get_setting,
     )
 )
