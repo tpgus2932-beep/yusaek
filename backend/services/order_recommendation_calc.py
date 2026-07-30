@@ -177,6 +177,9 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
     wish_count_change, wish_count_change_rate = calc_change_and_rate(row["wish_count"], prev_wish_count)
     cart_count_change, cart_count_change_rate = calc_change_and_rate(row["cart_count"], prev_cart_count)
 
+    prev_incoming_qty = prev_row["incoming_qty"] if prev_row is not None else None
+    incoming_qty_change, incoming_qty_change_rate = calc_change_and_rate(row["incoming_qty"], prev_incoming_qty)
+
     conn.execute(
         """
         UPDATE order_recommendation_daily SET
@@ -188,7 +191,8 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
             recommended_qty = ?,
             ad_budget_change = ?, ad_budget_change_rate = ?,
             wish_count_change = ?, wish_count_change_rate = ?,
-            cart_count_change = ?, cart_count_change_rate = ?
+            cart_count_change = ?, cart_count_change_rate = ?,
+            incoming_qty_change = ?, incoming_qty_change_rate = ?
         WHERE date = ? AND yusas_code = ?
         """,
         (
@@ -201,6 +205,7 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
             ad_budget_change, ad_budget_change_rate,
             wish_count_change, wish_count_change_rate,
             cart_count_change, cart_count_change_rate,
+            incoming_qty_change, incoming_qty_change_rate,
             date, yusas_code,
         ),
     )

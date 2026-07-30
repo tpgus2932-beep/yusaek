@@ -438,3 +438,29 @@ def test_compute_row_is_order_independent():
     assert row_a["recommended_qty"] == row_b["recommended_qty"] == 8
     conn_a.close()
     conn_b.close()
+
+
+def test_compute_row_computes_incoming_qty_change():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+
+    ensure_row(conn, "2026-07-28", code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET incoming_qty = 10 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-28", code),
+    )
+    ensure_row(conn, "2026-07-29", code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET incoming_qty = 15 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", code),
+    )
+    conn.commit()
+
+    compute_row(conn, code, "2026-07-29", get_setting=lambda key: None)
+
+    row = get_row(conn, "2026-07-29", code)
+    assert row["incoming_qty_change"] == 5
+    assert row["incoming_qty_change_rate"] == pytest.approx(0.5)
+    conn.close()
