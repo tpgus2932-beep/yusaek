@@ -164,3 +164,46 @@ def test_forecast_accuracy_endpoint_returns_aggregate_metrics():
     body = res.json()
     assert body["sample_count"] == 1
     assert body["mae"] == pytest.approx(2.0)
+
+
+def test_evaluate_order_performance_endpoint_fills_deviation_columns():
+    client, get_db, _keep_alive = _make_client()
+    conn = get_db()
+    date = today_kst()
+    ensure_row(conn, date, "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET recommended_qty = 10, confirmed_qty = 12 "
+        "WHERE date = ? AND yusas_code = ?",
+        (date, "YUSAS00001"),
+    )
+    conn.commit()
+    conn.close()
+
+    res = client.post("/order-recommendation/evaluate-order-performance", params={"date": date})
+    assert res.status_code == 200
+    assert res.json()["evaluated"] == 1
+
+    res2 = client.get("/order-recommendation/daily", params={"date": date})
+    row = res2.json()["items"][0]
+    assert row["confirm_deviation"] == 2
+
+
+def test_order_performance_endpoint_returns_aggregate_metrics():
+    client, get_db, _keep_alive = _make_client()
+    conn = get_db()
+    date = today_kst()
+    ensure_row(conn, date, "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET recommended_qty = 10, confirmed_qty = 12 "
+        "WHERE date = ? AND yusas_code = ?",
+        (date, "YUSAS00001"),
+    )
+    conn.commit()
+    conn.close()
+    client.post("/order-recommendation/evaluate-order-performance", params={"date": date})
+
+    res = client.get("/order-recommendation/order-performance", params={"days": 7})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["sample_count"] == 1
+    assert body["avg_confirm_deviation"] == pytest.approx(2.0)
