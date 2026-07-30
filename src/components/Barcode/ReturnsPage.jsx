@@ -267,6 +267,7 @@ const ReturnsPage = () => {
                 exchangeDefect: pool('/sounds/ww.wav'),
                 exchangeNormal: pool('/sounds/tt.wav'),
                 relatedNotice: pool('/sounds/ice.wav'),
+                specialNote: pool('/sounds/특이사항.wav'),
             };
         }
     }, []);
@@ -1157,7 +1158,9 @@ body { background: #fff; font-family: sans-serif; }
             const nextTab = tabForType(nextType);
             if (nextTab) setActiveTab(nextTab);
             const shouldPlay = nextType !== '-' && nextType !== '' && nextType !== '중복';
-            if (shouldPlay) {
+            if (data.special_note) {
+                playSound('specialNote');
+            } else if (shouldPlay) {
                 playTypeSound(nextType, String(data.sound_type || ''));
             }
             await maybeAddRelatedExchange(data.related_unscanned);
@@ -1654,6 +1657,7 @@ body { background: #fff; font-family: sans-serif; }
         const hasReason = items.some((item) => item.reason);
         const hasDetailReason = items.some((item) => item.detail_reason);
         const hasUserComment = items.some((item) => item.user_comment);
+        const hasSpecialNote = items.some((item) => item.special_note);
         const hasImages = items.some((item) => item.images && item.images.length > 0);
         const hasRefundStatus = items.some((item) => item.ably_refund_done || item.ably_refund_error);
         const hasReasonChangeStatus = items.some((item) => item.ably_reason_changed || item.ably_reason_change_error);
@@ -1680,6 +1684,7 @@ body { background: #fff; font-family: sans-serif; }
                             <th>가공데이터</th>
                             <th>입고수량</th>
                             <th>분류</th>
+                            {hasSpecialNote && <th>특이사항</th>}
                             {hasReason && <th>사유</th>}
                             {hasDetailReason && <th>상세사유</th>}
                             {hasUserComment && <th>고객메모</th>}
@@ -1719,6 +1724,11 @@ body { background: #fff; font-family: sans-serif; }
                                 <td>{item.item_text}</td>
                                 <td>{item.qty}</td>
                                 <td>{item.type}</td>
+                                {hasSpecialNote && (
+                                    <td style={{ color: '#dc2626', fontWeight: 600 }}>
+                                        {item.special_note ? `⚠ ${item.special_note}` : ''}
+                                    </td>
+                                )}
                                 {hasReason && <td>{item.reason || ''}</td>}
                                 {hasDetailReason && <td>{item.detail_reason || ''}</td>}
                                 {hasUserComment && <td>{item.user_comment || ''}</td>}
