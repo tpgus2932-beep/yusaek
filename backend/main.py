@@ -66,6 +66,7 @@ from api.ably_minus_routes import build_ably_minus_router
 from api.accident_cargo_routes import build_accident_cargo_router
 from api.return_regathering_routes import build_return_regathering_router
 from api.return_processing_log_routes import build_return_processing_log_router
+from api.return_special_notes_routes import build_return_special_notes_router
 from api.delivery_anomaly_routes import build_delivery_anomaly_router
 from api.client_cancel_soldout_routes import build_client_cancel_soldout_router
 from api.exchange_return_anomaly_routes import build_exchange_return_anomaly_router
@@ -1758,6 +1759,34 @@ app.include_router(
     build_return_processing_log_router(
         get_current_user=_get_current_user,
         get_shared_db=_get_shared_db,
+    )
+)
+
+
+def _init_return_special_notes():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS return_special_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice_no TEXT NOT NULL UNIQUE,
+            note TEXT NOT NULL DEFAULT '',
+            created_by TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_return_special_notes()
+
+app.include_router(
+    build_return_special_notes_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        clean_invoice=_clean_invoice,
     )
 )
 
