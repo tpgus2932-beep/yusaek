@@ -85,6 +85,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
                 bank_name           TEXT NOT NULL DEFAULT '',
                 account_holder      TEXT NOT NULL DEFAULT '',
                 account_number      TEXT NOT NULL DEFAULT '',
+                resident_registration_number TEXT NOT NULL DEFAULT '',
                 payment_completed   INTEGER NOT NULL DEFAULT 0,
                 created_at          TEXT NOT NULL,
                 UNIQUE(name, date)
@@ -101,6 +102,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             ("bank_name", "ALTER TABLE attendance_daily_workers ADD COLUMN bank_name TEXT NOT NULL DEFAULT ''"),
             ("account_holder", "ALTER TABLE attendance_daily_workers ADD COLUMN account_holder TEXT NOT NULL DEFAULT ''"),
             ("account_number", "ALTER TABLE attendance_daily_workers ADD COLUMN account_number TEXT NOT NULL DEFAULT ''"),
+            ("resident_registration_number", "ALTER TABLE attendance_daily_workers ADD COLUMN resident_registration_number TEXT NOT NULL DEFAULT ''"),
             ("payment_completed", "ALTER TABLE attendance_daily_workers ADD COLUMN payment_completed INTEGER NOT NULL DEFAULT 0"),
         ):
             if column not in daily_worker_cols:
@@ -493,12 +495,17 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         bankName: str = ""
         accountHolder: str = ""
         accountNumber: str = ""
+        residentRegistrationNumber: str = ""
 
     class DailyWorkerAccountUpdate(BaseModel):
         pin: str
         bankName: str = ""
         accountHolder: str = ""
         accountNumber: str = ""
+
+    class DailyWorkerResidentNumberUpdate(BaseModel):
+        pin: str
+        residentRegistrationNumber: str = ""
 
     class DailyWorkerDelete(BaseModel):
         pin: str
@@ -736,6 +743,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             "bankName": row["bank_name"],
             "accountHolder": row["account_holder"],
             "accountNumber": row["account_number"],
+            "residentRegistrationNumber": row["resident_registration_number"],
             "paymentCompleted": bool(row["payment_completed"]),
         }
 
@@ -745,7 +753,8 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn = get_db()
         query = (
             "SELECT d.id, d.name, d.date, d.start_time, d.end_time, "
-            "d.bank_name, d.account_holder, d.account_number, d.payment_completed, "
+            "d.bank_name, d.account_holder, d.account_number, "
+            "d.resident_registration_number, d.payment_completed, "
             "i.timestamp AS check_in_timestamp, o.timestamp AS check_out_timestamp "
             "FROM attendance_daily_workers d "
             "LEFT JOIN attendance_records i ON i.id = d.check_in_record_id "
@@ -772,8 +781,11 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         bank_name = body.bankName.strip()
         account_holder = body.accountHolder.strip()
         account_number = re.sub(r"[^0-9]", "", body.accountNumber)
+        resident_registration_number = re.sub(r"[^0-9]", "", body.residentRegistrationNumber)
         if any((bank_name, account_holder, account_number)) and not all((bank_name, account_holder, account_number)):
             raise HTTPException(status_code=400, detail="계좌정보를 입력할 때는 은행, 예금주, 계좌번호를 모두 입력하세요.")
+        if resident_registration_number and len(resident_registration_number) != 13:
+            raise HTTPException(status_code=400, detail="주민등록번호 13자리를 정확히 입력하세요.")
         try:
             start_kst = datetime.strptime(
                 f"{body.date} {body.startTime}", "%Y-%m-%d %H:%M"
@@ -799,12 +811,13 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             conn.execute(
                 "INSERT INTO attendance_daily_workers "
                 "(name, date, start_time, end_time, check_in_record_id, check_out_record_id, "
-                "bank_name, account_holder, account_number, payment_completed, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+                "bank_name, account_holder, account_number, resident_registration_number, payment_completed, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
                 (
                     name, body.date, body.startTime, body.endTime,
                     in_cursor.lastrowid, out_cursor.lastrowid,
-                    bank_name, account_holder, account_number, _now_kst().isoformat(),
+                    bank_name, account_holder, account_number,
+                    resident_registration_number, _now_kst().isoformat(),
                 ),
             )
             conn.commit()
@@ -835,6 +848,27 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.execute(
             "UPDATE attendance_daily_workers SET bank_name = ?, account_holder = ?, account_number = ? WHERE id = ?",
             (bank_name, account_holder, account_number, entry_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+
+    @router.patch("/daily-workers/{entry_id}/resident-number")
+    def update_daily_worker_resident_number(entry_id: int, body: DailyWorkerResidentNumberUpdate):
+        _check_pin(body.pin)
+        resident_registration_number = re.sub(r"[^0-9]", "", body.residentRegistrationNumber)
+        if resident_registration_number and len(resident_registration_number) != 13:
+            raise HTTPException(status_code=400, detail="주민등록번호 13자리를 정확히 입력하세요.")
+        conn = get_db()
+        row = conn.execute(
+            "SELECT id FROM attendance_daily_workers WHERE id = ?", (entry_id,)
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="일일 알바 기록을 찾을 수 없습니다.")
+        conn.execute(
+            "UPDATE attendance_daily_workers SET resident_registration_number = ? WHERE id = ?",
+            (resident_registration_number, entry_id),
         )
         conn.commit()
         conn.close()

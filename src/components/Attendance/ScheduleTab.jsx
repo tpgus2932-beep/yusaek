@@ -120,7 +120,6 @@ function getKoreanDateString() {
 
 function getRecordHours(inRecord, outRecord) {
   if (!inRecord?.timestamp || !outRecord?.timestamp) return 0;
-  if (inRecord.payrollEligible === false || outRecord.payrollEligible === false) return 0;
   const diff = new Date(outRecord.normalizedTimestamp || outRecord.timestamp)
     - new Date(inRecord.normalizedTimestamp || inRecord.timestamp);
   return diff > 0 ? diff / 3600000 : 0;
@@ -141,10 +140,6 @@ function buildActualHoursMap(records) {
   const map = {};
   Object.entries(grouped).forEach(([key, { checkIn, checkOut }]) => {
     if (!checkIn || !checkOut) { map[key] = null; return; }
-    if (checkIn.payrollEligible === false || checkOut.payrollEligible === false) {
-      map[key] = null;
-      return;
-    }
     const hours = (
       new Date(checkOut.normalizedTimestamp || checkOut.timestamp)
       - new Date(checkIn.normalizedTimestamp || checkIn.timestamp)

@@ -175,12 +175,15 @@ export default function AttendanceAdminPage() {
   const [dailyCustomBank, setDailyCustomBank] = useState('');
   const [dailyAccountHolder, setDailyAccountHolder] = useState('');
   const [dailyAccountNumber, setDailyAccountNumber] = useState('');
+  const [dailyResidentNumber, setDailyResidentNumber] = useState('');
   const [dailyLoading, setDailyLoading] = useState(false);
   const [dailyError, setDailyError] = useState('');
   const [dailyCopyMessage, setDailyCopyMessage] = useState('');
   const [dailyFilterFrom, setDailyFilterFrom] = useState(todayStr);
   const [dailyFilterTo, setDailyFilterTo] = useState(todayStr);
   const [editingDailyAccount, setEditingDailyAccount] = useState(null);
+  const [expandedDailyWorkerId, setExpandedDailyWorkerId] = useState(null);
+  const [editingDailyResident, setEditingDailyResident] = useState(null);
   const [fixedPayrollYear, setFixedPayrollYear] = useState(() => new Date().getFullYear());
   const [fixedPayrollMonth, setFixedPayrollMonth] = useState(() => new Date().getMonth() + 1);
   const [fixedPayrollRows, setFixedPayrollRows] = useState([]);
@@ -347,6 +350,7 @@ export default function AttendanceAdminPage() {
 
   const addDailyWorker = async () => {
     const name = dailyName.trim();
+    const residentNumberDigits = dailyResidentNumber.replace(/\D/g, '');
     const hasAccountInput = Boolean(dailyAccountHolder.trim() || dailyAccountNumber.trim() || dailyCustomBank.trim());
     const bankName = hasAccountInput ? (dailyBank === '직접입력:' ? dailyCustomBank.trim() : dailyBank) : '';
     if (!name) {
@@ -355,6 +359,10 @@ export default function AttendanceAdminPage() {
     }
     if (hasAccountInput && (!bankName || !dailyAccountHolder.trim() || !dailyAccountNumber.trim())) {
       setDailyError('계좌정보를 입력하려면 은행, 예금주, 계좌번호를 모두 입력하세요. 입력하지 않고 등록해도 됩니다.');
+      return;
+    }
+    if (residentNumberDigits && residentNumberDigits.length !== 13) {
+      setDailyError('주민등록번호 13자리를 정확히 입력하세요.');
       return;
     }
     setDailyLoading(true);
@@ -366,6 +374,7 @@ export default function AttendanceAdminPage() {
         body: JSON.stringify({
           pin, name, date: dailyDate, startTime: dailyStartTime, endTime: dailyEndTime,
           bankName, accountHolder: dailyAccountHolder.trim(), accountNumber: dailyAccountNumber.trim(),
+          residentRegistrationNumber: residentNumberDigits,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -373,6 +382,7 @@ export default function AttendanceAdminPage() {
       setDailyName('');
       setDailyAccountHolder('');
       setDailyAccountNumber('');
+      setDailyResidentNumber('');
       setShowDailyWorkerForm(false);
       await loadDailyWorkers();
     } catch (error) {
@@ -420,6 +430,54 @@ export default function AttendanceAdminPage() {
     }
     setEditingDailyAccount(null);
     await loadDailyWorkers();
+  };
+
+  const startDailyResidentEdit = (entry) => {
+    const digits = (entry.residentRegistrationNumber || '').replace(/\D/g, '');
+    setEditingDailyResident({
+      id: entry.id,
+      value: digits.length > 6 ? `${digits.slice(0, 6)}-${digits.slice(6)}` : digits,
+    });
+    setDailyError('');
+  };
+
+  const saveDailyResident = async () => {
+    if (!editingDailyResident) return;
+    const digits = editingDailyResident.value.replace(/\D/g, '');
+    if (digits && digits.length !== 13) {
+      setDailyError('주민등록번호 13자리를 정확히 입력하세요.');
+      return;
+    }
+    const res = await fetch(`${COLLAB_API_BASE}/attendance/daily-workers/${editingDailyResident.id}/resident-number`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin, residentRegistrationNumber: digits }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setDailyError(data.detail || '주민등록번호 수정에 실패했습니다.');
+      return;
+    }
+    setEditingDailyResident(null);
+    await loadDailyWorkers();
+  };
+
+  const getDailyWorkerAmount = (entry) => {
+    const year = Number(entry.date.slice(0, 4));
+    const month = Number(entry.date.slice(5, 7));
+    return calcSalaryData([
+      { date: entry.date, type: '출근', timestamp: entry.checkInTimestamp },
+      { date: entry.date, type: '퇴근', timestamp: entry.checkOutTimestamp },
+    ], {
+      hourlyRate: salaryHourlyRate,
+      holidayMin: salaryHolidayMin,
+      workDays: salaryWorkDays,
+      deductPct: salaryDeductPct,
+      memberName: entry.name,
+      year,
+      month,
+      allowances: [],
+    }).netPay;
   };
 
   const toggleDailyPayment = async (entry) => {
@@ -1565,7 +1623,7 @@ export default function AttendanceAdminPage() {
                 </label>
               </div>
               <div className={styles.dailyAccountGrid}>
-                <label className={styles.dailyField}>
+                <label className={`${styles.dailyField} ${styles.dailyBankField}`}>
                   <span>은행</span>
                   <select className={styles.filterInput} value={dailyBank} onChange={(e) => setDailyBank(e.target.value)}>
                     {DAILY_BANK_OPTIONS.map((bank) => <option key={bank} value={bank}>{bank}</option>)}
@@ -1577,13 +1635,29 @@ export default function AttendanceAdminPage() {
                     <input className={styles.filterInput} value={dailyCustomBank} onChange={(e) => setDailyCustomBank(e.target.value)} placeholder="은행명" />
                   </label>
                 )}
-                <label className={styles.dailyField}>
+                <label className={`${styles.dailyField} ${styles.dailyHolderField}`}>
                   <span>예금주</span>
                   <input className={styles.filterInput} value={dailyAccountHolder} onChange={(e) => setDailyAccountHolder(e.target.value)} placeholder="예금주" />
                 </label>
-                <label className={styles.dailyField}>
+                <label className={`${styles.dailyField} ${styles.dailyAccountNumberField}`}>
                   <span>계좌번호</span>
                   <input className={styles.filterInput} type="text" inputMode="numeric" value={dailyAccountNumber} onChange={(e) => setDailyAccountNumber(e.target.value)} placeholder="숫자만 입력" />
+                </label>
+                <label className={`${styles.dailyField} ${styles.dailyResidentField}`}>
+                  <span>주민등록번호</span>
+                  <input
+                    className={styles.filterInput}
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    maxLength={14}
+                    value={dailyResidentNumber}
+                    onChange={(e) => {
+                      const digits = e.target.value.replace(/\D/g, '').slice(0, 13);
+                      setDailyResidentNumber(digits.length > 6 ? `${digits.slice(0, 6)}-${digits.slice(6)}` : digits);
+                    }}
+                    placeholder="000000-0000000"
+                  />
                 </label>
               </div>
               {dailyError && <div className={styles.errorMsg}>{dailyError}</div>}
@@ -1621,50 +1695,122 @@ export default function AttendanceAdminPage() {
                 <div className={styles.emptyMsg}>등록된 일일 알바 기록이 없습니다.</div>
               ) : (
                 <div className={styles.dailyWorkerScroll}>
-                  {dailyWorkers.map((entry) => (
-                    <article key={entry.id} className={`${styles.dailyWorkerCard} ${entry.paymentCompleted ? styles.dailyWorkerCardPaid : ''}`}>
-                      <div>
-                        <strong>{entry.name}</strong>
-                        <span>{entry.date}</span>
-                      </div>
-                      <div className={styles.dailyWorkerTime}>
-                        <span>{entry.startTime} ~ {entry.endTime}</span>
-                        <small>{calcDuration({ timestamp: entry.checkInTimestamp }, { timestamp: entry.checkOutTimestamp })}</small>
-                      </div>
-                      {editingDailyAccount?.id === entry.id ? (
-                        <div className={styles.dailyAccountEditor}>
-                          <select className={styles.filterInput} value={editingDailyAccount.bank} onChange={(e) => setEditingDailyAccount((current) => ({ ...current, bank: e.target.value }))}>
-                            {DAILY_BANK_OPTIONS.map((bank) => <option key={bank} value={bank}>{bank}</option>)}
-                          </select>
-                          {editingDailyAccount.bank === '직접입력:' && (
-                            <input className={styles.filterInput} value={editingDailyAccount.customBank} onChange={(e) => setEditingDailyAccount((current) => ({ ...current, customBank: e.target.value }))} placeholder="은행명" />
-                          )}
-                          <input className={styles.filterInput} value={editingDailyAccount.accountHolder} onChange={(e) => setEditingDailyAccount((current) => ({ ...current, accountHolder: e.target.value }))} placeholder="예금주" />
-                          <input className={styles.filterInput} inputMode="numeric" value={editingDailyAccount.accountNumber} onChange={(e) => setEditingDailyAccount((current) => ({ ...current, accountNumber: e.target.value }))} placeholder="계좌번호" />
-                        </div>
-                      ) : (
-                        <div className={styles.dailyWorkerAccount}>
-                          {entry.bankName ? (
-                            <><strong>{entry.bankName}</strong><span>예금주 {entry.accountHolder}</span><span>{entry.accountNumber}</span></>
-                          ) : <span className={styles.accountMissing}>계좌정보 미등록</span>}
-                        </div>
-                      )}
-                      <div className={styles.dailyWorkerActions}>
-                        {editingDailyAccount?.id === entry.id ? (
-                          <>
-                            <button className={styles.accountEditBtn} onClick={saveDailyAccount}>저장</button>
-                            <button className={styles.resetBtn} onClick={() => setEditingDailyAccount(null)}>취소</button>
-                          </>
-                        ) : (
-                          <button className={styles.accountEditBtn} onClick={() => startDailyAccountEdit(entry)}>계좌수정</button>
-                        )}
-                        <button className={`${styles.paymentBtn} ${entry.paymentCompleted ? styles.paymentBtnActive : ''}`} onClick={() => toggleDailyPayment(entry)}>
-                          {entry.paymentCompleted ? '입금완료 해제' : '입금완료'}
+                  {dailyWorkers.map((entry) => {
+                    const isExpanded = expandedDailyWorkerId === entry.id;
+                    const residentDigits = (entry.residentRegistrationNumber || '').replace(/\D/g, '');
+                    const formattedResidentNumber = residentDigits.length === 13
+                      ? `${residentDigits.slice(0, 6)}-${residentDigits.slice(6)}`
+                      : '미등록';
+                    return (
+                      <article key={entry.id} className={`${styles.dailyWorkerCard} ${entry.paymentCompleted ? styles.dailyWorkerCardPaid : ''}`}>
+                        <button
+                          type="button"
+                          className={styles.dailyWorkerSummary}
+                          onClick={() => {
+                            setExpandedDailyWorkerId(isExpanded ? null : entry.id);
+                            setEditingDailyAccount(null);
+                            setEditingDailyResident(null);
+                            setDailyError('');
+                          }}
+                          aria-expanded={isExpanded}
+                        >
+                          <span className={styles.dailyWorkerIdentity}>
+                            <strong>{entry.name}</strong>
+                            <small>{entry.date}</small>
+                          </span>
+                          <span className={styles.dailyWorkerTime}>
+                            <strong>{entry.startTime} ~ {entry.endTime}</strong>
+                            <small>{calcDuration({ timestamp: entry.checkInTimestamp }, { timestamp: entry.checkOutTimestamp })}</small>
+                          </span>
+                          <span className={styles.dailyWorkerAmount}>
+                            <small>실지급액</small>
+                            <strong>{getDailyWorkerAmount(entry).toLocaleString()}원</strong>
+                          </span>
+                          <span className={styles.dailyWorkerExpandHint}>{isExpanded ? '접기' : '상세보기'}</span>
                         </button>
-                        <button className={styles.delBtn} onClick={() => deleteDailyWorker(entry)}>삭제</button>
-                      </div>
-                    </article>
-                  ))}
+
+                        {isExpanded ? (
+                          <div className={styles.dailyWorkerDetail}>
+                            <section className={styles.dailyDetailSection}>
+                              <div className={styles.dailyDetailHeader}>
+                                <strong>계좌정보</strong>
+                                {editingDailyAccount?.id !== entry.id ? (
+                                  <button type="button" className={styles.accountEditBtn} onClick={() => startDailyAccountEdit(entry)}>계좌수정</button>
+                                ) : null}
+                              </div>
+                              {editingDailyAccount?.id === entry.id ? (
+                                <>
+                                  <div className={styles.dailyAccountEditor}>
+                                    <select className={styles.filterInput} value={editingDailyAccount.bank} onChange={(e) => setEditingDailyAccount((current) => ({ ...current, bank: e.target.value }))}>
+                                      {DAILY_BANK_OPTIONS.map((bank) => <option key={bank} value={bank}>{bank}</option>)}
+                                    </select>
+                                    {editingDailyAccount.bank === '직접입력:' ? (
+                                      <input className={styles.filterInput} value={editingDailyAccount.customBank} onChange={(e) => setEditingDailyAccount((current) => ({ ...current, customBank: e.target.value }))} placeholder="은행명" />
+                                    ) : null}
+                                    <input className={styles.filterInput} value={editingDailyAccount.accountHolder} onChange={(e) => setEditingDailyAccount((current) => ({ ...current, accountHolder: e.target.value }))} placeholder="예금주" />
+                                    <input className={styles.filterInput} inputMode="numeric" value={editingDailyAccount.accountNumber} onChange={(e) => setEditingDailyAccount((current) => ({ ...current, accountNumber: e.target.value }))} placeholder="계좌번호" />
+                                  </div>
+                                  <div className={styles.dailyDetailEditActions}>
+                                    <button type="button" className={styles.accountEditBtn} onClick={saveDailyAccount}>저장</button>
+                                    <button type="button" className={styles.resetBtn} onClick={() => setEditingDailyAccount(null)}>취소</button>
+                                  </div>
+                                </>
+                              ) : (
+                                <div className={styles.dailyWorkerAccount}>
+                                  {entry.bankName ? (
+                                    <><strong>{entry.bankName}</strong><span>예금주 {entry.accountHolder}</span><span>{entry.accountNumber}</span></>
+                                  ) : <span className={styles.accountMissing}>계좌정보 미등록</span>}
+                                </div>
+                              )}
+                            </section>
+
+                            <section className={styles.dailyDetailSection}>
+                              <div className={styles.dailyDetailHeader}>
+                                <strong>주민등록번호</strong>
+                                {editingDailyResident?.id !== entry.id ? (
+                                  <button type="button" className={styles.accountEditBtn} onClick={() => startDailyResidentEdit(entry)}>주민등록번호 수정</button>
+                                ) : null}
+                              </div>
+                              {editingDailyResident?.id === entry.id ? (
+                                <>
+                                  <input
+                                    className={styles.filterInput}
+                                    inputMode="numeric"
+                                    autoComplete="off"
+                                    maxLength={14}
+                                    value={editingDailyResident.value}
+                                    onChange={(e) => {
+                                      const digits = e.target.value.replace(/\D/g, '').slice(0, 13);
+                                      setEditingDailyResident((current) => ({
+                                        ...current,
+                                        value: digits.length > 6 ? `${digits.slice(0, 6)}-${digits.slice(6)}` : digits,
+                                      }));
+                                    }}
+                                    placeholder="000000-0000000"
+                                  />
+                                  <div className={styles.dailyDetailEditActions}>
+                                    <button type="button" className={styles.accountEditBtn} onClick={saveDailyResident}>저장</button>
+                                    <button type="button" className={styles.resetBtn} onClick={() => setEditingDailyResident(null)}>취소</button>
+                                  </div>
+                                </>
+                              ) : (
+                                <span className={residentDigits.length === 13 ? styles.dailyResidentValue : styles.accountMissing}>
+                                  {formattedResidentNumber}
+                                </span>
+                              )}
+                            </section>
+
+                            <div className={styles.dailyWorkerActions}>
+                              <button className={`${styles.paymentBtn} ${entry.paymentCompleted ? styles.paymentBtnActive : ''}`} onClick={() => toggleDailyPayment(entry)}>
+                                {entry.paymentCompleted ? '입금완료 해제' : '입금완료'}
+                              </button>
+                              <button className={styles.delBtn} onClick={() => deleteDailyWorker(entry)}>삭제</button>
+                            </div>
+                          </div>
+                        ) : null}
+                      </article>
+                    );
+                  })}
                 </div>
               )}
             </div>

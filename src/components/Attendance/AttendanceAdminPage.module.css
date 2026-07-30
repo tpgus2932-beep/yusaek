@@ -274,10 +274,18 @@
 .transferConfirmBtn:disabled { opacity: .6; cursor: wait; }
 .dailyAccountGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns:
+    minmax(105px, .72fr)
+    minmax(105px, .72fr)
+    minmax(175px, 1.2fr)
+    minmax(190px, 1.3fr);
   gap: 10px;
   margin-bottom: 12px;
 }
+.dailyBankField,
+.dailyHolderField,
+.dailyAccountNumberField,
+.dailyResidentField { min-width: 0; }
 .dailyActionRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .dailyFormDetails {
   margin-top: 16px;
@@ -338,11 +346,7 @@
   padding-right: 5px;
 }
 .dailyWorkerCard {
-  display: grid;
-  grid-template-columns: minmax(110px, .7fr) minmax(170px, 1fr) minmax(210px, 1.2fr) auto;
-  align-items: center;
-  gap: 14px;
-  padding: 14px;
+  overflow: hidden;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
   background: #f8fafc;
@@ -352,27 +356,91 @@
   background: #e5e7eb;
   border-color: #cbd5e1;
   filter: saturate(.25);
-  opacity: .72;
+  opacity: .78;
 }
-.dailyWorkerCard > div:first-child {
+.dailyWorkerSummary {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(110px, .7fr) minmax(170px, 1fr) minmax(150px, .85fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dailyWorkerSummary:hover { background: #f1f5f9; }
+.dailyWorkerSummary:focus-visible { outline: 2px solid #2563eb; outline-offset: -2px; }
+.dailyWorkerIdentity {
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
-.dailyWorkerCard strong { color: #1e293b; font-size: 15px; }
-.dailyWorkerCard span { color: #64748b; font-size: 13px; }
+.dailyWorkerIdentity strong { color: #1e293b; font-size: 15px; }
+.dailyWorkerIdentity small { color: #64748b; font-size: 13px; }
 .dailyWorkerTime {
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
-.dailyWorkerTime span { color: #2563eb; font-weight: 700; }
+.dailyWorkerTime strong { color: #2563eb; font-size: 13px; }
 .dailyWorkerTime small { color: #94a3b8; }
+.dailyWorkerAmount { display: flex; flex-direction: column; gap: 3px; }
+.dailyWorkerAmount small { color: #94a3b8; font-size: 12px; }
+.dailyWorkerAmount strong { color: #0f766e; font-size: 16px; }
+.dailyWorkerExpandHint {
+  padding: 6px 9px;
+  border-radius: 999px;
+  color: #475569;
+  background: #e2e8f0;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.dailyWorkerDetail {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  align-items: start;
+  gap: 12px;
+  padding: 14px;
+  border-top: 1px solid #e2e8f0;
+  background: #fff;
+}
+.dailyDetailSection {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.dailyDetailHeader {
+  display: flex;
+  min-height: 31px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+.dailyDetailHeader strong { color: #334155; font-size: 13px; }
 .dailyWorkerAccount { display: flex; flex-direction: column; gap: 3px; }
 .dailyWorkerAccount strong { color: #334155; }
 .accountMissing { color: #dc2626 !important; font-weight: 800; }
 .dailyAccountEditor { display: grid; grid-template-columns: repeat(2, minmax(100px, 1fr)); gap: 6px; }
 .dailyAccountEditor .filterInput { width: 100%; min-width: 0; }
+.dailyResidentValue {
+  display: block;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: #fff;
+  color: #1e293b;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+.dailyDetailEditActions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
 .dailyWorkerActions { display: flex; align-items: center; gap: 7px; }
 .paymentBtn { background: #2563eb; padding: 8px 10px; white-space: nowrap; }
 .paymentBtnActive { background: #64748b; }
@@ -382,12 +450,14 @@
   .tabBar { overflow-x: auto; }
   .tabBtn { min-width: 112px; }
   .dailyFormGrid { grid-template-columns: 1fr 1fr; }
+  .dailyAccountGrid { grid-template-columns: 1fr 1fr; }
   .dailyFilterRow { grid-template-columns: 1fr auto; }
   .fixedPayrollFilters { grid-template-columns: 1fr 1fr; }
-  .dailyWorkerCard { grid-template-columns: 1fr auto; }
-  .dailyWorkerTime { grid-column: 1; }
-  .dailyWorkerAccount { grid-column: 1; }
-  .dailyWorkerActions { grid-column: 2; grid-row: 1 / span 3; flex-direction: column; align-items: stretch; }
+  .dailyWorkerSummary { grid-template-columns: 1fr 1fr; }
+  .dailyWorkerAmount { align-items: flex-start; }
+  .dailyWorkerExpandHint { justify-self: end; }
+  .dailyWorkerDetail { grid-template-columns: 1fr; }
+  .dailyWorkerActions { justify-content: flex-end; }
 }
 
 /* ── 직원 관리 ── */

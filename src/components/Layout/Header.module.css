@@ -244,6 +244,27 @@
 }
 .attendanceLink:hover { opacity: 0.88; }
 
+.eventCalendarButton {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0.45rem 0.85rem;
+    border: 1px solid #d8dee8;
+    border-radius: var(--radius-sm);
+    background: #fff;
+    color: #27364b;
+    font-size: 0.82rem;
+    font-weight: 700;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.eventCalendarButton:hover {
+    border-color: #9aa7b8;
+    background: #f8fafc;
+}
+
 .guidebookLink {
     display: inline-flex;
     align-items: center;
@@ -314,6 +335,11 @@
     .attendanceLink {
         font-size: 0.75rem;
         padding: 0.35rem 0.6rem;
+    }
+
+    .eventCalendarButton {
+        padding: 0.35rem 0.6rem;
+        font-size: 0.75rem;
     }
 
     .guidebookLink {
