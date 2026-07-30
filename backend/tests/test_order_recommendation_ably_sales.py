@@ -253,6 +253,38 @@ def test_collect_ably_sales_history_limits_concurrent_fetches():
     assert 1 < max_concurrent <= 8
 
 
+@respx.mock
+def test_collect_ably_sales_history_skips_failed_call_and_continues():
+    _mock_login()
+    call_count = 0
+
+    def _side_effect(request):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise httpx.ConnectTimeout("simulated network timeout")
+        return httpx.Response(200, json=_stats_response([_goods_option("111", 5, 2)]))
+
+    respx.get(_STATS_URL).mock(side_effect=_side_effect)
+
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+
+    with patch(
+        "services.order_recommendation_ably_sales.load_wonbe_goods_sno_map",
+        return_value={"1": [("111", "S24083")]},
+    ):
+        updated = asyncio.run(collect_ably_sales_history(get_db, user="tester"))
+
+    # 28개 날짜 중 1건은 네트워크 실패로 스킵, 나머지 27건은 정상 반영.
+    assert updated == 27
+
+    progress = get_sales_history_progress("tester")
+    assert progress["running"] is False
+    assert progress["done"] == 28  # 실패한 것도 done에는 카운트(진행률이 멈추지 않게)
+    assert progress["updated"] == 27
+
+
 def test_get_sales_history_progress_returns_default_when_never_run():
     progress = get_sales_history_progress("never-ran-user")
 
