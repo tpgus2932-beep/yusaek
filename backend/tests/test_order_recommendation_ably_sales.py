@@ -224,6 +224,36 @@ def test_collect_ably_sales_history_ignores_unmapped_option_sno():
 
 
 @respx.mock
+def test_collect_ably_sales_history_fills_zero_for_option_missing_from_response():
+    """에이블리는 그날 판매/장바구니 활동이 없는 옵션을 응답에서 통째로 생략한다.
+    매핑된 옵션인데 응답에 없으면 sales_qty=0으로 명시적으로 채워야 한다 —
+    안 그러면 NULL로 남아서 _missing_dates가 영원히 재조회 대상으로 잡는다."""
+    _mock_login()
+    respx.get(_STATS_URL).mock(
+        return_value=httpx.Response(200, json=_stats_response([_goods_option("111", 5, 2)]))
+    )
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+
+    with patch(
+        "services.order_recommendation_ably_sales.load_wonbe_goods_sno_map",
+        return_value={"1": [("111", "S24083"), ("222", "S24067")]},
+    ):
+        updated = asyncio.run(collect_ably_sales_history(get_db))
+
+    assert updated == 56  # 28일 x 2옵션 (222는 매번 응답 생략, 0으로 채움)
+
+    conn = get_db()
+    target_date = _backfill_date_range(today_kst())[0]
+    row_a = get_row(conn, target_date, "S24083")
+    row_b = get_row(conn, target_date, "S24067")
+    assert row_a["sales_qty"] == 5
+    assert row_b["sales_qty"] == 0
+    assert row_b["cart_count"] == 0
+    conn.close()
+
+
+@respx.mock
 def test_collect_ably_sales_history_limits_concurrent_fetches():
     _mock_login()
     concurrent = 0

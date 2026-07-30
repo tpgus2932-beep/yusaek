@@ -101,8 +101,10 @@ async def collect_ably_sales_history(get_db, user: str = "_default") -> int:
                     progress["done"] += 1
                     return
             try:
+                returned_snos: set[str] = set()
                 for opt in goods_options:
                     sno = str(opt.get("goods_option_sno") or "")
+                    returned_snos.add(sno)
                     yusas_code = option_to_code.get(sno)
                     if yusas_code is None:
                         continue
@@ -111,6 +113,20 @@ async def collect_ably_sales_history(get_db, user: str = "_default") -> int:
                         "UPDATE order_recommendation_daily SET sales_qty = ?, cart_count = ? "
                         "WHERE date = ? AND yusas_code = ?",
                         (int(opt.get("order_count") or 0), int(opt.get("cart_count") or 0), date, yusas_code),
+                    )
+                    updated += 1
+                # Ably는 그날 주문/장바구니 활동이 전혀 없는 옵션을 응답에서 통째로
+                # 생략한다. 매핑된 옵션인데 응답에 없으면 활동이 0이었다는 뜻이므로
+                # 명시적으로 0을 채운다 — 안 그러면 sales_qty가 계속 NULL로 남아
+                # _missing_dates가 영원히 이 (goods_sno, date)를 다시 조회 대상으로 잡는다.
+                for sno, yusas_code in option_to_code.items():
+                    if sno in returned_snos:
+                        continue
+                    ensure_row(conn, date, yusas_code)
+                    conn.execute(
+                        "UPDATE order_recommendation_daily SET sales_qty = COALESCE(sales_qty, 0), "
+                        "cart_count = COALESCE(cart_count, 0) WHERE date = ? AND yusas_code = ?",
+                        (date, yusas_code),
                     )
                     updated += 1
                 conn.commit()
