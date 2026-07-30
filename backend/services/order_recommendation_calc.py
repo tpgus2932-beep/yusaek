@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 from services.order_recommendation_store import get_row, previous_date
 
-WEEKDAY_LOOKBACK_WEEKS = 8
+WEEKDAY_LOOKBACK_WEEKS = 4
 WEEKDAY_MIN_WEEKS = 4
 FALLBACK_WINDOW_DAYS = 14
 

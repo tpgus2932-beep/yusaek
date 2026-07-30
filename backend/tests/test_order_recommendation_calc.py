@@ -83,7 +83,7 @@ def test_calc_sales_window_returns_none_total_when_no_data():
     conn.close()
 
 
-def test_calc_weekday_average_sales_uses_8_week_lookback_when_enough_data():
+def test_calc_weekday_average_sales_uses_4_week_lookback_when_enough_data():
     get_db, _keep_alive = _make_db_factory()
     init_order_recommendation_tables(get_db)
     conn = get_db()
