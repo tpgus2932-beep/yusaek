@@ -17,6 +17,7 @@ from services.order_recommendation_ably_sales import (
     _fetch_goods_sno_stats,
     _missing_dates,
     collect_ably_sales_history,
+    get_sales_history_progress,
 )
 from services.order_recommendation_store import (
     ensure_row,
@@ -239,3 +240,34 @@ def test_collect_ably_sales_history_ignores_unmapped_option_sno():
         updated = asyncio.run(collect_ably_sales_history(get_db))
 
     assert updated == 28  # S24083만, 999는 무시
+
+
+def test_get_sales_history_progress_returns_default_when_never_run():
+    progress = get_sales_history_progress("never-ran-user")
+
+    assert progress == {"running": False, "total": 0, "done": 0, "updated": 0}
+
+
+@respx.mock
+def test_collect_ably_sales_history_updates_progress_to_completed_state():
+    _mock_login()
+    respx.get(_STATS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_stats_response([
+                _goods_option("111", 5, 2),
+                _goods_option("222", 3, 1),
+            ]),
+        )
+    )
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+
+    with patch(
+        "services.order_recommendation_ably_sales.load_wonbe_goods_sno_map",
+        return_value={"1": [("111", "S24083"), ("222", "S24067")]},
+    ):
+        updated = asyncio.run(collect_ably_sales_history(get_db, user="tester"))
+
+    progress = get_sales_history_progress("tester")
+    assert progress == {"running": False, "total": 28, "done": 28, "updated": updated}

@@ -8,6 +8,13 @@ from services.order_recommendation_store import ensure_row, today_kst
 
 BACKFILL_DAYS = 28
 
+# user -> {"running": bool, "total": int, "done": int, "updated": int} — 판매량 수집 진행상황 폴링용
+_sales_history_progress: dict[str, dict] = {}
+
+
+def get_sales_history_progress(user: str) -> dict:
+    return _sales_history_progress.get(user) or {"running": False, "total": 0, "done": 0, "updated": 0}
+
 
 def _date_minus(date: str, days: int) -> str:
     return (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -56,35 +63,50 @@ async def _fetch_goods_sno_stats(client: AblyClient, goods_sno: str, date: str) 
     return options
 
 
-async def collect_ably_sales_history(get_db) -> int:
+async def collect_ably_sales_history(get_db, user: str = "_default") -> int:
     goods_sno_map = load_wonbe_goods_sno_map()
     dates = _backfill_date_range(today_kst())
 
     conn = get_db()
     try:
-        client = AblyClient()
-        updated = 0
+        # 그룹별로 빠진 날짜를 먼저 다 계산해서 진행률의 total(=API 호출 예정 횟수)을 미리 안다.
+        groups: list[tuple[str, dict[str, str], list[str]]] = []
+        total_calls = 0
         for goods_sno, options in goods_sno_map.items():
             option_to_code = {sno: code for sno, code in options}
             missing: set[str] = set()
             for _sno, yusas_code in options:
                 missing.update(_missing_dates(conn, yusas_code, dates))
+            sorted_missing = sorted(missing)
+            groups.append((goods_sno, option_to_code, sorted_missing))
+            total_calls += len(sorted_missing)
 
-            for date in sorted(missing):
-                goods_options = await _fetch_goods_sno_stats(client, goods_sno, date)
-                for opt in goods_options:
-                    sno = str(opt.get("goods_option_sno") or "")
-                    yusas_code = option_to_code.get(sno)
-                    if yusas_code is None:
-                        continue
-                    ensure_row(conn, date, yusas_code)
-                    conn.execute(
-                        "UPDATE order_recommendation_daily SET sales_qty = ?, cart_count = ? "
-                        "WHERE date = ? AND yusas_code = ?",
-                        (int(opt.get("sold_quantity") or 0), int(opt.get("cart_count") or 0), date, yusas_code),
-                    )
-                    updated += 1
-                conn.commit()
+        progress = {"running": True, "total": total_calls, "done": 0, "updated": 0}
+        _sales_history_progress[user] = progress
+
+        client = AblyClient()
+        updated = 0
+        try:
+            for goods_sno, option_to_code, missing_dates in groups:
+                for date in missing_dates:
+                    goods_options = await _fetch_goods_sno_stats(client, goods_sno, date)
+                    for opt in goods_options:
+                        sno = str(opt.get("goods_option_sno") or "")
+                        yusas_code = option_to_code.get(sno)
+                        if yusas_code is None:
+                            continue
+                        ensure_row(conn, date, yusas_code)
+                        conn.execute(
+                            "UPDATE order_recommendation_daily SET sales_qty = ?, cart_count = ? "
+                            "WHERE date = ? AND yusas_code = ?",
+                            (int(opt.get("sold_quantity") or 0), int(opt.get("cart_count") or 0), date, yusas_code),
+                        )
+                        updated += 1
+                    conn.commit()
+                    progress["done"] += 1
+                    progress["updated"] = updated
+        finally:
+            progress["running"] = False
     finally:
         conn.close()
     return updated

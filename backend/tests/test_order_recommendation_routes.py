@@ -237,3 +237,16 @@ def test_collect_sales_history_endpoint_returns_updated_count():
 
     assert res.status_code == 200
     assert res.json() == {"ok": True, "updated": 42}
+
+
+def test_collect_sales_history_progress_endpoint_returns_progress_dict():
+    client, _get_db, _keep_alive = _make_client()
+
+    with patch(
+        "api.order_recommendation_routes.get_sales_history_progress",
+        return_value={"running": True, "total": 100, "done": 40, "updated": 60},
+    ):
+        res = client.get("/order-recommendation/collect-sales-history/progress")
+
+    assert res.status_code == 200
+    assert res.json() == {"running": True, "total": 100, "done": 40, "updated": 60}

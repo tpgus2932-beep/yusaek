@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends
 
-from services.order_recommendation_ably_sales import collect_ably_sales_history
+from services.order_recommendation_ably_sales import collect_ably_sales_history, get_sales_history_progress
 from services.order_recommendation_calc import compute_all
 from services.order_recommendation_collect import run_collectors
 from services.order_recommendation_evaluate import aggregate_forecast_accuracy, evaluate_all
@@ -32,8 +32,12 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting):
 
     @router.post("/collect-sales-history")
     async def collect_sales_history(user: str = Depends(get_current_user)):
-        updated = await collect_ably_sales_history(get_db)
+        updated = await collect_ably_sales_history(get_db, user=user)
         return {"ok": True, "updated": updated}
+
+    @router.get("/collect-sales-history/progress")
+    def collect_sales_history_progress(user: str = Depends(get_current_user)):
+        return get_sales_history_progress(user)
 
     @router.post("/compute")
     def compute(date: str | None = None, user: str = Depends(get_current_user)):
