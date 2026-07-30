@@ -1470,6 +1470,11 @@ body { background: #fff; font-family: sans-serif; }
         }
     };
 
+    const handleEditSpecialNote = (note) => {
+        setSpecialNoteInvoiceInput(note.invoiceNo || '');
+        setSpecialNoteTextInput(note.note || '');
+    };
+
     const handleDeleteSpecialNote = async (id) => {
         try {
             const res = await fetch(`${API}/return-special-notes/${id}`, {
@@ -2914,13 +2919,22 @@ body { background: #fff; font-family: sans-serif; }
                                                 {n.createdBy} · {n.createdAt}
                                             </div>
                                         </div>
-                                        <button
-                                            type="button"
-                                            className={pageStyles.secondaryBtn}
-                                            onClick={() => handleDeleteSpecialNote(n.id)}
-                                        >
-                                            삭제
-                                        </button>
+                                        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.secondaryBtn}
+                                                onClick={() => handleEditSpecialNote(n)}
+                                            >
+                                                수정
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.secondaryBtn}
+                                                onClick={() => handleDeleteSpecialNote(n.id)}
+                                            >
+                                                삭제
+                                            </button>
+                                        </div>
                                     </div>
                                 ))}
                             </div>
