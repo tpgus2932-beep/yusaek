@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 
 from api.wonbe_routes import load_wonbe_goods_sno_map
@@ -7,6 +8,7 @@ from sdk.ably import AblyClient
 from services.order_recommendation_store import ensure_row, today_kst
 
 BACKFILL_DAYS = 28
+FETCH_CONCURRENCY = 8
 
 # user -> {"running": bool, "total": int, "done": int, "updated": int} — 판매량 수집 진행상황 폴링용
 _sales_history_progress: dict[str, dict] = {}
@@ -62,42 +64,50 @@ async def collect_ably_sales_history(get_db, user: str = "_default") -> int:
 
     conn = get_db()
     try:
-        # 그룹별로 빠진 날짜를 먼저 다 계산해서 진행률의 total(=API 호출 예정 횟수)을 미리 안다.
-        groups: list[tuple[str, dict[str, str], list[str]]] = []
-        total_calls = 0
+        # (goods_sno, date, option_to_code) 단위 호출 목록을 미리 만들어서
+        # 진행률의 total(=API 호출 예정 횟수)을 안다. 같은 goods_sno는 한 번만
+        # option_to_code로 묶고, 실제 (goods_sno, date) 조합마다 한 번씩 호출한다.
+        calls: list[tuple[str, str, dict[str, str]]] = []
         for goods_sno, options in goods_sno_map.items():
             option_to_code = {sno: code for sno, code in options}
             missing: set[str] = set()
             for _sno, yusas_code in options:
                 missing.update(_missing_dates(conn, yusas_code, dates))
-            sorted_missing = sorted(missing)
-            groups.append((goods_sno, option_to_code, sorted_missing))
-            total_calls += len(sorted_missing)
+            for date in sorted(missing):
+                calls.append((goods_sno, date, option_to_code))
 
-        progress = {"running": True, "total": total_calls, "done": 0, "updated": 0}
+        progress = {"running": True, "total": len(calls), "done": 0, "updated": 0}
         _sales_history_progress[user] = progress
 
         client = AblyClient()
+        semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
         updated = 0
+
+        async def _run_one(goods_sno: str, date: str, option_to_code: dict[str, str]) -> None:
+            nonlocal updated
+            # 세마포어는 네트워크 호출(느린 부분)만 감싼다 — DB 쓰기는 로컬이라 빠르고,
+            # 동시에 여러 개가 기다려도 상관없다. 이렇게 네트워크 대기 중에 이벤트루프가
+            # 자유로워져서 진행률 폴링 같은 다른 요청도 그 사이 처리된다.
+            async with semaphore:
+                goods_options = await _fetch_goods_sno_stats(client, goods_sno, date)
+            for opt in goods_options:
+                sno = str(opt.get("goods_option_sno") or "")
+                yusas_code = option_to_code.get(sno)
+                if yusas_code is None:
+                    continue
+                ensure_row(conn, date, yusas_code)
+                conn.execute(
+                    "UPDATE order_recommendation_daily SET sales_qty = ?, cart_count = ? "
+                    "WHERE date = ? AND yusas_code = ?",
+                    (int(opt.get("order_count") or 0), int(opt.get("cart_count") or 0), date, yusas_code),
+                )
+                updated += 1
+            conn.commit()
+            progress["done"] += 1
+            progress["updated"] = updated
+
         try:
-            for goods_sno, option_to_code, missing_dates in groups:
-                for date in missing_dates:
-                    goods_options = await _fetch_goods_sno_stats(client, goods_sno, date)
-                    for opt in goods_options:
-                        sno = str(opt.get("goods_option_sno") or "")
-                        yusas_code = option_to_code.get(sno)
-                        if yusas_code is None:
-                            continue
-                        ensure_row(conn, date, yusas_code)
-                        conn.execute(
-                            "UPDATE order_recommendation_daily SET sales_qty = ?, cart_count = ? "
-                            "WHERE date = ? AND yusas_code = ?",
-                            (int(opt.get("order_count") or 0), int(opt.get("cart_count") or 0), date, yusas_code),
-                        )
-                        updated += 1
-                    conn.commit()
-                    progress["done"] += 1
-                    progress["updated"] = updated
+            await asyncio.gather(*[_run_one(goods_sno, date, option_to_code) for goods_sno, date, option_to_code in calls])
         finally:
             progress["running"] = False
     finally:

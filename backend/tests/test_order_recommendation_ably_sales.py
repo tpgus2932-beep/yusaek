@@ -223,6 +223,36 @@ def test_collect_ably_sales_history_ignores_unmapped_option_sno():
     assert updated == 28  # S24083만, 999는 무시
 
 
+@respx.mock
+def test_collect_ably_sales_history_limits_concurrent_fetches():
+    _mock_login()
+    concurrent = 0
+    max_concurrent = 0
+
+    async def _side_effect(request):
+        nonlocal concurrent, max_concurrent
+        concurrent += 1
+        max_concurrent = max(max_concurrent, concurrent)
+        await asyncio.sleep(0.01)
+        concurrent -= 1
+        return httpx.Response(200, json=_stats_response([_goods_option("111", 1, 0)]))
+
+    respx.get(_STATS_URL).mock(side_effect=_side_effect)
+
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    # goods_sno 10개 x 28일 = 280번 호출될 여지를 만들어 동시성이 실제로 발동하는지 본다.
+    goods_sno_map = {str(i): [(f"opt{i}", f"S{i}")] for i in range(10)}
+
+    with patch(
+        "services.order_recommendation_ably_sales.load_wonbe_goods_sno_map",
+        return_value=goods_sno_map,
+    ):
+        asyncio.run(collect_ably_sales_history(get_db))
+
+    assert 1 < max_concurrent <= 8
+
+
 def test_get_sales_history_progress_returns_default_when_never_run():
     progress = get_sales_history_progress("never-ran-user")
 
