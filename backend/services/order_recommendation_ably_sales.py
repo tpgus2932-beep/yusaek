@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+import traceback
 from datetime import datetime, timedelta
 
 from api.wonbe_routes import load_wonbe_goods_sno_map
@@ -94,21 +96,28 @@ async def collect_ably_sales_history(get_db, user: str = "_default") -> int:
                 except Exception:
                     # 네트워크 순단 등으로 이 (goods_sno, date) 하나가 실패해도 asyncio.gather
                     # 전체를 죽이지 않는다 — 갭필 구조라 다음 실행 때 이 날짜만 자동 재시도된다.
+                    print(f"[sales-history] fetch failed goods_sno={goods_sno} date={date}", file=sys.stderr)
+                    traceback.print_exc(file=sys.stderr)
                     progress["done"] += 1
                     return
-            for opt in goods_options:
-                sno = str(opt.get("goods_option_sno") or "")
-                yusas_code = option_to_code.get(sno)
-                if yusas_code is None:
-                    continue
-                ensure_row(conn, date, yusas_code)
-                conn.execute(
-                    "UPDATE order_recommendation_daily SET sales_qty = ?, cart_count = ? "
-                    "WHERE date = ? AND yusas_code = ?",
-                    (int(opt.get("order_count") or 0), int(opt.get("cart_count") or 0), date, yusas_code),
-                )
-                updated += 1
-            conn.commit()
+            try:
+                for opt in goods_options:
+                    sno = str(opt.get("goods_option_sno") or "")
+                    yusas_code = option_to_code.get(sno)
+                    if yusas_code is None:
+                        continue
+                    ensure_row(conn, date, yusas_code)
+                    conn.execute(
+                        "UPDATE order_recommendation_daily SET sales_qty = ?, cart_count = ? "
+                        "WHERE date = ? AND yusas_code = ?",
+                        (int(opt.get("order_count") or 0), int(opt.get("cart_count") or 0), date, yusas_code),
+                    )
+                    updated += 1
+                conn.commit()
+            except Exception:
+                # DB 쓰기 실패도 마찬가지로 이 한 건만 건너뛰고 전체 수집은 계속한다.
+                print(f"[sales-history] write failed goods_sno={goods_sno} date={date}", file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
             progress["done"] += 1
             progress["updated"] = updated
 
