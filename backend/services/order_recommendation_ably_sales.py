@@ -36,31 +36,24 @@ def _missing_dates(conn, yusas_code: str, dates: list[str]) -> list[str]:
 
 
 async def _fetch_goods_sno_stats(client: AblyClient, goods_sno: str, date: str) -> list[dict]:
-    options: list[dict] = []
-    page = 1
-    while True:
-        response = await client.request(
-            "GET", "/seller/business-insight/market-performance/option-stats-options/",
-            params={
-                "goods_sno": goods_sno, "start_date": date, "end_date": date,
-                "page": page, "per_page": 100,
-                "sort_key": "sold_quantity", "sort_order": "desc",
-            },
+    response = await client.request(
+        "GET", "/seller/statistics/goods/",
+        params={
+            "page": 1, "per_page": 100, "option_enable": "true",
+            "keyword": goods_sno, "keyword_type": "goods_sno",
+            "start_date": date, "end_date": date,
+        },
+        origin="my.a-bly.com",
+    )
+    if not response.is_success:
+        raise RuntimeError(
+            f"Ably 판매통계 조회 실패 (goods_sno={goods_sno}, date={date}, HTTP {response.status_code})"
         )
-        if not response.is_success:
-            raise RuntimeError(
-                f"Ably 판매통계 조회 실패 (goods_sno={goods_sno}, date={date}, HTTP {response.status_code})"
-            )
-        data = response.json()
-        options.extend(data.get("options") or [])
-
-        max_page = data.get("max_page_number") or 1
-        current_page = data.get("current_page") or page
-        if current_page >= max_page:
-            break
-        page += 1
-
-    return options
+    data = response.json()
+    statistics = (data.get("results") or {}).get("statistics") or []
+    if not statistics:
+        return []
+    return statistics[0].get("goods_options") or []
 
 
 async def collect_ably_sales_history(get_db, user: str = "_default") -> int:
@@ -99,7 +92,7 @@ async def collect_ably_sales_history(get_db, user: str = "_default") -> int:
                         conn.execute(
                             "UPDATE order_recommendation_daily SET sales_qty = ?, cart_count = ? "
                             "WHERE date = ? AND yusas_code = ?",
-                            (int(opt.get("sold_quantity") or 0), int(opt.get("cart_count") or 0), date, yusas_code),
+                            (int(opt.get("order_count") or 0), int(opt.get("cart_count") or 0), date, yusas_code),
                         )
                         updated += 1
                     conn.commit()

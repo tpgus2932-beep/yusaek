@@ -27,7 +27,7 @@ from services.order_recommendation_store import (
 )
 
 _LOGIN_URL = "https://api.a-bly.com/seller/login/"
-_STATS_URL = "https://api.a-bly.com/seller/business-insight/market-performance/option-stats-options/"
+_STATS_URL = "https://api.a-bly.com/seller/statistics/goods/"
 
 
 def _make_db_factory():
@@ -47,17 +47,15 @@ def _mock_login():
     respx.post(_LOGIN_URL).mock(return_value=httpx.Response(200, json={"token": "test-token"}))
 
 
-def _goods_option(sno, sold_quantity, cart_count):
-    return {"goods_option_sno": sno, "sold_quantity": sold_quantity, "cart_count": cart_count, "like_count": 999}
+def _goods_option(sno, order_count, cart_count):
+    return {"goods_option_sno": sno, "order_count": order_count, "cart_count": cart_count, "like_count": 999}
 
 
-def _stats_response(options, *, current_page=1, max_page_number=1):
+def _stats_response(goods_options):
     return {
-        "current_page": current_page,
-        "max_page_number": max_page_number,
-        "per_page": 100,
-        "total_count": len(options),
-        "options": options,
+        "results": {
+            "statistics": [{"goods_sno": 1, "goods_options": goods_options}] if goods_options is not None else [],
+        }
     }
 
 
@@ -103,7 +101,7 @@ def test_missing_dates_excludes_dates_already_filled():
 
 
 @respx.mock
-def test_fetch_goods_sno_stats_parses_options():
+def test_fetch_goods_sno_stats_parses_goods_options():
     _mock_login()
     respx.get(_STATS_URL).mock(
         return_value=httpx.Response(200, json=_stats_response([_goods_option("111", 5, 2)]))
@@ -116,31 +114,14 @@ def test_fetch_goods_sno_stats_parses_options():
 
 
 @respx.mock
-def test_fetch_goods_sno_stats_returns_empty_list_when_no_options():
+def test_fetch_goods_sno_stats_returns_empty_list_when_no_statistics():
     _mock_login()
-    respx.get(_STATS_URL).mock(return_value=httpx.Response(200, json=_stats_response([])))
+    respx.get(_STATS_URL).mock(return_value=httpx.Response(200, json=_stats_response(None)))
     client = AblyClient()
 
     options = asyncio.run(_fetch_goods_sno_stats(client, "1", "2026-07-01"))
 
     assert options == []
-
-
-@respx.mock
-def test_fetch_goods_sno_stats_follows_pagination_across_pages():
-    _mock_login()
-    route = respx.get(_STATS_URL).mock(
-        side_effect=[
-            httpx.Response(200, json=_stats_response([_goods_option("111", 5, 2)], current_page=1, max_page_number=2)),
-            httpx.Response(200, json=_stats_response([_goods_option("222", 3, 1)], current_page=2, max_page_number=2)),
-        ]
-    )
-    client = AblyClient()
-
-    options = asyncio.run(_fetch_goods_sno_stats(client, "1", "2026-07-01"))
-
-    assert options == [_goods_option("111", 5, 2), _goods_option("222", 3, 1)]
-    assert route.call_count == 2
 
 
 @respx.mock
