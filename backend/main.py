@@ -50,6 +50,8 @@ from api.order_recommendation_routes import build_order_recommendation_router
 from services.order_recommendation_store import init_order_recommendation_tables
 from services.order_recommendation_collect import register_collector
 from services.order_recommendation_ezadmin_collectors import build_ezadmin_collectors
+from services.order_non_ably_backorder import init_non_ably_backorder_table
+from api.order_non_ably_backorder_routes import build_non_ably_order_router
 from api.amood_routes import build_amood_router
 from api.returns_routes import build_returns_router
 from api.order_routes import build_order_router
@@ -845,6 +847,7 @@ def _init_request_attachments():
 _init_request_attachments()
 
 init_order_recommendation_tables(_get_shared_db)
+init_non_ably_backorder_table(_get_shared_db)
 
 
 def _init_shared_files():
@@ -1431,6 +1434,13 @@ app.include_router(
 )
 for _ez_column, _ez_fn in build_ezadmin_collectors(_get_setting).items():
     register_collector(_ez_column, _ez_fn)
+app.include_router(
+    build_non_ably_order_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        get_setting=_get_setting,
+    )
+)
 
 _sms_router, _enqueue_sms_fn = build_sms_router(
     get_current_user=_get_current_user,
