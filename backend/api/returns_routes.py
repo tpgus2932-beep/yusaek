@@ -506,6 +506,22 @@ def build_returns_router(
             return _resolve_lotte_request_memo(state, item.get("scan", ""), fallback)
         return fallback
 
+    def _lookup_special_note(invoice_no: str) -> str:
+        invoice_no = clean_invoice(invoice_no)
+        if not invoice_no:
+            return ""
+        conn = get_db()
+        if conn is None:
+            return ""
+        try:
+            row = conn.execute(
+                "SELECT note FROM return_special_notes WHERE invoice_no = ?",
+                (invoice_no,),
+            ).fetchone()
+        finally:
+            conn.close()
+        return row["note"] if row else ""
+
     @router.get("/returns/state")
     def returns_state(user: str = Depends(get_current_user)):
         state = get_return_state(user)
@@ -1657,6 +1673,8 @@ def build_returns_router(
             state.last_type = "미매칭"
             return {"ok": True, "last_type": state.last_type, "queues": return_queue_payload(state)}
 
+        special_note = _lookup_special_note(e_val)
+
         if e_val in {it.get("match") for it in state.all_items if it.get("match")}:
             # /returns/scan-related로 이미 큐에 들어간 건 (related_unscanned
             # 확인 후 추가한 경우) - 물리 바코드는 처음 스캔이라도 실제로는
@@ -1693,6 +1711,7 @@ def build_returns_router(
                 "item_text": item_text,
                 "qty": qty,
                 "type": rtype,
+                "special_note": special_note,
                 "detail_reason":  str(row.get("DETAIL_REASON") or ""),
                 "user_comment":   str(row.get("USER_COMMENT") or ""),
                 "request_no":     str(row.get("REQUEST_NO") or ""),
@@ -1743,6 +1762,7 @@ def build_returns_router(
         return {
             "ok": True,
             "last_type": state.last_type,
+            "special_note": special_note,
             "queues": return_queue_payload(state),
             "related_unscanned": related_unscanned,
         }
