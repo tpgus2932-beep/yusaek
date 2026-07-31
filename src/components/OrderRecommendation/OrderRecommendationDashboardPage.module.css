@@ -222,3 +222,52 @@
   font-size: 0.75rem;
   color: var(--text-muted);
 }
+
+.backtestControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.backtestField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.backtestField label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.backtestDateInput,
+.backtestWeightInput {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.82rem;
+}
+
+.backtestWeightInput {
+  width: 70px;
+}
+
+.backtestSaveBtn {
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--accent-black);
+  border-radius: var(--radius-sm);
+  background: var(--accent-black);
+  color: var(--accent-white);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.backtestSaveMsg {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
