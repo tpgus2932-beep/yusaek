@@ -177,3 +177,48 @@
   color: var(--text-secondary);
   font-weight: 600;
 }
+
+.confirmInput {
+  width: 70px;
+  padding: 0.3rem 0.4rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.82rem;
+}
+
+.reasonInput {
+  width: 140px;
+  padding: 0.3rem 0.4rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.82rem;
+}
+
+.rowSaveBtn {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--accent-black);
+  border-radius: var(--radius-sm);
+  background: var(--accent-black);
+  color: var(--accent-white);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.rowSaveBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  border-color: var(--border-color);
+}
+
+.rowMessage {
+  margin-left: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
