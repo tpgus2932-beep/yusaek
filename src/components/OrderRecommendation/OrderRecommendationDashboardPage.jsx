@@ -131,6 +131,7 @@ const DAILY_TABLE_COLUMNS = [
   { key: 'expected_sales_today', label: '예상판매량' },
   { key: 'incoming_qty', label: '미송' },
   { key: 'ezadmin_lack_qty', label: '부족수량' },
+  { key: 'coverage_days_used', label: '커버리지' },
   { key: 'recommended_qty', label: '추천발주량' },
 ];
 
@@ -176,6 +177,7 @@ function DailyTableRow({ date, item }) {
       <td>{item.expected_sales_today != null ? item.expected_sales_today.toFixed(1) : '-'}</td>
       <td>{item.incoming_qty ?? '-'}</td>
       <td>{item.ezadmin_lack_qty ?? '-'}</td>
+      <td>{item.coverage_days_used != null ? `${item.coverage_days_used}일` : '-'}</td>
       <td>{item.recommended_qty ?? '-'}</td>
       <td>
         <input
@@ -200,66 +202,6 @@ function DailyTableRow({ date, item }) {
         {message && <span className={styles.rowMessage}>{message}</span>}
       </td>
     </tr>
-  );
-}
-
-function CoverageDaysControl() {
-  const [coverageDays, setCoverageDays] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState('');
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`${API}/order-recommendation/settings`, { headers: getAuthHeaders() });
-        const data = await res.json().catch(() => ({}));
-        if (!cancelled && res.ok && data.ok) setCoverageDays(String(data.coverage_days));
-      } catch {
-        // 조회 실패 시 빈 값 유지
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  const save = async () => {
-    setSaving(true);
-    setMessage('');
-    try {
-      const res = await fetch(`${API}/order-recommendation/settings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ coverage_days: Number(coverageDays) }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data.ok === false) throw new Error(data?.detail || '저장 실패');
-      setMessage('저장됨 — 다음 예상발주 계산부터 적용됩니다');
-    } catch (err) {
-      setMessage(err.message || '저장 실패');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className={styles.backtestControls}>
-      <div className={styles.backtestField}>
-        <label>며칠치 발주 (1~5일)</label>
-        <input
-          type="number"
-          min="1"
-          max="5"
-          step="1"
-          className={styles.backtestWeightInput}
-          value={coverageDays}
-          onChange={(e) => setCoverageDays(e.target.value)}
-        />
-      </div>
-      <button type="button" className={styles.backtestSaveBtn} onClick={save} disabled={saving}>
-        {saving ? '저장 중...' : '저장'}
-      </button>
-      {message && <span className={styles.backtestSaveMsg}>{message}</span>}
-    </div>
   );
 }
 
@@ -379,11 +321,6 @@ export default function OrderRecommendationDashboardPage() {
             <ActionButton key={action.key} action={action} onSuccess={refresh} />
           ))}
         </div>
-      </section>
-
-      <section className={styles.section}>
-        <h3 className={styles.sectionTitle}>발주 커버리지</h3>
-        <CoverageDaysControl />
       </section>
 
       <section className={styles.section}>

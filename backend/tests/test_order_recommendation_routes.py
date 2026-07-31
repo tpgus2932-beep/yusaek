@@ -326,7 +326,8 @@ def test_compute_endpoint_fills_recommended_qty_for_existing_rows():
 
     res2 = client.get("/order-recommendation/daily", params={"date": "2026-07-29"})
     row = res2.json()["items"][0]
-    assert row["recommended_qty"] == 10
+    # expected_sales_today=10.0 -> 10~15 구간 -> 커버리지 자동 5일치로 합산
+    assert row["recommended_qty"] == 50
 
 
 def test_collect_endpoint_invokes_registered_collectors():
@@ -502,37 +503,3 @@ def test_save_weights_ignores_missing_keys():
     assert res.status_code == 200
     assert "order_recommendation_weight_previous_day" in store
     assert "order_recommendation_weight_weekday_average" not in store
-
-
-def test_get_settings_returns_default_coverage_days_when_unset():
-    client, _get_db, _keep_alive, _store = _make_client()
-
-    res = client.get("/order-recommendation/settings")
-    assert res.status_code == 200
-    assert res.json() == {"ok": True, "coverage_days": 1.0}
-
-
-def test_get_settings_returns_saved_coverage_days():
-    client, _get_db, _keep_alive, store = _make_client()
-    store["order_recommendation_coverage_days"] = "3"
-
-    res = client.get("/order-recommendation/settings")
-    assert res.status_code == 200
-    assert res.json() == {"ok": True, "coverage_days": 3.0}
-
-
-def test_save_settings_updates_coverage_days():
-    client, _get_db, _keep_alive, store = _make_client()
-
-    res = client.post("/order-recommendation/settings", json={"coverage_days": 3})
-    assert res.status_code == 200
-    assert res.json() == {"ok": True}
-    assert store["order_recommendation_coverage_days"] == "3.0"
-
-
-def test_save_settings_rejects_coverage_days_out_of_range():
-    client, _get_db, _keep_alive, store = _make_client()
-
-    res = client.post("/order-recommendation/settings", json={"coverage_days": 6})
-    assert res.status_code == 400
-    assert "order_recommendation_coverage_days" not in store

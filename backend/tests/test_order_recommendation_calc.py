@@ -346,6 +346,33 @@ def test_setting_weight_accepts_zero():
     assert _setting_weight(lambda key: "0", "k", 0.35) == 0.0
 
 
+from services.order_recommendation_calc import coverage_days_for_expected_sales
+
+
+def test_coverage_days_for_expected_sales_under_5_is_1_day():
+    assert coverage_days_for_expected_sales(0) == 1.0
+    assert coverage_days_for_expected_sales(4.9) == 1.0
+
+
+def test_coverage_days_for_expected_sales_5_to_9_is_3_days():
+    assert coverage_days_for_expected_sales(5) == 3.0
+    assert coverage_days_for_expected_sales(9.9) == 3.0
+
+
+def test_coverage_days_for_expected_sales_10_to_15_is_5_days():
+    assert coverage_days_for_expected_sales(10) == 5.0
+    assert coverage_days_for_expected_sales(15) == 5.0
+
+
+def test_coverage_days_for_expected_sales_over_15_is_7_days():
+    assert coverage_days_for_expected_sales(15.1) == 7.0
+    assert coverage_days_for_expected_sales(100) == 7.0
+
+
+def test_coverage_days_for_expected_sales_none_defaults_to_1_day():
+    assert coverage_days_for_expected_sales(None) == 1.0
+
+
 from services.order_recommendation_calc import compute_all, compute_row
 
 
@@ -441,7 +468,9 @@ def test_compute_row_full_pipeline_with_default_settings():
     assert row["previous_day_sales_qty"] == 20
     # (34/3*.20 + 20*.25 + 12*.20 + 11*.15 + 40/3*.20) / 1.0
     assert row["expected_sales_today"] == pytest.approx(13.983333333333333)
-    assert row["recommended_qty"] == 6  # ceil(13.983...)-5-3
+    # expected_sales_today가 10~15 구간 -> 커버리지 자동 5일치 (coverage_days_for_expected_sales)
+    assert row["coverage_days_used"] == pytest.approx(5.0)
+    assert row["recommended_qty"] == 62
     assert row["model_version"] == "weighted_v1"
     assert row["model_weight_weekday"] == pytest.approx(0.20)
     assert row["model_weight_previous_day"] == pytest.approx(0.25)
@@ -478,8 +507,9 @@ def test_compute_row_respects_custom_weight_and_recommendation_settings():
     row = get_row(conn, "2026-07-29", code)
     # 요일평균(3주)=34/3, (34/3*.5 + 20*.5) / (.5+.5) = 15.666...
     assert row["expected_sales_today"] == pytest.approx(15.666666666666666)
-    # coverage_days 기본값 1이라 커버리지 합산도 동일 -> ceil(15.666...+1)=17, 17-5-3=9
-    assert row["recommended_qty"] == 9
+    # 15개 초과 구간 -> 커버리지 자동 7일치
+    assert row["coverage_days_used"] == pytest.approx(7.0)
+    assert row["recommended_qty"] == 103
     assert row["model_version"] == "weighted_v1"
     assert row["model_weight_weekday"] == pytest.approx(0.5)
     assert row["model_weight_previous_day"] == pytest.approx(0.5)
@@ -515,7 +545,6 @@ def test_compute_row_sums_multi_day_coverage_using_each_days_own_weekday_average
         "order_recommendation_weight_previous_day": "0",
         "order_recommendation_weight_avg_7d": "0",
         "order_recommendation_weight_avg_14d": "0",
-        "order_recommendation_coverage_days": "2",
         "order_recommendation_safety_stock_qty": "0",
     }
     compute_row(conn, code, "2026-07-29", get_setting=lambda key: settings.get(key))
@@ -523,8 +552,9 @@ def test_compute_row_sums_multi_day_coverage_using_each_days_own_weekday_average
     row = get_row(conn, "2026-07-29", code)
     # expected_sales_today는 D(수) 하루치 예측만 저장 -> 10.0 (정확도 평가용, 커버리지 합산과는 별개)
     assert row["expected_sales_today"] == pytest.approx(10.0)
-    # 발주량은 D(수)=10.0 + D+1(목)=20.0 = 30.0 합산 기준 -> ceil(30+0)=30, 30-5-3=22
-    assert row["recommended_qty"] == 22
+    # 10~15 구간 -> 커버리지 자동 5일치 (D~D+4, 요일마다 각자 요일평균 재계산해서 합산)
+    assert row["coverage_days_used"] == pytest.approx(5.0)
+    assert row["recommended_qty"] == 67
     conn.close()
 
 
@@ -610,7 +640,9 @@ def test_compute_row_is_order_independent():
     row_b = get_row(conn_b, "2026-07-30", code)
 
     assert row_a["expected_sales_today"] == row_b["expected_sales_today"] == pytest.approx(9.6)
-    assert row_a["recommended_qty"] == row_b["recommended_qty"] == 9
+    # 5~9 구간 -> 커버리지 자동 3일치
+    assert row_a["coverage_days_used"] == row_b["coverage_days_used"] == pytest.approx(3.0)
+    assert row_a["recommended_qty"] == row_b["recommended_qty"] == 29
     conn_a.close()
     conn_b.close()
 

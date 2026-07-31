@@ -39,15 +39,15 @@ EXPECTED_COLUMNS = {
     "wish_count_change", "wish_count_change_rate",
     "cart_count_change", "cart_count_change_rate",
     "incoming_qty_change", "incoming_qty_change_rate",
-    "sales_7d", "sales_14d", "avg_sales_7d", "avg_sales_14d",
+    "sales_3d", "sales_7d", "sales_14d", "avg_sales_3d", "avg_sales_7d", "avg_sales_14d",
     "weekday_average_sales", "expected_sales_today",
     "model_version", "model_weight_weekday", "model_weight_previous_day",
-    "model_weight_avg_7d", "model_weight_avg_14d",
+    "model_weight_avg_7d", "model_weight_avg_14d", "model_weight_avg_3d",
     "recommended_qty",
     "forecast_error", "absolute_error", "within_20_percent", "evaluated_at",
     "confirm_deviation", "fulfillment_gap", "order_performance_evaluated_at",
     "confirmed_qty", "override_reason", "updated_by", "updated_at",
-    "excluded_from_avg", "created_at",
+    "excluded_from_avg", "created_at", "registered_at", "coverage_days_used",
 }
 
 

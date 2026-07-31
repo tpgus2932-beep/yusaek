@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends
 
 from api.wonbe_routes import load_wonbe_product_name_map
 from services.order_recommendation_ably_sales import collect_ably_sales_history, get_sales_history_progress
-from services.order_recommendation_calc import DEFAULT_COVERAGE_DAYS, calc_expected_sales_today_for_date, compute_all
+from services.order_recommendation_calc import calc_expected_sales_today_for_date, compute_all
 from services.order_recommendation_collect import run_collectors
 from services.order_recommendation_evaluate import (
     aggregate_forecast_accuracy,
@@ -196,27 +196,6 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
         for key in keys:
             if key in payload and payload[key] is not None:
                 set_setting(f"order_recommendation_{key}", str(payload[key]))
-        return {"ok": True}
-
-    @router.get("/settings")
-    def get_settings(user: str = Depends(get_current_user)):
-        raw = get_setting("order_recommendation_coverage_days")
-        try:
-            coverage_days = float(raw) if raw not in (None, "") else DEFAULT_COVERAGE_DAYS
-        except (TypeError, ValueError):
-            coverage_days = DEFAULT_COVERAGE_DAYS
-        return {"ok": True, "coverage_days": coverage_days}
-
-    @router.post("/settings")
-    def save_settings(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        if "coverage_days" in payload and payload["coverage_days"] is not None:
-            try:
-                value = float(payload["coverage_days"])
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail="coverage_days는 숫자여야 합니다")
-            if not (1 <= value <= 5):
-                raise HTTPException(status_code=400, detail="coverage_days는 1~5 사이여야 합니다")
-            set_setting("order_recommendation_coverage_days", str(value))
         return {"ok": True}
 
     @router.post("/{date}/{yusas_code}/confirm")

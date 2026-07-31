@@ -238,6 +238,19 @@ def calc_expected_sales_today_for_date(
     }
 
 
+def coverage_days_for_expected_sales(expected_sales) -> float:
+    """예상판매량 구간별로 발주 커버리지(한 번에 며칠치를 발주할지)를 자동으로 정한다.
+    0~4개: 1일치 / 5~9개: 3일치 / 10~15개: 5일치 / 15개 초과: 7일치.
+    예상판매량을 모르면(None) 가장 보수적인 1일치로 계산한다."""
+    if expected_sales is None or expected_sales < 5:
+        return 1.0
+    if expected_sales < 10:
+        return 3.0
+    if expected_sales <= 15:
+        return 5.0
+    return 7.0
+
+
 def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
     row = get_row(conn, date, yusas_code)
     if row is None:
@@ -248,7 +261,7 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
     prev_date_str = previous_date(date)
     prev_row = get_row(conn, prev_date_str, yusas_code)
 
-    coverage_days = _setting_float(get_setting, "order_recommendation_coverage_days", DEFAULT_COVERAGE_DAYS)
+    coverage_days = coverage_days_for_expected_sales(signals["expected_sales_today"])
     safety_stock_qty = _setting_float(get_setting, "order_recommendation_safety_stock_qty", DEFAULT_SAFETY_STOCK_QTY)
 
     coverage_period_expected_sales = calc_expected_sales_for_coverage(
@@ -281,6 +294,7 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
             weekday_average_sales = ?, expected_sales_today = ?,
             model_version = ?, model_weight_weekday = ?, model_weight_previous_day = ?,
             model_weight_avg_7d = ?, model_weight_avg_14d = ?, model_weight_avg_3d = ?,
+            coverage_days_used = ?,
             recommended_qty = ?,
             ad_budget_change = ?, ad_budget_change_rate = ?,
             wish_count_change = ?, wish_count_change_rate = ?,
@@ -295,6 +309,7 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
             signals["weekday_average_sales"], signals["expected_sales_today"],
             MODEL_VERSION, signals["weight_weekday_average"], signals["weight_previous_day"],
             signals["weight_avg_7d"], signals["weight_avg_14d"], signals["weight_avg_3d"],
+            coverage_days,
             recommended_qty,
             ad_budget_change, ad_budget_change_rate,
             wish_count_change, wish_count_change_rate,

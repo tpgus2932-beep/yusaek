@@ -86,6 +86,9 @@ def init_order_recommendation_tables(get_db) -> None:
     _ensure_forecast_accuracy_columns(conn)
     _ensure_order_performance_columns(conn)
     _ensure_ezadmin_columns(conn)
+    _ensure_avg_sales_3d_columns(conn)
+    _ensure_registered_at_column(conn)
+    _ensure_coverage_days_used_column(conn)
     conn.commit()
     conn.close()
 
@@ -143,6 +146,36 @@ def _ensure_ezadmin_columns(conn) -> None:
     for column, ddl_type in _EZADMIN_COLUMNS:
         if column not in cols:
             conn.execute(f"ALTER TABLE order_recommendation_daily ADD COLUMN {column} {ddl_type}")
+
+
+_AVG_SALES_3D_COLUMNS = [
+    ("sales_3d", "INTEGER"),
+    ("avg_sales_3d", "REAL"),
+    ("model_weight_avg_3d", "REAL"),
+]
+
+
+def _ensure_avg_sales_3d_columns(conn) -> None:
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()]
+    for column, ddl_type in _AVG_SALES_3D_COLUMNS:
+        if column not in cols:
+            conn.execute(f"ALTER TABLE order_recommendation_daily ADD COLUMN {column} {ddl_type}")
+
+
+def _ensure_registered_at_column(conn) -> None:
+    """상품 등록일("YYYY-MM-DD"). wonbe DB는 별도 파일이라 집계 쿼리에서 매번
+    크로스 레퍼런스할 수 없으므로, 이 테이블에 직접 박아넣어 SQL로 바로 필터링한다."""
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()]
+    if "registered_at" not in cols:
+        conn.execute("ALTER TABLE order_recommendation_daily ADD COLUMN registered_at TEXT")
+
+
+def _ensure_coverage_days_used_column(conn) -> None:
+    """그날 발주추천 계산에 실제로 쓰인 커버리지(며칠치)를 스냅샷으로 남긴다.
+    예상판매량 구간별 자동계산 결과라서 나중에 값이 바뀌어도 그날 실제 쓰인 값을 추적 가능."""
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(order_recommendation_daily)").fetchall()]
+    if "coverage_days_used" not in cols:
+        conn.execute("ALTER TABLE order_recommendation_daily ADD COLUMN coverage_days_used REAL")
 
 
 def get_row(conn, date: str, yusas_code: str):
