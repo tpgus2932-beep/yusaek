@@ -16,6 +16,29 @@
   font-weight: 700;
 }
 
+.pageTabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.pageTabBtn {
+  padding: 0.5rem 0.9rem;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pageTabBtnActive {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-black);
+}
+
 .section {
   margin-bottom: 1.5rem;
 }
