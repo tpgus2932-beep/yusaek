@@ -60,7 +60,7 @@ COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래
 
 # username → {"running": bool, "total": int, "done": int, "matched": int} — 제조국 채우기 진행상황 폴링용
 _country_sync_progress: dict[str, dict] = {}
-EDITABLE = {"상품명합", "거래처합", "원가", "거래처주소"}
+EDITABLE = {"상품명합", "거래처합", "원가", "거래처주소", "등록일"}
 
 INGODAEGI_COLUMNS = ["상품코드", "입고수량"]
 ABLY_STOCK_COLUMNS = ["옵션번호", "수량"]
