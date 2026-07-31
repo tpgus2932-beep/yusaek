@@ -122,8 +122,8 @@ const DAILY_TABLE_COLUMNS = [
   { key: 'product_name', label: '상품명' },
   { key: 'yusas_code', label: '상품코드' },
   { key: 'stock_qty', label: '재고' },
-  { key: 'incoming_qty', label: '입고예정' },
   { key: 'expected_sales_today', label: '예상판매량' },
+  { key: 'incoming_qty', label: '부족수량' },
   { key: 'recommended_qty', label: '추천발주량' },
 ];
 
@@ -166,8 +166,8 @@ function DailyTableRow({ date, item }) {
       <td>{item.product_name || '-'}</td>
       <td>{item.yusas_code}</td>
       <td>{item.stock_qty ?? '-'}</td>
-      <td>{item.incoming_qty ?? '-'}</td>
       <td>{item.expected_sales_today != null ? item.expected_sales_today.toFixed(1) : '-'}</td>
+      <td>{item.incoming_qty ?? '-'}</td>
       <td>{item.recommended_qty ?? '-'}</td>
       <td>
         <input
