@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends
 
+from api.wonbe_routes import load_wonbe_product_name_map
 from services.order_recommendation_ably_sales import collect_ably_sales_history, get_sales_history_progress
 from services.order_recommendation_calc import compute_all
 from services.order_recommendation_collect import run_collectors
@@ -48,10 +49,16 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting):
     @router.get("/daily")
     def daily(date: str | None = None, user: str = Depends(get_current_user)):
         target_date = date or today_kst()
+        name_map = load_wonbe_product_name_map()
         conn = get_db()
         try:
             rows = list_rows(conn, target_date)
-            return {"ok": True, "date": target_date, "items": [_row_to_dict(r) for r in rows]}
+            items = []
+            for r in rows:
+                item = _row_to_dict(r)
+                item["product_name"] = name_map.get(item["yusas_code"], "")
+                items.append(item)
+            return {"ok": True, "date": target_date, "items": items}
         finally:
             conn.close()
 

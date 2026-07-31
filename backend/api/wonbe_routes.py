@@ -266,6 +266,42 @@ def load_wonbe_goods_sno_map() -> dict[str, list[tuple[str, str]]]:
     return goods_map
 
 
+def load_wonbe_registered_at_map() -> dict[str, str]:
+    """상품코드 → 등록일("YYYY-MM-DD") 매핑. "등록일 채우기"로 이미 채워진 값을 재사용한다.
+
+    발주추천 판매량 백필이 상품 등록 이전 날짜를 실제 판매 0건으로 착각해
+    채워버리지 않도록, 백필 대상 날짜를 이 등록일로 잘라내는 데 쓴다."""
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute(
+            "SELECT 상품코드, 등록일 FROM wonbe WHERE 등록일 IS NOT NULL AND 등록일 != ''"
+        ).fetchall()
+    finally:
+        conn.close()
+    result: dict[str, str] = {}
+    for r in rows:
+        code = r["상품코드"]
+        registered_at = str(r["등록일"]).strip()
+        if not code or not registered_at:
+            continue
+        result[code] = registered_at[:10]  # "YYYY-MM-DD HH:MM:SS" -> 날짜만
+    return result
+
+
+def load_wonbe_product_name_map() -> dict[str, str]:
+    """상품코드 → 상품명 매핑. 발주 대시보드 일별 데이터 테이블에서 상품명 표시용."""
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute(
+            "SELECT 상품코드, 상품명 FROM wonbe WHERE 상품코드 != ''"
+        ).fetchall()
+    finally:
+        conn.close()
+    return {r["상품코드"]: r["상품명"] or "" for r in rows if r["상품코드"]}
+
+
 def load_wonbe_product_cost_map() -> dict[str, int]:
     """상품명합 → 원가(int) 매핑. 마진계산(아무드/에이블리 정산) 등에서 원가 조회용."""
     conn = _get_wonbe_db()

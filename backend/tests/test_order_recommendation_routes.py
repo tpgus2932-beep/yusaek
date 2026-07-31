@@ -48,6 +48,15 @@ def _make_client(settings=None):
     return TestClient(app), get_db, keep_alive
 
 
+@pytest.fixture(autouse=True)
+def _stub_wonbe_product_name_map(monkeypatch):
+    """실제 wonbe.db 파일을 매번 열지 않도록 기본값(빈 매핑)으로 목 처리.
+    상품명 매칭 자체를 검증하는 테스트는 자기 안에서 with patch(...)로 덮어쓴다."""
+    monkeypatch.setattr(
+        "api.order_recommendation_routes.load_wonbe_product_name_map", lambda: {}
+    )
+
+
 def test_daily_returns_empty_list_initially():
     client, _get_db, _keep_alive = _make_client()
     res = client.get("/order-recommendation/daily", params={"date": "2026-07-29"})
@@ -70,6 +79,41 @@ def test_confirm_creates_row_and_sets_confirmed_fields():
     assert items[0]["override_reason"] == "장마철 여유분"
     assert items[0]["updated_by"] == "tester"
     assert items[0]["updated_at"] is not None
+
+
+def test_daily_includes_product_name_when_wonbe_matches():
+    client, get_db, _keep_alive = _make_client()
+    conn = get_db()
+    ensure_row(conn, "2026-07-29", "S24083")
+    conn.commit()
+    conn.close()
+
+    with patch(
+        "api.order_recommendation_routes.load_wonbe_product_name_map",
+        return_value={"S24083": "나샤 실버 목걸이"},
+    ):
+        res = client.get("/order-recommendation/daily", params={"date": "2026-07-29"})
+
+    items = res.json()["items"]
+    assert len(items) == 1
+    assert items[0]["product_name"] == "나샤 실버 목걸이"
+
+
+def test_daily_product_name_empty_string_when_wonbe_has_no_match():
+    client, get_db, _keep_alive = _make_client()
+    conn = get_db()
+    ensure_row(conn, "2026-07-29", "S24083")
+    conn.commit()
+    conn.close()
+
+    with patch(
+        "api.order_recommendation_routes.load_wonbe_product_name_map",
+        return_value={},
+    ):
+        res = client.get("/order-recommendation/daily", params={"date": "2026-07-29"})
+
+    items = res.json()["items"]
+    assert items[0]["product_name"] == ""
 
 
 def test_compute_endpoint_fills_recommended_qty_for_existing_rows():
