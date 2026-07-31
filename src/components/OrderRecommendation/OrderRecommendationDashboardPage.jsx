@@ -4,6 +4,7 @@ import styles from './OrderRecommendationDashboardPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders } from '../../lib/api';
 import { useEzadminSession } from '../../lib/EzadminSessionContext';
 import OrderRecommendationBacktestSection from './OrderRecommendationBacktestSection';
+import OrderRecommendationCoverageCheckSection from './OrderRecommendationCoverageCheckSection';
 
 const PAGE_TABS = [
   { key: 'dashboard', label: '대시보드' },
@@ -310,7 +311,10 @@ export default function OrderRecommendationDashboardPage() {
 
       {pageTab === 'backtest' ? (
         <section className={styles.section}>
+          <h3 className={styles.sectionTitle}>일별 예측 정확도</h3>
           <OrderRecommendationBacktestSection daily={daily} />
+          <h3 className={styles.sectionTitle}>커버리지 검증</h3>
+          <OrderRecommendationCoverageCheckSection />
         </section>
       ) : (
         <>
