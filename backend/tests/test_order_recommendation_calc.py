@@ -373,6 +373,32 @@ def test_coverage_days_for_expected_sales_none_defaults_to_1_day():
     assert coverage_days_for_expected_sales(None) == 1.0
 
 
+from services.order_recommendation_calc import default_confirmed_qty_for_row
+
+
+def test_default_confirmed_qty_under_3_uses_lack_qty_only():
+    assert default_confirmed_qty_for_row(2.9, 5, 4) == 4
+
+
+def test_default_confirmed_qty_under_3_with_no_lack_qty_is_none():
+    assert default_confirmed_qty_for_row(2.9, 5, None) is None
+
+
+def test_default_confirmed_qty_at_least_3_uses_lack_plus_recommended():
+    # recommended_qty는 이미 미송(incoming_qty)을 뺀 값이라 여기서 또 빼지 않는다.
+    # 10 + 13 = 23
+    assert default_confirmed_qty_for_row(3.0, 13, 10) == 23
+
+
+def test_default_confirmed_qty_at_least_3_none_when_any_input_missing():
+    assert default_confirmed_qty_for_row(5, None, 10) is None
+    assert default_confirmed_qty_for_row(5, 13, None) is None
+
+
+def test_default_confirmed_qty_none_expected_sales_uses_at_least_3_formula():
+    assert default_confirmed_qty_for_row(None, 13, 10) == 23
+
+
 from services.order_recommendation_calc import compute_all, compute_row
 
 
@@ -670,4 +696,77 @@ def test_compute_row_computes_incoming_qty_change():
     row = get_row(conn, "2026-07-29", code)
     assert row["incoming_qty_change"] == 5
     assert row["incoming_qty_change_rate"] == pytest.approx(0.5)
+    conn.close()
+
+
+def test_compute_row_forces_zero_recommended_and_confirms_lack_qty_when_expected_sales_under_3():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+
+    _seed(conn, "2026-07-28", code, sales_qty=2)  # 전날값만 있음 -> expected_sales_today = 2 (3 미만)
+    ensure_row(conn, "2026-07-29", code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET stock_qty = 0, incoming_qty = 5, ezadmin_lack_qty = 4 "
+        "WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", code),
+    )
+    conn.commit()
+
+    compute_row(conn, code, "2026-07-29", get_setting=lambda key: None)
+
+    row = get_row(conn, "2026-07-29", code)
+    assert row["expected_sales_today"] == pytest.approx(2.0)
+    assert row["recommended_qty"] == 0  # 예상판매량 3 미만이라 강제로 0
+    assert row["confirmed_qty"] == 4  # 부족수량 그대로 (미송 5는 무시)
+    conn.close()
+
+
+def test_compute_row_confirmed_qty_none_when_expected_sales_under_3_and_lack_qty_missing():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+
+    _seed(conn, "2026-07-28", code, sales_qty=2)
+    ensure_row(conn, "2026-07-29", code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET stock_qty = 0, incoming_qty = 5 "
+        "WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", code),
+    )
+    conn.commit()
+
+    compute_row(conn, code, "2026-07-29", get_setting=lambda key: None)
+
+    row = get_row(conn, "2026-07-29", code)
+    assert row["recommended_qty"] == 0
+    assert row["confirmed_qty"] is None  # ezadmin_lack_qty가 없어서 채우지 않음
+    conn.close()
+
+
+def test_compute_row_default_confirmed_qty_at_least_3_uses_lack_plus_recommended():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+
+    _seed(conn, "2026-07-28", code, sales_qty=5)  # 전날값만 있음 -> expected_sales_today = 5 (3 이상)
+    ensure_row(conn, "2026-07-29", code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET stock_qty = 0, incoming_qty = 2, ezadmin_lack_qty = 10 "
+        "WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", code),
+    )
+    conn.commit()
+
+    compute_row(conn, code, "2026-07-29", get_setting=lambda key: None)
+
+    row = get_row(conn, "2026-07-29", code)
+    assert row["expected_sales_today"] == pytest.approx(5.0)
+    assert row["recommended_qty"] is not None
+    # recommended_qty는 이미 미송(incoming_qty=2)을 뺀 값이므로 여기서 또 빼지 않는다.
+    # 부족수량(10) + 추천발주량
+    assert row["confirmed_qty"] == 10 + row["recommended_qty"]
     conn.close()

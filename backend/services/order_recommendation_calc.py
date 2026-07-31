@@ -251,6 +251,20 @@ def coverage_days_for_expected_sales(expected_sales) -> float:
     return 7.0
 
 
+def default_confirmed_qty_for_row(expected_sales_today, recommended_qty, ezadmin_lack_qty):
+    """확정수량 기본값(자동 채움). 예상판매량이 3개 미만이면 예측 기반 추천발주는
+    신뢰하지 않고(추천발주량도 0으로 강제) 실제 부족수량 그대로를 기본값으로 쓴다.
+    3개 이상이면 부족수량에 추천발주량을 더한 값을 쓴다 — recommended_qty 자체가
+    calc_recommended_qty 안에서 이미 미송(incoming_qty)을 뺀 값이라, 여기서 또
+    빼면 이중 차감이 되므로 더하기만 한다.
+    필요한 값이 하나라도 없으면(None) 계산하지 않고 None을 반환한다."""
+    if expected_sales_today is not None and expected_sales_today < 3:
+        return ezadmin_lack_qty
+    if ezadmin_lack_qty is None or recommended_qty is None:
+        return None
+    return ezadmin_lack_qty + recommended_qty
+
+
 def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
     row = get_row(conn, date, yusas_code)
     if row is None:
@@ -274,6 +288,12 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
     recommended_qty = calc_recommended_qty(
         coverage_period_expected_sales, row["stock_qty"], row["incoming_qty"], safety_stock_qty
     )
+    if signals["expected_sales_today"] is not None and signals["expected_sales_today"] < 3:
+        recommended_qty = 0
+
+    confirmed_qty_default = default_confirmed_qty_for_row(
+        signals["expected_sales_today"], recommended_qty, row["ezadmin_lack_qty"]
+    )
 
     prev_ad_budget = prev_row["ad_budget"] if prev_row is not None else None
     prev_wish_count = prev_row["wish_count"] if prev_row is not None else None
@@ -296,6 +316,7 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
             model_weight_avg_7d = ?, model_weight_avg_14d = ?, model_weight_avg_3d = ?,
             coverage_days_used = ?,
             recommended_qty = ?,
+            confirmed_qty = ?,
             ad_budget_change = ?, ad_budget_change_rate = ?,
             wish_count_change = ?, wish_count_change_rate = ?,
             cart_count_change = ?, cart_count_change_rate = ?,
@@ -311,6 +332,7 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
             signals["weight_avg_7d"], signals["weight_avg_14d"], signals["weight_avg_3d"],
             coverage_days,
             recommended_qty,
+            confirmed_qty_default,
             ad_budget_change, ad_budget_change_rate,
             wish_count_change, wish_count_change_rate,
             cart_count_change, cart_count_change_rate,
