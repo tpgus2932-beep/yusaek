@@ -83,14 +83,14 @@ def test_calc_sales_window_returns_none_total_when_no_data():
     conn.close()
 
 
-def test_calc_weekday_average_sales_uses_4_week_lookback_when_enough_data():
+def test_calc_weekday_average_sales_uses_3_week_lookback_when_enough_data():
     get_db, _keep_alive = _make_db_factory()
     init_order_recommendation_tables(get_db)
     conn = get_db()
     code = "YUSAS00001"
 
-    # 2026-07-29(수)와 같은 요일 4주치
-    for date, qty in [("2026-07-22", 10), ("2026-07-15", 12), ("2026-07-08", 8), ("2026-07-01", 10)]:
+    # 2026-07-29(수)와 같은 요일 3주치
+    for date, qty in [("2026-07-22", 10), ("2026-07-15", 12), ("2026-07-08", 8)]:
         _seed(conn, date, code, sales_qty=qty)
     conn.commit()
 
@@ -105,7 +105,7 @@ def test_calc_weekday_average_sales_ignores_excluded_rows():
     conn = get_db()
     code = "YUSAS00001"
 
-    for date, qty in [("2026-07-22", 10), ("2026-07-15", 10), ("2026-07-08", 10), ("2026-07-01", 10)]:
+    for date, qty in [("2026-07-22", 10), ("2026-07-15", 10), ("2026-07-08", 10)]:
         _seed(conn, date, code, sales_qty=qty)
     _seed(conn, "2026-06-24", code, sales_qty=1000, excluded=1)  # 품절일 취급 — 제외돼야 함
     conn.commit()
@@ -115,16 +115,15 @@ def test_calc_weekday_average_sales_ignores_excluded_rows():
     conn.close()
 
 
-def test_calc_weekday_average_sales_falls_back_to_14_day_average_when_under_4_weeks():
+def test_calc_weekday_average_sales_falls_back_to_14_day_average_when_under_3_weeks():
     get_db, _keep_alive = _make_db_factory()
     init_order_recommendation_tables(get_db)
     conn = get_db()
     code = "YUSAS00001"
 
-    # 같은 요일(수) 데이터는 3주치뿐 — 폴백 조건
+    # 같은 요일(수) 데이터는 2주치뿐 — 폴백 조건(최소 3주 미달)
     _seed(conn, "2026-07-22", code, sales_qty=10)
     _seed(conn, "2026-07-15", code, sales_qty=20)
-    _seed(conn, "2026-07-08", code, sales_qty=999)  # 14일 윈도(07-15~07-28) 밖 — 폴백엔 안 들어감
     # 14일 윈도 안의 다른 요일 데이터
     _seed(conn, "2026-07-20", code, sales_qty=5)
     _seed(conn, "2026-07-25", code, sales_qty=15)
@@ -371,6 +370,52 @@ def _seed_full_pipeline_scenario(conn, code):
     ensure_row(conn, "2026-07-29", code)
 
 
+from services.order_recommendation_calc import calc_expected_sales_today_for_date
+
+
+def test_calc_expected_sales_today_for_date_matches_known_scenario():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+    _seed_full_pipeline_scenario(conn, code)
+    conn.commit()
+
+    result = calc_expected_sales_today_for_date(conn, code, "2026-07-29", get_setting=lambda key: None)
+
+    assert result["weekday_average_sales"] == pytest.approx(34 / 3)
+    assert result["avg_sales_3d"] == pytest.approx(40 / 3)
+    assert result["avg_sales_7d"] == pytest.approx(12.0)
+    assert result["avg_sales_14d"] == pytest.approx(11.0)
+    assert result["previous_day_sales_qty"] == 20
+    assert result["expected_sales_today"] == pytest.approx(13.983333333333333)
+    assert result["weight_weekday_average"] == pytest.approx(0.20)
+    assert result["weight_avg_3d"] == pytest.approx(0.20)
+    conn.close()
+
+
+def test_calc_expected_sales_today_for_date_honors_zero_weight_override():
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    code = "YUSAS00001"
+    _seed_full_pipeline_scenario(conn, code)
+    conn.commit()
+
+    result = calc_expected_sales_today_for_date(
+        conn, code, "2026-07-29", get_setting=lambda key: None,
+        weight_overrides={"weight_avg_3d": 0.0},
+    )
+
+    # avg_3d(40/3) 신호가 weight 0으로 완전히 배제돼야 함 -> weight_sum = .20+.25+.20+.15 = .80
+    # (34/3*.20 + 20*.25 + 12*.20 + 11*.15) / .80 = 14.145833333333332
+    # (buggy `override or default` 패턴이었다면 0.0이 falsy라 기본값 0.20으로 폴백해서
+    #  13.983333333333333 — 원래 시나리오 값 — 이 나왔을 것)
+    assert result["expected_sales_today"] == pytest.approx(14.145833333333332)
+    assert result["weight_avg_3d"] == 0.0
+    conn.close()
+
+
 def test_compute_row_full_pipeline_with_default_settings():
     get_db, _keep_alive = _make_db_factory()
     init_order_recommendation_tables(get_db)
@@ -388,17 +433,21 @@ def test_compute_row_full_pipeline_with_default_settings():
     compute_row(conn, code, "2026-07-29", get_setting=lambda key: None)
 
     row = get_row(conn, "2026-07-29", code)
-    assert row["weekday_average_sales"] == pytest.approx(10.0)
+    # 3주 요일 이력만 사용: (14+10+10)/3 = 11.333...
+    assert row["weekday_average_sales"] == pytest.approx(34 / 3)
+    assert row["avg_sales_3d"] == pytest.approx(40 / 3)  # 07-26,07-27,07-28 = 10+10+20
     assert row["avg_sales_7d"] == pytest.approx(12.0)
     assert row["avg_sales_14d"] == pytest.approx(11.0)
     assert row["previous_day_sales_qty"] == 20
-    assert row["expected_sales_today"] == pytest.approx(13.15)
-    assert row["recommended_qty"] == 6  # ceil(13.15)-5-3
+    # (34/3*.20 + 20*.25 + 12*.20 + 11*.15 + 40/3*.20) / 1.0
+    assert row["expected_sales_today"] == pytest.approx(13.983333333333333)
+    assert row["recommended_qty"] == 6  # ceil(13.983...)-5-3
     assert row["model_version"] == "weighted_v1"
-    assert row["model_weight_weekday"] == pytest.approx(0.35)
+    assert row["model_weight_weekday"] == pytest.approx(0.20)
     assert row["model_weight_previous_day"] == pytest.approx(0.25)
-    assert row["model_weight_avg_7d"] == pytest.approx(0.25)
+    assert row["model_weight_avg_7d"] == pytest.approx(0.20)
     assert row["model_weight_avg_14d"] == pytest.approx(0.15)
+    assert row["model_weight_avg_3d"] == pytest.approx(0.20)
     conn.close()
 
 
@@ -421,20 +470,22 @@ def test_compute_row_respects_custom_weight_and_recommendation_settings():
         "order_recommendation_weight_previous_day": "0.5",
         "order_recommendation_weight_avg_7d": "0",
         "order_recommendation_weight_avg_14d": "0",
+        "order_recommendation_weight_avg_3d": "0",
         "order_recommendation_safety_stock_qty": "1",
     }
     compute_row(conn, code, "2026-07-29", get_setting=lambda key: settings.get(key))
 
     row = get_row(conn, "2026-07-29", code)
-    # (10*.5 + 20*.5) / (.5+.5) = 15.0
-    assert row["expected_sales_today"] == pytest.approx(15.0)
-    # coverage_days 기본값 1이라 커버리지 합산도 15.0과 동일 -> ceil(15+1)=16, 16-5-3=8
-    assert row["recommended_qty"] == 8
+    # 요일평균(3주)=34/3, (34/3*.5 + 20*.5) / (.5+.5) = 15.666...
+    assert row["expected_sales_today"] == pytest.approx(15.666666666666666)
+    # coverage_days 기본값 1이라 커버리지 합산도 동일 -> ceil(15.666...+1)=17, 17-5-3=9
+    assert row["recommended_qty"] == 9
     assert row["model_version"] == "weighted_v1"
     assert row["model_weight_weekday"] == pytest.approx(0.5)
     assert row["model_weight_previous_day"] == pytest.approx(0.5)
     assert row["model_weight_avg_7d"] == pytest.approx(0.0)
     assert row["model_weight_avg_14d"] == pytest.approx(0.0)
+    assert row["model_weight_avg_3d"] == pytest.approx(0.0)
     conn.close()
 
 
@@ -558,8 +609,8 @@ def test_compute_row_is_order_independent():
     compute_row(conn_b, code, "2026-07-30", get_setting=lambda key: None)
     row_b = get_row(conn_b, "2026-07-30", code)
 
-    assert row_a["expected_sales_today"] == row_b["expected_sales_today"] == pytest.approx(8.549999999999999)
-    assert row_a["recommended_qty"] == row_b["recommended_qty"] == 8
+    assert row_a["expected_sales_today"] == row_b["expected_sales_today"] == pytest.approx(9.6)
+    assert row_a["recommended_qty"] == row_b["recommended_qty"] == 9
     conn_a.close()
     conn_b.close()
 
