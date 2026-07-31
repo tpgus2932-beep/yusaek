@@ -118,6 +118,90 @@ function formatNumber(value, digits = 1) {
   return value == null ? '데이터 없음' : value.toFixed(digits);
 }
 
+const DAILY_TABLE_COLUMNS = [
+  { key: 'product_name', label: '상품명' },
+  { key: 'yusas_code', label: '상품코드' },
+  { key: 'stock_qty', label: '재고' },
+  { key: 'incoming_qty', label: '입고예정' },
+  { key: 'expected_sales_today', label: '예상판매량' },
+  { key: 'recommended_qty', label: '추천발주량' },
+];
+
+function DailyDataTable({ date, items }) {
+  const [search, setSearch] = useState('');
+  const [sortKey, setSortKey] = useState('recommended_qty');
+  const [sortDir, setSortDir] = useState('desc');
+
+  const withRecommendation = (items || []).filter((i) => i.recommended_qty != null);
+  const term = search.trim();
+  const searched = term
+    ? withRecommendation.filter(
+        (i) => (i.product_name || '').includes(term) || (i.yusas_code || '').includes(term)
+      )
+    : withRecommendation;
+  const sorted = [...searched].sort((a, b) => {
+    const av = a[sortKey] ?? -Infinity;
+    const bv = b[sortKey] ?? -Infinity;
+    if (av === bv) return 0;
+    const cmp = av > bv ? 1 : -1;
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
+
+  const toggleSort = (key) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir('desc');
+    }
+  };
+
+  return (
+    <div>
+      <div className={styles.dailyTableToolbar}>
+        <input
+          type="text"
+          className={styles.dailySearchInput}
+          placeholder="상품명 또는 상품코드 검색"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <span className={styles.dailyTableCount}>{sorted.length}건</span>
+      </div>
+      <div className={styles.dailyTableScroll}>
+        <table className={styles.dailyTable}>
+          <thead>
+            <tr>
+              {DAILY_TABLE_COLUMNS.map((col) => (
+                <th key={col.key} className={styles.sortableTh} onClick={() => toggleSort(col.key)}>
+                  {col.label}
+                  {sortKey === col.key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </th>
+              ))}
+              <th>확정수량</th>
+              <th>사유</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((item) => (
+              <tr key={item.yusas_code}>
+                <td>{item.product_name || '-'}</td>
+                <td>{item.yusas_code}</td>
+                <td>{item.stock_qty ?? '-'}</td>
+                <td>{item.incoming_qty ?? '-'}</td>
+                <td>{item.expected_sales_today != null ? item.expected_sales_today.toFixed(1) : '-'}</td>
+                <td>{item.recommended_qty ?? '-'}</td>
+                <td colSpan={3} style={{ color: 'var(--text-muted)' }}>Task 3에서 편집 UI로 교체됨</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function OrderRecommendationDashboardPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
@@ -205,6 +289,22 @@ export default function OrderRecommendationDashboardPage() {
             <div className={styles.statValue}>{performance ? formatNumber(performance.avg_incoming_qty_change) : '-'}</div>
           </div>
         </div>
+      </section>
+
+      <section className={styles.section}>
+        <div className={styles.dailySectionHeader}>
+          <h3 className={styles.sectionTitle}>일별 데이터</h3>
+          <button type="button" className={styles.refreshLinkBtn} onClick={refresh}>
+            새로고침
+          </button>
+        </div>
+        {daily ? (
+          <DailyDataTable date={daily.date} items={daily.items} />
+        ) : (
+          <div className={styles.actionMessage}>
+            불러오는 중이거나 실패했습니다. 위 새로고침을 눌러보세요.
+          </div>
+        )}
       </section>
     </div>
   );
