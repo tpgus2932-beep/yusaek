@@ -1440,6 +1440,7 @@ app.include_router(
         get_current_user=_get_current_user,
         get_db=_get_order_recommendation_db,
         get_setting=_get_setting,
+        set_setting=_set_setting,
     )
 )
 for _ez_column, _ez_fn in build_ezadmin_collectors(_get_setting).items():

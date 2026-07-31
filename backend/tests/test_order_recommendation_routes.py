@@ -36,16 +36,18 @@ def _make_db_factory():
 def _make_client(settings=None):
     get_db, keep_alive = _make_db_factory()
     init_order_recommendation_tables(get_db)
+    store = dict(settings or {})
 
     app = FastAPI()
     app.include_router(
         build_order_recommendation_router(
             get_current_user=lambda: "tester",
             get_db=get_db,
-            get_setting=lambda key: (settings or {}).get(key),
+            get_setting=lambda key: store.get(key),
+            set_setting=lambda key, value: store.__setitem__(key, value),
         )
     )
-    return TestClient(app), get_db, keep_alive
+    return TestClient(app), get_db, keep_alive, store
 
 
 @pytest.fixture(autouse=True)
@@ -58,14 +60,14 @@ def _stub_wonbe_product_name_map(monkeypatch):
 
 
 def test_daily_returns_empty_list_initially():
-    client, _get_db, _keep_alive = _make_client()
+    client, _get_db, _keep_alive, _store = _make_client()
     res = client.get("/order-recommendation/daily", params={"date": "2026-07-29"})
     assert res.status_code == 200
     assert res.json() == {"ok": True, "date": "2026-07-29", "items": []}
 
 
 def test_confirm_creates_row_and_sets_confirmed_fields():
-    client, get_db, _keep_alive = _make_client()
+    client, get_db, _keep_alive, _store = _make_client()
     res = client.post(
         "/order-recommendation/2026-07-29/YUSAS00001/confirm",
         json={"confirmed_qty": 7, "override_reason": "장마철 여유분"},
@@ -82,7 +84,7 @@ def test_confirm_creates_row_and_sets_confirmed_fields():
 
 
 def test_daily_includes_product_name_when_wonbe_matches():
-    client, get_db, _keep_alive = _make_client()
+    client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
     ensure_row(conn, "2026-07-29", "S24083")
     conn.commit()
@@ -100,7 +102,7 @@ def test_daily_includes_product_name_when_wonbe_matches():
 
 
 def test_daily_product_name_empty_string_when_wonbe_has_no_match():
-    client, get_db, _keep_alive = _make_client()
+    client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
     ensure_row(conn, "2026-07-29", "S24083")
     conn.commit()
@@ -117,7 +119,7 @@ def test_daily_product_name_empty_string_when_wonbe_has_no_match():
 
 
 def test_backtest_returns_items_only_for_products_with_recommended_qty_today():
-    client, get_db, _keep_alive = _make_client()
+    client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
     today = today_kst()
 
@@ -149,7 +151,7 @@ def test_backtest_returns_items_only_for_products_with_recommended_qty_today():
 
 
 def test_backtest_applies_weight_overrides_and_computes_aggregate():
-    client, get_db, _keep_alive = _make_client()
+    client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
     today = today_kst()
 
@@ -193,7 +195,7 @@ def test_backtest_applies_weight_overrides_and_computes_aggregate():
 
 
 def test_compute_endpoint_fills_recommended_qty_for_existing_rows():
-    client, get_db, _keep_alive = _make_client()
+    client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
     for date, qty in [("2026-07-22", 10), ("2026-07-15", 10), ("2026-07-08", 10), ("2026-07-01", 10)]:
         ensure_row(conn, date, "YUSAS00001")
@@ -220,7 +222,7 @@ def test_compute_endpoint_fills_recommended_qty_for_existing_rows():
 
 
 def test_collect_endpoint_invokes_registered_collectors():
-    client, get_db, _keep_alive = _make_client()
+    client, get_db, _keep_alive, _store = _make_client()
     try:
         async def fake_collector(date):
             return {"YUSAS00001": 42}
@@ -238,7 +240,7 @@ def test_collect_endpoint_invokes_registered_collectors():
 
 
 def test_collect_endpoint_defaults_to_empty_when_no_collectors_registered():
-    client, _get_db, _keep_alive = _make_client()
+    client, _get_db, _keep_alive, _store = _make_client()
     collect_mod.COLLECTORS.clear()
     res = client.post("/order-recommendation/collect", params={"date": "2026-07-29"})
     assert res.status_code == 200
@@ -246,7 +248,7 @@ def test_collect_endpoint_defaults_to_empty_when_no_collectors_registered():
 
 
 def test_evaluate_endpoint_fills_forecast_accuracy_columns():
-    client, get_db, _keep_alive = _make_client()
+    client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
     date = today_kst()
     ensure_row(conn, date, "YUSAS00001")
@@ -268,7 +270,7 @@ def test_evaluate_endpoint_fills_forecast_accuracy_columns():
 
 
 def test_forecast_accuracy_endpoint_returns_aggregate_metrics():
-    client, get_db, _keep_alive = _make_client()
+    client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
     date = today_kst()
     ensure_row(conn, date, "YUSAS00001")
@@ -289,7 +291,7 @@ def test_forecast_accuracy_endpoint_returns_aggregate_metrics():
 
 
 def test_evaluate_order_performance_endpoint_fills_deviation_columns():
-    client, get_db, _keep_alive = _make_client()
+    client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
     date = today_kst()
     ensure_row(conn, date, "YUSAS00001")
@@ -311,7 +313,7 @@ def test_evaluate_order_performance_endpoint_fills_deviation_columns():
 
 
 def test_order_performance_endpoint_returns_aggregate_metrics():
-    client, get_db, _keep_alive = _make_client()
+    client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
     date = today_kst()
     ensure_row(conn, date, "YUSAS00001")
@@ -332,7 +334,7 @@ def test_order_performance_endpoint_returns_aggregate_metrics():
 
 
 def test_collect_endpoint_returns_need_session_when_ezadmin_session_expired():
-    client, _get_db, _keep_alive = _make_client()
+    client, _get_db, _keep_alive, _store = _make_client()
     try:
         async def failing_collector(date):
             raise EzAdminSessionExpired()
@@ -347,7 +349,7 @@ def test_collect_endpoint_returns_need_session_when_ezadmin_session_expired():
 
 
 def test_collect_sales_history_endpoint_returns_updated_count():
-    client, _get_db, _keep_alive = _make_client()
+    client, _get_db, _keep_alive, _store = _make_client()
 
     with patch(
         "api.order_recommendation_routes.collect_ably_sales_history",
@@ -360,7 +362,7 @@ def test_collect_sales_history_endpoint_returns_updated_count():
 
 
 def test_collect_sales_history_progress_endpoint_returns_progress_dict():
-    client, _get_db, _keep_alive = _make_client()
+    client, _get_db, _keep_alive, _store = _make_client()
 
     with patch(
         "api.order_recommendation_routes.get_sales_history_progress",
@@ -370,3 +372,25 @@ def test_collect_sales_history_progress_endpoint_returns_progress_dict():
 
     assert res.status_code == 200
     assert res.json() == {"running": True, "total": 100, "done": 40, "updated": 60}
+
+
+def test_save_weights_updates_settings_store():
+    client, _get_db, _keep_alive, store = _make_client()
+
+    res = client.post(
+        "/order-recommendation/weights",
+        json={"weight_weekday_average": 0.3, "weight_avg_3d": 0.1},
+    )
+    assert res.status_code == 200
+    assert res.json() == {"ok": True}
+    assert store["order_recommendation_weight_weekday_average"] == "0.3"
+    assert store["order_recommendation_weight_avg_3d"] == "0.1"
+
+
+def test_save_weights_ignores_missing_keys():
+    client, _get_db, _keep_alive, store = _make_client()
+
+    res = client.post("/order-recommendation/weights", json={"weight_previous_day": 0.4})
+    assert res.status_code == 200
+    assert "order_recommendation_weight_previous_day" in store
+    assert "order_recommendation_weight_weekday_average" not in store

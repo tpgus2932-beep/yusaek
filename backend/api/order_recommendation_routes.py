@@ -24,7 +24,7 @@ def _row_to_dict(row) -> dict:
     return {key: row[key] for key in row.keys()}
 
 
-def build_order_recommendation_router(*, get_current_user, get_db, get_setting):
+def build_order_recommendation_router(*, get_current_user, get_db, get_setting, set_setting):
     router = APIRouter(prefix="/order-recommendation", tags=["order-recommendation"])
 
     @router.post("/collect")
@@ -172,6 +172,17 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting):
             }
         finally:
             conn.close()
+
+    @router.post("/weights")
+    def save_weights(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        keys = [
+            "weight_weekday_average", "weight_previous_day",
+            "weight_avg_7d", "weight_avg_14d", "weight_avg_3d",
+        ]
+        for key in keys:
+            if key in payload and payload[key] is not None:
+                set_setting(f"order_recommendation_{key}", str(payload[key]))
+        return {"ok": True}
 
     @router.post("/{date}/{yusas_code}/confirm")
     def confirm(
