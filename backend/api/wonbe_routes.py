@@ -2286,6 +2286,46 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
         finally:
             conn.close()
 
+    @router.get("/ichae/export")
+    def ichae_export(month: str = "", user: str = Depends(get_current_user)):
+        month = month.strip()
+        if month and not re.fullmatch(r"\d{4}-\d{2}", month):
+            raise HTTPException(status_code=400, detail="month는 YYYY-MM 형식이어야 합니다.")
+        conn = _get_janggi_db()
+        try:
+            _init_ichae_table(conn)
+            if month:
+                rows = conn.execute(
+                    "SELECT * FROM 이체파일 WHERE 날짜 LIKE ? ORDER BY 날짜 ASC, 상태 ASC, D ASC",
+                    (f"{month}%",),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM 이체파일 ORDER BY 날짜 ASC, 상태 ASC, D ASC"
+                ).fetchall()
+        finally:
+            conn.close()
+
+        export_cols = ["날짜", "A", "B", "C", "D", "E", "F", "상태"]
+        export_labels = ["날짜", "은행코드", "계좌번호", "입금금액", "거래처명", "거래처가 보는 메모", "우리가 보는 메모", "상태"]
+
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("Sheet1")
+        for ci, label in enumerate(export_labels):
+            sheet.write(0, ci, label)
+        for ri, row in enumerate(rows, start=1):
+            for ci, col in enumerate(export_cols):
+                sheet.write(ri, ci, row[col] if row[col] is not None else "")
+
+        buf = io.BytesIO()
+        book.save(buf)
+        filename = f"이체파일_{month}.xls" if month else "이체파일_전체.xls"
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/vnd.ms-excel",
+            headers={"Content-Disposition": _content_disposition(filename)},
+        )
+
     # ── 일괄이체목록 마킹 ────────────────────────────────────────
 
     @router.post("/janggi/bulk-ichae-mark")
