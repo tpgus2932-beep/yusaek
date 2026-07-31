@@ -157,17 +157,21 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
                     "within_20_percent": within_20_percent,
                 })
 
-            abs_errors = [abs(i["forecast_error"]) for i in items if i["forecast_error"] is not None]
+            signed_errors = [i["forecast_error"] for i in items if i["forecast_error"] is not None]
+            abs_errors = [abs(e) for e in signed_errors]
             actuals = [i["actual_sales_qty"] for i in items if i["forecast_error"] is not None]
             hit_flags = [i["within_20_percent"] for i in items if i["within_20_percent"] is not None]
             mae = sum(abs_errors) / len(abs_errors) if abs_errors else None
             actual_sum = sum(actuals)
             wape = (sum(abs_errors) / actual_sum) if abs_errors and actual_sum > 0 else None
+            # 부호 있는 오차 합 / 실제판매 합 — 양수면 실제보다 많이 예측(과다발주 경향),
+            # 음수면 적게 예측(과소발주 경향). WAPE와 분모는 같고 부호만 살린 버전.
+            bias = (sum(signed_errors) / actual_sum) if signed_errors and actual_sum > 0 else None
             hit_rate_20pct = (sum(hit_flags) / len(hit_flags)) if hit_flags else None
 
             return {
                 "ok": True, "date": date,
-                "sample_count": len(hit_flags), "mae": mae, "wape": wape,
+                "sample_count": len(hit_flags), "mae": mae, "wape": wape, "bias": bias,
                 "hit_rate_20pct": hit_rate_20pct, "items": items,
             }
         finally:

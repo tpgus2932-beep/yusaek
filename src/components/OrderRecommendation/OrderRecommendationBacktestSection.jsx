@@ -148,6 +148,14 @@ export default function OrderRecommendationBacktestSection({ daily }) {
           <div className={styles.statLabel}>±20% 적중률</div>
           <div className={styles.statValue}>{result ? formatPercent(result.hit_rate_20pct) : '-'}</div>
         </div>
+        <div className={styles.statCard}>
+          <div className={styles.statLabel}>평균 편향</div>
+          <div className={styles.statValue}>
+            {result && result.bias != null
+              ? `${result.bias > 0 ? '+' : ''}${(result.bias * 100).toFixed(1)}%`
+              : '-'}
+          </div>
+        </div>
       </div>
 
       <div className={styles.dailyTableScroll}>

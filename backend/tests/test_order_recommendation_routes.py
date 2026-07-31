@@ -192,6 +192,49 @@ def test_backtest_applies_weight_overrides_and_computes_aggregate():
     assert body["items"][0]["within_20_percent"] == 1
     assert body["sample_count"] == 1
     assert body["hit_rate_20pct"] == pytest.approx(1.0)
+    assert body["bias"] == pytest.approx(0.0)
+
+
+def test_backtest_bias_is_positive_when_overforecasting():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    today = today_kst()
+
+    ensure_row(conn, today, "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET recommended_qty = 5 WHERE date = ? AND yusas_code = ?",
+        (today, "YUSAS00001"),
+    )
+    ensure_row(conn, "2026-07-28", "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = 20 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-28", "YUSAS00001"),
+    )
+    ensure_row(conn, "2026-07-29", "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = 10 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", "YUSAS00001"),
+    )
+    conn.commit()
+    conn.close()
+
+    # weight_previous_day=1 -> expected_sales_today = 전날(20), 실제는 10 -> 오차 +10(과다예측)
+    res = client.get(
+        "/order-recommendation/backtest",
+        params={
+            "date": "2026-07-29",
+            "weight_weekday_average": 0,
+            "weight_previous_day": 1,
+            "weight_avg_7d": 0,
+            "weight_avg_14d": 0,
+            "weight_avg_3d": 0,
+        },
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["items"][0]["forecast_error"] == pytest.approx(10.0)
+    # bias = 부호있는오차합(10) / 실제합(10) = 1.0 (실제보다 평균 100% 많이 예측 = 과다발주 경향)
+    assert body["bias"] == pytest.approx(1.0)
 
 
 def test_compute_endpoint_fills_recommended_qty_for_existing_rows():
