@@ -503,3 +503,111 @@ def test_save_weights_ignores_missing_keys():
     assert res.status_code == 200
     assert "order_recommendation_weight_previous_day" in store
     assert "order_recommendation_weight_weekday_average" not in store
+
+
+def test_coverage_check_single_day_coverage_matches_actual_sales():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    ensure_row(conn, "2026-07-01", "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET recommended_qty = ?, coverage_days_used = ?, sales_qty = ? "
+        "WHERE date = ? AND yusas_code = ?",
+        (10, 1, 8, "2026-07-01", "YUSAS00001"),
+    )
+    conn.commit()
+    conn.close()
+
+    res = client.get("/order-recommendation/coverage-check", params={"date": "2026-07-01"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["sample_count"] == 1
+    item = body["items"][0]
+    assert item["yusas_code"] == "YUSAS00001"
+    assert item["coverage_days_used"] == 1
+    assert item["recommended_qty"] == 10
+    assert item["actual_coverage_sales"] == 8
+    assert item["forecast_error"] == pytest.approx(2.0)
+
+
+def test_coverage_check_multi_day_coverage_sums_forward():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    ensure_row(conn, "2026-07-01", "YUSAS00002")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET recommended_qty = ?, coverage_days_used = ?, sales_qty = ? "
+        "WHERE date = ? AND yusas_code = ?",
+        (15, 3, 5, "2026-07-01", "YUSAS00002"),
+    )
+    ensure_row(conn, "2026-07-02", "YUSAS00002")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
+        (4, "2026-07-02", "YUSAS00002"),
+    )
+    ensure_row(conn, "2026-07-03", "YUSAS00002")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
+        (6, "2026-07-03", "YUSAS00002"),
+    )
+    conn.commit()
+    conn.close()
+
+    res = client.get("/order-recommendation/coverage-check", params={"date": "2026-07-01"})
+    body = res.json()
+    item = body["items"][0]
+    assert item["actual_coverage_sales"] == 15  # 5 + 4 + 6
+    assert item["recommended_qty"] == 15
+    assert item["forecast_error"] == pytest.approx(0.0)
+
+
+def test_coverage_check_excludes_product_with_incomplete_window():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    ensure_row(conn, "2026-07-01", "YUSAS00003")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET recommended_qty = ?, coverage_days_used = ?, sales_qty = ? "
+        "WHERE date = ? AND yusas_code = ?",
+        (10, 3, 5, "2026-07-01", "YUSAS00003"),
+    )
+    ensure_row(conn, "2026-07-02", "YUSAS00003")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
+        (4, "2026-07-02", "YUSAS00003"),
+    )
+    # 2026-07-03 행 자체가 없음 -> 커버리지 3일 기간이 미완료 -> 결과에서 제외돼야 함
+    conn.commit()
+    conn.close()
+
+    res = client.get("/order-recommendation/coverage-check", params={"date": "2026-07-01"})
+    body = res.json()
+    assert body["items"] == []
+    assert body["sample_count"] == 0
+
+
+def test_coverage_check_aggregates_mae_wape_bias_hit_rate():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    ensure_row(conn, "2026-07-01", "YUSAS_A")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET recommended_qty = ?, coverage_days_used = ?, sales_qty = ? "
+        "WHERE date = ? AND yusas_code = ?",
+        (12, 1, 10, "2026-07-01", "YUSAS_A"),
+    )
+    ensure_row(conn, "2026-07-01", "YUSAS_B")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET recommended_qty = ?, coverage_days_used = ?, sales_qty = ? "
+        "WHERE date = ? AND yusas_code = ?",
+        (8, 1, 10, "2026-07-01", "YUSAS_B"),
+    )
+    conn.commit()
+    conn.close()
+
+    res = client.get("/order-recommendation/coverage-check", params={"date": "2026-07-01"})
+    body = res.json()
+
+    # YUSAS_A: 오차 +2 (|2|<=20%*10=2 -> 적중), YUSAS_B: 오차 -2 (|2|<=2 -> 적중)
+    assert body["sample_count"] == 2
+    assert body["mae"] == pytest.approx(2.0)
+    assert body["wape"] == pytest.approx(4 / 20)
+    assert body["bias"] == pytest.approx(0 / 20)
+    assert body["hit_rate_20pct"] == pytest.approx(1.0)
