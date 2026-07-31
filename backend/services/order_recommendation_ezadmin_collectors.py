@@ -33,7 +33,7 @@ async def _fetch_ably_io30_snapshot(get_setting, date: str) -> dict[str, dict]:
             continue
         snapshot[product_id] = {
             "stock_qty": to_int(ez_val(cell.get("stock"))),
-            "incoming_qty": to_int(ez_val(cell.get("not_yet_deliv"))),
+            "incoming_qty": to_int(ez_val(cell.get("reserve_qty"))),  # 미송(입고대기) — not_yet_deliv 아님
             "ezadmin_lack_qty": to_int(ez_val(cell.get("lack_qty"))),
         }
 

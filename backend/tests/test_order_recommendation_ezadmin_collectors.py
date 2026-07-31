@@ -22,11 +22,11 @@ def _setting(sessid="sess123"):
     return lambda key: sessid if key == "ezadmin_phpsessid" else None
 
 
-def _cell(product_id, stock, not_yet_deliv, lack_qty):
+def _cell(product_id, stock, reserve_qty, lack_qty):
     return {
         "product_id": product_id,
         "stock": f"<a class=atd href='#' onclick=javascript:run_stock(this)>{stock}</a>",
-        "not_yet_deliv": f"<a class=atd href='#' onclick=javascript:run_not_yet_deliv(this)>{not_yet_deliv}</a>",
+        "reserve_qty": f"<input type='text' class='input22 right' value='{reserve_qty}' org_value='{reserve_qty}'>",
         "lack_qty": str(lack_qty),
     }
 
