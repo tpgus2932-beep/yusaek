@@ -290,16 +290,19 @@ def load_wonbe_registered_at_map() -> dict[str, str]:
 
 
 def load_wonbe_product_name_map() -> dict[str, str]:
-    """상품코드 → 상품명 매핑. 발주 대시보드 일별 데이터 테이블에서 상품명 표시용."""
+    """상품코드 → 상품명합(상품명+색상+사이즈) 매핑. 발주 대시보드 일별 데이터 테이블 표시용.
+
+    같은 상품이라도 색상/사이즈별로 상품코드가 다른데 순수 상품명은 전부 동일해서
+    구분이 안 된다 — 상품명합을 쓰면 옵션까지 포함된 이름이 나온다."""
     conn = _get_wonbe_db()
     try:
         _init_wonbe_table(conn)
         rows = conn.execute(
-            "SELECT 상품코드, 상품명 FROM wonbe WHERE 상품코드 != ''"
+            "SELECT 상품코드, 상품명합 FROM wonbe WHERE 상품코드 != ''"
         ).fetchall()
     finally:
         conn.close()
-    return {r["상품코드"]: r["상품명"] or "" for r in rows if r["상품코드"]}
+    return {r["상품코드"]: r["상품명합"] or "" for r in rows if r["상품코드"]}
 
 
 def load_wonbe_product_cost_map() -> dict[str, int]:
