@@ -4,14 +4,19 @@ from fastapi import APIRouter, Body, Depends
 
 from api.wonbe_routes import load_wonbe_product_name_map
 from services.order_recommendation_ably_sales import collect_ably_sales_history, get_sales_history_progress
-from services.order_recommendation_calc import compute_all
+from services.order_recommendation_calc import calc_expected_sales_today_for_date, compute_all
 from services.order_recommendation_collect import run_collectors
-from services.order_recommendation_evaluate import aggregate_forecast_accuracy, evaluate_all
+from services.order_recommendation_evaluate import (
+    aggregate_forecast_accuracy,
+    calc_forecast_error,
+    calc_within_20_percent,
+    evaluate_all,
+)
 from services.order_recommendation_order_performance import (
     aggregate_order_performance,
     evaluate_order_performance_all,
 )
-from services.order_recommendation_store import ensure_row, list_rows, now_kst_iso, today_kst
+from services.order_recommendation_store import ensure_row, get_row, list_rows, now_kst_iso, today_kst
 from sdk.ezadmin import EzAdminSessionExpired
 
 
@@ -99,6 +104,74 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting):
         finally:
             conn.close()
         return {"ok": True, "days": days, "yusas_code": yusas_code, **result}
+
+    @router.get("/backtest")
+    def backtest(
+        date: str,
+        weight_weekday_average: float | None = None,
+        weight_previous_day: float | None = None,
+        weight_avg_7d: float | None = None,
+        weight_avg_14d: float | None = None,
+        weight_avg_3d: float | None = None,
+        user: str = Depends(get_current_user),
+    ):
+        overrides = {
+            "weight_weekday_average": weight_weekday_average,
+            "weight_previous_day": weight_previous_day,
+            "weight_avg_7d": weight_avg_7d,
+            "weight_avg_14d": weight_avg_14d,
+            "weight_avg_3d": weight_avg_3d,
+        }
+        overrides = {k: v for k, v in overrides.items() if v is not None}
+
+        conn = get_db()
+        try:
+            today = today_kst()
+            codes = [
+                r["yusas_code"]
+                for r in conn.execute(
+                    "SELECT yusas_code FROM order_recommendation_daily "
+                    "WHERE date = ? AND recommended_qty IS NOT NULL",
+                    (today,),
+                ).fetchall()
+            ]
+            name_map = load_wonbe_product_name_map()
+
+            items = []
+            for code in codes:
+                signals = calc_expected_sales_today_for_date(
+                    conn, code, date, get_setting, overrides or None
+                )
+                expected = signals["expected_sales_today"]
+                row = get_row(conn, date, code)
+                actual = row["sales_qty"] if row is not None else None
+                forecast_error = calc_forecast_error(expected, actual)
+                absolute_error = abs(forecast_error) if forecast_error is not None else None
+                within_20_percent = calc_within_20_percent(absolute_error, actual)
+                items.append({
+                    "yusas_code": code,
+                    "product_name": name_map.get(code, ""),
+                    "expected_sales_today": expected,
+                    "actual_sales_qty": actual,
+                    "forecast_error": forecast_error,
+                    "within_20_percent": within_20_percent,
+                })
+
+            abs_errors = [abs(i["forecast_error"]) for i in items if i["forecast_error"] is not None]
+            actuals = [i["actual_sales_qty"] for i in items if i["forecast_error"] is not None]
+            hit_flags = [i["within_20_percent"] for i in items if i["within_20_percent"] is not None]
+            mae = sum(abs_errors) / len(abs_errors) if abs_errors else None
+            actual_sum = sum(actuals)
+            wape = (sum(abs_errors) / actual_sum) if abs_errors and actual_sum > 0 else None
+            hit_rate_20pct = (sum(hit_flags) / len(hit_flags)) if hit_flags else None
+
+            return {
+                "ok": True, "date": date,
+                "sample_count": len(hit_flags), "mae": mae, "wape": wape,
+                "hit_rate_20pct": hit_rate_20pct, "items": items,
+            }
+        finally:
+            conn.close()
 
     @router.post("/{date}/{yusas_code}/confirm")
     def confirm(

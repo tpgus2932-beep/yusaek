@@ -116,6 +116,82 @@ def test_daily_product_name_empty_string_when_wonbe_has_no_match():
     assert items[0]["product_name"] == ""
 
 
+def test_backtest_returns_items_only_for_products_with_recommended_qty_today():
+    client, get_db, _keep_alive = _make_client()
+    conn = get_db()
+    today = today_kst()
+
+    # 오늘 추천발주량 있는 상품 -> 백테스트 대상
+    ensure_row(conn, today, "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET recommended_qty = 5 WHERE date = ? AND yusas_code = ?",
+        (today, "YUSAS00001"),
+    )
+    # 오늘 추천발주량 없는 상품 -> 백테스트 대상 아님
+    ensure_row(conn, today, "YUSAS00002")
+
+    # 백테스트 대상 날짜의 실제 판매량
+    ensure_row(conn, "2026-07-29", "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = 10 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", "YUSAS00001"),
+    )
+    conn.commit()
+    conn.close()
+
+    res = client.get("/order-recommendation/backtest", params={"date": "2026-07-29"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["date"] == "2026-07-29"
+    assert len(body["items"]) == 1
+    assert body["items"][0]["yusas_code"] == "YUSAS00001"
+    assert body["items"][0]["actual_sales_qty"] == 10
+
+
+def test_backtest_applies_weight_overrides_and_computes_aggregate():
+    client, get_db, _keep_alive = _make_client()
+    conn = get_db()
+    today = today_kst()
+
+    ensure_row(conn, today, "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET recommended_qty = 5 WHERE date = ? AND yusas_code = ?",
+        (today, "YUSAS00001"),
+    )
+    ensure_row(conn, "2026-07-28", "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = 10 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-28", "YUSAS00001"),
+    )
+    ensure_row(conn, "2026-07-29", "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = 10 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", "YUSAS00001"),
+    )
+    conn.commit()
+    conn.close()
+
+    # weight_previous_day=1, 나머지 0 -> 신호가 전날값(10)만 남아 expected_sales_today == 10 -> 오차 0 -> 적중
+    res = client.get(
+        "/order-recommendation/backtest",
+        params={
+            "date": "2026-07-29",
+            "weight_weekday_average": 0,
+            "weight_previous_day": 1,
+            "weight_avg_7d": 0,
+            "weight_avg_14d": 0,
+            "weight_avg_3d": 0,
+        },
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["items"][0]["expected_sales_today"] == pytest.approx(10.0)
+    assert body["items"][0]["forecast_error"] == pytest.approx(0.0)
+    assert body["items"][0]["within_20_percent"] == 1
+    assert body["sample_count"] == 1
+    assert body["hit_rate_20pct"] == pytest.approx(1.0)
+
+
 def test_compute_endpoint_fills_recommended_qty_for_existing_rows():
     client, get_db, _keep_alive = _make_client()
     conn = get_db()
