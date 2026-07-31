@@ -52,6 +52,7 @@ function initialWeightsFromDaily(daily) {
 
 export default function OrderRecommendationBacktestSection({ daily }) {
   const [date, setDate] = useState(yesterdayDateStr());
+  const [days, setDays] = useState(1);
   const [weights, setWeights] = useState(() => initialWeightsFromDaily(daily));
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -62,7 +63,7 @@ export default function OrderRecommendationBacktestSection({ daily }) {
     setLoading(true);
     const timer = setTimeout(async () => {
       try {
-        const params = new URLSearchParams({ date, ...weights });
+        const params = new URLSearchParams({ date, days, ...weights });
         const res = await fetch(`${API}/order-recommendation/backtest?${params}`, {
           headers: getAuthHeaders(),
         });
@@ -78,7 +79,7 @@ export default function OrderRecommendationBacktestSection({ daily }) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [date, weights]);
+  }, [date, days, weights]);
 
   const saveWeights = async () => {
     setSaveMessage('저장 중...');
@@ -108,6 +109,18 @@ export default function OrderRecommendationBacktestSection({ daily }) {
             min={minBacktestDateStr()}
             max={yesterdayDateStr()}
             onChange={(e) => setDate(e.target.value)}
+          />
+        </div>
+        <div className={styles.backtestField}>
+          <label>기간(일수, 최대 5일)</label>
+          <input
+            type="number"
+            min="1"
+            max="5"
+            step="1"
+            className={styles.backtestWeightInput}
+            value={days}
+            onChange={(e) => setDays(Math.min(5, Math.max(1, Number(e.target.value) || 1)))}
           />
         </div>
         {WEIGHT_FIELDS.map((f) => (
@@ -162,6 +175,7 @@ export default function OrderRecommendationBacktestSection({ daily }) {
         <table className={styles.dailyTable}>
           <thead>
             <tr>
+              <th>날짜</th>
               <th>상품명</th>
               <th>예상판매량</th>
               <th>실제판매량</th>
@@ -171,7 +185,8 @@ export default function OrderRecommendationBacktestSection({ daily }) {
           </thead>
           <tbody>
             {(result?.items || []).map((item) => (
-              <tr key={item.yusas_code}>
+              <tr key={`${item.date}-${item.yusas_code}`}>
+                <td>{item.date}</td>
                 <td>{item.product_name || '-'}</td>
                 <td>{item.expected_sales_today != null ? item.expected_sales_today.toFixed(1) : '-'}</td>
                 <td>{item.actual_sales_qty ?? '-'}</td>

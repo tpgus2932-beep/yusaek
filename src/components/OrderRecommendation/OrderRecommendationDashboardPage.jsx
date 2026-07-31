@@ -203,6 +203,66 @@ function DailyTableRow({ date, item }) {
   );
 }
 
+function CoverageDaysControl() {
+  const [coverageDays, setCoverageDays] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API}/order-recommendation/settings`, { headers: getAuthHeaders() });
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled && res.ok && data.ok) setCoverageDays(String(data.coverage_days));
+      } catch {
+        // 조회 실패 시 빈 값 유지
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setMessage('');
+    try {
+      const res = await fetch(`${API}/order-recommendation/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ coverage_days: Number(coverageDays) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data?.detail || '저장 실패');
+      setMessage('저장됨 — 다음 예상발주 계산부터 적용됩니다');
+    } catch (err) {
+      setMessage(err.message || '저장 실패');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className={styles.backtestControls}>
+      <div className={styles.backtestField}>
+        <label>며칠치 발주 (1~5일)</label>
+        <input
+          type="number"
+          min="1"
+          max="5"
+          step="1"
+          className={styles.backtestWeightInput}
+          value={coverageDays}
+          onChange={(e) => setCoverageDays(e.target.value)}
+        />
+      </div>
+      <button type="button" className={styles.backtestSaveBtn} onClick={save} disabled={saving}>
+        {saving ? '저장 중...' : '저장'}
+      </button>
+      {message && <span className={styles.backtestSaveMsg}>{message}</span>}
+    </div>
+  );
+}
+
 function DailyDataTable({ date, items }) {
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState('recommended_qty');
@@ -319,6 +379,11 @@ export default function OrderRecommendationDashboardPage() {
             <ActionButton key={action.key} action={action} onSuccess={refresh} />
           ))}
         </div>
+      </section>
+
+      <section className={styles.section}>
+        <h3 className={styles.sectionTitle}>발주 커버리지</h3>
+        <CoverageDaysControl />
       </section>
 
       <section className={styles.section}>

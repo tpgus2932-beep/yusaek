@@ -195,6 +195,71 @@ def test_backtest_applies_weight_overrides_and_computes_aggregate():
     assert body["bias"] == pytest.approx(0.0)
 
 
+def test_backtest_days_param_aggregates_multiple_dates_into_one_result():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    today = today_kst()
+
+    ensure_row(conn, today, "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET recommended_qty = 5 WHERE date = ? AND yusas_code = ?",
+        (today, "YUSAS00001"),
+    )
+    for date, qty in [("2026-07-26", 10), ("2026-07-27", 20), ("2026-07-28", 30), ("2026-07-29", 40)]:
+        ensure_row(conn, date, "YUSAS00001")
+        conn.execute(
+            "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
+            (qty, date, "YUSAS00001"),
+        )
+    conn.commit()
+    conn.close()
+
+    # date=07-29, days=3 -> 07-27,07-28,07-29 세 날짜를 전날값(weight_previous_day=1)만으로 예측해 하나로 합산
+    # 07-27: 예상=전날(07-26)=10, 실제=20, 오차=-10 / 07-28: 예상=20,실제=30,오차=-10 / 07-29: 예상=30,실제=40,오차=-10
+    res = client.get(
+        "/order-recommendation/backtest",
+        params={
+            "date": "2026-07-29",
+            "days": 3,
+            "weight_weekday_average": 0,
+            "weight_previous_day": 1,
+            "weight_avg_7d": 0,
+            "weight_avg_14d": 0,
+            "weight_avg_3d": 0,
+        },
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["sample_count"] == 3  # 3개 날짜 x 1개 상품
+    assert body["mae"] == pytest.approx(10.0)
+    assert body["wape"] == pytest.approx(30 / 90)
+    assert body["bias"] == pytest.approx(-30 / 90)
+    assert body["hit_rate_20pct"] == pytest.approx(0.0)
+    assert {item["date"] for item in body["items"]} == {"2026-07-27", "2026-07-28", "2026-07-29"}
+
+
+def test_backtest_days_param_clamped_to_max_5():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    today = today_kst()
+    ensure_row(conn, today, "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET recommended_qty = 5 WHERE date = ? AND yusas_code = ?",
+        (today, "YUSAS00001"),
+    )
+    conn.commit()
+    conn.close()
+
+    res = client.get(
+        "/order-recommendation/backtest",
+        params={"date": "2026-07-29", "days": 30},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    dates = {item["date"] for item in body["items"]}
+    assert len(dates) == 5
+
+
 def test_backtest_bias_is_positive_when_overforecasting():
     client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
@@ -437,3 +502,37 @@ def test_save_weights_ignores_missing_keys():
     assert res.status_code == 200
     assert "order_recommendation_weight_previous_day" in store
     assert "order_recommendation_weight_weekday_average" not in store
+
+
+def test_get_settings_returns_default_coverage_days_when_unset():
+    client, _get_db, _keep_alive, _store = _make_client()
+
+    res = client.get("/order-recommendation/settings")
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "coverage_days": 1.0}
+
+
+def test_get_settings_returns_saved_coverage_days():
+    client, _get_db, _keep_alive, store = _make_client()
+    store["order_recommendation_coverage_days"] = "3"
+
+    res = client.get("/order-recommendation/settings")
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "coverage_days": 3.0}
+
+
+def test_save_settings_updates_coverage_days():
+    client, _get_db, _keep_alive, store = _make_client()
+
+    res = client.post("/order-recommendation/settings", json={"coverage_days": 3})
+    assert res.status_code == 200
+    assert res.json() == {"ok": True}
+    assert store["order_recommendation_coverage_days"] == "3.0"
+
+
+def test_save_settings_rejects_coverage_days_out_of_range():
+    client, _get_db, _keep_alive, store = _make_client()
+
+    res = client.post("/order-recommendation/settings", json={"coverage_days": 6})
+    assert res.status_code == 400
+    assert "order_recommendation_coverage_days" not in store
