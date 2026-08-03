@@ -32,6 +32,7 @@ function JanggiListView() {
   const [ichaeLoading, setIchaeLoading] = useState(false);
   const [ichaeConfirmMode, setIchaeConfirmMode] = useState(false);
   const [bulkMarkLoading, setBulkMarkLoading] = useState(false);
+  const [purchaseMoveLoading, setPurchaseMoveLoading] = useState(false);
   const [ilgwalOnly, setIlgwalOnly] = useState(false);
   const [showProductModal, setShowProductModal] = useState(false);
   const [productSearch, setProductSearch] = useState("");
@@ -463,6 +464,56 @@ function JanggiListView() {
     }
   };
 
+  const handleMoveToPurchaseManager = async () => {
+    setPurchaseMoveLoading(true);
+    setMessage("");
+    try {
+      const params = new URLSearchParams({
+        q: query,
+        date: dateFilter,
+        misong_filter: "매입차감",
+        offset: "0",
+        limit: "10000",
+      });
+      const res = await fetch(`${API}/wonbe/janggi/search?${params}`, { headers: getAuthHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "매입차감 목록 조회 실패");
+
+      const targetMap = new Map();
+      (data.rows || []).forEach((row) => {
+        const vendor = String(row["거래처"] || "").trim();
+        const rawAmount = Number(String(row["가격"] || "").replace(/[^\d.-]/g, "")) || 0;
+        if (!vendor || rawAmount >= 0) return;
+        const current = targetMap.get(vendor) || { vendor, amount: 0, memos: [], sourceCount: 0 };
+        current.amount += Math.abs(rawAmount);
+        const memo = String(row["메모"] || "").trim();
+        if (memo && !current.memos.includes(memo)) current.memos.push(memo);
+        current.sourceCount += 1;
+        targetMap.set(vendor, current);
+      });
+
+      const targets = [...targetMap.values()].map((target) => ({
+        vendor: target.vendor,
+        amount: target.amount,
+        memo: target.memos.join(" / "),
+        sourceCount: target.sourceCount,
+        date: dateFilter,
+      }));
+      if (!targets.length) throw new Error("이동할 음수 매입차감 금액이 없습니다.");
+
+      localStorage.setItem("noye-kimsungil-purchase-deduction-handoff", JSON.stringify({
+        targets,
+        createdAt: new Date().toISOString(),
+      }));
+      localStorage.setItem("activeTab", "noye-kimsungil");
+      localStorage.setItem("noye-kimsungil-active-tab", "purchase");
+      window.location.reload();
+    } catch (err) {
+      setMessage(err.message || "매입관리 이동 실패");
+      setPurchaseMoveLoading(false);
+    }
+  };
+
   const totalPages = Math.ceil(total / PAGE_SIZE);
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
@@ -660,6 +711,25 @@ function JanggiListView() {
           <span>{currentPage} / {totalPages}</span>
           <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setOffset(offset + PAGE_SIZE)} disabled={currentPage >= totalPages || loading}>다음</button>
         </div>
+      )}
+
+      {misongFilter === "매입차감" && (
+        <button
+          className={`${styles.btn} ${styles.btnPrimary}`}
+          onClick={handleMoveToPurchaseManager}
+          disabled={loading || purchaseMoveLoading || !total}
+          style={{
+            position: "fixed",
+            right: "24px",
+            bottom: "24px",
+            zIndex: 30,
+            minHeight: "44px",
+            padding: "0 18px",
+            boxShadow: "0 10px 28px rgba(15, 23, 42, 0.2)",
+          }}
+        >
+          {purchaseMoveLoading ? "이동 중..." : "매입관리로 이동"}
+        </button>
       )}
 
       {showProductModal && (

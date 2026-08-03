@@ -142,15 +142,14 @@ export default function PurchaseManager() {
           rowNumber: index + (looksLikeHeader(rawRows[0] || []) ? 2 : 1),
           vendor: normalizeCell(row[0]),
           product: normalizeCell(row[1]),
-          color: normalizeCell(row[2]),
-          size: normalizeCell(row[3]),
-          qty: parseQty(row[4]),
-          price: parsePrice(row[5]),
-          unitPrice: parseQty(row[4]) ? parsePrice(row[5]) / parseQty(row[4]) : parsePrice(row[5]),
-          date: formatExcelDate(row[6], XLSX),
-          note: normalizeCell(row[7]),
+          option: normalizeCell(row[2]),
+          qty: parseQty(row[3]),
+          price: parsePrice(row[4]),
+          unitPrice: parseQty(row[3]) ? parsePrice(row[4]) / parseQty(row[3]) : parsePrice(row[4]),
+          date: formatExcelDate(row[5], XLSX),
+          note: normalizeCell(row[6]),
         }))
-        .filter((row) => row.vendor || row.product || row.color || row.size || row.qty || row.price || row.date || row.note);
+        .filter((row) => row.vendor || row.product || row.option || row.qty || row.price || row.date || row.note);
 
       if (!rows.length) throw new Error("등록할 행이 없습니다.");
       sendToFrame({ type: "purchase-manager-excel-rows", fileName: file.name, rows });

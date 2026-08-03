@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import re
 import sqlite3
 import urllib.parse
@@ -51,9 +52,22 @@ def _parse_ably_datetime(value) -> datetime | None:
     except Exception:
         return None
 
-WONBE_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스유.db")
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+_wonbe_db_setting = os.environ.get("WONBE_DB_PATH", "").strip()
+if _wonbe_db_setting:
+    WONBE_DB_PATH = Path(_wonbe_db_setting).expanduser()
+    if not WONBE_DB_PATH.is_absolute():
+        WONBE_DB_PATH = _BACKEND_DIR.parent / WONBE_DB_PATH
+else:
+    WONBE_DB_PATH = _BACKEND_DIR / "data" / "원가베이스유.db"
 WONBE_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스유.xlsx")
-JANGGI_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\날짜별장끼정리.db")
+_janggi_db_setting = os.environ.get("JANGGI_DB_PATH", "").strip()
+if _janggi_db_setting:
+    JANGGI_DB_PATH = Path(_janggi_db_setting).expanduser()
+    if not JANGGI_DB_PATH.is_absolute():
+        JANGGI_DB_PATH = _BACKEND_DIR.parent / JANGGI_DB_PATH
+else:
+    JANGGI_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\날짜별장끼정리.db")
 INGODAEGI_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\입고대기.xlsx")
 
 COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국"]

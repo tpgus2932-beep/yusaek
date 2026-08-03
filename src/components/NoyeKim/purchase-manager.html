@@ -405,6 +405,17 @@
       box-shadow: var(--shadow);
     }
 
+    #rowsPanel {
+      overflow: visible;
+    }
+
+    #rowsPanel thead th {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: var(--panel-alt);
+    }
+
     table {
       width: 100%;
       border-collapse: collapse;
@@ -537,6 +548,23 @@
       white-space: nowrap;
     }
 
+    .deduction-needed-btn {
+      min-height: 24px;
+      padding: 0 9px;
+      border-color: #f59e0b;
+      background: #fff7ed;
+      color: #c2410c;
+      font-size: 11px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .deduction-needed-btn.active {
+      border-color: #c2410c;
+      background: #c2410c;
+      color: #fff;
+    }
+
     .vendor-total-price {
       color: var(--brand);
       font-weight: 900;
@@ -619,9 +647,8 @@
       min-width: 118px;
     }
 
-    .color-cell,
-    .size-cell {
-      min-width: 96px;
+    .option-cell {
+      min-width: 160px;
       white-space: nowrap;
     }
 
@@ -720,6 +747,33 @@
       font-size: 27px;
       line-height: 1.15;
       white-space: nowrap;
+    }
+
+    .deduction-target-summary {
+      padding: 11px 12px;
+      border: 1px solid #fed7aa;
+      border-radius: 7px;
+      background: #fff7ed;
+      color: #9a3412;
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.5;
+    }
+
+    .deduction-target-summary strong {
+      display: block;
+      color: #c2410c;
+      font-size: 18px;
+    }
+
+    .deduction-target-memo {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #fed7aa;
+      color: #7c2d12;
+      font-weight: 800;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
     }
 
     .vat-toggle-btn {
@@ -1304,8 +1358,7 @@
                 <th>행</th>
                 <th>거래처</th>
                 <th>거래처상품명</th>
-                <th>색상</th>
-                <th>사이즈</th>
+                <th>옵션</th>
                 <th>갯수</th>
                 <th>가격</th>
                 <th>반품등록일</th>
@@ -1326,6 +1379,7 @@
     <aside class="floating-summary app-view" data-view-panel="main" aria-label="선택 합산 가격">
       <div class="selection-tools">
         <div class="selection-summary" id="selectionSummary">선택 0건 · 합산 가격 <strong>0원</strong></div>
+        <div class="deduction-target-summary" id="deductionTargetSummary" hidden></div>
         <button type="button" class="vat-toggle-btn" id="vatToggleBtn">부가세포함</button>
       </div>
     </aside>
@@ -1334,10 +1388,10 @@
       <table>
         <thead>
           <tr id="rowsHead">
-            <th class="vendor-toggle-cell" colspan="4">
+            <th class="vendor-toggle-cell" colspan="3">
               <div class="vendor-toggle">
                 <input type="checkbox" class="row-checkbox" id="vendorSelectAll" aria-label="전체 거래처 선택">
-                <span class="th-sort-label" data-sort="vendor">거래처 · 상품정보</span>
+                <span class="th-sort-label" data-sort="vendor">거래처 · 상품명 · 옵션</span>
               </div>
             </th>
             <th data-sort="qty" class="num">수량</th>
@@ -1470,6 +1524,7 @@
     const INITIAL_PURCHASE_CLEAR_STORAGE_KEY = "purchaseDeductionInitialClear20260713v2";
     const KAKAO_SENT_STORAGE_KEY = "purchaseDeductionKakaoSentState";
     const UNDO_STORAGE_KEY = "purchaseDeductionUndoHistory";
+    const REDO_STORAGE_KEY = "purchaseDeductionRedoHistory";
     const LEGACY_UNDO_STORAGE_KEY = "purchaseDeductionLastUndo";
     const UNDO_HISTORY_LIMIT = 50;
     function createBaseRows() {
@@ -1568,6 +1623,8 @@
     });
     const completionLogs = loadJson(LOGS_STORAGE_KEY, []);
     let manageHistory = loadJson(MANAGE_HISTORY_STORAGE_KEY, []);
+    let deductionTargets = [];
+    let activeDeductionVendor = "";
     const kakaoSentState = loadObject(KAKAO_SENT_STORAGE_KEY, {});
     let serverStateLoaded = false;
     let serverSaveTimer = null;
@@ -1638,6 +1695,7 @@
     const deleteConfirmYesBtn = document.querySelector("#deleteConfirmYesBtn");
     const deleteConfirmNoBtn = document.querySelector("#deleteConfirmNoBtn");
     const selectionSummary = document.querySelector("#selectionSummary");
+    const deductionTargetSummary = document.querySelector("#deductionTargetSummary");
     const floatingSummary = document.querySelector(".floating-summary");
     const vatToggleBtn = document.querySelector("#vatToggleBtn");
     const bulkCompleteBtn = document.querySelector("#bulkCompleteBtn");
@@ -1649,7 +1707,9 @@
         completionLogs: cloneForUndo(completionLogs),
         manageHistory: cloneForUndo(manageHistory),
         kakaoSentState: cloneForUndo(kakaoSentState),
-        undoHistory: cloneForUndo(getUndoHistory())
+        undoHistory: cloneForUndo(getUndoHistory()),
+        redoHistory: cloneForUndo(getRedoHistory()),
+        deductionTargets: cloneForUndo(deductionTargets)
       };
     }
 
@@ -1667,9 +1727,12 @@
       rows.splice(0, rows.length, ...nextRows.map(normalizeManagedRow));
       completionLogs.splice(0, completionLogs.length, ...nextLogs);
       manageHistory = Array.isArray(serverState?.manageHistory) ? serverState.manageHistory : [];
+      deductionTargets = Array.isArray(serverState?.deductionTargets) ? serverState.deductionTargets : [];
+      activeDeductionVendor = deductionTargets[0]?.vendor || "";
       Object.keys(kakaoSentState).forEach((key) => delete kakaoSentState[key]);
       Object.assign(kakaoSentState, loadObjectFromValue(serverState?.kakaoSentState));
       saveUndoHistory(Array.isArray(serverState?.undoHistory) ? serverState.undoHistory : []);
+      saveRedoHistory(Array.isArray(serverState?.redoHistory) ? serverState.redoHistory : []);
       selectedRowIds.clear();
       selectedVendors.clear();
       saveRows();
@@ -1778,6 +1841,15 @@
       scheduleServerSave();
     }
 
+    function getRedoHistory() {
+      return loadJson(REDO_STORAGE_KEY, []);
+    }
+
+    function saveRedoHistory(history) {
+      localStorage.setItem(REDO_STORAGE_KEY, JSON.stringify(history.slice(-UNDO_HISTORY_LIMIT)));
+      scheduleServerSave();
+    }
+
     function cloneForUndo(value) {
       return JSON.parse(JSON.stringify(value));
     }
@@ -1791,10 +1863,12 @@
         savedAt: new Date().toISOString()
       });
       saveUndoHistory(history);
+      saveRedoHistory([]);
     }
 
     function clearUndoSnapshot() {
       localStorage.removeItem(UNDO_STORAGE_KEY);
+      localStorage.removeItem(REDO_STORAGE_KEY);
       localStorage.removeItem(LEGACY_UNDO_STORAGE_KEY);
       scheduleServerSave();
     }
@@ -1808,6 +1882,40 @@
       const snapshot = history.pop();
       if (!snapshot || !Array.isArray(snapshot.rows) || !Array.isArray(snapshot.completionLogs)) return false;
 
+      const redoHistory = getRedoHistory();
+      redoHistory.push({
+        action: snapshot.action,
+        rows: cloneForUndo(rows),
+        completionLogs: cloneForUndo(completionLogs),
+        savedAt: new Date().toISOString()
+      });
+
+      applyHistorySnapshot(snapshot);
+      saveUndoHistory(history);
+      saveRedoHistory(redoHistory);
+      return true;
+    }
+
+    function restoreLastRedo() {
+      const redoHistory = getRedoHistory();
+      const snapshot = redoHistory.pop();
+      if (!snapshot || !Array.isArray(snapshot.rows) || !Array.isArray(snapshot.completionLogs)) return false;
+
+      const history = getUndoHistory();
+      history.push({
+        action: snapshot.action,
+        rows: cloneForUndo(rows),
+        completionLogs: cloneForUndo(completionLogs),
+        savedAt: new Date().toISOString()
+      });
+
+      applyHistorySnapshot(snapshot);
+      saveUndoHistory(history);
+      saveRedoHistory(redoHistory);
+      return true;
+    }
+
+    function applyHistorySnapshot(snapshot) {
       rows.splice(0, rows.length, ...snapshot.rows.map((row) => {
         const parts = splitColorSize(row.color ?? row.option ?? "", row.size ?? "");
         const color = parts.color;
@@ -1829,9 +1937,7 @@
       closeDeleteDialog();
       saveRows();
       saveLogs();
-      saveUndoHistory(history);
       render();
-      return true;
     }
 
     function saveKakaoSentState() {
@@ -1999,12 +2105,46 @@
       if (errors.length) showDbError(errors);
     }
 
+    function processPurchaseDeductionHandoff() {
+      let handoff;
+      try {
+        handoff = JSON.parse(localStorage.getItem("noye-kimsungil-purchase-deduction-handoff") || "null");
+      } catch {
+        handoff = null;
+      }
+      if (!handoff || !Array.isArray(handoff.targets)) return;
+      const incomingTargets = handoff.targets
+        .map((target) => ({
+          vendor: normalizeText(target.vendor),
+          amount: Math.abs(Number(target.amount) || 0),
+          memo: normalizeText(target.memo),
+          date: normalizeText(target.date),
+          sourceCount: Number(target.sourceCount) || 0
+        }))
+        .filter((target) => target.vendor && target.amount > 0);
+      const existingVendorKeys = new Set(rows.map((row) => normalizeText(row.vendor)).filter(Boolean));
+      const unmatchedTargets = incomingTargets.filter((target) => !existingVendorKeys.has(normalizeText(target.vendor)));
+      deductionTargets = incomingTargets.filter((target) => existingVendorKeys.has(normalizeText(target.vendor)));
+      activeDeductionVendor = deductionTargets[0]?.vendor || "";
+      localStorage.removeItem("noye-kimsungil-purchase-deduction-handoff");
+      if (unmatchedTargets.length) {
+        dbErrorMessage.innerHTML = `
+          <div>매입관리 기존 목록과 매칭되지 않은 거래처가 있습니다.</div>
+          <ul>${unmatchedTargets.map((target) => `
+            <li>${escapeHtml(target.vendor)} · ${formatWon(target.amount)}원${target.memo ? ` · ${escapeHtml(target.memo)}` : ""}</li>
+          `).join("")}</ul>
+        `;
+        dbErrorMessage.hidden = false;
+      }
+      scheduleServerSave();
+      render();
+    }
+
     function validateImportRow(row) {
       const errors = [];
       if (!normalizeText(row.vendor)) errors.push("거래처");
       if (!normalizeText(row.product)) errors.push("거래처상품명");
-      if (!normalizeText(row.color)) errors.push("색상");
-      if (!normalizeText(row.size)) errors.push("사이즈");
+      if (!normalizeText(row.option)) errors.push("옵션");
       if (!(Number(row.qty) > 0)) errors.push("갯수");
       if (!(Number(row.price) > 0)) errors.push("가격");
       if (!normalizeText(row.date)) errors.push("반품등록일");
@@ -2021,8 +2161,7 @@
         ...row,
         vendor: getImportInputValue(index, "vendor"),
         product: getImportInputValue(index, "product"),
-        color: getImportInputValue(index, "color"),
-        size: getImportInputValue(index, "size"),
+        option: getImportInputValue(index, "option"),
         qty: Number(getImportInputValue(index, "qty").replace(/[^\d.-]/g, "")) || 0,
         price: Number(getImportInputValue(index, "price").replace(/[^\d.-]/g, "")) || 0,
         unitPrice: (Number(getImportInputValue(index, "qty").replace(/[^\d.-]/g, "")) || 0)
@@ -2047,8 +2186,7 @@
           ${[
             ["vendor", row.vendor],
             ["product", row.product],
-            ["color", row.color],
-            ["size", row.size],
+            ["option", row.option],
             ["qty", row.qty || ""],
             ["price", row.price || ""],
             ["date", row.date],
@@ -2076,8 +2214,7 @@
         rowNumber: row.rowNumber ?? index + 1,
         vendor: normalizeText(row.vendor),
         product: normalizeText(row.product),
-        color: normalizeText(row.color),
-        size: normalizeText(row.size),
+        option: normalizeText(row.option),
         qty: Number(row.qty) || 0,
         date: normalizeText(row.date),
         note: normalizeText(row.note),
@@ -2100,9 +2237,9 @@
         id: nextId++,
         vendor: row.vendor,
         product: row.product,
-        color: row.color,
-        size: row.size,
-        option: [row.color, row.size].filter(Boolean).join(" "),
+        color: row.option,
+        size: "",
+        option: row.option,
         qty: Number(row.qty) || 0,
         date: row.date,
         price: Number(row.price) || 0,
@@ -2180,16 +2317,38 @@
         group.rows.push(row);
         map.set(vendor, group);
       });
-      return [...map.values()];
+      const targetOrder = new Map(deductionTargets.map((target, index) => [normalizeText(target.vendor), index]));
+      return [...map.values()].sort((left, right) => {
+        const leftOrder = targetOrder.get(normalizeText(left.vendor));
+        const rightOrder = targetOrder.get(normalizeText(right.vendor));
+        if (leftOrder !== undefined || rightOrder !== undefined) {
+          if (leftOrder === undefined) return 1;
+          if (rightOrder === undefined) return -1;
+          return leftOrder - rightOrder;
+        }
+        return 0;
+      });
+    }
+
+    function getDeductionTarget(vendor) {
+      const key = normalizeText(vendor);
+      return deductionTargets.find((target) => normalizeText(target.vendor) === key) || null;
+    }
+
+    function formatOption(row) {
+      return [row.color, row.size]
+        .map((value) => normalizeText(value))
+        .filter(Boolean)
+        .join(" ");
     }
 
     function renderHeader(groups) {
       const allSelected = groups.length > 0 && groups.every((group) => selectedVendors.has(group.vendor));
       rowsHead.innerHTML = `
-        <th class="vendor-toggle-cell" colspan="4">
+        <th class="vendor-toggle-cell" colspan="3">
           <div class="vendor-toggle">
             <input type="checkbox" class="row-checkbox" id="vendorSelectAll" aria-label="전체 거래처 선택" ${allSelected ? "checked" : ""}>
-            <span class="th-sort-label" data-sort="vendor">거래처 · 상품정보</span>
+            <span class="th-sort-label" data-sort="vendor">거래처 · 상품명 · 옵션</span>
           </div>
         </th>
         <th data-sort="qty" class="num">수량</th>
@@ -2213,8 +2372,7 @@
       tr.innerHTML = `
         <td class="detail-indent">·</td>
         <td class="product">${escapeHtml(row.product)}</td>
-        <td class="color-cell">${escapeHtml(row.color)}</td>
-        <td class="size-cell">${escapeHtml(row.size)}</td>
+        <td class="option-cell">${escapeHtml(formatOption(row))}</td>
         <td class="num editable-cell qty-cell" contenteditable="true" inputmode="numeric" data-row-id="${row.id}">${formatWon(row.qty)}</td>
         <td><span class="date-badge">${escapeHtml(row.date)}</span></td>
         <td class="num price-td">
@@ -2248,16 +2406,18 @@
 
       groups.forEach((group) => {
         const expanded = expandedVendors.has(group.vendor);
+        const deductionTarget = getDeductionTarget(group.vendor);
         const tr = document.createElement("tr");
         tr.className = `vendor-row${expanded ? " expanded" : ""}`;
         tr.dataset.vendor = group.vendor;
         tr.innerHTML = `
-          <td class="vendor-toggle-cell" colspan="4">
+          <td class="vendor-toggle-cell" colspan="3">
             <div class="vendor-toggle">
               <input type="checkbox" class="row-checkbox vendor-checkbox" data-vendor="${escapeHtml(group.vendor)}" aria-label="${escapeHtml(group.vendor)} 선택" ${selectedVendors.has(group.vendor) ? "checked" : ""}>
               <button type="button" class="chevron-btn" aria-expanded="${expanded}" aria-label="${escapeHtml(group.vendor)} 상세 ${expanded ? "접기" : "펼치기"}">${CHEVRON_ICON}</button>
               <span class="vendor-name">${escapeHtml(group.vendor)}</span>
               <span class="count-badge">${formatWon(group.count)}건</span>
+              ${deductionTarget ? `<button type="button" class="deduction-needed-btn ${activeDeductionVendor === deductionTarget.vendor ? "active" : ""}" data-deduction-vendor="${escapeHtml(deductionTarget.vendor)}">차감필요</button>` : ""}
             </div>
           </td>
           <td class="num">${formatWon(group.qty)}</td>
@@ -2294,6 +2454,20 @@
       const displayPrice = state.includeVat ? selectedPrice + vat : selectedPrice;
       const vatNote = state.includeVat ? ` <span class="vat-note">(부가세 ${formatWon(vat)}원 포함)</span>` : "";
       selectionSummary.innerHTML = `선택 ${formatWon(selectedRows.length)}건 · 합산 가격 <strong>${formatWon(displayPrice)}원</strong>${vatNote}`;
+      const activeTarget = getDeductionTarget(activeDeductionVendor);
+      if (activeTarget) {
+        const difference = activeTarget.amount - displayPrice;
+        deductionTargetSummary.hidden = false;
+        deductionTargetSummary.innerHTML = `
+          ${escapeHtml(activeTarget.vendor)} 차감 필요
+          <strong>${formatWon(activeTarget.amount)}원</strong>
+          선택금액과 차이: ${difference === 0 ? "일치" : `${formatWon(Math.abs(difference))}원 ${difference > 0 ? "부족" : "초과"}`}
+          <div class="deduction-target-memo">메모: ${escapeHtml(activeTarget.memo || "메모 없음")}</div>
+        `;
+      } else {
+        deductionTargetSummary.hidden = true;
+        deductionTargetSummary.innerHTML = "";
+      }
       const currentBulkCompleteBtn = document.querySelector("#bulkCompleteBtn");
       if (currentBulkCompleteBtn) currentBulkCompleteBtn.disabled = selectedRows.length === 0;
       vatToggleBtn.classList.toggle("active", state.includeVat);
@@ -2692,6 +2866,69 @@
       const idSet = new Set(rowIds);
       const completedRows = rows.filter((row) => idSet.has(row.id));
       if (!completedRows.length) return;
+      const activeTarget = getDeductionTarget(activeDeductionVendor);
+      const completedTargetAmount = completedRows
+        .filter((row) => activeTarget && normalizeText(row.vendor) === normalizeText(activeTarget.vendor))
+        .reduce((sum, row) => sum + Number(row.price || 0), 0);
+      const isSingleTargetSelection = activeTarget
+        && completedRows.every((row) => normalizeText(row.vendor) === normalizeText(activeTarget.vendor));
+
+      if (isSingleTargetSelection && completedTargetAmount > activeTarget.amount) {
+        saveUndoSnapshot("partial-complete");
+        const completedDate = todayValue();
+        const fullyCompletedIds = new Set();
+        const managedEntries = [];
+        let amountToDeduct = activeTarget.amount;
+
+        completedRows.forEach((row, index) => {
+          if (amountToDeduct <= 0) return;
+          const originalPrice = Number(row.price || 0);
+          const deductedPrice = Math.min(originalPrice, amountToDeduct);
+          if (deductedPrice <= 0) return;
+
+          const logId = `${row.id}-${Date.now()}-${index}`;
+          const completedPart = { ...row, price: deductedPrice };
+          completionLogs.push({
+            id: logId,
+            vendor: row.vendor,
+            product: row.product,
+            color: row.color,
+            size: row.size,
+            option: row.option,
+            qty: row.qty,
+            price: deductedPrice,
+            returnDate: row.date,
+            completedDate
+          });
+
+          if (deductedPrice >= originalPrice) {
+            fullyCompletedIds.add(row.id);
+            managedEntries.push({ row: completedPart, logId });
+          } else {
+            row.price = originalPrice - deductedPrice;
+            row.unitPrice = row.qty ? row.price / row.qty : row.price;
+            const existingNote = String(row.note || "");
+            row.note = existingNote.includes("차감 후 남은금액")
+              ? existingNote
+              : [existingNote, "차감 후 남은금액"].filter(Boolean).join(" / ");
+          }
+          selectedRowIds.delete(row.id);
+          amountToDeduct -= deductedPrice;
+        });
+
+        if (managedEntries.length) addManageHistory("complete", managedEntries);
+        for (let index = rows.length - 1; index >= 0; index -= 1) {
+          if (fullyCompletedIds.has(rows[index].id)) rows.splice(index, 1);
+        }
+
+        deductionTargets = deductionTargets.filter((target) => normalizeText(target.vendor) !== normalizeText(activeTarget.vendor));
+        activeDeductionVendor = deductionTargets[0]?.vendor || "";
+        saveRows();
+        saveLogs();
+        scheduleServerSave();
+        render();
+        return;
+      }
 
       saveUndoSnapshot("complete");
       const completedDate = todayValue();
@@ -2721,6 +2958,11 @@
 
       saveRows();
       saveLogs();
+      if (activeTarget && completedTargetAmount > 0) {
+        deductionTargets = deductionTargets.filter((target) => normalizeText(target.vendor) !== normalizeText(activeTarget.vendor));
+        activeDeductionVendor = deductionTargets[0]?.vendor || "";
+        scheduleServerSave();
+      }
       render();
     }
 
@@ -3000,6 +3242,13 @@
 
       if (event.target.closest(".row-checkbox")) return;
 
+      const deductionButton = event.target.closest(".deduction-needed-btn");
+      if (deductionButton) {
+        activeDeductionVendor = deductionButton.dataset.deductionVendor || "";
+        render();
+        return;
+      }
+
       const vendorRow = event.target.closest(".vendor-row");
       if (vendorRow) {
         const vendor = vendorRow.dataset.vendor || "";
@@ -3116,6 +3365,11 @@
         return;
       }
 
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y" && !isTextEditingTarget(event.target)) {
+        if (restoreLastRedo()) event.preventDefault();
+        return;
+      }
+
       if (event.key === "Escape" && !noteTemplateMenu.hidden) {
         closeNoteTemplateMenu();
         return;
@@ -3152,6 +3406,7 @@
           scheduleServerSave();
         }
         processPurchaseHandoff();
+        processPurchaseDeductionHandoff();
         return;
       }
       if (event.data?.type === "purchase-manager-state-error") {
