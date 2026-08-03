@@ -525,6 +525,100 @@ def build_collab_router(
 
         return {"ok": True}
 
+    SHOPPING_EVENT_COLORS = ['blue', 'mint', 'pink', 'purple', 'amber']
+
+    @router.get("/shopping-events")
+    def list_shopping_events(user: str = Depends(get_current_user)):
+        conn = get_db()
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM shopping_events
+            ORDER BY start_date ASC, id ASC
+            """
+        ).fetchall()
+        conn.close()
+        items = []
+        for row in rows:
+            items.append(
+                {
+                    "id": row["id"],
+                    "region": row["region"],
+                    "title": row["title"],
+                    "content": row["content"] or "",
+                    "md": row["md"] or "",
+                    "start_date": row["start_date"],
+                    "end_date": row["end_date"],
+                    "color": row["color"] or "blue",
+                    "created_by_username": row["created_by_username"],
+                    "created_by_display": row["created_by_display"] or "",
+                    "created_at": row["created_at"],
+                }
+            )
+        return {"ok": True, "events": items}
+
+    @router.post("/shopping-events")
+    def create_shopping_event(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        region = (payload.get("region") or "").strip()
+        title = (payload.get("title") or "").strip()
+        content = (payload.get("content") or "").strip()
+        md = (payload.get("md") or "").strip()
+        start_date = (payload.get("start_date") or "").strip()
+        end_date = (payload.get("end_date") or "").strip()
+        if region not in ("korea", "japan"):
+            raise HTTPException(status_code=400, detail="invalid region")
+        if not title or not content or not md or not start_date or not end_date:
+            raise HTTPException(status_code=400, detail="모든 항목을 입력해 주세요.")
+        if end_date < start_date:
+            raise HTTPException(status_code=400, detail="종료일은 시작일보다 빠를 수 없습니다.")
+
+        now = datetime.now(timezone.utc).isoformat()
+        created_by_display = get_user_display(user)
+        conn = get_db()
+        count_row = conn.execute("SELECT COUNT(*) AS c FROM shopping_events").fetchone()
+        color = SHOPPING_EVENT_COLORS[count_row["c"] % len(SHOPPING_EVENT_COLORS)]
+        cursor = conn.execute(
+            """
+            INSERT INTO shopping_events (
+                region, title, content, md, start_date, end_date, color,
+                created_by_username, created_by_display, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (region, title, content, md, start_date, end_date, color, user, created_by_display, now),
+        )
+        new_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return {
+            "ok": True,
+            "event": {
+                "id": new_id,
+                "region": region,
+                "title": title,
+                "content": content,
+                "md": md,
+                "start_date": start_date,
+                "end_date": end_date,
+                "color": color,
+                "created_by_username": user,
+                "created_by_display": created_by_display,
+                "created_at": now,
+            },
+        }
+
+    @router.delete("/shopping-events")
+    def delete_shopping_events(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        raw_ids = payload.get("ids") or []
+        ids = [int(i) for i in raw_ids if str(i).lstrip('-').isdigit()]
+        if not ids:
+            raise HTTPException(status_code=400, detail="ids required")
+        conn = get_db()
+        placeholders = ",".join("?" for _ in ids)
+        conn.execute(f"DELETE FROM shopping_events WHERE id IN ({placeholders})", ids)
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+
     @router.get("/shared-todos")
     def list_shared_todos(user: str = Depends(get_current_user)):
         conn = get_db()

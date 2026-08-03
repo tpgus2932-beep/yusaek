@@ -1138,6 +1138,32 @@ def _init_client_schedule_excluded():
 _init_client_schedule_excluded()
 
 
+def _init_shopping_events():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS shopping_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            region TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            md TEXT NOT NULL DEFAULT '',
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            color TEXT NOT NULL DEFAULT 'blue',
+            created_by_username TEXT NOT NULL,
+            created_by_display TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_shopping_events()
+
+
 def _get_user_display(username: str) -> str:
     conn = _get_db()
     row = conn.execute("SELECT display_name FROM users WHERE username = ?", (username,)).fetchone()
