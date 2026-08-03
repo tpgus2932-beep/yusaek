@@ -9,6 +9,21 @@ const todayStr = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
+const weekInfoForDate = (dateStr) => {
+  const date = new Date(`${dateStr}T00:00:00`);
+  const daysSinceMonday = (date.getDay() + 6) % 7;
+  const monday = new Date(date);
+  monday.setDate(date.getDate() - daysSinceMonday);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  const key = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
+  const startLabel = `${monday.getFullYear()}년 ${monday.getMonth() + 1}월 ${monday.getDate()}일`;
+  const endLabel = monday.getFullYear() === sunday.getFullYear()
+    ? `${sunday.getMonth() + 1}월 ${sunday.getDate()}일`
+    : `${sunday.getFullYear()}년 ${sunday.getMonth() + 1}월 ${sunday.getDate()}일`;
+  return { key, label: `${startLabel} ~ ${endLabel}` };
+};
+
 const DAILY_BANK_CODES = {
   국민: '004', 산업: '002', 하나: '081', 케이뱅크: '089', 경남: '039', 저축: '050',
   우리: '020', 카카오: '090', 광주: '034', 새마을금고: '045', 우체국: '071', 토스뱅크: '092',
@@ -123,10 +138,13 @@ export default function AttendanceAdminPage() {
 
   // 직원 관리
   const [members, setMembers] = useState([]);
+  const [memberArea, setMemberArea] = useState('back');
   const [newName, setNewName] = useState('');
   const [addError, setAddError] = useState('');
   const [editingMember, setEditingMember] = useState(null);
   const [memberEditName, setMemberEditName] = useState('');
+  const [memberEditHourlyRate, setMemberEditHourlyRate] = useState('');
+  const [showMemberRateHistory, setShowMemberRateHistory] = useState(false);
   const [memberEditError, setMemberEditError] = useState('');
   const [memberEditSaving, setMemberEditSaving] = useState(false);
   const [memberAccounts, setMemberAccounts] = useState({});
@@ -159,6 +177,8 @@ export default function AttendanceAdminPage() {
   const [salaryAllowances, setSalaryAllowances] = useState([]);
   const [allowanceName, setAllowanceName] = useState('');
   const [allowanceAmount, setAllowanceAmount] = useState('');
+  const [fixedAllowancesByMember, setFixedAllowancesByMember] = useState({});
+  const [fixedAllowanceSaving, setFixedAllowanceSaving] = useState(false);
   const [salaryLoading, setSalaryLoading] = useState(false);
   const [salaryError, setSalaryError] = useState('');
   const salaryCardRef = useRef(null);
@@ -186,6 +206,7 @@ export default function AttendanceAdminPage() {
   const [editingDailyResident, setEditingDailyResident] = useState(null);
   const [fixedPayrollYear, setFixedPayrollYear] = useState(() => new Date().getFullYear());
   const [fixedPayrollMonth, setFixedPayrollMonth] = useState(() => new Date().getMonth() + 1);
+  const [fixedPayrollArea, setFixedPayrollArea] = useState('all');
   const [fixedPayrollRows, setFixedPayrollRows] = useState([]);
   const [fixedPayrollLoading, setFixedPayrollLoading] = useState(false);
   const [fixedPayrollError, setFixedPayrollError] = useState('');
@@ -193,25 +214,53 @@ export default function AttendanceAdminPage() {
   const [pendingTransferCopy, setPendingTransferCopy] = useState(null);
   const [transferConfirmBusy, setTransferConfirmBusy] = useState(false);
   const [transferConfirmError, setTransferConfirmError] = useState('');
+  const [selectedDailyTransferIds, setSelectedDailyTransferIds] = useState(new Set());
+  const [selectedFixedTransferIds, setSelectedFixedTransferIds] = useState(new Set());
+
+  // 입금 요청
+  const [paymentRequestMode, setPaymentRequestMode] = useState('personal');
+  const [paymentRequests, setPaymentRequests] = useState([]);
+  const [paymentRequestDate, setPaymentRequestDate] = useState(todayStr);
+  const [paymentRequestFilterDate, setPaymentRequestFilterDate] = useState(todayStr);
+  const [paymentRequestBank, setPaymentRequestBank] = useState('국민');
+  const [paymentRequestCustomBank, setPaymentRequestCustomBank] = useState('');
+  const [paymentRequestHolder, setPaymentRequestHolder] = useState('');
+  const [paymentRequestAccount, setPaymentRequestAccount] = useState('');
+  const [paymentRequestAmount, setPaymentRequestAmount] = useState('');
+  const [paymentRequestContent, setPaymentRequestContent] = useState('');
+  const [paymentRequestResident, setPaymentRequestResident] = useState('');
+  const [paymentRequestLoading, setPaymentRequestLoading] = useState(false);
+  const [paymentRequestError, setPaymentRequestError] = useState('');
+  const [paymentRequestCopyMessage, setPaymentRequestCopyMessage] = useState('');
+  const [editingPaymentRequest, setEditingPaymentRequest] = useState(null);
+  const [studioPayments, setStudioPayments] = useState([]);
+  const [studioForm, setStudioForm] = useState({
+    studioName: '', usageTime: '', amount: '', vatAmount: '', bankName: '국민', customBank: '',
+    accountNumber: '', accountHolder: '', modelName: '', modelPayment: '', shootDate: todayStr,
+  });
+  const [studioPaymentFilterDate, setStudioPaymentFilterDate] = useState(todayStr);
+  const [studioPaymentLoading, setStudioPaymentLoading] = useState(false);
+  const [studioPaymentError, setStudioPaymentError] = useState('');
+  const [studioPaymentCopyMessage, setStudioPaymentCopyMessage] = useState('');
+  const [selectedStudioPaymentIds, setSelectedStudioPaymentIds] = useState(new Set());
+  const [expandedStudioPaymentId, setExpandedStudioPaymentId] = useState(null);
+  const [editingStudioPayment, setEditingStudioPayment] = useState(null);
+  const [requestEditSaving, setRequestEditSaving] = useState(false);
+  const [requestEditError, setRequestEditError] = useState('');
+  const [lastStudioHistoryPromptName, setLastStudioHistoryPromptName] = useState('');
+  const [selectedPaymentRequestIds, setSelectedPaymentRequestIds] = useState(new Set());
 
   // 시간 수정
   const [editingRecord, setEditingRecord] = useState(null);
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState('');
-
-  const eachDate = (from, to) => {
-    if (!from && !to) return [todayStr()];
-    const start = new Date(`${from || to}T00:00:00`);
-    const end = new Date(`${to || from}T00:00:00`);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
-      return [from || to || todayStr()];
-    }
-    const dates = [];
-    for (const d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      dates.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
-    }
-    return dates;
-  };
+  const [showRecordCreate, setShowRecordCreate] = useState(false);
+  const [recordCreateMember, setRecordCreateMember] = useState('');
+  const [recordCreateDate, setRecordCreateDate] = useState(todayStr);
+  const [recordCreateStart, setRecordCreateStart] = useState('09:00');
+  const [recordCreateEnd, setRecordCreateEnd] = useState('14:00');
+  const [recordCreateSaving, setRecordCreateSaving] = useState(false);
+  const [recordCreateError, setRecordCreateError] = useState('');
 
   const verifyPin = async () => {
     if (!pin.trim()) return;
@@ -260,9 +309,23 @@ export default function AttendanceAdminPage() {
     }
   }, [pin]);
 
+  const loadFixedAllowances = useCallback(async () => {
+    try {
+      const params = new URLSearchParams({ pin });
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/members/fixed-allowances?${params}`);
+      if (res.ok) setFixedAllowancesByMember(await res.json());
+    } catch {
+      // 급여관리 화면에서 다시 저장하거나 새로고침해 재조회할 수 있다.
+    }
+  }, [pin]);
+
   useEffect(() => {
     if (pinAuth) loadMemberAccounts();
   }, [pinAuth, loadMemberAccounts]);
+
+  useEffect(() => {
+    if (pinAuth) loadFixedAllowances();
+  }, [pinAuth, loadFixedAllowances]);
 
   const openMemberAccountEdit = (member) => {
     const account = memberAccounts[member.id] || {};
@@ -337,6 +400,7 @@ export default function AttendanceAdminPage() {
       const data = await res.json().catch(() => []);
       if (!res.ok) throw new Error(data?.detail || '일일 알바 기록 조회에 실패했습니다.');
       setDailyWorkers(Array.isArray(data) ? data : []);
+      setSelectedDailyTransferIds(new Set());
     } catch (error) {
       setDailyError(error.message || '일일 알바 기록 조회에 실패했습니다.');
     } finally {
@@ -347,6 +411,254 @@ export default function AttendanceAdminPage() {
   useEffect(() => {
     if (pinAuth && tab === 'payroll' && payrollMode === 'daily') loadDailyWorkers();
   }, [pinAuth, tab, payrollMode, loadDailyWorkers]);
+
+  const loadPaymentRequests = useCallback(async () => {
+    setPaymentRequestLoading(true);
+    setPaymentRequestError('');
+    try {
+      const params = new URLSearchParams({ pin });
+      if (paymentRequestFilterDate) params.append('date', paymentRequestFilterDate);
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/payment-requests?${params}`);
+      const data = await res.json().catch(() => []);
+      if (!res.ok) throw new Error(data?.detail || '입금 요청 조회에 실패했습니다.');
+      setPaymentRequests(Array.isArray(data) ? data : []);
+      setSelectedPaymentRequestIds(new Set());
+    } catch (error) {
+      setPaymentRequestError(error.message || '입금 요청 조회에 실패했습니다.');
+    } finally {
+      setPaymentRequestLoading(false);
+    }
+  }, [pin, paymentRequestFilterDate]);
+
+  useEffect(() => {
+    if (pinAuth && tab === 'paymentRequest' && paymentRequestMode === 'personal') loadPaymentRequests();
+  }, [pinAuth, tab, paymentRequestMode, loadPaymentRequests]);
+
+  useEffect(() => {
+    if (pinAuth && tab === 'paymentRequest' && paymentRequestMode === 'studio') loadStudioPayments();
+  }, [pinAuth, tab, paymentRequestMode]);
+
+  const addPaymentRequest = async () => {
+    const bankName = paymentRequestBank === '직접입력:'
+      ? paymentRequestCustomBank.trim()
+      : paymentRequestBank;
+    const residentDigits = paymentRequestResident.replace(/\D/g, '');
+    const amount = Number(paymentRequestAmount);
+    setPaymentRequestError('');
+    if (!paymentRequestDate || !bankName || !paymentRequestHolder.trim()
+      || !paymentRequestAccount.trim() || !paymentRequestContent.trim()) {
+      setPaymentRequestError('날짜, 은행, 예금주, 계좌번호, 내용을 모두 입력하세요.');
+      return;
+    }
+    if (!Number.isInteger(amount) || amount <= 0) {
+      setPaymentRequestError('이체금액을 1원 이상의 정수로 입력하세요.');
+      return;
+    }
+    if (residentDigits && residentDigits.length !== 13) {
+      setPaymentRequestError('주민등록번호 13자리를 정확히 입력하세요.');
+      return;
+    }
+    setPaymentRequestLoading(true);
+    try {
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/payment-requests`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pin,
+          date: paymentRequestDate,
+          bankName,
+          accountHolder: paymentRequestHolder.trim(),
+          accountNumber: paymentRequestAccount.trim(),
+          amount,
+          content: paymentRequestContent.trim(),
+          residentRegistrationNumber: residentDigits,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || '입금 요청 등록에 실패했습니다.');
+      setPaymentRequestHolder('');
+      setPaymentRequestAccount('');
+      setPaymentRequestAmount('');
+      setPaymentRequestContent('');
+      setPaymentRequestResident('');
+      setPaymentRequestFilterDate(paymentRequestDate);
+      setPaymentRequests([data]);
+      setSelectedPaymentRequestIds(new Set());
+    } catch (error) {
+      setPaymentRequestError(error.message || '입금 요청 등록에 실패했습니다.');
+    } finally {
+      setPaymentRequestLoading(false);
+    }
+  };
+
+  const togglePaymentRequestPayment = async (entry) => {
+    const res = await fetch(`${COLLAB_API_BASE}/attendance/payment-requests/${entry.id}/payment`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin, completed: !entry.paymentCompleted }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setPaymentRequestError(data.detail || '입금 상태 변경에 실패했습니다.');
+      return;
+    }
+    setPaymentRequests((current) => current.map((item) => (
+      item.id === entry.id ? { ...item, paymentCompleted: !entry.paymentCompleted } : item
+    )));
+    setSelectedPaymentRequestIds((current) => {
+      const next = new Set(current);
+      next.delete(entry.id);
+      return next;
+    });
+  };
+
+  const deletePaymentRequest = async (entry) => {
+    if (!window.confirm(`${entry.accountHolder}님의 ${entry.date} 입금 요청을 삭제하시겠습니까?`)) return;
+    const res = await fetch(`${COLLAB_API_BASE}/attendance/payment-requests/${entry.id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setPaymentRequestError(data.detail || '입금 요청 삭제에 실패했습니다.');
+      return;
+    }
+    await loadPaymentRequests();
+  };
+
+  const loadStudioPayments = async () => {
+    setStudioPaymentLoading(true);
+    setStudioPaymentError('');
+    try {
+      const params = new URLSearchParams({ pin, date: studioPaymentFilterDate });
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/studio-payments?${params}`);
+      const data = await res.json().catch(() => []);
+      if (!res.ok) throw new Error(data.detail || '스튜디오 입금 조회에 실패했습니다.');
+      setStudioPayments(Array.isArray(data) ? data : []);
+      setSelectedStudioPaymentIds(new Set());
+    } catch (error) {
+      setStudioPaymentError(error.message || '스튜디오 입금 조회에 실패했습니다.');
+    } finally {
+      setStudioPaymentLoading(false);
+    }
+  };
+
+  const addStudioPayment = async () => {
+    const bankName = studioForm.bankName === '직접입력:' ? studioForm.customBank.trim() : studioForm.bankName;
+    const amount = Number(studioForm.amount);
+    const vatAmount = Number(studioForm.vatAmount || 0);
+    const modelPayment = Number(studioForm.modelPayment);
+    setStudioPaymentError('');
+    if (!studioForm.studioName.trim() || !studioForm.usageTime.trim() || !bankName
+      || !studioForm.accountNumber.trim() || !studioForm.accountHolder.trim()
+      || !studioForm.modelName.trim() || !studioForm.shootDate) {
+      setStudioPaymentError('스튜디오 입금 정보를 모두 입력하세요.');
+      return;
+    }
+    if (!Number.isInteger(amount) || amount <= 0 || !Number.isInteger(vatAmount) || vatAmount < 0 || !Number.isInteger(modelPayment) || modelPayment < 0) {
+      setStudioPaymentError('입금액과 모델지급액을 확인하세요.');
+      return;
+    }
+    setStudioPaymentLoading(true);
+    try {
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/studio-payments`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...studioForm, pin, bankName, amount, vatAmount, modelPayment }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || '스튜디오 입금 등록에 실패했습니다.');
+      setStudioForm((current) => ({ ...current, studioName: '', usageTime: '', amount: '', vatAmount: '', accountNumber: '', accountHolder: '', modelName: '', modelPayment: '' }));
+      setLastStudioHistoryPromptName('');
+      setStudioPaymentFilterDate(studioForm.shootDate);
+      setStudioPayments([data]);
+    } catch (error) {
+      setStudioPaymentError(error.message || '스튜디오 입금 등록에 실패했습니다.');
+    } finally {
+      setStudioPaymentLoading(false);
+    }
+  };
+
+  const applyStudioHistory = async () => {
+    const studioName = studioForm.studioName.trim();
+    if (!studioName || studioName === lastStudioHistoryPromptName) return;
+    try {
+      const params = new URLSearchParams({ pin, studio_name: studioName });
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/studio-payments/history?${params}`);
+      const history = await res.json().catch(() => null);
+      if (!res.ok || !history) return;
+      setLastStudioHistoryPromptName(studioName);
+      if (!window.confirm('과거 동일한 이력이 있습니다. 자동 기입 하시겠습니까?')) return;
+      const listedBank = DAILY_BANK_OPTIONS.includes(history.bankName);
+      setStudioForm((current) => ({
+        ...current,
+        usageTime: history.usageTime || '',
+        bankName: listedBank ? history.bankName : '직접입력:',
+        customBank: listedBank ? '' : history.bankName,
+        accountNumber: history.accountNumber || '',
+        accountHolder: history.accountHolder || '',
+        modelName: history.modelName || '',
+      }));
+    } catch {
+      // 과거 이력 자동입력은 선택 기능이므로 직접 입력을 계속할 수 있다.
+    }
+  };
+
+  const toggleStudioPayment = async (entry) => {
+    const res = await fetch(`${COLLAB_API_BASE}/attendance/studio-payments/${entry.id}/payment`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin, completed: !entry.paymentCompleted }),
+    });
+    if (res.ok) setStudioPayments((current) => current.map((item) => item.id === entry.id ? { ...item, paymentCompleted: !entry.paymentCompleted } : item));
+  };
+
+  const deleteStudioPayment = async (entry) => {
+    if (!window.confirm('삭제하시겠습니까?')) return;
+    await fetch(`${COLLAB_API_BASE}/attendance/studio-payments/${entry.id}`, {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }),
+    });
+    await loadStudioPayments();
+  };
+
+  const savePaymentRequestEdit = async () => {
+    if (!editingPaymentRequest) return;
+    setRequestEditSaving(true);
+    setRequestEditError('');
+    try {
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/payment-requests/${editingPaymentRequest.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...editingPaymentRequest, pin, amount: Number(editingPaymentRequest.amount) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || '수정에 실패했습니다.');
+      setPaymentRequests((current) => current.map((item) => item.id === data.id ? data : item));
+      setEditingPaymentRequest(null);
+    } catch (error) {
+      setRequestEditError(error.message || '수정에 실패했습니다.');
+    } finally {
+      setRequestEditSaving(false);
+    }
+  };
+
+  const saveStudioPaymentEdit = async () => {
+    if (!editingStudioPayment) return;
+    setRequestEditSaving(true);
+    setRequestEditError('');
+    try {
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/studio-payments/${editingStudioPayment.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...editingStudioPayment, pin, amount: Number(editingStudioPayment.amount), vatAmount: Number(editingStudioPayment.vatAmount || 0), modelPayment: Number(editingStudioPayment.modelPayment) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || '수정에 실패했습니다.');
+      setStudioPayments((current) => current.map((item) => item.id === data.id ? data : item));
+      setEditingStudioPayment(null);
+    } catch (error) {
+      setRequestEditError(error.message || '수정에 실패했습니다.');
+    } finally {
+      setRequestEditSaving(false);
+    }
+  };
 
   const addDailyWorker = async () => {
     const name = dailyName.trim();
@@ -522,20 +834,29 @@ export default function AttendanceAdminPage() {
       if (r.type === '출근' && !map[key].출근) map[key].출근 = r;
       if (r.type === '퇴근') map[key].퇴근 = r; // 마지막 퇴근 기록 사용
     });
-    const targetMembers = filterName
-      ? members.filter((m) => m.name === filterName)
-      : members;
-    eachDate(filterDateFrom, filterDateTo).forEach((date) => {
-      targetMembers.forEach((m) => {
-        const key = `${date}__${m.name}`;
-        if (!map[key]) map[key] = { date, name: m.name, 출근: null, 퇴근: null };
-      });
-    });
     return Object.values(map).sort((a, b) => {
       if (a.date !== b.date) return b.date.localeCompare(a.date);
       return a.name.localeCompare(b.name, 'ko-KR');
     });
-  }, [records, members, filterName, filterDateFrom, filterDateTo]);
+  }, [records]);
+
+  const recordWeekNumbers = useMemo(() => {
+    const weekKeys = [...new Set(groupedRecords.map((group) => weekInfoForDate(group.date).key))]
+      .sort((a, b) => a.localeCompare(b));
+    return Object.fromEntries(weekKeys.map((key, index) => [key, index + 1]));
+  }, [groupedRecords]);
+
+  const displayedMembers = useMemo(
+    () => members.filter((member) => (member.workArea || 'back') === memberArea),
+    [members, memberArea],
+  );
+
+  const displayedFixedPayrollRows = useMemo(
+    () => fixedPayrollRows.filter((row) => (
+      fixedPayrollArea === 'all' || (row.workArea || 'back') === fixedPayrollArea
+    )),
+    [fixedPayrollRows, fixedPayrollArea],
+  );
 
   const addMember = async () => {
     const name = newName.trim();
@@ -544,7 +865,7 @@ export default function AttendanceAdminPage() {
     const res = await fetch(`${COLLAB_API_BASE}/attendance/members`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, pin }),
+      body: JSON.stringify({ name, pin, workArea: memberArea }),
     });
     if (res.ok) {
       setNewName('');
@@ -555,8 +876,8 @@ export default function AttendanceAdminPage() {
     }
   };
 
-  const deleteMember = async (id, name) => {
-    if (!window.confirm(`'${name}'을(를) 삭제하시겠습니까?`)) return;
+  const deleteMember = async (id) => {
+    if (!window.confirm('삭제하시겠습니까?')) return;
     await fetch(`${COLLAB_API_BASE}/attendance/members/${id}`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
@@ -577,14 +898,21 @@ export default function AttendanceAdminPage() {
   const openMemberEdit = (member) => {
     setEditingMember(member);
     setMemberEditName(member.name);
+    setMemberEditHourlyRate(member.hourlyRate || '');
+    setShowMemberRateHistory(false);
     setMemberEditError('');
   };
 
   const updateMember = async () => {
     if (!editingMember) return;
     const name = memberEditName.trim();
+    const hourlyRate = memberEditHourlyRate === '' ? null : Number(memberEditHourlyRate);
     if (!name) {
       setMemberEditError('이름을 입력하세요.');
+      return;
+    }
+    if (hourlyRate !== null && (!Number.isInteger(hourlyRate) || hourlyRate <= 0)) {
+      setMemberEditError('개별 시급은 1원 이상의 정수로 입력하세요.');
       return;
     }
     setMemberEditSaving(true);
@@ -593,7 +921,7 @@ export default function AttendanceAdminPage() {
       const res = await fetch(`${COLLAB_API_BASE}/attendance/members/${editingMember.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, pin }),
+        body: JSON.stringify({ name, pin, hourlyRate }),
       });
       if (res.ok) {
         setEditingMember(null);
@@ -676,7 +1004,12 @@ export default function AttendanceAdminPage() {
   };
 
   const calcSalaryData = (records, cfg) => {
-    const { hourlyRate, holidayMin, workDays, deductPct, memberName, year, month, allowances = [] } = cfg;
+    const { hourlyRate, hourlyRateHistory = [], holidayMin, workDays, deductPct, memberName, year, month, allowances = [] } = cfg;
+    const rateForDate = (date) => {
+      const applicable = hourlyRateHistory.filter((entry) => entry.effectiveDate <= date);
+      const override = applicable.length ? applicable[applicable.length - 1].hourlyRate : null;
+      return override || hourlyRate;
+    };
     // 30분 단위 반올림: 15분 이하 버림, 16분 이상 올림
     const roundHalf = (h) => Math.floor((h * 60 + 14) / 30) * 30 / 60;
     // 날짜별 출/퇴근 그룹화
@@ -697,19 +1030,23 @@ export default function AttendanceAdminPage() {
       const monday = new Date(d);
       monday.setDate(d.getDate() - daysSinceMon);
       const wk = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
-      weekMap[wk] = (weekMap[wk] || 0) + h;
+      if (!weekMap[wk]) weekMap[wk] = { hours: 0, basicPay: 0, latestDate: date };
+      weekMap[wk].hours += h;
+      weekMap[wk].basicPay += h * rateForDate(date);
+      if (date > weekMap[wk].latestDate) weekMap[wk].latestDate = date;
     });
 
-    const monthlyHours = Object.values(weekMap).reduce((s, h) => s + h, 0);
+    const monthlyHours = Object.values(weekMap).reduce((s, week) => s + week.hours, 0);
     const weeks = Object.entries(weekMap)
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([wkStart, hours], idx) => {
+      .map(([wkStart, week], idx) => {
+        const { hours } = week;
         const qualifies = hours >= holidayMin;
-        const holPay = qualifies ? Math.round((hours / workDays) * hourlyRate) : 0;
+        const holPay = qualifies ? Math.round((hours / workDays) * rateForDate(week.latestDate)) : 0;
         return { week: idx + 1, wkStart, hours, qualifies, holPay };
       });
 
-    const basicPay = Math.round(monthlyHours * hourlyRate);
+    const basicPay = Math.round(Object.values(weekMap).reduce((sum, week) => sum + week.basicPay, 0));
     const holTotal = weeks.reduce((s, w) => s + w.holPay, 0);
     const allowanceTotal = allowances.reduce((s, a) => s + (Number(a.amount) || 0), 0);
     const totalPay = basicPay + holTotal + allowanceTotal;
@@ -721,7 +1058,7 @@ export default function AttendanceAdminPage() {
 
     return {
       member: memberName, year, month,
-      hourlyRate, deductPct,
+      hourlyRate: rateForDate(`${year}-${String(month).padStart(2, '0')}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`), deductPct,
       monthlyHours, basicPay, holTotal, allowances, allowanceTotal, totalPay, incomeTax, localTax, deduction, netPay,
       qualifyingWeeks: weeks.filter((w) => w.qualifies).length,
       weeks,
@@ -731,25 +1068,28 @@ export default function AttendanceAdminPage() {
   const copyUnpaidDailyWorkers = async () => {
     setDailyCopyMessage('');
     const unpaid = dailyWorkers.filter((entry) => !entry.paymentCompleted);
-    if (unpaid.length === 0) {
+    const copyTargets = selectedDailyTransferIds.size > 0
+      ? unpaid.filter((entry) => selectedDailyTransferIds.has(entry.id))
+      : unpaid;
+    if (copyTargets.length === 0) {
       setDailyCopyMessage('복사할 미입금 기록이 없습니다.');
       return;
     }
-    const missing = unpaid.filter((entry) => !entry.bankName || !entry.accountHolder || !entry.accountNumber);
+    const missing = copyTargets.filter((entry) => !entry.bankName || !entry.accountHolder || !entry.accountNumber);
     if (missing.length > 0) {
       const message = `계좌정보 미등록: ${missing.map((entry) => entry.name).join(', ')}`;
       setDailyCopyMessage(message);
       window.alert(message);
       return;
     }
-    const unmatched = [...new Set(unpaid.filter((entry) => !DAILY_BANK_CODES[entry.bankName]).map((entry) => entry.bankName))];
+    const unmatched = [...new Set(copyTargets.filter((entry) => !DAILY_BANK_CODES[entry.bankName]).map((entry) => entry.bankName))];
     if (unmatched.length > 0) {
       const message = `은행코드 미매칭: ${unmatched.join(', ')}`;
       setDailyCopyMessage(message);
       window.alert(message);
       return;
     }
-    const rows = unpaid.map((entry) => {
+    const rows = copyTargets.map((entry) => {
       const year = Number(entry.date.slice(0, 4));
       const month = Number(entry.date.slice(5, 7));
       const salary = calcSalaryData([
@@ -805,13 +1145,14 @@ export default function AttendanceAdminPage() {
       const rows = members.map((member, index) => {
         const salary = calcSalaryData(recordSets[index], {
           hourlyRate: salaryHourlyRate,
+          hourlyRateHistory: member.hourlyRateHistory || [],
           holidayMin: salaryHolidayMin,
           workDays: salaryWorkDays,
           deductPct: salaryDeductPct,
           memberName: member.name,
           year: fixedPayrollYear,
           month: fixedPayrollMonth,
-          allowances: [],
+          allowances: fixedAllowancesByMember[member.id] || [],
         });
         return {
           ...member,
@@ -821,6 +1162,7 @@ export default function AttendanceAdminPage() {
         };
       });
       setFixedPayrollRows(rows);
+      setSelectedFixedTransferIds(new Set());
     } catch (error) {
       setFixedPayrollError(error.message || '고정 알바 급여 조회에 실패했습니다.');
     } finally {
@@ -850,26 +1192,29 @@ export default function AttendanceAdminPage() {
 
   const copyUnpaidFixedWorkers = async () => {
     setFixedCopyMessage('');
-    const unpaid = fixedPayrollRows.filter((row) => !row.paymentCompleted && row.salary.netPay > 0);
-    if (unpaid.length === 0) {
+    const unpaid = displayedFixedPayrollRows.filter((row) => !row.paymentCompleted && row.salary.netPay > 0);
+    const copyTargets = selectedFixedTransferIds.size > 0
+      ? unpaid.filter((row) => selectedFixedTransferIds.has(row.id))
+      : unpaid;
+    if (copyTargets.length === 0) {
       setFixedCopyMessage('복사할 미입금 급여가 없습니다.');
       return;
     }
-    const missing = unpaid.filter((row) => !row.bankName || !row.accountHolder || !row.accountNumber);
+    const missing = copyTargets.filter((row) => !row.bankName || !row.accountHolder || !row.accountNumber);
     if (missing.length > 0) {
       const message = `계좌정보 미등록: ${missing.map((row) => row.name).join(', ')}`;
       setFixedCopyMessage(message);
       window.alert(message);
       return;
     }
-    const unmatched = unpaid.filter((row) => !DAILY_BANK_CODES[row.bankName]);
+    const unmatched = copyTargets.filter((row) => !DAILY_BANK_CODES[row.bankName]);
     if (unmatched.length > 0) {
       const message = `은행코드 미매칭: ${unmatched.map((row) => `${row.name}(${row.bankName})`).join(', ')}`;
       setFixedCopyMessage(message);
       window.alert(message);
       return;
     }
-    const rows = unpaid.map((row) => ({
+    const rows = copyTargets.map((row) => ({
       id: row.id,
       name: row.name,
       amount: row.salary.netPay,
@@ -886,6 +1231,66 @@ export default function AttendanceAdminPage() {
     setPendingTransferCopy({ type: 'fixed', title: `${fixedPayrollMonth}월 고정 알바 미입금 정보`, rows });
   };
 
+  const copyUnpaidPaymentRequests = () => {
+    setPaymentRequestCopyMessage('');
+    const unpaid = paymentRequests.filter((entry) => !entry.paymentCompleted);
+    const copyTargets = selectedPaymentRequestIds.size > 0
+      ? unpaid.filter((entry) => selectedPaymentRequestIds.has(entry.id))
+      : unpaid;
+    if (copyTargets.length === 0) {
+      setPaymentRequestCopyMessage('복사할 미입금 요청이 없습니다.');
+      return;
+    }
+    const unmatched = [...new Set(copyTargets
+      .filter((entry) => !DAILY_BANK_CODES[entry.bankName])
+      .map((entry) => entry.bankName))];
+    if (unmatched.length > 0) {
+      const message = `은행코드 미매칭: ${unmatched.join(', ')}`;
+      setPaymentRequestCopyMessage(message);
+      window.alert(message);
+      return;
+    }
+    const rows = copyTargets.map((entry) => ({
+      id: entry.id,
+      name: entry.accountHolder,
+      amount: entry.amount,
+      excel: [
+        DAILY_BANK_CODES[entry.bankName],
+        entry.accountNumber,
+        entry.amount,
+        entry.accountHolder,
+        '주식회사유색',
+        entry.content,
+      ].join('\t'),
+    }));
+    setTransferConfirmError('');
+    setPendingTransferCopy({ type: 'request', title: `${paymentRequestFilterDate} 입금 요청 미입금 정보`, rows });
+  };
+
+  const copyUnpaidStudioPayments = () => {
+    setStudioPaymentCopyMessage('');
+    const unpaid = studioPayments.filter((entry) => !entry.paymentCompleted);
+    const targets = selectedStudioPaymentIds.size > 0
+      ? unpaid.filter((entry) => selectedStudioPaymentIds.has(entry.id)) : unpaid;
+    if (!targets.length) {
+      setStudioPaymentCopyMessage('복사할 미입금 정보가 없습니다.');
+      return;
+    }
+    const unmatched = [...new Set(targets.filter((entry) => !DAILY_BANK_CODES[entry.bankName]).map((entry) => entry.bankName))];
+    if (unmatched.length) {
+      const message = `은행코드 미매칭: ${unmatched.join(', ')}`;
+      setStudioPaymentCopyMessage(message);
+      window.alert(message);
+      return;
+    }
+    const rows = targets.map((entry) => ({
+      id: entry.id, name: entry.accountHolder, amount: entry.amount + (entry.vatAmount || 0),
+      excel: [DAILY_BANK_CODES[entry.bankName], entry.accountNumber, entry.amount + (entry.vatAmount || 0),
+        entry.accountHolder, '주식회사유색', `${entry.studioName} 스튜디오 입금`].join('\t'),
+    }));
+    setPendingTransferCopy({ type: 'studio', title: `${studioPaymentFilterDate} 스튜디오 미입금 정보`, rows });
+  };
+
   const confirmTransferCopy = async () => {
     if (!pendingTransferCopy || transferConfirmBusy) return;
     setTransferConfirmBusy(true);
@@ -899,7 +1304,8 @@ export default function AttendanceAdminPage() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ pin, completed: true }),
             })
-          : fetch(`${COLLAB_API_BASE}/attendance/fixed-worker-payments/${row.id}`, {
+          : pendingTransferCopy.type === 'fixed'
+          ? fetch(`${COLLAB_API_BASE}/attendance/fixed-worker-payments/${row.id}`, {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -908,6 +1314,16 @@ export default function AttendanceAdminPage() {
                 month: fixedPayrollMonth,
                 completed: true,
               }),
+            })
+          : pendingTransferCopy.type === 'studio'
+          ? fetch(`${COLLAB_API_BASE}/attendance/studio-payments/${row.id}/payment`, {
+              method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ pin, completed: true }),
+            })
+          : fetch(`${COLLAB_API_BASE}/attendance/payment-requests/${row.id}/payment`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ pin, completed: true }),
             })
       )));
       if (responses.some((response) => !response.ok)) {
@@ -920,17 +1336,72 @@ export default function AttendanceAdminPage() {
           completedIds.has(entry.id) ? { ...entry, paymentCompleted: true } : entry
         )));
         setDailyCopyMessage(`${copiedCount}건을 복사하고 입금완료 처리했습니다.`);
-      } else {
+        setSelectedDailyTransferIds(new Set());
+      } else if (pendingTransferCopy.type === 'fixed') {
         setFixedPayrollRows((current) => current.map((row) => (
           completedIds.has(row.id) ? { ...row, paymentCompleted: true } : row
         )));
         setFixedCopyMessage(`${copiedCount}건을 복사하고 입금완료 처리했습니다.`);
+        setSelectedFixedTransferIds(new Set());
+      } else if (pendingTransferCopy.type === 'studio') {
+        setStudioPayments((current) => current.map((entry) => (
+          completedIds.has(entry.id) ? { ...entry, paymentCompleted: true } : entry
+        )));
+        setSelectedStudioPaymentIds(new Set());
+      } else {
+        setPaymentRequests((current) => current.map((row) => (
+          completedIds.has(row.id) ? { ...row, paymentCompleted: true } : row
+        )));
+        setPaymentRequestCopyMessage(`${copiedCount}건을 복사하고 입금완료 처리했습니다.`);
+        setSelectedPaymentRequestIds(new Set());
       }
       setPendingTransferCopy(null);
     } catch (error) {
       setTransferConfirmError(error.message || '복사 및 입금완료 처리에 실패했습니다.');
     } finally {
       setTransferConfirmBusy(false);
+    }
+  };
+
+  const changeSalaryMember = (value) => {
+    setSalaryMember(value);
+    setSalaryResult(null);
+    setAllSalaryResults(null);
+    setDailySalaryResults(null);
+    const member = members.find((item) => item.name === value);
+    setSalaryAllowances(member ? [...(fixedAllowancesByMember[member.id] || [])] : []);
+  };
+
+  const saveFixedAllowances = async () => {
+    const member = members.find((item) => item.name === salaryMember);
+    if (!member) {
+      window.alert('고정할 직원을 먼저 선택하세요.');
+      return;
+    }
+    if (salaryAllowances.length === 0) {
+      window.alert('추가수당을 먼저 추가하세요.');
+      return;
+    }
+    if (!window.confirm('앞으로 해당 내용과 금액을 고정합니다')) return;
+    setFixedAllowanceSaving(true);
+    setSalaryError('');
+    try {
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/members/${member.id}/fixed-allowances`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pin,
+          allowances: salaryAllowances.map(({ name, amount }) => ({ name, amount: Number(amount) })),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || '추가수당 고정에 실패했습니다.');
+      await loadFixedAllowances();
+      setSalaryAllowances((current) => current.map((item) => ({ ...item, fixed: true })));
+    } catch (error) {
+      setSalaryError(error.message || '추가수당 고정에 실패했습니다.');
+    } finally {
+      setFixedAllowanceSaving(false);
     }
   };
 
@@ -969,7 +1440,13 @@ export default function AttendanceAdminPage() {
         const res = await fetch(`${COLLAB_API_BASE}/attendance/records?${params}`);
         if (!res.ok) throw new Error('출퇴근 기록 조회 실패');
         const fetched = await res.json();
-        setSalaryResult(calcSalaryData(fetched, { ...cfg, memberName: salaryMember }));
+        const member = members.find((item) => item.name === salaryMember);
+        setSalaryResult(calcSalaryData(fetched, {
+          ...cfg,
+          memberName: salaryMember,
+          hourlyRate: salaryHourlyRate,
+          hourlyRateHistory: member?.hourlyRateHistory || [],
+        }));
       } else {
         if (!members.length) throw new Error('직원 목록이 없습니다.');
         const results = await Promise.all(members.map(async (mem) => {
@@ -977,7 +1454,13 @@ export default function AttendanceAdminPage() {
           const res = await fetch(`${COLLAB_API_BASE}/attendance/records?${params}`);
           if (!res.ok) throw new Error(`${mem.name} 조회 실패`);
           const fetched = await res.json();
-          return calcSalaryData(fetched, { ...cfg, memberName: mem.name });
+          return calcSalaryData(fetched, {
+            ...cfg,
+            memberName: mem.name,
+            hourlyRate: salaryHourlyRate,
+            hourlyRateHistory: mem.hourlyRateHistory || [],
+            allowances: fixedAllowancesByMember[mem.id] || [],
+          });
         }));
         setAllSalaryResults(results);
       }
@@ -1075,6 +1558,56 @@ export default function AttendanceAdminPage() {
       isNew: true,
     });
     setEditError('');
+  };
+
+  const openRecordCreate = () => {
+    setRecordCreateMember(filterName || members[0]?.name || '');
+    setRecordCreateDate(filterDateFrom || todayStr());
+    setRecordCreateStart('09:00');
+    setRecordCreateEnd('14:00');
+    setRecordCreateError('');
+    setShowRecordCreate(true);
+  };
+
+  const createRecordPair = async () => {
+    if (!recordCreateMember || !recordCreateDate || !recordCreateStart || !recordCreateEnd) {
+      setRecordCreateError('직원, 날짜, 출근시간, 퇴근시간을 모두 입력하세요.');
+      return;
+    }
+    setRecordCreateSaving(true);
+    setRecordCreateError('');
+    try {
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/records/pair`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pin,
+          member_name: recordCreateMember,
+          date: recordCreateDate,
+          startTime: recordCreateStart,
+          endTime: recordCreateEnd,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || '출퇴근 기록 등록에 실패했습니다.');
+
+      const params = new URLSearchParams({
+        pin,
+        date: recordCreateDate,
+        name: recordCreateMember,
+      });
+      const recordsRes = await fetch(`${COLLAB_API_BASE}/attendance/records?${params}`);
+      const nextRecords = recordsRes.ok ? await recordsRes.json() : [];
+      setFilterDateFrom(recordCreateDate);
+      setFilterDateTo(recordCreateDate);
+      setFilterName(recordCreateMember);
+      setRecords(Array.isArray(nextRecords) ? nextRecords : []);
+      setShowRecordCreate(false);
+    } catch (error) {
+      setRecordCreateError(error.message || '출퇴근 기록 등록에 실패했습니다.');
+    } finally {
+      setRecordCreateSaving(false);
+    }
   };
 
   const updateRecord = async () => {
@@ -1179,6 +1712,12 @@ export default function AttendanceAdminPage() {
           >
             🧾 급여 계산
           </button>
+          <button
+            className={`${styles.tabBtn} ${tab === 'paymentRequest' ? styles.tabActive : ''}`}
+            onClick={() => setTab('paymentRequest')}
+          >
+            💸 입금 요청
+          </button>
         </div>
 
         {tab === 'payroll' && (
@@ -1195,9 +1734,200 @@ export default function AttendanceAdminPage() {
           </div>
         )}
 
+        {/* ── 입금 요청 탭 ── */}
+        {tab === 'paymentRequest' && (
+          <>
+            <div className={styles.memberAreaTabs}>
+              <button className={`${styles.memberAreaTab} ${paymentRequestMode === 'personal' ? styles.memberAreaTabActive : ''}`} onClick={() => setPaymentRequestMode('personal')}>개인요청</button>
+              <button className={`${styles.memberAreaTab} ${paymentRequestMode === 'studio' ? styles.memberAreaTabActive : ''}`} onClick={() => setPaymentRequestMode('studio')}>스튜디오 입금</button>
+            </div>
+            {paymentRequestMode === 'personal' && (
+              <>
+            <div className={styles.card}>
+              <div className={styles.dailyListHeader}>
+                <strong>입금 요청 등록</strong>
+                <button className={styles.copyUnpaidBtn} onClick={copyUnpaidPaymentRequests} disabled={paymentRequestLoading || paymentRequests.length === 0}>
+                  미입금 정보 복사
+                </button>
+              </div>
+              <div className={styles.paymentRequestGrid}>
+                <label className={styles.dailyField}>
+                  <span>날짜</span>
+                  <input type="date" className={styles.filterInput} value={paymentRequestDate} onChange={(e) => setPaymentRequestDate(e.target.value)} />
+                </label>
+                <label className={styles.dailyField}>
+                  <span>은행</span>
+                  <select className={styles.filterInput} value={paymentRequestBank} onChange={(e) => setPaymentRequestBank(e.target.value)}>
+                    {DAILY_BANK_OPTIONS.map((bank) => <option key={bank} value={bank}>{bank}</option>)}
+                  </select>
+                </label>
+                {paymentRequestBank === '직접입력:' && (
+                  <label className={styles.dailyField}>
+                    <span>은행명 직접입력</span>
+                    <input className={styles.filterInput} value={paymentRequestCustomBank} onChange={(e) => setPaymentRequestCustomBank(e.target.value)} placeholder="은행명" />
+                  </label>
+                )}
+                <label className={styles.dailyField}>
+                  <span>예금주</span>
+                  <input className={styles.filterInput} value={paymentRequestHolder} onChange={(e) => setPaymentRequestHolder(e.target.value)} placeholder="예금주" />
+                </label>
+                <label className={styles.dailyField}>
+                  <span>계좌번호</span>
+                  <input className={styles.filterInput} inputMode="numeric" value={paymentRequestAccount} onChange={(e) => setPaymentRequestAccount(e.target.value)} placeholder="숫자만 입력" />
+                </label>
+                <label className={styles.dailyField}>
+                  <span>이체금액</span>
+                  <input type="number" min="1" className={styles.filterInput} value={paymentRequestAmount} onChange={(e) => setPaymentRequestAmount(e.target.value)} placeholder="금액" />
+                </label>
+                <label className={`${styles.dailyField} ${styles.paymentRequestContentField}`}>
+                  <span>내용</span>
+                  <input className={styles.filterInput} value={paymentRequestContent} onChange={(e) => setPaymentRequestContent(e.target.value)} placeholder="이체 내용" />
+                </label>
+                <label className={styles.dailyField}>
+                  <span>주민등록번호 (필요시)</span>
+                  <input
+                    className={styles.filterInput}
+                    inputMode="numeric"
+                    autoComplete="off"
+                    maxLength={14}
+                    value={paymentRequestResident}
+                    onChange={(e) => {
+                      const digits = e.target.value.replace(/\D/g, '').slice(0, 13);
+                      setPaymentRequestResident(digits.length > 6 ? `${digits.slice(0, 6)}-${digits.slice(6)}` : digits);
+                    }}
+                    placeholder="000000-0000000"
+                  />
+                </label>
+              </div>
+              {paymentRequestError && <div className={styles.errorMsg}>{paymentRequestError}</div>}
+              <button className={styles.addBtn} onClick={addPaymentRequest} disabled={paymentRequestLoading}>
+                {paymentRequestLoading ? '등록 중...' : '등록'}
+              </button>
+            </div>
+
+            <div className={styles.card}>
+              <div className={styles.dailyListHeader}>
+                <strong>입금 요청 목록</strong>
+                <span>{paymentRequests.length}건</span>
+              </div>
+              <div className={styles.paymentRequestFilter}>
+                <label className={styles.dailyField}>
+                  <span>조회 날짜</span>
+                  <input type="date" className={styles.filterInput} value={paymentRequestFilterDate} onChange={(e) => setPaymentRequestFilterDate(e.target.value)} />
+                </label>
+                <button className={`${styles.searchBtn} ${styles.dailySearchBtn}`} onClick={loadPaymentRequests} disabled={paymentRequestLoading}>조회</button>
+              </div>
+              {paymentRequestCopyMessage && <div className={styles.dailyCopyMessage}>{paymentRequestCopyMessage}</div>}
+              {paymentRequestLoading && paymentRequests.length === 0 ? (
+                <div className={styles.loadingMsg}>불러오는 중...</div>
+              ) : paymentRequests.length === 0 ? (
+                <div className={styles.emptyMsg}>해당 날짜에 등록된 입금 요청이 없습니다.</div>
+              ) : (
+                <div className={styles.dailyWorkerScroll}>
+                  {paymentRequests.map((entry) => {
+                    const residentDigits = (entry.residentRegistrationNumber || '').replace(/\D/g, '');
+                    const resident = residentDigits.length === 13
+                      ? `${residentDigits.slice(0, 6)}-${residentDigits.slice(6)}`
+                      : '미기재';
+                    return (
+                      <article key={entry.id} className={`${styles.paymentRequestCard} ${entry.paymentCompleted ? styles.dailyWorkerCardPaid : ''}`}>
+                        <label className={styles.transferSelectBox} title="선택한 항목만 복사">
+                          <input
+                            type="checkbox"
+                            checked={selectedPaymentRequestIds.has(entry.id)}
+                            disabled={entry.paymentCompleted}
+                            onChange={(e) => setSelectedPaymentRequestIds((current) => {
+                              const next = new Set(current);
+                              if (e.target.checked) next.add(entry.id); else next.delete(entry.id);
+                              return next;
+                            })}
+                          />
+                        </label>
+                        <div><strong>{entry.accountHolder}</strong><span>{entry.date}</span></div>
+                        <div className={styles.dailyWorkerAccount}><strong>{entry.bankName}</strong><span>{entry.accountNumber}</span></div>
+                        <div className={styles.paymentRequestDetails}><strong>{entry.amount.toLocaleString()}원</strong><span>{entry.content}</span><small>주민등록번호 {resident}</small></div>
+                        <div className={styles.dailyWorkerActions}>
+                          <button className={`${styles.paymentBtn} ${entry.paymentCompleted ? styles.paymentBtnActive : ''}`} onClick={() => togglePaymentRequestPayment(entry)}>
+                            {entry.paymentCompleted ? '입금완료 해제' : '입금완료'}
+                          </button>
+                          <button className={styles.editMemberBtn} onClick={() => { setRequestEditError(''); setEditingPaymentRequest({ ...entry }); }}>수정</button>
+                          <button className={styles.delBtn} onClick={() => deletePaymentRequest(entry)}>삭제</button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+              </>
+            )}
+            {paymentRequestMode === 'studio' && (
+              <>
+                <div className={styles.card}>
+                  <div className={styles.dailyListHeader}>
+                    <strong>스튜디오 입금 등록</strong>
+                    <button className={styles.copyUnpaidBtn} onClick={copyUnpaidStudioPayments} disabled={studioPaymentLoading || studioPayments.length === 0}>미입금 정보 복사</button>
+                  </div>
+                  <div className={styles.paymentRequestGrid}>
+                    <label className={styles.dailyField}><span>스튜디오 이름</span><input className={styles.filterInput} value={studioForm.studioName} onChange={(e) => { setStudioForm((v) => ({ ...v, studioName: e.target.value })); if (e.target.value.trim() !== lastStudioHistoryPromptName) setLastStudioHistoryPromptName(''); }} onBlur={applyStudioHistory} /></label>
+                    <label className={styles.dailyField}><span>시간</span><input className={styles.filterInput} value={studioForm.usageTime} onChange={(e) => setStudioForm((v) => ({ ...v, usageTime: e.target.value }))} placeholder="예: 3시간" /></label>
+                    <label className={styles.dailyField}><span>입금액</span><input type="number" min="1" className={styles.filterInput} value={studioForm.amount} onChange={(e) => setStudioForm((v) => ({ ...v, amount: e.target.value }))} /></label>
+                    <label className={styles.dailyField}><span>부가세 (필요시)</span><input type="number" min="0" className={styles.filterInput} value={studioForm.vatAmount} onChange={(e) => setStudioForm((v) => ({ ...v, vatAmount: e.target.value }))} placeholder="미입력 시 0원" /></label>
+                    <label className={styles.dailyField}><span>은행</span><select className={styles.filterInput} value={studioForm.bankName} onChange={(e) => setStudioForm((v) => ({ ...v, bankName: e.target.value }))}>{DAILY_BANK_OPTIONS.map((bank) => <option key={bank} value={bank}>{bank}</option>)}</select></label>
+                    {studioForm.bankName === '직접입력:' && <label className={styles.dailyField}><span>은행명 직접입력</span><input className={styles.filterInput} value={studioForm.customBank} onChange={(e) => setStudioForm((v) => ({ ...v, customBank: e.target.value }))} /></label>}
+                    <label className={styles.dailyField}><span>계좌</span><input className={styles.filterInput} inputMode="numeric" value={studioForm.accountNumber} onChange={(e) => setStudioForm((v) => ({ ...v, accountNumber: e.target.value }))} /></label>
+                    <label className={styles.dailyField}><span>예금주</span><input className={styles.filterInput} value={studioForm.accountHolder} onChange={(e) => setStudioForm((v) => ({ ...v, accountHolder: e.target.value }))} /></label>
+                    <label className={styles.dailyField}><span>모델명</span><input className={styles.filterInput} value={studioForm.modelName} onChange={(e) => setStudioForm((v) => ({ ...v, modelName: e.target.value }))} /></label>
+                    <label className={styles.dailyField}><span>모델지급액</span><input type="number" min="0" className={styles.filterInput} value={studioForm.modelPayment} onChange={(e) => setStudioForm((v) => ({ ...v, modelPayment: e.target.value }))} /></label>
+                    <label className={styles.dailyField}><span>촬영예정일 ({new Date(`${studioForm.shootDate}T00:00:00`).toLocaleDateString('ko-KR', { weekday: 'short' })})</span><input type="date" className={styles.filterInput} value={studioForm.shootDate} onChange={(e) => setStudioForm((v) => ({ ...v, shootDate: e.target.value }))} /></label>
+                  </div>
+                  {studioPaymentError && <div className={styles.errorMsg}>{studioPaymentError}</div>}
+                  <button className={styles.addBtn} onClick={addStudioPayment} disabled={studioPaymentLoading}>{studioPaymentLoading ? '등록 중...' : '등록'}</button>
+                </div>
+                <div className={styles.card}>
+                  <div className={styles.dailyListHeader}><strong>스튜디오 입금 목록</strong><span>{studioPayments.length}건</span></div>
+                  <div className={styles.paymentRequestFilter}>
+                    <label className={styles.dailyField}><span>조회 날짜</span><input type="date" className={styles.filterInput} value={studioPaymentFilterDate} onChange={(e) => setStudioPaymentFilterDate(e.target.value)} /></label>
+                    <button className={`${styles.searchBtn} ${styles.dailySearchBtn}`} onClick={loadStudioPayments} disabled={studioPaymentLoading}>조회</button>
+                  </div>
+                  {studioPaymentCopyMessage && <div className={styles.dailyCopyMessage}>{studioPaymentCopyMessage}</div>}
+                  {!studioPayments.length ? <div className={styles.emptyMsg}>해당 날짜에 등록된 스튜디오 입금이 없습니다.</div> : (
+                    <div className={styles.dailyWorkerScroll}>{studioPayments.map((entry) => (
+                      <article key={entry.id} className={`${styles.studioPaymentCard} ${entry.paymentCompleted ? styles.dailyWorkerCardPaid : ''}`}>
+                        <label className={styles.transferSelectBox} onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedStudioPaymentIds.has(entry.id)} disabled={entry.paymentCompleted} onChange={(e) => setSelectedStudioPaymentIds((current) => { const next = new Set(current); if (e.target.checked) next.add(entry.id); else next.delete(entry.id); return next; })} /></label>
+                        <button type="button" className={styles.studioPaymentSummary} onClick={() => setExpandedStudioPaymentId((id) => id === entry.id ? null : entry.id)}>
+                          <strong>{entry.studioName}</strong><span>{entry.usageTime}</span><span>{(entry.amount + (entry.vatAmount || 0)).toLocaleString()}원</span><span>{entry.shootDate}</span>
+                        </button>
+                        {expandedStudioPaymentId === entry.id && <div className={styles.studioPaymentDetails}>
+                          <span>입금액 {entry.amount.toLocaleString()}원</span><span>부가세 {(entry.vatAmount || 0).toLocaleString()}원</span><span>은행 {entry.bankName}</span><span>계좌 {entry.accountNumber}</span><span>예금주 {entry.accountHolder}</span><span>모델명 {entry.modelName}</span><span>모델지급액 {entry.modelPayment.toLocaleString()}원</span><span>촬영예정일 {entry.shootDate} ({new Date(`${entry.shootDate}T00:00:00`).toLocaleDateString('ko-KR', { weekday: 'short' })})</span>
+                        </div>}
+                        <div className={styles.dailyWorkerActions}><button className={`${styles.paymentBtn} ${entry.paymentCompleted ? styles.paymentBtnActive : ''}`} onClick={() => toggleStudioPayment(entry)}>{entry.paymentCompleted ? '입금완료 해제' : '입금완료'}</button><button className={styles.editMemberBtn} onClick={() => { setRequestEditError(''); setEditingStudioPayment({ ...entry }); }}>수정</button><button className={styles.delBtn} onClick={() => deleteStudioPayment(entry)}>삭제</button></div>
+                      </article>
+                    ))}</div>
+                  )}
+                </div>
+              </>
+            )}
+          </>
+        )}
+
         {/* ── 직원 관리 탭 ── */}
         {tab === 'members' && (
           <div className={styles.card}>
+            <div className={styles.memberAreaTabs}>
+              <button
+                className={`${styles.memberAreaTab} ${memberArea === 'back' ? styles.memberAreaTabActive : ''}`}
+                onClick={() => setMemberArea('back')}
+              >
+                백
+              </button>
+              <button
+                className={`${styles.memberAreaTab} ${memberArea === 'front' ? styles.memberAreaTabActive : ''}`}
+                onClick={() => setMemberArea('front')}
+              >
+                프론트
+              </button>
+            </div>
             <div className={styles.inputRow}>
               <input
                 className={styles.inputField}
@@ -1211,10 +1941,10 @@ export default function AttendanceAdminPage() {
             {addError && <div className={styles.errorMsg}>{addError}</div>}
 
             <ul className={styles.memberList}>
-              {members.length === 0 && (
+              {displayedMembers.length === 0 && (
                 <li className={styles.emptyMsg}>등록된 직원이 없습니다.</li>
               )}
-              {members.map((m) => (
+              {displayedMembers.map((m) => (
                 <li key={m.id} className={styles.memberItem}>
                   <span className={styles.memberName}>{m.name}</span>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.78rem', color: '#64748b', whiteSpace: 'nowrap' }}>
@@ -1228,7 +1958,7 @@ export default function AttendanceAdminPage() {
                   <button className={styles.editMemberBtn} onClick={() => openMemberEdit(m)}>
                     수정
                   </button>
-                  <button className={styles.delBtn} onClick={() => deleteMember(m.id, m.name)}>
+                  <button className={styles.delBtn} onClick={() => deleteMember(m.id)}>
                     삭제
                   </button>
                   <button
@@ -1278,6 +2008,7 @@ export default function AttendanceAdminPage() {
               </div>
               <div className={styles.filterBtns}>
                 <button className={styles.searchBtn} onClick={loadRecords}>조회</button>
+                <button className={styles.addBtn} onClick={openRecordCreate}>등록</button>
                 {groupedRecords.length > 0 && (
                   <button className={styles.exportBtn} onClick={exportExcel}>엑셀 다운로드</button>
                 )}
@@ -1301,10 +2032,21 @@ export default function AttendanceAdminPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {groupedRecords.map((g) => {
+                      {groupedRecords.map((g, index) => {
                         const dur = calcDuration(g.출근, g.퇴근);
+                        const weekInfo = weekInfoForDate(g.date);
+                        const previousWeekKey = index > 0
+                          ? weekInfoForDate(groupedRecords[index - 1].date).key
+                          : null;
                         return (
                           <Fragment key={`${g.date}__${g.name}`}>
+                            {weekInfo.key !== previousWeekKey && (
+                              <tr className={styles.weekDividerRow}>
+                                <td colSpan={4}>
+                                  <strong>{recordWeekNumbers[weekInfo.key]}주차</strong>
+                                </td>
+                              </tr>
+                            )}
                             <tr>
                               <td className={styles.nameCell}>{g.name}</td>
                               <td className={styles.dateCell}>{g.date}</td>
@@ -1367,7 +2109,7 @@ export default function AttendanceAdminPage() {
                 <select className={styles.filterInput} value={salaryMonth} onChange={(e) => setSalaryMonth(+e.target.value)}>
                   {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{m}월</option>)}
                 </select>
-                <select className={styles.filterInput} value={salaryMember} onChange={(e) => { setSalaryMember(e.target.value); setSalaryResult(null); setAllSalaryResults(null); setDailySalaryResults(null); }}>
+                <select className={styles.filterInput} value={salaryMember} onChange={(e) => changeSalaryMember(e.target.value)}>
                   <option value="">전체</option>
                   {members.map((m) => <option key={m.id} value={m.name}>{m.name}</option>)}
                   <option value="__daily__">일일알바</option>
@@ -1395,7 +2137,7 @@ export default function AttendanceAdminPage() {
                 <span style={{ fontSize: '0.8rem', color: '#64748b', whiteSpace: 'nowrap' }}>추가수당</span>
                 {salaryAllowances.map((a, i) => (
                   <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '0.375rem', padding: '0.15rem 0.5rem', fontSize: '0.8rem' }}>
-                    {a.name} {Number(a.amount).toLocaleString()}원
+                    {a.name} {Number(a.amount).toLocaleString()}원{a.fixed ? ' · 고정' : ''}
                     <button type="button" onClick={() => setSalaryAllowances((prev) => prev.filter((_, j) => j !== i))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', padding: '0', lineHeight: 1 }}>✕</button>
                   </span>
                 ))}
@@ -1427,6 +2169,12 @@ export default function AttendanceAdminPage() {
                     setAllowanceAmount('');
                   }}
                 >추가</button>
+                <button
+                  type="button"
+                  className={styles.fixedAllowanceBtn}
+                  onClick={saveFixedAllowances}
+                  disabled={fixedAllowanceSaving}
+                >{fixedAllowanceSaving ? '저장 중...' : '고정'}</button>
               </div>
               <div className={styles.filterBtns}>
                 <button className={styles.searchBtn} onClick={loadSalary} disabled={salaryLoading}>
@@ -1703,6 +2451,18 @@ export default function AttendanceAdminPage() {
                       : '미등록';
                     return (
                       <article key={entry.id} className={`${styles.dailyWorkerCard} ${entry.paymentCompleted ? styles.dailyWorkerCardPaid : ''}`}>
+                        <label className={styles.transferSelectBox} title="선택한 항목만 복사">
+                          <input
+                            type="checkbox"
+                            checked={selectedDailyTransferIds.has(entry.id)}
+                            disabled={entry.paymentCompleted}
+                            onChange={(e) => setSelectedDailyTransferIds((current) => {
+                              const next = new Set(current);
+                              if (e.target.checked) next.add(entry.id); else next.delete(entry.id);
+                              return next;
+                            })}
+                          />
+                        </label>
                         <button
                           type="button"
                           className={styles.dailyWorkerSummary}
@@ -1833,10 +2593,25 @@ export default function AttendanceAdminPage() {
                         {Array.from({ length: 12 }, (_, index) => index + 1).map((month) => <option key={month} value={month}>{month}월</option>)}
                       </select>
                     </label>
+                    <label className={styles.dailyField}>
+                      <span>직원 구분</span>
+                      <select
+                        className={styles.filterInput}
+                        value={fixedPayrollArea}
+                        onChange={(e) => {
+                          setFixedPayrollArea(e.target.value);
+                          setSelectedFixedTransferIds(new Set());
+                        }}
+                      >
+                        <option value="all">전체</option>
+                        <option value="back">백</option>
+                        <option value="front">프론트</option>
+                      </select>
+                    </label>
                     <button className={`${styles.searchBtn} ${styles.dailySearchBtn}`} onClick={loadFixedPayroll} disabled={fixedPayrollLoading}>
                       {fixedPayrollLoading ? '계산 중...' : '급여 조회'}
                     </button>
-                    <button className={styles.copyUnpaidBtn} onClick={copyUnpaidFixedWorkers} disabled={fixedPayrollLoading || fixedPayrollRows.length === 0}>
+                    <button className={styles.copyUnpaidBtn} onClick={copyUnpaidFixedWorkers} disabled={fixedPayrollLoading || displayedFixedPayrollRows.length === 0}>
                       미입금 정보 복사
                     </button>
                   </div>
@@ -1846,14 +2621,30 @@ export default function AttendanceAdminPage() {
                 <div className={styles.card}>
                   <div className={styles.dailyListHeader}>
                     <strong>고정 알바 급여 기록</strong>
-                    <span>{fixedPayrollYear}년 {fixedPayrollMonth}월 · {fixedPayrollRows.length}명</span>
+                    <span>{fixedPayrollYear}년 {fixedPayrollMonth}월 · {displayedFixedPayrollRows.length}명</span>
                   </div>
-                  {fixedPayrollRows.length === 0 ? (
-                    <div className={styles.emptyMsg}>급여 조회를 눌러 월별 급여를 계산하세요.</div>
+                  {displayedFixedPayrollRows.length === 0 ? (
+                    <div className={styles.emptyMsg}>
+                      {fixedPayrollRows.length === 0
+                        ? '급여 조회를 눌러 월별 급여를 계산하세요.'
+                        : '선택한 구분에 등록된 직원이 없습니다.'}
+                    </div>
                   ) : (
                     <div className={styles.dailyWorkerScroll}>
-                      {fixedPayrollRows.map((row) => (
-                        <article key={row.id} className={`${styles.dailyWorkerCard} ${row.paymentCompleted ? styles.dailyWorkerCardPaid : ''}`}>
+                      {displayedFixedPayrollRows.map((row) => (
+                        <article key={row.id} className={`${styles.fixedWorkerCard} ${row.paymentCompleted ? styles.dailyWorkerCardPaid : ''}`}>
+                          <label className={styles.transferSelectBox} title="선택한 항목만 복사">
+                            <input
+                              type="checkbox"
+                              checked={selectedFixedTransferIds.has(row.id)}
+                              disabled={row.paymentCompleted || row.salary.netPay <= 0}
+                              onChange={(e) => setSelectedFixedTransferIds((current) => {
+                                const next = new Set(current);
+                                if (e.target.checked) next.add(row.id); else next.delete(row.id);
+                                return next;
+                              })}
+                            />
+                          </label>
                           <div><strong>{row.name}</strong><span>{fixedPayrollYear}년 {fixedPayrollMonth}월</span></div>
                           <div className={styles.dailyWorkerTime}>
                             <span>{row.salary.monthlyHours.toFixed(1)}H</span>
@@ -1879,6 +2670,43 @@ export default function AttendanceAdminPage() {
           </>
         )}
       </div>
+
+      {/* 출퇴근 기록 신규 등록 모달 */}
+      {showRecordCreate && (
+        <div className={styles.modalOverlay} onClick={() => !recordCreateSaving && setShowRecordCreate(false)}>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <h3 className={styles.modalTitle}>출퇴근 기록 등록</h3>
+            <div className={styles.editFields}>
+              <label className={styles.editLabel}>
+                직원
+                <select className={styles.editInput} value={recordCreateMember} onChange={(e) => setRecordCreateMember(e.target.value)}>
+                  <option value="">직원 선택</option>
+                  {members.map((member) => <option key={member.id} value={member.name}>{member.name}</option>)}
+                </select>
+              </label>
+              <label className={styles.editLabel}>
+                날짜
+                <input type="date" className={styles.editInput} value={recordCreateDate} onChange={(e) => setRecordCreateDate(e.target.value)} />
+              </label>
+              <label className={styles.editLabel}>
+                출근시간
+                <input type="time" className={styles.editInput} value={recordCreateStart} onChange={(e) => setRecordCreateStart(e.target.value)} />
+              </label>
+              <label className={styles.editLabel}>
+                퇴근시간
+                <input type="time" className={styles.editInput} value={recordCreateEnd} onChange={(e) => setRecordCreateEnd(e.target.value)} />
+              </label>
+            </div>
+            {recordCreateError && <div className={styles.pinError}>{recordCreateError}</div>}
+            <div className={styles.modalBtns}>
+              <button className={styles.pinSubmit} onClick={createRecordPair} disabled={recordCreateSaving}>
+                {recordCreateSaving ? '등록 중...' : '등록'}
+              </button>
+              <button className={styles.backLink} onClick={() => setShowRecordCreate(false)} disabled={recordCreateSaving}>취소</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 시간 수정 모달 */}
       {editingRecord && (
@@ -1926,14 +2754,46 @@ export default function AttendanceAdminPage() {
       {editingMember && (
         <div className={styles.modalOverlay} onClick={() => setEditingMember(null)}>
           <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
-            <h3 className={styles.modalTitle}>직원 이름 수정</h3>
-            <input
-              className={styles.editInput}
-              value={memberEditName}
-              onChange={(e) => setMemberEditName(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && updateMember()}
-              autoFocus
-            />
+            <h3 className={styles.modalTitle}>직원 정보 수정</h3>
+            <div className={styles.editFields}>
+              <label className={styles.editLabel}>
+                이름
+                <input
+                  className={styles.editInput}
+                  value={memberEditName}
+                  onChange={(e) => setMemberEditName(e.target.value)}
+                  autoFocus
+                />
+              </label>
+              <label className={styles.editLabel}>
+                <span className={styles.memberRateLabelRow}>
+                  <span>개별 시급</span>
+                  <button type="button" className={styles.memberRateHistoryBtn} onClick={() => setShowMemberRateHistory((value) => !value)}>이력</button>
+                </span>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  className={styles.editInput}
+                  value={memberEditHourlyRate}
+                  onChange={(e) => setMemberEditHourlyRate(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && updateMember()}
+                  placeholder="미입력 시 공통 시급 적용"
+                />
+              </label>
+              {showMemberRateHistory && (
+                <div className={styles.memberRateHistory}>
+                  {(editingMember.hourlyRateHistory || []).length === 0 ? (
+                    <span>변경 이력이 없습니다.</span>
+                  ) : [...editingMember.hourlyRateHistory].reverse().map((history) => (
+                    <div key={history.id}>
+                      <span>{history.effectiveDate}</span>
+                      <strong>{history.hourlyRate ? `${history.hourlyRate.toLocaleString()}원` : '공통 시급 적용'}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             {memberEditError && <div className={styles.pinError}>{memberEditError}</div>}
             <div className={styles.modalBtns}>
               <button className={styles.pinSubmit} onClick={updateMember} disabled={memberEditSaving}>
@@ -2016,6 +2876,44 @@ export default function AttendanceAdminPage() {
                 {transferConfirmBusy ? '처리 중...' : '확인 후 복사'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {editingPaymentRequest && (
+        <div className={styles.modalOverlay} onClick={() => !requestEditSaving && setEditingPaymentRequest(null)}>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <h3 className={styles.modalTitle}>개인요청 수정</h3>
+            <div className={styles.editFields}>
+              {[
+                ['date', '날짜', 'date'], ['bankName', '은행', 'text'], ['accountHolder', '예금주', 'text'],
+                ['accountNumber', '계좌번호', 'text'], ['amount', '이체금액', 'number'], ['content', '내용', 'text'],
+                ['residentRegistrationNumber', '주민등록번호 (필요시)', 'text'],
+              ].map(([key, label, type]) => (
+                <label key={key} className={styles.editLabel}>{label}<input type={type} className={styles.editInput} value={editingPaymentRequest[key] ?? ''} onChange={(e) => setEditingPaymentRequest((current) => ({ ...current, [key]: e.target.value }))} /></label>
+              ))}
+            </div>
+            {requestEditError && <div className={styles.pinError}>{requestEditError}</div>}
+            <div className={styles.modalBtns}><button className={styles.pinSubmit} onClick={savePaymentRequestEdit} disabled={requestEditSaving}>{requestEditSaving ? '저장 중...' : '저장'}</button><button className={styles.backLink} onClick={() => setEditingPaymentRequest(null)}>취소</button></div>
+          </div>
+        </div>
+      )}
+
+      {editingStudioPayment && (
+        <div className={styles.modalOverlay} onClick={() => !requestEditSaving && setEditingStudioPayment(null)}>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <h3 className={styles.modalTitle}>스튜디오 입금 수정</h3>
+            <div className={styles.editFields}>
+              {[
+                ['studioName', '스튜디오 이름', 'text'], ['usageTime', '시간', 'text'], ['amount', '입금액', 'number'], ['vatAmount', '부가세 (필요시)', 'number'],
+                ['bankName', '은행', 'text'], ['accountNumber', '계좌', 'text'], ['accountHolder', '예금주', 'text'],
+                ['modelName', '모델명', 'text'], ['modelPayment', '모델지급액', 'number'], ['shootDate', '촬영예정일', 'date'],
+              ].map(([key, label, type]) => (
+                <label key={key} className={styles.editLabel}>{label}<input type={type} className={styles.editInput} value={editingStudioPayment[key] ?? ''} onChange={(e) => setEditingStudioPayment((current) => ({ ...current, [key]: e.target.value }))} /></label>
+              ))}
+            </div>
+            {requestEditError && <div className={styles.pinError}>{requestEditError}</div>}
+            <div className={styles.modalBtns}><button className={styles.pinSubmit} onClick={saveStudioPaymentEdit} disabled={requestEditSaving}>{requestEditSaving ? '저장 중...' : '저장'}</button><button className={styles.backLink} onClick={() => setEditingStudioPayment(null)}>취소</button></div>
           </div>
         </div>
       )}
