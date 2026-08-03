@@ -206,11 +206,16 @@
 .payrollSubActive { color: #1d4ed8; background: #fff; box-shadow: 0 1px 3px #94a3b855; }
 .fixedPayrollFilters {
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr) auto auto;
+  grid-template-columns: repeat(3, minmax(120px, 1fr)) auto auto;
   align-items: end;
   gap: 9px;
 }
 .memberAccountFields { display: grid; gap: 10px; }
+.memberRateLabelRow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.memberRateHistoryBtn { padding: 2px 7px; border: 0; border-radius: 6px; background: #e0e7ff; color: #4338ca; font-size: 12px; font-weight: 800; cursor: pointer; }
+.memberRateHistory { display: grid; gap: 5px; padding: 9px; border-radius: 8px; background: #f8fafc; color: #64748b; font-size: 12px; }
+.memberRateHistory > div { display: flex; justify-content: space-between; gap: 12px; }
+.memberRateHistory strong { color: #334155; }
 .modal.transferConfirmModal { width: min(92vw, 470px); padding: 24px; }
 .transferConfirmHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .transferConfirmHeader .modalTitle { margin: 4px 0 0; }
@@ -346,6 +351,7 @@
   padding-right: 5px;
 }
 .dailyWorkerCard {
+  position: relative;
   overflow: hidden;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
@@ -364,7 +370,7 @@
   grid-template-columns: minmax(110px, .7fr) minmax(170px, 1fr) minmax(150px, .85fr) auto;
   align-items: center;
   gap: 14px;
-  padding: 14px;
+  padding: 14px 14px 14px 46px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -445,11 +451,12 @@
 .paymentBtn { background: #2563eb; padding: 8px 10px; white-space: nowrap; }
 .paymentBtnActive { background: #64748b; }
 .fixedWorkerCard {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(110px, .7fr) minmax(170px, 1fr) minmax(210px, 1.2fr) auto;
   align-items: center;
   gap: 14px;
-  padding: 14px;
+  padding: 14px 14px 14px 46px;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
   background: #f8fafc;
@@ -463,6 +470,89 @@
 .fixedWorkerCard strong { color: #1e293b; font-size: 15px; }
 .fixedWorkerCard span { color: #64748b; font-size: 13px; }
 .fixedWorkerCard .dailyWorkerTime span { color: #2563eb; font-weight: 700; }
+.transferSelectBox {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+.transferSelectBox input { width: 17px; height: 17px; accent-color: #2563eb; cursor: pointer; }
+.transferSelectBox input:disabled { cursor: not-allowed; }
+.paymentRequestGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.paymentRequestContentField { grid-column: span 2; }
+.paymentRequestFilter {
+  display: grid;
+  grid-template-columns: minmax(180px, 280px) auto;
+  align-items: end;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.paymentRequestCard {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(120px, .7fr) minmax(170px, 1fr) minmax(230px, 1.4fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 14px 14px 46px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+  margin-bottom: 8px;
+}
+.paymentRequestCard > div:first-of-type { display: flex; flex-direction: column; gap: 3px; }
+.paymentRequestCard strong { color: #1e293b; font-size: 15px; }
+.paymentRequestCard span,
+.paymentRequestCard small { color: #64748b; font-size: 13px; }
+.paymentRequestDetails { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.paymentRequestDetails strong { color: #0f766e; font-size: 16px; }
+.paymentRequestDetails span { overflow-wrap: anywhere; }
+.studioPaymentCard {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+}
+.studioPaymentSummary {
+  display: grid;
+  grid-template-columns: minmax(100px, 1.3fr) repeat(3, minmax(80px, 1fr));
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #475569;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+.studioPaymentSummary strong { color: #1e293b; }
+.studioPaymentDetails {
+  grid-column: 2 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 14px;
+  padding: 12px;
+  border-radius: 9px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 13px;
+}
 .dailySalaryScroll > .card:last-child { margin-bottom: 0; }
 
 @media (max-width: 720px) {
@@ -481,6 +571,17 @@
   .fixedWorkerCard .dailyWorkerTime { grid-column: 1; }
   .fixedWorkerCard .dailyWorkerAccount { grid-column: 1; }
   .fixedWorkerCard .dailyWorkerActions {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .paymentRequestGrid { grid-template-columns: 1fr 1fr; }
+  .paymentRequestContentField { grid-column: span 2; }
+  .paymentRequestCard { grid-template-columns: 1fr auto; }
+  .paymentRequestCard .dailyWorkerAccount,
+  .paymentRequestCard .paymentRequestDetails { grid-column: 1; }
+  .paymentRequestCard .dailyWorkerActions {
     grid-column: 2;
     grid-row: 1 / span 3;
     flex-direction: column;
@@ -521,6 +622,31 @@
   color: #dc2626;
   font-size: 13px;
   margin-bottom: 8px;
+}
+.memberAreaTabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  margin-bottom: 12px;
+  background: #f1f5f9;
+  border-radius: 10px;
+}
+.memberAreaTab {
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #64748b;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.memberAreaTabActive {
+  background: #fff;
+  color: #2563eb;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 12%);
 }
 .memberList { list-style: none; padding: 0; margin: 0; }
 .memberItem {
@@ -676,6 +802,16 @@
   color: #1e293b;
 }
 .table tr:last-child td { border-bottom: none; }
+.weekDividerRow td {
+  padding: 13px 12px 9px;
+  border-top: 10px solid #fff;
+  border-bottom: 1px solid #cbd5e1;
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+.weekDividerRow:first-child td { border-top: 0; }
+.weekDividerRow strong { font-size: 13px; }
+.weekDividerRow span { color: #64748b; font-size: 12px; }
 .badge {
   padding: 3px 10px;
   border-radius: 100px;
@@ -775,6 +911,18 @@
   transition: border-color 0.2s;
 }
 .salarySettingInput:focus { border-color: #2563eb; }
+.fixedAllowanceBtn {
+  padding: 0.25rem 0.65rem;
+  border: none;
+  border-radius: 8px;
+  background: #0f766e;
+  color: #fff;
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.fixedAllowanceBtn:disabled { opacity: 0.55; cursor: default; }
 
 /* 명세서 카드 */
 .slipHeader {

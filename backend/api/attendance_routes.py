@@ -162,6 +162,38 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             conn.execute(
                 "ALTER TABLE attendance_members ADD COLUMN include_in_schedule INTEGER NOT NULL DEFAULT 1"
             )
+        if "work_area" not in member_cols:
+            conn.execute(
+                "ALTER TABLE attendance_members ADD COLUMN work_area TEXT NOT NULL DEFAULT 'back'"
+            )
+        if "hourly_rate" not in member_cols:
+            conn.execute(
+                "ALTER TABLE attendance_members ADD COLUMN hourly_rate INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance_member_hourly_rate_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                member_id INTEGER NOT NULL,
+                hourly_rate INTEGER NOT NULL,
+                effective_date TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_member_hourly_rate_history_member_date "
+            "ON attendance_member_hourly_rate_history(member_id, effective_date)"
+        )
+        history_bootstrap_now = datetime.now(timezone.utc).astimezone(KST)
+        conn.execute(
+            "INSERT INTO attendance_member_hourly_rate_history "
+            "(member_id, hourly_rate, effective_date, created_at) "
+            "SELECT m.id, m.hourly_rate, ?, ? FROM attendance_members m "
+            "WHERE hourly_rate > 0 AND NOT EXISTS ("
+            "SELECT 1 FROM attendance_member_hourly_rate_history h WHERE h.member_id = m.id)",
+            (history_bootstrap_now.strftime("%Y-%m-%d"), history_bootstrap_now.isoformat()),
+        )
         for column, ddl in (
             ("bank_name", "ALTER TABLE attendance_members ADD COLUMN bank_name TEXT NOT NULL DEFAULT ''"),
             ("account_holder", "ALTER TABLE attendance_members ADD COLUMN account_holder TEXT NOT NULL DEFAULT ''"),
@@ -180,6 +212,68 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
                 PRIMARY KEY(member_id, year, month)
             )
             """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance_payment_requests (
+                id                           INTEGER PRIMARY KEY AUTOINCREMENT,
+                date                         TEXT NOT NULL,
+                bank_name                    TEXT NOT NULL,
+                account_holder               TEXT NOT NULL,
+                account_number               TEXT NOT NULL,
+                amount                       INTEGER NOT NULL,
+                content                      TEXT NOT NULL,
+                resident_registration_number TEXT NOT NULL DEFAULT '',
+                payment_completed            INTEGER NOT NULL DEFAULT 0,
+                created_at                   TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_payment_requests_date ON attendance_payment_requests(date)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance_studio_payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                studio_name TEXT NOT NULL,
+                usage_time TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                bank_name TEXT NOT NULL,
+                account_number TEXT NOT NULL,
+                account_holder TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                model_payment INTEGER NOT NULL,
+                shoot_date TEXT NOT NULL,
+                payment_completed INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_studio_payments_date ON attendance_studio_payments(shoot_date)"
+        )
+        studio_payment_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(attendance_studio_payments)").fetchall()
+        }
+        if "vat_amount" not in studio_payment_cols:
+            conn.execute(
+                "ALTER TABLE attendance_studio_payments ADD COLUMN vat_amount INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance_member_fixed_allowances (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                member_id  INTEGER NOT NULL,
+                name       TEXT NOT NULL,
+                amount     INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_member_fixed_allowances_member "
+            "ON attendance_member_fixed_allowances(member_id)"
         )
         conn.execute(
             """
@@ -438,10 +532,12 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
     class MemberCreate(BaseModel):
         name: str
         pin: str
+        workArea: str = "back"
 
     class MemberUpdate(BaseModel):
         name: str
         pin: str
+        hourlyRate: int | None = None
 
     class MemberDelete(BaseModel):
         pin: str
@@ -449,6 +545,10 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
     class MemberScheduleVisibility(BaseModel):
         pin: str
         includeInSchedule: bool
+
+    class MemberWorkAreaUpdate(BaseModel):
+        pin: str
+        workArea: str
 
     class MemberAccountUpdate(BaseModel):
         pin: str
@@ -462,6 +562,14 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         month: int
         completed: bool
 
+    class FixedAllowanceItem(BaseModel):
+        name: str
+        amount: int
+
+    class FixedAllowancesUpdate(BaseModel):
+        pin: str
+        allowances: list[FixedAllowanceItem]
+
     class RecordCreate(BaseModel):
         member_name: str
         type: str  # "출근" | "퇴근"
@@ -472,6 +580,13 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         type: str  # "출근" | "퇴근"
         date: str   # YYYY-MM-DD (KST)
         time: str   # HH:MM (KST)
+
+    class ManualRecordPairCreate(BaseModel):
+        pin: str
+        member_name: str
+        date: str
+        startTime: str
+        endTime: str
 
     class RecordDelete(BaseModel):
         pin: str
@@ -516,18 +631,75 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         pin: str
         completed: bool
 
+    class PaymentRequestCreate(BaseModel):
+        pin: str
+        date: str
+        bankName: str
+        accountHolder: str
+        accountNumber: str
+        amount: int
+        content: str
+        residentRegistrationNumber: str = ""
+
+    class PaymentRequestUpdate(PaymentRequestCreate):
+        pass
+
+    class PaymentRequestPaymentUpdate(BaseModel):
+        pin: str
+        completed: bool
+
+    class PaymentRequestDelete(BaseModel):
+        pin: str
+
+    class StudioPaymentCreate(BaseModel):
+        pin: str
+        studioName: str
+        usageTime: str
+        amount: int
+        vatAmount: int = 0
+        bankName: str
+        accountNumber: str
+        accountHolder: str
+        modelName: str
+        modelPayment: int
+        shootDate: str
+
+    class StudioPaymentUpdate(StudioPaymentCreate):
+        pass
+
     # ── 직원 목록 (인증 불필요) ─────────────────────────
     @router.get("/members")
     def list_members():
         conn = get_db()
         rows = conn.execute(
-            "SELECT id, name, include_in_schedule FROM attendance_members ORDER BY name"
+            "SELECT id, name, include_in_schedule, work_area, hourly_rate "
+            "FROM attendance_members ORDER BY name"
         ).fetchall()
-        conn.close()
-        return [
-            {"id": r["id"], "name": r["name"], "includeInSchedule": bool(r["include_in_schedule"])}
+        history_rows = conn.execute(
+            "SELECT id, member_id, hourly_rate, effective_date, created_at "
+            "FROM attendance_member_hourly_rate_history ORDER BY effective_date, id"
+        ).fetchall()
+        histories = {}
+        for history in history_rows:
+            histories.setdefault(history["member_id"], []).append({
+                "id": history["id"],
+                "hourlyRate": history["hourly_rate"] if history["hourly_rate"] > 0 else None,
+                "effectiveDate": history["effective_date"],
+                "changedAt": history["created_at"],
+            })
+        result = [
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "includeInSchedule": bool(r["include_in_schedule"]),
+                "workArea": r["work_area"] if r["work_area"] in ("back", "front") else "back",
+                "hourlyRate": r["hourly_rate"] if r["hourly_rate"] > 0 else None,
+                "hourlyRateHistory": histories.get(r["id"], []),
+            }
             for r in rows
         ]
+        conn.close()
+        return result
 
     @router.get("/members/accounts")
     def list_member_accounts(pin: str = ""):
@@ -580,6 +752,54 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.close()
         return {str(row["member_id"]): bool(row["payment_completed"]) for row in rows}
 
+    @router.get("/members/fixed-allowances")
+    def list_member_fixed_allowances(pin: str = ""):
+        _check_pin(pin)
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT id, member_id, name, amount FROM attendance_member_fixed_allowances "
+            "ORDER BY member_id, id"
+        ).fetchall()
+        conn.close()
+        result = {}
+        for row in rows:
+            result.setdefault(str(row["member_id"]), []).append({
+                "id": row["id"],
+                "name": row["name"],
+                "amount": row["amount"],
+                "fixed": True,
+            })
+        return result
+
+    @router.put("/members/{member_id}/fixed-allowances")
+    def save_member_fixed_allowances(member_id: int, body: FixedAllowancesUpdate):
+        _check_pin(body.pin)
+        normalized = []
+        for allowance in body.allowances:
+            name = allowance.name.strip()
+            if not name or allowance.amount <= 0:
+                raise HTTPException(status_code=400, detail="추가수당 내용과 금액을 확인하세요.")
+            normalized.append((name, allowance.amount))
+        conn = get_db()
+        member = conn.execute(
+            "SELECT id FROM attendance_members WHERE id = ?", (member_id,)
+        ).fetchone()
+        if not member:
+            conn.close()
+            raise HTTPException(status_code=404, detail="직원을 찾을 수 없습니다.")
+        conn.execute(
+            "DELETE FROM attendance_member_fixed_allowances WHERE member_id = ?", (member_id,)
+        )
+        now = _now_kst().isoformat()
+        conn.executemany(
+            "INSERT INTO attendance_member_fixed_allowances (member_id, name, amount, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            [(member_id, name, amount, now) for name, amount in normalized],
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+
     @router.patch("/fixed-worker-payments/{member_id}")
     def update_fixed_worker_payment(member_id: int, body: FixedWorkerPaymentUpdate):
         _check_pin(body.pin)
@@ -614,18 +834,43 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.close()
         return {"ok": True}
 
+    # ── 직원 백/프론트 표시 구분 변경 (PIN 필요) ─────────
+    @router.patch("/members/{member_id}/work-area")
+    def set_member_work_area(member_id: int, body: MemberWorkAreaUpdate):
+        _check_pin(body.pin)
+        work_area = body.workArea.strip().lower()
+        if work_area not in ("back", "front"):
+            raise HTTPException(status_code=400, detail="직원 구분이 올바르지 않습니다.")
+        conn = get_db()
+        member = conn.execute(
+            "SELECT id FROM attendance_members WHERE id = ?", (member_id,)
+        ).fetchone()
+        if not member:
+            conn.close()
+            raise HTTPException(status_code=404, detail="직원을 찾을 수 없습니다.")
+        conn.execute(
+            "UPDATE attendance_members SET work_area = ? WHERE id = ?",
+            (work_area, member_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "workArea": work_area}
+
     # ── 직원 추가 (PIN 필요) ────────────────────────────
     @router.post("/members")
     def add_member(body: MemberCreate):
         _check_pin(body.pin)
         name = body.name.strip()
+        work_area = body.workArea.strip().lower()
         if not name:
             raise HTTPException(status_code=400, detail="이름을 입력하세요.")
+        if work_area not in ("back", "front"):
+            raise HTTPException(status_code=400, detail="직원 구분이 올바르지 않습니다.")
         try:
             conn = get_db()
             conn.execute(
-                "INSERT INTO attendance_members (name, created_at) VALUES (?, ?)",
-                (name, _now_kst().isoformat()),
+                "INSERT INTO attendance_members (name, created_at, work_area) VALUES (?, ?, ?)",
+                (name, _now_kst().isoformat(), work_area),
             )
             conn.commit()
             conn.close()
@@ -653,12 +898,15 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
     def update_member(member_id: int, body: MemberUpdate):
         _check_pin(body.pin)
         name = body.name.strip()
+        hourly_rate = body.hourlyRate or 0
         if not name:
             raise HTTPException(status_code=400, detail="이름을 입력하세요.")
+        if hourly_rate < 0:
+            raise HTTPException(status_code=400, detail="시급은 0원 이상으로 입력하세요.")
 
         conn = get_db()
         old = conn.execute(
-            "SELECT name FROM attendance_members WHERE id = ?",
+            "SELECT name, hourly_rate FROM attendance_members WHERE id = ?",
             (member_id,),
         ).fetchone()
         if not old:
@@ -667,9 +915,16 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
 
         try:
             conn.execute(
-                "UPDATE attendance_members SET name = ? WHERE id = ?",
-                (name, member_id),
+                "UPDATE attendance_members SET name = ?, hourly_rate = ? WHERE id = ?",
+                (name, hourly_rate, member_id),
             )
+            if hourly_rate != old["hourly_rate"]:
+                now = _now_kst()
+                conn.execute(
+                    "INSERT INTO attendance_member_hourly_rate_history "
+                    "(member_id, hourly_rate, effective_date, created_at) VALUES (?, ?, ?, ?)",
+                    (member_id, hourly_rate, now.strftime("%Y-%m-%d"), now.isoformat()),
+                )
             conn.execute(
                 "UPDATE attendance_records SET member_name = ? WHERE member_name = ?",
                 (name, old["name"]),
@@ -731,6 +986,66 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             )
         conn.close()
         return {"ok": True, "timestamp": dt_utc.isoformat()}
+
+    @router.post("/records/pair")
+    def add_manual_record_pair(body: ManualRecordPairCreate):
+        _check_pin(body.pin)
+        member_name = body.member_name.strip()
+        if not member_name:
+            raise HTTPException(status_code=400, detail="직원을 선택하세요.")
+        try:
+            check_in_kst = datetime.strptime(
+                f"{body.date} {body.startTime}", "%Y-%m-%d %H:%M"
+            ).replace(tzinfo=KST)
+            check_out_kst = datetime.strptime(
+                f"{body.date} {body.endTime}", "%Y-%m-%d %H:%M"
+            ).replace(tzinfo=KST)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="날짜/시간 형식이 올바르지 않습니다.")
+        if check_out_kst <= check_in_kst:
+            raise HTTPException(status_code=400, detail="퇴근시간은 출근시간보다 늦어야 합니다.")
+
+        conn = get_db()
+        member = conn.execute(
+            "SELECT id FROM attendance_members WHERE name = ?", (member_name,)
+        ).fetchone()
+        if not member:
+            conn.close()
+            raise HTTPException(status_code=404, detail="직원을 찾을 수 없습니다.")
+        existing = conn.execute(
+            "SELECT type FROM attendance_records "
+            "WHERE member_name = ? AND date = ? AND type IN ('출근', '퇴근')",
+            (member_name, body.date),
+        ).fetchall()
+        if existing:
+            conn.close()
+            existing_types = ", ".join(sorted({row["type"] for row in existing}))
+            raise HTTPException(
+                status_code=409,
+                detail=f"해당 날짜에 이미 {existing_types} 기록이 있습니다. 기존 기록에서 수정하세요.",
+            )
+
+        check_in_utc = check_in_kst.astimezone(timezone.utc)
+        check_out_utc = check_out_kst.astimezone(timezone.utc)
+        try:
+            conn.execute(
+                "INSERT INTO attendance_records (member_name, type, timestamp, date) "
+                "VALUES (?, '출근', ?, ?)",
+                (member_name, check_in_utc.isoformat(), body.date),
+            )
+            conn.execute(
+                "INSERT INTO attendance_records (member_name, type, timestamp, date) "
+                "VALUES (?, '퇴근', ?, ?)",
+                (member_name, check_out_utc.isoformat(), body.date),
+            )
+            conn.commit()
+            _check_checkin_exception(conn, member_name, body.date, check_in_utc.isoformat())
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return {"ok": True}
 
     # ── 일일 알바 ──────────────────────────────────────
     def _daily_worker_row_to_dict(row):
@@ -907,6 +1222,323 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             raise HTTPException(status_code=404, detail="일일 알바 기록을 찾을 수 없습니다.")
         conn.execute("DELETE FROM attendance_records WHERE id IN (?, ?)", (row["check_in_record_id"], row["check_out_record_id"]))
         conn.execute("DELETE FROM attendance_daily_workers WHERE id = ?", (entry_id,))
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+
+    # ── 입금 요청 ──────────────────────────────────────
+    def _payment_request_row_to_dict(row):
+        return {
+            "id": row["id"],
+            "date": row["date"],
+            "bankName": row["bank_name"],
+            "accountHolder": row["account_holder"],
+            "accountNumber": row["account_number"],
+            "amount": row["amount"],
+            "content": row["content"],
+            "residentRegistrationNumber": row["resident_registration_number"],
+            "paymentCompleted": bool(row["payment_completed"]),
+        }
+
+    @router.get("/payment-requests")
+    def list_payment_requests(pin: str = "", date: str = ""):
+        _check_pin(pin)
+        conn = get_db()
+        query = (
+            "SELECT id, date, bank_name, account_holder, account_number, amount, content, "
+            "resident_registration_number, payment_completed "
+            "FROM attendance_payment_requests"
+        )
+        params = []
+        if date:
+            query += " WHERE date = ?"
+            params.append(date)
+        query += " ORDER BY date DESC, id DESC"
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        return [_payment_request_row_to_dict(row) for row in rows]
+
+    @router.post("/payment-requests")
+    def add_payment_request(body: PaymentRequestCreate):
+        _check_pin(body.pin)
+        try:
+            datetime.strptime(body.date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="날짜 형식이 올바르지 않습니다.")
+        bank_name = body.bankName.strip()
+        account_holder = body.accountHolder.strip()
+        account_number = re.sub(r"[^0-9]", "", body.accountNumber)
+        content = body.content.strip()
+        resident_number = re.sub(r"[^0-9]", "", body.residentRegistrationNumber)
+        if not all((bank_name, account_holder, account_number, content)):
+            raise HTTPException(status_code=400, detail="은행, 예금주, 계좌번호, 내용을 모두 입력하세요.")
+        if body.amount <= 0:
+            raise HTTPException(status_code=400, detail="이체금액은 0원보다 커야 합니다.")
+        if resident_number and len(resident_number) != 13:
+            raise HTTPException(status_code=400, detail="주민등록번호 13자리를 정확히 입력하세요.")
+        conn = get_db()
+        assignee = conn.execute(
+            "SELECT username, display_name FROM users WHERE display_name = ? LIMIT 1",
+            ("김승일",),
+        ).fetchone()
+        if not assignee:
+            assignee = conn.execute(
+                "SELECT username, display_name FROM users "
+                "WHERE display_name LIKE ? OR username LIKE ? LIMIT 1",
+                ("%김승일%", "%kimsungil%"),
+            ).fetchone()
+        if not assignee:
+            conn.close()
+            raise HTTPException(status_code=400, detail="김승일 계정을 찾지 못했습니다.")
+        cursor = conn.execute(
+            "INSERT INTO attendance_payment_requests "
+            "(date, bank_name, account_holder, account_number, amount, content, "
+            "resident_registration_number, payment_completed, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+            (
+                body.date, bank_name, account_holder, account_number, body.amount,
+                content, resident_number, _now_kst().isoformat(),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO requests "
+            "(requester_username, requester_display, assignee_username, assignee_display, "
+            "text, status, created_at) VALUES (?, ?, ?, ?, ?, 'open', ?)",
+            (
+                "attendance_system",
+                "입금 요청 자동알림",
+                assignee["username"],
+                (assignee["display_name"] or "").strip() or "김승일",
+                f"{content} 입금필요",
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT id, date, bank_name, account_holder, account_number, amount, content, "
+            "resident_registration_number, payment_completed "
+            "FROM attendance_payment_requests WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+        conn.close()
+        return _payment_request_row_to_dict(row)
+
+    @router.patch("/payment-requests/{request_id}/payment")
+    def update_payment_request_payment(request_id: int, body: PaymentRequestPaymentUpdate):
+        _check_pin(body.pin)
+        conn = get_db()
+        row = conn.execute(
+            "SELECT id FROM attendance_payment_requests WHERE id = ?", (request_id,)
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="입금 요청을 찾을 수 없습니다.")
+        conn.execute(
+            "UPDATE attendance_payment_requests SET payment_completed = ? WHERE id = ?",
+            (1 if body.completed else 0, request_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "paymentCompleted": body.completed}
+
+    @router.patch("/payment-requests/{request_id}")
+    def update_payment_request(request_id: int, body: PaymentRequestUpdate):
+        _check_pin(body.pin)
+        try:
+            datetime.strptime(body.date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="날짜 형식이 올바르지 않습니다.")
+        bank_name = body.bankName.strip()
+        account_holder = body.accountHolder.strip()
+        account_number = re.sub(r"[^0-9]", "", body.accountNumber)
+        content = body.content.strip()
+        resident_number = re.sub(r"[^0-9]", "", body.residentRegistrationNumber)
+        if not all((bank_name, account_holder, account_number, content)) or body.amount <= 0:
+            raise HTTPException(status_code=400, detail="입금 요청 정보를 확인하세요.")
+        if resident_number and len(resident_number) != 13:
+            raise HTTPException(status_code=400, detail="주민등록번호 13자리를 정확히 입력하세요.")
+        conn = get_db()
+        conn.execute(
+            "UPDATE attendance_payment_requests SET date = ?, bank_name = ?, account_holder = ?, "
+            "account_number = ?, amount = ?, content = ?, resident_registration_number = ? WHERE id = ?",
+            (body.date, bank_name, account_holder, account_number, body.amount, content, resident_number, request_id),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT id, date, bank_name, account_holder, account_number, amount, content, "
+            "resident_registration_number, payment_completed FROM attendance_payment_requests WHERE id = ?",
+            (request_id,),
+        ).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="입금 요청을 찾을 수 없습니다.")
+        return _payment_request_row_to_dict(row)
+
+    @router.delete("/payment-requests/{request_id}")
+    def delete_payment_request(request_id: int, body: PaymentRequestDelete):
+        _check_pin(body.pin)
+        conn = get_db()
+        row = conn.execute(
+            "SELECT id FROM attendance_payment_requests WHERE id = ?", (request_id,)
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="입금 요청을 찾을 수 없습니다.")
+        conn.execute("DELETE FROM attendance_payment_requests WHERE id = ?", (request_id,))
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+
+    def _studio_payment_row_to_dict(row):
+        return {
+            "id": row["id"], "studioName": row["studio_name"],
+            "usageTime": row["usage_time"], "amount": row["amount"],
+            "vatAmount": row["vat_amount"],
+            "bankName": row["bank_name"], "accountNumber": row["account_number"],
+            "accountHolder": row["account_holder"], "modelName": row["model_name"],
+            "modelPayment": row["model_payment"], "shootDate": row["shoot_date"],
+            "paymentCompleted": bool(row["payment_completed"]),
+        }
+
+    @router.get("/studio-payments")
+    def list_studio_payments(pin: str = "", date: str = ""):
+        _check_pin(pin)
+        conn = get_db()
+        query = "SELECT * FROM attendance_studio_payments"
+        params = []
+        if date:
+            query += " WHERE shoot_date = ?"
+            params.append(date)
+        query += " ORDER BY shoot_date DESC, id DESC"
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        return [_studio_payment_row_to_dict(row) for row in rows]
+
+    @router.get("/studio-payments/history")
+    def get_studio_payment_history(studio_name: str, pin: str = ""):
+        _check_pin(pin)
+        name = studio_name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="스튜디오 이름을 입력하세요.")
+        conn = get_db()
+        row = conn.execute(
+            "SELECT * FROM attendance_studio_payments WHERE studio_name = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (name,),
+        ).fetchone()
+        conn.close()
+        return _studio_payment_row_to_dict(row) if row else None
+
+    @router.post("/studio-payments")
+    def add_studio_payment(body: StudioPaymentCreate):
+        _check_pin(body.pin)
+        try:
+            datetime.strptime(body.shootDate, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="촬영예정일 형식이 올바르지 않습니다.")
+        studio_name = body.studioName.strip()
+        usage_time = body.usageTime.strip()
+        bank_name = body.bankName.strip()
+        account_number = re.sub(r"[^0-9]", "", body.accountNumber)
+        account_holder = body.accountHolder.strip()
+        model_name = body.modelName.strip()
+        if not all((studio_name, usage_time, bank_name, account_number, account_holder, model_name)):
+            raise HTTPException(status_code=400, detail="스튜디오 입금 정보를 모두 입력하세요.")
+        if body.amount <= 0 or body.vatAmount < 0 or body.modelPayment < 0:
+            raise HTTPException(status_code=400, detail="입금액을 확인하세요.")
+        conn = get_db()
+        assignee = conn.execute(
+            "SELECT username, display_name FROM users WHERE display_name = ? LIMIT 1",
+            ("김승일",),
+        ).fetchone()
+        if not assignee:
+            assignee = conn.execute(
+                "SELECT username, display_name FROM users "
+                "WHERE display_name LIKE ? OR username LIKE ? LIMIT 1",
+                ("%김승일%", "%kimsungil%"),
+            ).fetchone()
+        if not assignee:
+            conn.close()
+            raise HTTPException(status_code=400, detail="김승일 계정을 찾지 못했습니다.")
+        cursor = conn.execute(
+            "INSERT INTO attendance_studio_payments "
+            "(studio_name, usage_time, amount, vat_amount, bank_name, account_number, account_holder, "
+            "model_name, model_payment, shoot_date, payment_completed, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+            (studio_name, usage_time, body.amount, body.vatAmount, bank_name, account_number, account_holder,
+             model_name, body.modelPayment, body.shootDate, _now_kst().isoformat()),
+        )
+        conn.execute(
+            "INSERT INTO requests "
+            "(requester_username, requester_display, assignee_username, assignee_display, "
+            "text, status, created_at) VALUES (?, ?, ?, ?, ?, 'open', ?)",
+            (
+                "attendance_system",
+                "입금 요청 자동알림",
+                assignee["username"],
+                (assignee["display_name"] or "").strip() or "김승일",
+                f"{studio_name} 입금필요",
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM attendance_studio_payments WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        conn.close()
+        return _studio_payment_row_to_dict(row)
+
+    @router.patch("/studio-payments/{payment_id}/payment")
+    def update_studio_payment(payment_id: int, body: PaymentRequestPaymentUpdate):
+        _check_pin(body.pin)
+        conn = get_db()
+        row = conn.execute("SELECT id FROM attendance_studio_payments WHERE id = ?", (payment_id,)).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="스튜디오 입금 정보를 찾을 수 없습니다.")
+        conn.execute("UPDATE attendance_studio_payments SET payment_completed = ? WHERE id = ?",
+                     (1 if body.completed else 0, payment_id))
+        conn.commit()
+        conn.close()
+        return {"ok": True, "paymentCompleted": body.completed}
+
+    @router.patch("/studio-payments/{payment_id}")
+    def edit_studio_payment(payment_id: int, body: StudioPaymentUpdate):
+        _check_pin(body.pin)
+        try:
+            datetime.strptime(body.shootDate, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="촬영예정일 형식이 올바르지 않습니다.")
+        studio_name = body.studioName.strip()
+        usage_time = body.usageTime.strip()
+        bank_name = body.bankName.strip()
+        account_number = re.sub(r"[^0-9]", "", body.accountNumber)
+        account_holder = body.accountHolder.strip()
+        model_name = body.modelName.strip()
+        if not all((studio_name, usage_time, bank_name, account_number, account_holder, model_name)):
+            raise HTTPException(status_code=400, detail="스튜디오 입금 정보를 모두 입력하세요.")
+        if body.amount <= 0 or body.vatAmount < 0 or body.modelPayment < 0:
+            raise HTTPException(status_code=400, detail="입금액을 확인하세요.")
+        conn = get_db()
+        conn.execute(
+            "UPDATE attendance_studio_payments SET studio_name = ?, usage_time = ?, amount = ?, vat_amount = ?, "
+            "bank_name = ?, account_number = ?, account_holder = ?, model_name = ?, "
+            "model_payment = ?, shoot_date = ? WHERE id = ?",
+            (studio_name, usage_time, body.amount, body.vatAmount, bank_name, account_number, account_holder,
+             model_name, body.modelPayment, body.shootDate, payment_id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM attendance_studio_payments WHERE id = ?", (payment_id,)).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="스튜디오 입금 정보를 찾을 수 없습니다.")
+        return _studio_payment_row_to_dict(row)
+
+    @router.delete("/studio-payments/{payment_id}")
+    def delete_studio_payment(payment_id: int, body: PaymentRequestDelete):
+        _check_pin(body.pin)
+        conn = get_db()
+        conn.execute("DELETE FROM attendance_studio_payments WHERE id = ?", (payment_id,))
         conn.commit()
         conn.close()
         return {"ok": True}
