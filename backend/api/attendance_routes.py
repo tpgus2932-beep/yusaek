@@ -323,6 +323,22 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         ).fetchone()
         return fixed["start_time"] if fixed and fixed["status"] == "scheduled" else None
 
+    def _is_fixed_workday(conn, member_name: str, date_str: str) -> bool:
+        """Return whether the weekday is covered by an active fixed schedule rule."""
+        member = conn.execute(
+            "SELECT id FROM attendance_members WHERE name = ?", (member_name,)
+        ).fetchone()
+        if not member:
+            return False
+        weekday = datetime.strptime(date_str, "%Y-%m-%d").isoweekday()
+        fixed = conn.execute(
+            "SELECT status FROM attendance_schedule_fixed_rules "
+            "WHERE member_id = ? AND weekday = ? AND effective_from <= ? "
+            "ORDER BY effective_from DESC, id DESC LIMIT 1",
+            (member["id"], weekday, date_str),
+        ).fetchone()
+        return bool(fixed and fixed["status"] == "scheduled")
+
     def _round_kst_to_half_hour(dt_kst: datetime) -> datetime:
         rounded_minutes = ((dt_kst.hour * 60 + dt_kst.minute + 15) // 30) * 30
         day_offset, minute_of_day = divmod(rounded_minutes, 24 * 60)
@@ -398,6 +414,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         result = []
         for (member_name, date_str), day_rows in grouped.items():
             scheduled_start = _scheduled_start_for(conn, member_name, date_str)
+            is_fixed_workday = _is_fixed_workday(conn, member_name, date_str)
             check_in = next((row for row in day_rows if row["type"] == "출근"), None)
             check_in_exception = False
             normalized_check_in = None
@@ -425,7 +442,9 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
                         "timestamp": row["timestamp"],
                         "date": row["date"],
                         "normalizedTimestamp": normalized_timestamp,
-                        "payrollEligible": not check_in_exception,
+                        # 비고정 추가 근무는 15분 보정/확인 규칙을 유지하되,
+                        # 실제 출퇴근 기록이 있으면 급여에서 제외하지 않는다.
+                        "payrollEligible": not check_in_exception or not is_fixed_workday,
                         "checkInException": check_in_exception,
                         "scheduledStartTime": scheduled_start,
                     }
