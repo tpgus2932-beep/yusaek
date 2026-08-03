@@ -1853,7 +1853,7 @@ export default function AttendanceAdminPage() {
                   ) : (
                     <div className={styles.dailyWorkerScroll}>
                       {fixedPayrollRows.map((row) => (
-                        <article key={row.id} className={`${styles.dailyWorkerCard} ${row.paymentCompleted ? styles.dailyWorkerCardPaid : ''}`}>
+                        <article key={row.id} className={`${styles.fixedWorkerCard} ${row.paymentCompleted ? styles.dailyWorkerCardPaid : ''}`}>
                           <div><strong>{row.name}</strong><span>{fixedPayrollYear}년 {fixedPayrollMonth}월</span></div>
                           <div className={styles.dailyWorkerTime}>
                             <span>{row.salary.monthlyHours.toFixed(1)}H</span>

@@ -444,6 +444,25 @@
 .dailyWorkerActions { display: flex; align-items: center; gap: 7px; }
 .paymentBtn { background: #2563eb; padding: 8px 10px; white-space: nowrap; }
 .paymentBtnActive { background: #64748b; }
+.fixedWorkerCard {
+  display: grid;
+  grid-template-columns: minmax(110px, .7fr) minmax(170px, 1fr) minmax(210px, 1.2fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+  margin-bottom: 8px;
+}
+.fixedWorkerCard > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.fixedWorkerCard strong { color: #1e293b; font-size: 15px; }
+.fixedWorkerCard span { color: #64748b; font-size: 13px; }
+.fixedWorkerCard .dailyWorkerTime span { color: #2563eb; font-weight: 700; }
 .dailySalaryScroll > .card:last-child { margin-bottom: 0; }
 
 @media (max-width: 720px) {
@@ -458,6 +477,15 @@
   .dailyWorkerExpandHint { justify-self: end; }
   .dailyWorkerDetail { grid-template-columns: 1fr; }
   .dailyWorkerActions { justify-content: flex-end; }
+  .fixedWorkerCard { grid-template-columns: 1fr auto; }
+  .fixedWorkerCard .dailyWorkerTime { grid-column: 1; }
+  .fixedWorkerCard .dailyWorkerAccount { grid-column: 1; }
+  .fixedWorkerCard .dailyWorkerActions {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 
 /* ── 직원 관리 ── */
