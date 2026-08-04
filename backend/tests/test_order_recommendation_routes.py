@@ -2,6 +2,7 @@ import pytest
 import sqlite3
 import sys
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -11,13 +12,18 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import services.order_recommendation_collect as collect_mod
-from api.order_recommendation_routes import build_order_recommendation_router
+from api.order_recommendation_routes import BACKTEST_TOP_N, build_order_recommendation_router
 from sdk.ezadmin import EzAdminSessionExpired
+from services.order_recommendation_calc import ORDER_LEAD_DAYS
 from services.order_recommendation_store import (
     ensure_row,
     init_order_recommendation_tables,
     today_kst,
 )
+
+
+def _date_plus(date: str, days: int) -> str:
+    return (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
 
 
 def _make_db_factory():
@@ -36,6 +42,7 @@ def _make_db_factory():
 def _make_client(settings=None):
     get_db, keep_alive = _make_db_factory()
     init_order_recommendation_tables(get_db)
+    get_shared_db, shared_keep_alive = _make_db_factory()
     store = dict(settings or {})
 
     app = FastAPI()
@@ -45,9 +52,12 @@ def _make_client(settings=None):
             get_db=get_db,
             get_setting=lambda key: store.get(key),
             set_setting=lambda key, value: store.__setitem__(key, value),
+            get_shared_db=get_shared_db,
         )
     )
-    return TestClient(app), get_db, keep_alive, store
+    client = TestClient(app)
+    client._shared_keep_alive = shared_keep_alive  # 참조 유지 - 없으면 in-memory 공유 DB가 사라짐
+    return client, get_db, keep_alive, store
 
 
 @pytest.fixture(autouse=True)
@@ -118,26 +128,70 @@ def test_daily_product_name_empty_string_when_wonbe_has_no_match():
     assert items[0]["product_name"] == ""
 
 
-def test_backtest_returns_items_only_for_products_with_recommended_qty_today():
+def test_backtest_date_range_returns_null_when_no_sales_data():
+    client, _get_db, _keep_alive, _store = _make_client()
+    res = client.get("/order-recommendation/backtest/date-range")
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "min_date": None, "max_date": None}
+
+
+def test_backtest_date_range_min_is_pushed_3_weeks_after_earliest_collected_date():
+    """같은요일평균이 최대 3주 전까지 조회하므로, 수집 시작일 자체는 같은요일 3주치가
+    없어 min으로 노출되면 안 되고 수집 시작일 + 21일부터 선택 가능해야 한다."""
     client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
-    today = today_kst()
+    for d in ("2026-07-01", "2026-07-15", "2026-07-29"):
+        ensure_row(conn, d, "YUSAS00001")
+        conn.execute(
+            "UPDATE order_recommendation_daily SET sales_qty = 3 WHERE date = ? AND yusas_code = ?",
+            (d, "YUSAS00001"),
+        )
+    # sales_qty가 아직 안 채워진(수집 안 된) 날짜는 범위에 영향을 주면 안 됨
+    ensure_row(conn, "2026-08-01", "YUSAS00001")
+    conn.commit()
+    conn.close()
 
-    # 오늘 추천발주량 있는 상품 -> 백테스트 대상
-    ensure_row(conn, today, "YUSAS00001")
-    conn.execute(
-        "UPDATE order_recommendation_daily SET recommended_qty = 5 WHERE date = ? AND yusas_code = ?",
-        (today, "YUSAS00001"),
-    )
-    # 오늘 추천발주량 없는 상품 -> 백테스트 대상 아님
-    ensure_row(conn, today, "YUSAS00002")
+    res = client.get("/order-recommendation/backtest/date-range")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["min_date"] == "2026-07-22"  # 2026-07-01 + 21일
+    assert body["max_date"] == "2026-07-28"  # 수집 최신일(2026-07-29) - ORDER_LEAD_DAYS(1일)
 
-    # 백테스트 대상 날짜의 실제 판매량
-    ensure_row(conn, "2026-07-29", "YUSAS00001")
+
+def test_backtest_date_range_min_date_null_when_not_enough_runway_yet():
+    """수집 시작일 + 21일이 아직 최신 수집일을 넘어가면(수집한 지 3주가 안 됐으면)
+    같은요일 3주치를 온전히 갖춘 날짜가 하나도 없으므로 min_date는 null이어야 한다."""
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    for d in ("2026-07-01", "2026-07-10"):
+        ensure_row(conn, d, "YUSAS00001")
+        conn.execute(
+            "UPDATE order_recommendation_daily SET sales_qty = 3 WHERE date = ? AND yusas_code = ?",
+            (d, "YUSAS00001"),
+        )
+    conn.commit()
+    conn.close()
+
+    res = client.get("/order-recommendation/backtest/date-range")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["min_date"] is None
+    assert body["max_date"] == "2026-07-09"  # 수집 최신일(2026-07-10) - ORDER_LEAD_DAYS(1일)
+
+
+def test_backtest_returns_items_only_for_products_with_collected_sales_qty():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+
+    # 판매량이 수집된 상품 -> 백테스트 대상. 예측이 실제로 겨냥하는 날(2026-07-30,
+    # 계산일+ORDER_LEAD_DAYS)에 실제값을 심어야 비교가 된다.
+    ensure_row(conn, "2026-07-30", "YUSAS00001")
     conn.execute(
         "UPDATE order_recommendation_daily SET sales_qty = 10 WHERE date = ? AND yusas_code = ?",
-        ("2026-07-29", "YUSAS00001"),
+        ("2026-07-30", "YUSAS00001"),
     )
+    # 판매량이 전혀 수집 안 된 상품 -> 백테스트 대상 아님
+    ensure_row(conn, "2026-07-29", "YUSAS00002")
     conn.commit()
     conn.close()
 
@@ -150,30 +204,46 @@ def test_backtest_returns_items_only_for_products_with_recommended_qty_today():
     assert body["items"][0]["actual_sales_qty"] == 10
 
 
+def test_backtest_limits_to_top_n_products_by_total_sales_qty():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    for i in range(BACKTEST_TOP_N + 1):
+        code = f"YUSAS{i:05d}"
+        ensure_row(conn, "2026-07-29", code)
+        conn.execute(
+            "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
+            (i + 1, "2026-07-29", code),  # 판매량 1~(N+1), YUSAS00000이 최소
+        )
+    conn.commit()
+    conn.close()
+
+    res = client.get("/order-recommendation/backtest", params={"date": "2026-07-29"})
+    assert res.status_code == 200
+    codes = {item["yusas_code"] for item in res.json()["items"]}
+    assert len(codes) == BACKTEST_TOP_N
+    assert "YUSAS00000" not in codes  # 판매량이 가장 적은 상품은 상위 N 밖
+    assert f"YUSAS{BACKTEST_TOP_N:05d}" in codes  # 판매량이 가장 많은 상품은 포함
+
+
 def test_backtest_applies_weight_overrides_and_computes_aggregate():
     client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
-    today = today_kst()
 
-    ensure_row(conn, today, "YUSAS00001")
-    conn.execute(
-        "UPDATE order_recommendation_daily SET recommended_qty = 5 WHERE date = ? AND yusas_code = ?",
-        (today, "YUSAS00001"),
-    )
     ensure_row(conn, "2026-07-28", "YUSAS00001")
     conn.execute(
         "UPDATE order_recommendation_daily SET sales_qty = 10 WHERE date = ? AND yusas_code = ?",
         ("2026-07-28", "YUSAS00001"),
     )
-    ensure_row(conn, "2026-07-29", "YUSAS00001")
+    # 예측이 실제로 겨냥하는 날(2026-07-30, 계산일+ORDER_LEAD_DAYS)에 실제값을 심는다.
+    ensure_row(conn, "2026-07-30", "YUSAS00001")
     conn.execute(
         "UPDATE order_recommendation_daily SET sales_qty = 10 WHERE date = ? AND yusas_code = ?",
-        ("2026-07-29", "YUSAS00001"),
+        ("2026-07-30", "YUSAS00001"),
     )
     conn.commit()
     conn.close()
 
-    # weight_previous_day=1, 나머지 0 -> 신호가 전날값(10)만 남아 expected_sales_today == 10 -> 오차 0 -> 적중
+    # weight_previous_day=1, 나머지 0 -> 신호가 전날값(07-28=10)만 남아 expected_sales_today == 10 -> 오차 0 -> 적중
     res = client.get(
         "/order-recommendation/backtest",
         params={
@@ -198,14 +268,8 @@ def test_backtest_applies_weight_overrides_and_computes_aggregate():
 def test_backtest_days_param_aggregates_multiple_dates_into_one_result():
     client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
-    today = today_kst()
 
-    ensure_row(conn, today, "YUSAS00001")
-    conn.execute(
-        "UPDATE order_recommendation_daily SET recommended_qty = 5 WHERE date = ? AND yusas_code = ?",
-        (today, "YUSAS00001"),
-    )
-    for date, qty in [("2026-07-26", 10), ("2026-07-27", 20), ("2026-07-28", 30), ("2026-07-29", 40)]:
+    for date, qty in [("2026-07-26", 10), ("2026-07-27", 20), ("2026-07-28", 30), ("2026-07-29", 40), ("2026-07-30", 50)]:
         ensure_row(conn, date, "YUSAS00001")
         conn.execute(
             "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
@@ -214,8 +278,11 @@ def test_backtest_days_param_aggregates_multiple_dates_into_one_result():
     conn.commit()
     conn.close()
 
-    # date=07-29, days=3 -> 07-27,07-28,07-29 세 날짜를 전날값(weight_previous_day=1)만으로 예측해 하나로 합산
-    # 07-27: 예상=전날(07-26)=10, 실제=20, 오차=-10 / 07-28: 예상=20,실제=30,오차=-10 / 07-29: 예상=30,실제=40,오차=-10
+    # date=07-29, days=3 -> 계산일 07-27,07-28,07-29 세 날짜를 전날값(weight_previous_day=1)만으로
+    # 예측하고, 각각 계산일+1일(리드타임)의 실제값과 비교해 하나로 합산한다.
+    # 07-27: 예상=전날(07-26)=10, 실제(07-28)=30, 오차=-20
+    # 07-28: 예상=전날(07-27)=20, 실제(07-29)=40, 오차=-20
+    # 07-29: 예상=전날(07-28)=30, 실제(07-30)=50, 오차=-20
     res = client.get(
         "/order-recommendation/backtest",
         params={
@@ -231,9 +298,9 @@ def test_backtest_days_param_aggregates_multiple_dates_into_one_result():
     assert res.status_code == 200
     body = res.json()
     assert body["sample_count"] == 3  # 3개 날짜 x 1개 상품
-    assert body["mae"] == pytest.approx(10.0)
-    assert body["wape"] == pytest.approx(30 / 90)
-    assert body["bias"] == pytest.approx(-30 / 90)
+    assert body["mae"] == pytest.approx(20.0)
+    assert body["wape"] == pytest.approx(60 / 120)
+    assert body["bias"] == pytest.approx(-60 / 120)
     assert body["hit_rate_20pct"] == pytest.approx(0.0)
     assert {item["date"] for item in body["items"]} == {"2026-07-27", "2026-07-28", "2026-07-29"}
 
@@ -241,11 +308,10 @@ def test_backtest_days_param_aggregates_multiple_dates_into_one_result():
 def test_backtest_days_param_clamped_to_max_5():
     client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
-    today = today_kst()
-    ensure_row(conn, today, "YUSAS00001")
+    ensure_row(conn, "2026-07-29", "YUSAS00001")
     conn.execute(
-        "UPDATE order_recommendation_daily SET recommended_qty = 5 WHERE date = ? AND yusas_code = ?",
-        (today, "YUSAS00001"),
+        "UPDATE order_recommendation_daily SET sales_qty = 5 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", "YUSAS00001"),
     )
     conn.commit()
     conn.close()
@@ -263,27 +329,22 @@ def test_backtest_days_param_clamped_to_max_5():
 def test_backtest_bias_is_positive_when_overforecasting():
     client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
-    today = today_kst()
 
-    ensure_row(conn, today, "YUSAS00001")
-    conn.execute(
-        "UPDATE order_recommendation_daily SET recommended_qty = 5 WHERE date = ? AND yusas_code = ?",
-        (today, "YUSAS00001"),
-    )
     ensure_row(conn, "2026-07-28", "YUSAS00001")
     conn.execute(
         "UPDATE order_recommendation_daily SET sales_qty = 20 WHERE date = ? AND yusas_code = ?",
         ("2026-07-28", "YUSAS00001"),
     )
-    ensure_row(conn, "2026-07-29", "YUSAS00001")
+    # 예측이 실제로 겨냥하는 날(2026-07-30, 계산일+ORDER_LEAD_DAYS)에 실제값을 심는다.
+    ensure_row(conn, "2026-07-30", "YUSAS00001")
     conn.execute(
         "UPDATE order_recommendation_daily SET sales_qty = 10 WHERE date = ? AND yusas_code = ?",
-        ("2026-07-29", "YUSAS00001"),
+        ("2026-07-30", "YUSAS00001"),
     )
     conn.commit()
     conn.close()
 
-    # weight_previous_day=1 -> expected_sales_today = 전날(20), 실제는 10 -> 오차 +10(과다예측)
+    # weight_previous_day=1 -> expected_sales_today = 전날(07-28=20), 실제(07-30)는 10 -> 오차 +10(과다예측)
     res = client.get(
         "/order-recommendation/backtest",
         params={
@@ -360,11 +421,16 @@ def test_evaluate_endpoint_fills_forecast_accuracy_columns():
     client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
     date = today_kst()
+    target_date = _date_plus(date, ORDER_LEAD_DAYS)
     ensure_row(conn, date, "YUSAS00001")
     conn.execute(
-        "UPDATE order_recommendation_daily SET expected_sales_today = 12, sales_qty = 10 "
-        "WHERE date = ? AND yusas_code = ?",
+        "UPDATE order_recommendation_daily SET expected_sales_today = 12 WHERE date = ? AND yusas_code = ?",
         (date, "YUSAS00001"),
+    )
+    ensure_row(conn, target_date, "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = 10 WHERE date = ? AND yusas_code = ?",
+        (target_date, "YUSAS00001"),
     )
     conn.commit()
     conn.close()
@@ -382,11 +448,16 @@ def test_forecast_accuracy_endpoint_returns_aggregate_metrics():
     client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
     date = today_kst()
+    target_date = _date_plus(date, ORDER_LEAD_DAYS)
     ensure_row(conn, date, "YUSAS00001")
     conn.execute(
-        "UPDATE order_recommendation_daily SET expected_sales_today = 12, sales_qty = 10 "
-        "WHERE date = ? AND yusas_code = ?",
+        "UPDATE order_recommendation_daily SET expected_sales_today = 12 WHERE date = ? AND yusas_code = ?",
         (date, "YUSAS00001"),
+    )
+    ensure_row(conn, target_date, "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = 10 WHERE date = ? AND yusas_code = ?",
+        (target_date, "YUSAS00001"),
     )
     conn.commit()
     conn.close()
@@ -483,6 +554,96 @@ def test_collect_sales_history_progress_endpoint_returns_progress_dict():
     assert res.json() == {"running": True, "total": 100, "done": 40, "updated": 60}
 
 
+def test_discover_missed_reorders_endpoint_passes_query_params_and_returns_result():
+    client, _get_db, _keep_alive, _store = _make_client()
+
+    fake_result = {
+        "date": "2026-08-04", "days": 5, "limit": 10, "candidate_count": 2,
+        "need_ezadmin_session": False,
+        "items": [{"yusas_code": "S1", "confirmed_qty": 3}],
+    }
+    with patch(
+        "api.order_recommendation_routes.discover_missed_reorder_candidates",
+        new=AsyncMock(return_value=fake_result),
+    ) as mocked:
+        res = client.get("/order-recommendation/discover-missed-reorders", params={"days": 5, "limit": 10})
+
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, **fake_result}
+    _args, kwargs = mocked.call_args
+    assert kwargs == {"days": 5, "limit": 10}
+
+
+def test_discover_missed_reorders_endpoint_uses_defaults_when_no_params():
+    client, _get_db, _keep_alive, _store = _make_client()
+
+    fake_result = {
+        "date": "2026-08-04", "days": 3, "limit": 150, "candidate_count": 0,
+        "need_ezadmin_session": False, "items": [],
+    }
+    with patch(
+        "api.order_recommendation_routes.discover_missed_reorder_candidates",
+        new=AsyncMock(return_value=fake_result),
+    ) as mocked:
+        res = client.get("/order-recommendation/discover-missed-reorders")
+
+    assert res.status_code == 200
+    _args, kwargs = mocked.call_args
+    assert kwargs == {"days": 3, "limit": 150}
+
+
+def test_discover_missed_reorders_endpoint_saves_snapshot_for_that_date():
+    client, _get_db, _keep_alive, _store = _make_client()
+
+    fake_result = {
+        "date": "2026-08-04", "days": 3, "limit": 150, "candidate_count": 1,
+        "need_ezadmin_session": False,
+        "items": [{"yusas_code": "S1", "confirmed_qty": 6}],
+    }
+    with patch(
+        "api.order_recommendation_routes.discover_missed_reorder_candidates",
+        new=AsyncMock(return_value=fake_result),
+    ):
+        client.get("/order-recommendation/discover-missed-reorders")
+
+    res = client.get("/order-recommendation/discover-missed-reorders/saved", params={"date": "2026-08-04"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["saved"] is True
+    assert body["items"] == [{"yusas_code": "S1", "confirmed_qty": 6}]
+    assert body["updated_by"] == "tester"
+
+
+def test_discover_missed_reorders_endpoint_overwrites_same_day_snapshot():
+    client, _get_db, _keep_alive, _store = _make_client()
+
+    first = {
+        "date": "2026-08-04", "days": 3, "limit": 150, "candidate_count": 1,
+        "need_ezadmin_session": False, "items": [{"yusas_code": "OLD"}],
+    }
+    second = {
+        "date": "2026-08-04", "days": 3, "limit": 150, "candidate_count": 1,
+        "need_ezadmin_session": False, "items": [{"yusas_code": "NEW"}],
+    }
+    with patch(
+        "api.order_recommendation_routes.discover_missed_reorder_candidates",
+        new=AsyncMock(side_effect=[first, second]),
+    ):
+        client.get("/order-recommendation/discover-missed-reorders")
+        client.get("/order-recommendation/discover-missed-reorders")
+
+    res = client.get("/order-recommendation/discover-missed-reorders/saved", params={"date": "2026-08-04"})
+    assert res.json()["items"] == [{"yusas_code": "NEW"}]
+
+
+def test_discover_missed_reorders_saved_endpoint_returns_not_saved_when_empty():
+    client, _get_db, _keep_alive, _store = _make_client()
+
+    res = client.get("/order-recommendation/discover-missed-reorders/saved", params={"date": "2026-08-04"})
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "saved": False}
+
+
 def test_save_weights_updates_settings_store():
     client, _get_db, _keep_alive, store = _make_client()
 
@@ -510,9 +671,15 @@ def test_coverage_check_single_day_coverage_matches_actual_sales():
     conn = get_db()
     ensure_row(conn, "2026-07-01", "YUSAS00001")
     conn.execute(
-        "UPDATE order_recommendation_daily SET recommended_qty = ?, coverage_days_used = ?, sales_qty = ? "
+        "UPDATE order_recommendation_daily SET recommended_qty = ?, coverage_days_used = ? "
         "WHERE date = ? AND yusas_code = ?",
-        (10, 1, 8, "2026-07-01", "YUSAS00001"),
+        (10, 1, "2026-07-01", "YUSAS00001"),
+    )
+    # 커버리지가 실제로 겨냥하는 날(2026-07-02, 발주일+ORDER_LEAD_DAYS)에 실제값을 심는다.
+    ensure_row(conn, "2026-07-02", "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
+        (8, "2026-07-02", "YUSAS00001"),
     )
     conn.commit()
     conn.close()
@@ -535,19 +702,25 @@ def test_coverage_check_multi_day_coverage_sums_forward():
     conn = get_db()
     ensure_row(conn, "2026-07-01", "YUSAS00002")
     conn.execute(
-        "UPDATE order_recommendation_daily SET recommended_qty = ?, coverage_days_used = ?, sales_qty = ? "
+        "UPDATE order_recommendation_daily SET recommended_qty = ?, coverage_days_used = ? "
         "WHERE date = ? AND yusas_code = ?",
-        (15, 3, 5, "2026-07-01", "YUSAS00002"),
+        (15, 3, "2026-07-01", "YUSAS00002"),
     )
+    # 커버리지가 실제로 겨냥하는 3일(2026-07-02~04, 발주일+ORDER_LEAD_DAYS부터)에 실제값을 심는다.
     ensure_row(conn, "2026-07-02", "YUSAS00002")
     conn.execute(
         "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
-        (4, "2026-07-02", "YUSAS00002"),
+        (5, "2026-07-02", "YUSAS00002"),
     )
     ensure_row(conn, "2026-07-03", "YUSAS00002")
     conn.execute(
         "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
-        (6, "2026-07-03", "YUSAS00002"),
+        (4, "2026-07-03", "YUSAS00002"),
+    )
+    ensure_row(conn, "2026-07-04", "YUSAS00002")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
+        (6, "2026-07-04", "YUSAS00002"),
     )
     conn.commit()
     conn.close()
@@ -589,15 +762,26 @@ def test_coverage_check_aggregates_mae_wape_bias_hit_rate():
     conn = get_db()
     ensure_row(conn, "2026-07-01", "YUSAS_A")
     conn.execute(
-        "UPDATE order_recommendation_daily SET recommended_qty = ?, coverage_days_used = ?, sales_qty = ? "
+        "UPDATE order_recommendation_daily SET recommended_qty = ?, coverage_days_used = ? "
         "WHERE date = ? AND yusas_code = ?",
-        (12, 1, 10, "2026-07-01", "YUSAS_A"),
+        (12, 1, "2026-07-01", "YUSAS_A"),
     )
     ensure_row(conn, "2026-07-01", "YUSAS_B")
     conn.execute(
-        "UPDATE order_recommendation_daily SET recommended_qty = ?, coverage_days_used = ?, sales_qty = ? "
+        "UPDATE order_recommendation_daily SET recommended_qty = ?, coverage_days_used = ? "
         "WHERE date = ? AND yusas_code = ?",
-        (8, 1, 10, "2026-07-01", "YUSAS_B"),
+        (8, 1, "2026-07-01", "YUSAS_B"),
+    )
+    # 커버리지가 실제로 겨냥하는 날(2026-07-02, 발주일+ORDER_LEAD_DAYS)에 실제값을 심는다.
+    ensure_row(conn, "2026-07-02", "YUSAS_A")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
+        (10, "2026-07-02", "YUSAS_A"),
+    )
+    ensure_row(conn, "2026-07-02", "YUSAS_B")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
+        (10, "2026-07-02", "YUSAS_B"),
     )
     conn.commit()
     conn.close()

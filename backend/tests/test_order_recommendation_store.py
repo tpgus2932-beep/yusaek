@@ -44,7 +44,7 @@ EXPECTED_COLUMNS = {
     "model_version", "model_weight_weekday", "model_weight_previous_day",
     "model_weight_avg_7d", "model_weight_avg_14d", "model_weight_avg_3d",
     "recommended_qty",
-    "forecast_error", "absolute_error", "within_20_percent", "evaluated_at",
+    "forecast_error", "absolute_error", "within_20_percent", "evaluated_at", "evaluated_actual_qty",
     "confirm_deviation", "fulfillment_gap", "order_performance_evaluated_at",
     "confirmed_qty", "override_reason", "updated_by", "updated_at",
     "excluded_from_avg", "created_at", "registered_at", "coverage_days_used",

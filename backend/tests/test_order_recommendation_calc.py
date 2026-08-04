@@ -180,32 +180,19 @@ def test_expected_sales_today_equals_single_value_when_only_one_present():
 
 
 def test_recommended_qty_none_when_expected_sales_missing():
-    assert calc_recommended_qty(None, 0, 0, 0) is None
-
-
-def test_recommended_qty_none_when_stock_missing():
-    assert calc_recommended_qty(10.0, None, 0, 0) is None
-
-
-def test_recommended_qty_none_when_incoming_missing():
-    assert calc_recommended_qty(10.0, 0, None, 0) is None
+    assert calc_recommended_qty(None, 0) is None
 
 
 def test_recommended_qty_uses_ceil_not_round():
     # coverage_period_expected_sales=10.1 -> round()면 10, ceil()이면 11. 발주 부족 방지용 회귀 테스트.
-    result = calc_recommended_qty(10.1, 0, 0, 0)
+    result = calc_recommended_qty(10.1, 0)
     assert result == 11
 
 
-def test_recommended_qty_never_negative():
-    result = calc_recommended_qty(5.0, 100, 50, 0)
-    assert result == 0
-
-
 def test_recommended_qty_applies_safety_stock():
-    # ceil(10+5)=15, 15-2-1=12
-    result = calc_recommended_qty(10.0, 2, 1, 5)
-    assert result == 12
+    # ceil(10+5)=15 — 재고/미송과는 무관한 순수 커버리지 수요치.
+    result = calc_recommended_qty(10.0, 5)
+    assert result == 15
 
 
 def test_expected_sales_for_coverage_matches_single_day_when_coverage_is_one():
@@ -233,12 +220,13 @@ def test_expected_sales_for_coverage_sums_each_days_own_weekday_average():
     init_order_recommendation_tables(get_db)
     conn = get_db()
     code = "YUSAS00001"
-    # 2026-07-29(수) 요일평균 10, 2026-07-30(목) 요일평균 20 — 각각 4주치.
-    _seed_weekday_history(conn, code, [
-        ("2026-07-22", 10), ("2026-07-15", 10), ("2026-07-08", 10), ("2026-07-01", 10),
-    ])
+    # date=2026-07-29(수)에 발주 -> 리드타임(1일) 때문에 실제로 커버되는 건
+    # 2026-07-30(목)/2026-07-31(금)부터다. 각 요일평균 4주치.
     _seed_weekday_history(conn, code, [
         ("2026-07-23", 20), ("2026-07-16", 20), ("2026-07-09", 20), ("2026-07-02", 20),
+    ])
+    _seed_weekday_history(conn, code, [
+        ("2026-07-24", 10), ("2026-07-17", 10), ("2026-07-10", 10), ("2026-07-03", 10),
     ])
     conn.commit()
 
@@ -248,7 +236,7 @@ def test_expected_sales_for_coverage_sums_each_days_own_weekday_average():
         weight_weekday_average=1.0, weight_previous_day=0.25, weight_avg_7d=0.25, weight_avg_14d=0.15,
     )
 
-    # 수요일 10.0 + 목요일 20.0 = 30.0 (다른 3개 신호는 전부 None이라 weekday만 남음)
+    # 목요일 20.0 + 금요일 10.0 = 30.0 (다른 3개 신호는 전부 None이라 weekday만 남음)
     assert result == pytest.approx(30.0)
     conn.close()
 
@@ -259,14 +247,14 @@ def test_expected_sales_for_coverage_rounds_fractional_coverage_days():
     conn = get_db()
     code = "YUSAS00001"
     _seed_weekday_history(conn, code, [
-        ("2026-07-22", 10), ("2026-07-15", 10), ("2026-07-08", 10), ("2026-07-01", 10),
+        ("2026-07-23", 20), ("2026-07-16", 20), ("2026-07-09", 20), ("2026-07-02", 20),
     ])
     _seed_weekday_history(conn, code, [
-        ("2026-07-23", 20), ("2026-07-16", 20), ("2026-07-09", 20), ("2026-07-02", 20),
+        ("2026-07-24", 10), ("2026-07-17", 10), ("2026-07-10", 10), ("2026-07-03", 10),
     ])
     conn.commit()
 
-    # 1.6 -> round()=2일치로 취급 -> 수요일+목요일 = 30.0
+    # 1.6 -> round()=2일치로 취급 -> 목요일+금요일 = 30.0
     result = calc_expected_sales_for_coverage(
         conn, code, "2026-07-29", 1.6,
         previous_day_sales_qty=None, avg_sales_7d=None, avg_sales_14d=None,
@@ -377,26 +365,39 @@ from services.order_recommendation_calc import default_confirmed_qty_for_row
 
 
 def test_default_confirmed_qty_under_3_uses_lack_qty_only():
-    assert default_confirmed_qty_for_row(2.9, 5, 4) == 4
+    # 재고/미송이 있어도(=0, 100) 무시하고 부족수량 그대로.
+    assert default_confirmed_qty_for_row(2.9, 5, 4, 0, 100) == 4
 
 
 def test_default_confirmed_qty_under_3_with_no_lack_qty_is_none():
-    assert default_confirmed_qty_for_row(2.9, 5, None) is None
+    assert default_confirmed_qty_for_row(2.9, 5, None, 0, 0) is None
 
 
-def test_default_confirmed_qty_at_least_3_uses_lack_plus_recommended():
-    # recommended_qty는 이미 미송(incoming_qty)을 뺀 값이라 여기서 또 빼지 않는다.
-    # 10 + 13 = 23
-    assert default_confirmed_qty_for_row(3.0, 13, 10) == 23
+def test_default_confirmed_qty_at_least_3_uses_lack_plus_recommended_minus_stock_and_incoming():
+    # 재고/미송이 0이면 부족수량 + 추천발주량 그대로: 10 + 13 = 23
+    assert default_confirmed_qty_for_row(3.0, 13, 10, 0, 0) == 23
 
 
 def test_default_confirmed_qty_at_least_3_none_when_any_input_missing():
-    assert default_confirmed_qty_for_row(5, None, 10) is None
-    assert default_confirmed_qty_for_row(5, 13, None) is None
+    assert default_confirmed_qty_for_row(5, None, 10, 0, 0) is None
+    assert default_confirmed_qty_for_row(5, 13, None, 0, 0) is None
+    assert default_confirmed_qty_for_row(5, 13, 10, None, 0) is None
+    assert default_confirmed_qty_for_row(5, 13, 10, 0, None) is None
 
 
 def test_default_confirmed_qty_none_expected_sales_uses_at_least_3_formula():
-    assert default_confirmed_qty_for_row(None, 13, 10) == 23
+    assert default_confirmed_qty_for_row(None, 13, 10, 0, 0) == 23
+
+
+def test_default_confirmed_qty_incoming_surplus_offsets_lack_qty():
+    # 회귀 테스트: 예상판매량 5.5, 커버리지 3일 -> 추천발주량(순수 수요) 15,
+    # 부족수량 21, 미송 30. 총필요 36 - 총가용(재고0+미송30) = 6.
+    assert default_confirmed_qty_for_row(5.5, 15, 21, 0, 30) == 6
+
+
+def test_default_confirmed_qty_incoming_fully_covers_lack_and_recommended():
+    # 미송이 총필요량보다 많으면 0으로 클램프(음수 아님).
+    assert default_confirmed_qty_for_row(5.5, 15, 21, 0, 100) == 0
 
 
 from services.order_recommendation_calc import compute_all, compute_row
@@ -408,9 +409,13 @@ def _seed_weekday_history(conn, code, dates_and_qty):
 
 
 def _seed_full_pipeline_scenario(conn, code):
-    """weekday_average_sales=10.0, avg_sales_7d=12.0, avg_sales_14d=11.0,
-    previous_day_sales_qty=20 이 나오도록 손으로 검증한 조합."""
-    # 요일평균용 4주치 수요일(2026-07-29 기준 -7/-14/-21/-28일)
+    """avg_sales_7d=12.0, avg_sales_14d=11.0, previous_day_sales_qty=20이 나오도록
+    손으로 검증한 조합(이 셋은 date=2026-07-29 기준, 리드타임과 무관하게 고정).
+    weekday_average_sales는 리드타임(1일) 때문에 다음날(2026-07-30, 목)의 3주치
+    요일평균 — 14일 윈도 안에 이미 있는 07-23/07-16(각 10)에 07-09(10)만 추가하면
+    10.0이 나온다."""
+    # 요일평균용 4주치 수요일(2026-07-29 기준 -7/-14/-21/-28일) — 이제 weekday_average와
+    # 무관하지만 avg_sales_7d/14d 윈도 값으로는 그대로 쓰인다.
     _seed_weekday_history(conn, code, [
         ("2026-07-22", 14), ("2026-07-15", 10), ("2026-07-08", 10), ("2026-07-01", 6),
     ])
@@ -420,6 +425,7 @@ def _seed_full_pipeline_scenario(conn, code):
     for date in ["2026-07-23", "2026-07-24", "2026-07-25", "2026-07-26", "2026-07-27"]:
         _seed(conn, date, code, sales_qty=10)
     _seed(conn, "2026-07-28", code, sales_qty=20)  # 전날 — previous_day_sales_qty로 복사됨
+    _seed(conn, "2026-07-09", code, sales_qty=10)  # 2026-07-30(목) 요일평균 3번째 관측치
     ensure_row(conn, "2026-07-29", code)
 
 
@@ -436,12 +442,12 @@ def test_calc_expected_sales_today_for_date_matches_known_scenario():
 
     result = calc_expected_sales_today_for_date(conn, code, "2026-07-29", get_setting=lambda key: None)
 
-    assert result["weekday_average_sales"] == pytest.approx(34 / 3)
+    assert result["weekday_average_sales"] == pytest.approx(10.0)
     assert result["avg_sales_3d"] == pytest.approx(40 / 3)
     assert result["avg_sales_7d"] == pytest.approx(12.0)
     assert result["avg_sales_14d"] == pytest.approx(11.0)
     assert result["previous_day_sales_qty"] == 20
-    assert result["expected_sales_today"] == pytest.approx(13.983333333333333)
+    assert result["expected_sales_today"] == pytest.approx(13.716666666666667)
     assert result["weight_weekday_average"] == pytest.approx(0.20)
     assert result["weight_avg_3d"] == pytest.approx(0.20)
     conn.close()
@@ -461,10 +467,10 @@ def test_calc_expected_sales_today_for_date_honors_zero_weight_override():
     )
 
     # avg_3d(40/3) 신호가 weight 0으로 완전히 배제돼야 함 -> weight_sum = .20+.25+.20+.15 = .80
-    # (34/3*.20 + 20*.25 + 12*.20 + 11*.15) / .80 = 14.145833333333332
+    # (10.0*.20 + 20*.25 + 12*.20 + 11*.15) / .80 = 13.8125
     # (buggy `override or default` 패턴이었다면 0.0이 falsy라 기본값 0.20으로 폴백해서
-    #  13.983333333333333 — 원래 시나리오 값 — 이 나왔을 것)
-    assert result["expected_sales_today"] == pytest.approx(14.145833333333332)
+    #  13.716666666666667 — 원래 시나리오 값 — 이 나왔을 것)
+    assert result["expected_sales_today"] == pytest.approx(13.8125)
     assert result["weight_avg_3d"] == 0.0
     conn.close()
 
@@ -486,17 +492,18 @@ def test_compute_row_full_pipeline_with_default_settings():
     compute_row(conn, code, "2026-07-29", get_setting=lambda key: None)
 
     row = get_row(conn, "2026-07-29", code)
-    # 3주 요일 이력만 사용: (14+10+10)/3 = 11.333...
-    assert row["weekday_average_sales"] == pytest.approx(34 / 3)
+    # 리드타임 때문에 다음날(2026-07-30,목) 3주 요일 이력 사용: (10+10+10)/3 = 10.0
+    assert row["weekday_average_sales"] == pytest.approx(10.0)
     assert row["avg_sales_3d"] == pytest.approx(40 / 3)  # 07-26,07-27,07-28 = 10+10+20
     assert row["avg_sales_7d"] == pytest.approx(12.0)
     assert row["avg_sales_14d"] == pytest.approx(11.0)
     assert row["previous_day_sales_qty"] == 20
-    # (34/3*.20 + 20*.25 + 12*.20 + 11*.15 + 40/3*.20) / 1.0
-    assert row["expected_sales_today"] == pytest.approx(13.983333333333333)
+    # (10.0*.20 + 20*.25 + 12*.20 + 11*.15 + 40/3*.20) / 1.0
+    assert row["expected_sales_today"] == pytest.approx(13.716666666666667)
     # expected_sales_today가 10~15 구간 -> 커버리지 자동 5일치 (coverage_days_for_expected_sales)
     assert row["coverage_days_used"] == pytest.approx(5.0)
-    assert row["recommended_qty"] == 62
+    # recommended_qty는 재고/미송과 무관한 순수 커버리지 수요치(ceil(coverage_period_expected_sales))
+    assert row["recommended_qty"] == 70
     assert row["model_version"] == "weighted_v1"
     assert row["model_weight_weekday"] == pytest.approx(0.20)
     assert row["model_weight_previous_day"] == pytest.approx(0.25)
@@ -531,11 +538,11 @@ def test_compute_row_respects_custom_weight_and_recommendation_settings():
     compute_row(conn, code, "2026-07-29", get_setting=lambda key: settings.get(key))
 
     row = get_row(conn, "2026-07-29", code)
-    # 요일평균(3주)=34/3, (34/3*.5 + 20*.5) / (.5+.5) = 15.666...
-    assert row["expected_sales_today"] == pytest.approx(15.666666666666666)
-    # 15개 초과 구간 -> 커버리지 자동 7일치
-    assert row["coverage_days_used"] == pytest.approx(7.0)
-    assert row["recommended_qty"] == 103
+    # 요일평균(리드타임 반영, 다음날 목요일 3주)=10.0, (10*.5 + 20*.5) / (.5+.5) = 15.0
+    assert row["expected_sales_today"] == pytest.approx(15.0)
+    # 10~15 구간(경계값 15 포함) -> 커버리지 자동 5일치
+    assert row["coverage_days_used"] == pytest.approx(5.0)
+    assert row["recommended_qty"] == 79
     assert row["model_version"] == "weighted_v1"
     assert row["model_weight_weekday"] == pytest.approx(0.5)
     assert row["model_weight_previous_day"] == pytest.approx(0.5)
@@ -551,12 +558,13 @@ def test_compute_row_sums_multi_day_coverage_using_each_days_own_weekday_average
     conn = get_db()
     code = "YUSAS00001"
 
-    # 2026-07-29(수) 요일평균 10, 2026-07-30(목) 요일평균 20 — 각각 4주치 깔끔하게 준비.
-    _seed_weekday_history(conn, code, [
-        ("2026-07-22", 10), ("2026-07-15", 10), ("2026-07-08", 10), ("2026-07-01", 10),
-    ])
+    # date=2026-07-29(수) 계산, 리드타임 때문에 실제 커버는 2026-07-30(목)부터.
+    # 목요일 요일평균 20, 금요일 요일평균 10 — 각각 4주치 깔끔하게 준비.
     _seed_weekday_history(conn, code, [
         ("2026-07-23", 20), ("2026-07-16", 20), ("2026-07-09", 20), ("2026-07-02", 20),
+    ])
+    _seed_weekday_history(conn, code, [
+        ("2026-07-24", 10), ("2026-07-17", 10), ("2026-07-10", 10), ("2026-07-03", 10),
     ])
     ensure_row(conn, "2026-07-29", code)
     conn.execute(
@@ -576,15 +584,15 @@ def test_compute_row_sums_multi_day_coverage_using_each_days_own_weekday_average
     compute_row(conn, code, "2026-07-29", get_setting=lambda key: settings.get(key))
 
     row = get_row(conn, "2026-07-29", code)
-    # expected_sales_today는 D(수) 하루치 예측만 저장 -> 10.0 (정확도 평가용, 커버리지 합산과는 별개)
-    assert row["expected_sales_today"] == pytest.approx(10.0)
-    # 10~15 구간 -> 커버리지 자동 5일치 (D~D+4, 요일마다 각자 요일평균 재계산해서 합산)
-    assert row["coverage_days_used"] == pytest.approx(5.0)
-    assert row["recommended_qty"] == 67
+    # expected_sales_today는 D+1(목, 리드타임 반영) 하루치 예측만 저장 -> 20.0 (정확도 평가용, 커버리지 합산과는 별개)
+    assert row["expected_sales_today"] == pytest.approx(20.0)
+    # 15개 초과 구간 -> 커버리지 자동 7일치 (D+1~D+7, 요일마다 각자 요일평균 재계산해서 합산)
+    assert row["coverage_days_used"] == pytest.approx(7.0)
+    assert row["recommended_qty"] == 105
     conn.close()
 
 
-def test_compute_row_recommended_qty_null_when_stock_missing():
+def test_compute_row_confirmed_qty_null_when_stock_missing():
     get_db, _keep_alive = _make_db_factory()
     init_order_recommendation_tables(get_db)
     conn = get_db()
@@ -601,7 +609,10 @@ def test_compute_row_recommended_qty_null_when_stock_missing():
     # weekday=10.0, avg_sales_7d=10.0(07-22만 윈도 안), avg_sales_14d=10.0(07-15,07-22),
     # previous_day_sales_qty=None -> 남은 가중치(.35+.25+.15=.75)로 재정규화해도 전부 10 -> 10.0
     assert row["expected_sales_today"] == pytest.approx(10.0)
-    assert row["recommended_qty"] is None
+    # recommended_qty는 재고/미송과 무관해서 stock_qty가 없어도 계산된다.
+    assert row["recommended_qty"] is not None
+    # confirmed_qty는 재고/미송이 있어야 계산되므로 stock_qty가 NULL이면 None.
+    assert row["confirmed_qty"] is None
     conn.close()
 
 
@@ -635,9 +646,10 @@ def test_compute_row_is_order_independent():
     code = "YUSAS00001"
 
     def _seed_order_independence_data(conn):
-        # D+1(2026-07-30, 목) 요일 이력만 준비 — D 자신의 요일 이력은 준비하지 않는다
+        # D+1(2026-07-30,목)의 compute_row는 리드타임 때문에 D+2(2026-07-31,금)의 요일
+        # 이력을 쓴다 — 그 이력만 준비하고 D/D+1 자신의 요일 이력은 준비하지 않는다.
         _seed_weekday_history(conn, code, [
-            ("2026-07-23", 6), ("2026-07-16", 6), ("2026-07-09", 6), ("2026-07-02", 6),
+            ("2026-07-24", 6), ("2026-07-17", 6), ("2026-07-10", 6), ("2026-07-03", 6),
         ])
         _seed(conn, "2026-07-29", code, sales_qty=12)  # D의 원본 판매량만
         ensure_row(conn, "2026-07-30", code)
@@ -668,7 +680,7 @@ def test_compute_row_is_order_independent():
     assert row_a["expected_sales_today"] == row_b["expected_sales_today"] == pytest.approx(9.6)
     # 5~9 구간 -> 커버리지 자동 3일치
     assert row_a["coverage_days_used"] == row_b["coverage_days_used"] == pytest.approx(3.0)
-    assert row_a["recommended_qty"] == row_b["recommended_qty"] == 29
+    assert row_a["recommended_qty"] == row_b["recommended_qty"] == 30
     conn_a.close()
     conn_b.close()
 
@@ -766,7 +778,7 @@ def test_compute_row_default_confirmed_qty_at_least_3_uses_lack_plus_recommended
     row = get_row(conn, "2026-07-29", code)
     assert row["expected_sales_today"] == pytest.approx(5.0)
     assert row["recommended_qty"] is not None
-    # recommended_qty는 이미 미송(incoming_qty=2)을 뺀 값이므로 여기서 또 빼지 않는다.
-    # 부족수량(10) + 추천발주량
-    assert row["confirmed_qty"] == 10 + row["recommended_qty"]
+    # recommended_qty는 재고/미송과 무관한 순수 커버리지 수요치.
+    # 확정수량 = (부족수량 + 추천발주량) - 재고(0) - 미송(2)
+    assert row["confirmed_qty"] == max(0, (10 + row["recommended_qty"]) - 0 - 2)
     conn.close()

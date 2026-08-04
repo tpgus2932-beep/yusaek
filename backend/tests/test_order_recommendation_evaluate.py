@@ -8,6 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from services.order_recommendation_calc import ORDER_LEAD_DAYS
 from services.order_recommendation_evaluate import (
     aggregate_forecast_accuracy,
     calc_forecast_error,
@@ -39,6 +40,10 @@ def _make_db_factory():
 def _days_ago(n):
     base = datetime.strptime(today_kst(), "%Y-%m-%d")
     return (base - timedelta(days=n)).strftime("%Y-%m-%d")
+
+
+def _date_plus(date, days):
+    return (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
 
 
 def test_calc_forecast_error_normal():
@@ -78,12 +83,17 @@ def test_evaluate_row_computes_error_and_hit_flag():
     init_order_recommendation_tables(get_db)
     conn = get_db()
     code = "YUSAS00001"
-    date = _days_ago(1)
+    date = _days_ago(2)  # date+ORDER_LEAD_DAYS의 실제값과 비교하므로 2일 전으로 잡아 여유를 둔다
+    target_date = _date_plus(date, ORDER_LEAD_DAYS)
     ensure_row(conn, date, code)
     conn.execute(
-        "UPDATE order_recommendation_daily SET expected_sales_today = 12, sales_qty = 10 "
-        "WHERE date = ? AND yusas_code = ?",
+        "UPDATE order_recommendation_daily SET expected_sales_today = 12 WHERE date = ? AND yusas_code = ?",
         (date, code),
+    )
+    ensure_row(conn, target_date, code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = 10 WHERE date = ? AND yusas_code = ?",
+        (target_date, code),
     )
     conn.commit()
 
@@ -93,6 +103,7 @@ def test_evaluate_row_computes_error_and_hit_flag():
     assert row["forecast_error"] == 2.0
     assert row["absolute_error"] == 2.0
     assert row["within_20_percent"] == 1
+    assert row["evaluated_actual_qty"] == 10
     assert row["evaluated_at"] is not None
     conn.close()
 
@@ -133,13 +144,19 @@ def test_evaluate_row_never_touches_model_version_or_weight_snapshot():
     init_order_recommendation_tables(get_db)
     conn = get_db()
     code = "YUSAS00001"
-    date = _days_ago(1)
+    date = _days_ago(2)
+    target_date = _date_plus(date, ORDER_LEAD_DAYS)
     ensure_row(conn, date, code)
     conn.execute(
-        "UPDATE order_recommendation_daily SET expected_sales_today = 12, sales_qty = 10, "
+        "UPDATE order_recommendation_daily SET expected_sales_today = 12, "
         "model_version = 'some_version', model_weight_weekday = 0.99 "
         "WHERE date = ? AND yusas_code = ?",
         (date, code),
+    )
+    ensure_row(conn, target_date, code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = 10 WHERE date = ? AND yusas_code = ?",
+        (target_date, code),
     )
     conn.commit()
 
@@ -171,11 +188,17 @@ def test_evaluate_all_processes_every_code_for_the_date():
 
 
 def _seed_and_evaluate(conn, code, date, expected, actual):
+    """expected는 date 행에, actual은 date+ORDER_LEAD_DAYS(발주가 실제로 커버하는 날) 행에 심는다."""
+    target_date = _date_plus(date, ORDER_LEAD_DAYS)
     ensure_row(conn, date, code)
     conn.execute(
-        "UPDATE order_recommendation_daily SET expected_sales_today = ?, sales_qty = ? "
-        "WHERE date = ? AND yusas_code = ?",
-        (expected, actual, date, code),
+        "UPDATE order_recommendation_daily SET expected_sales_today = ? WHERE date = ? AND yusas_code = ?",
+        (expected, date, code),
+    )
+    ensure_row(conn, target_date, code)
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
+        (actual, target_date, code),
     )
     conn.commit()
     evaluate_row(conn, code, date)

@@ -109,6 +109,10 @@ _FORECAST_ACCURACY_COLUMNS = [
     ("absolute_error", "REAL"),
     ("within_20_percent", "INTEGER"),
     ("evaluated_at", "TEXT"),
+    # expected_sales_today는 date+ORDER_LEAD_DAYS(발주 리드타임 이후 첫날)의 예측이라
+    # date 자신의 sales_qty와는 다른 날짜의 실제값과 비교된다. 그 실제값을 그대로
+    # 저장해둬야 집계(WAPE 등)에서 올바른 분모를 쓸 수 있다.
+    ("evaluated_actual_qty", "INTEGER"),
 ]
 
 

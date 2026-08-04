@@ -6,7 +6,18 @@ from fastapi import APIRouter, Body, Depends
 
 from api.wonbe_routes import load_wonbe_product_name_map
 from services.order_recommendation_ably_sales import collect_ably_sales_history, get_sales_history_progress
-from services.order_recommendation_calc import calc_expected_sales_today_for_date, compute_all
+from services.order_recommendation_discover import (
+    DEFAULT_DISCOVER_DAYS,
+    DEFAULT_DISCOVER_LIMIT,
+    discover_missed_reorder_candidates,
+)
+from services.order_recommendation_discover_snapshot import get_discover_snapshot, save_discover_snapshot
+from services.order_recommendation_calc import (
+    ORDER_LEAD_DAYS,
+    WEEKDAY_LOOKBACK_WEEKS,
+    calc_expected_sales_today_for_date,
+    compute_all,
+)
 from services.order_recommendation_collect import run_collectors
 from services.order_recommendation_evaluate import (
     aggregate_forecast_accuracy,
@@ -22,11 +33,34 @@ from services.order_recommendation_store import ensure_row, get_row, list_rows, 
 from sdk.ezadmin import EzAdminSessionExpired
 
 
+BACKTEST_TOP_N = 50
+
+
 def _row_to_dict(row) -> dict:
     return {key: row[key] for key in row.keys()}
 
 
-def build_order_recommendation_router(*, get_current_user, get_db, get_setting, set_setting):
+def _actual_coverage_sales(conn, yusas_code: str, start_date: str, coverage_days: int):
+    """start_date에 발주해서 실제로 커버되는 첫날(start_date+ORDER_LEAD_DAYS)부터
+    coverage_days일치(포함) 실제 판매량 합. 기간 중 하루라도 수집이 안 됐으면
+    (sales_qty가 없으면) None — 아직 다 지나지 않은 기간은 검증 대상이 아님."""
+    target_dates = [
+        (datetime.strptime(start_date, "%Y-%m-%d") + timedelta(days=offset + ORDER_LEAD_DAYS)).strftime("%Y-%m-%d")
+        for offset in range(coverage_days)
+    ]
+    placeholders = ",".join("?" * len(target_dates))
+    sales_rows = conn.execute(
+        f"SELECT date, sales_qty FROM order_recommendation_daily "
+        f"WHERE yusas_code = ? AND date IN ({placeholders})",
+        (yusas_code, *target_dates),
+    ).fetchall()
+    sales_by_date = {sr["date"]: sr["sales_qty"] for sr in sales_rows}
+    if len(sales_by_date) < len(target_dates) or any(sales_by_date.get(d) is None for d in target_dates):
+        return None
+    return sum(sales_by_date[d] for d in target_dates)
+
+
+def build_order_recommendation_router(*, get_current_user, get_db, get_setting, set_setting, get_shared_db):
     router = APIRouter(prefix="/order-recommendation", tags=["order-recommendation"])
 
     @router.post("/collect")
@@ -46,6 +80,35 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
     @router.get("/collect-sales-history/progress")
     def collect_sales_history_progress(user: str = Depends(get_current_user)):
         return get_sales_history_progress(user)
+
+    @router.get("/discover-missed-reorders/saved")
+    def discover_missed_reorders_saved(date: str | None = None, user: str = Depends(get_current_user)):
+        """오늘(또는 지정 날짜) 마지막으로 조회했던 '추가된 상품' 결과를 재조회 없이 읽기만 한다."""
+        target_date = date or today_kst()
+        snapshot = get_discover_snapshot(get_shared_db, target_date)
+        if snapshot is None:
+            return {"ok": True, "saved": False}
+        return {"ok": True, "saved": True, **snapshot}
+
+    @router.get("/discover-missed-reorders")
+    async def discover_missed_reorders(
+        days: int = DEFAULT_DISCOVER_DAYS,
+        limit: int = DEFAULT_DISCOVER_LIMIT,
+        user: str = Depends(get_current_user),
+    ):
+        result = await discover_missed_reorder_candidates(
+            get_db, get_setting, get_shared_db, days=days, limit=limit
+        )
+        try:
+            save_discover_snapshot(
+                get_shared_db,
+                date=result["date"], days=result["days"], limit=result["limit"],
+                candidate_count=result["candidate_count"], items=result["items"],
+                need_ezadmin_session=result["need_ezadmin_session"], updated_by=user,
+            )
+        except Exception:
+            pass  # 스냅샷 저장 실패는 이번 조회 결과 응답을 막지 않는다.
+        return {"ok": True, **result}
 
     @router.post("/compute")
     def compute(date: str | None = None, user: str = Depends(get_current_user)):
@@ -107,6 +170,39 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
             conn.close()
         return {"ok": True, "days": days, "yusas_code": yusas_code, **result}
 
+    @router.get("/backtest/date-range")
+    def backtest_date_range(user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT MIN(date) AS min_date, MAX(date) AS max_date "
+                "FROM order_recommendation_daily WHERE sales_qty IS NOT NULL"
+            ).fetchone()
+            earliest, collected_max_date = row["min_date"], row["max_date"]
+
+            # 백테스트 대상일(계산일)의 예측은 계산일+ORDER_LEAD_DAYS의 실제값과 비교하므로,
+            # 그 실제값까지 이미 수집돼 있어야 한다 — 그래서 선택 가능한 최대 날짜를 그만큼 당긴다.
+            max_date = None
+            if collected_max_date is not None:
+                max_date = (
+                    datetime.strptime(collected_max_date, "%Y-%m-%d") - timedelta(days=ORDER_LEAD_DAYS)
+                ).strftime("%Y-%m-%d")
+
+            min_date = None
+            if earliest is not None:
+                # 같은요일평균 신호가 최대 3주(WEEKDAY_LOOKBACK_WEEKS) 전까지 조회하므로,
+                # 대상 날짜 기준 그만큼 과거 판매량이 먼저 수집돼 있어야 한다. 그 전 날짜는
+                # 이 신호가 통째로 비어 예측 신뢰도가 떨어지므로 선택 가능 범위에서 제외한다.
+                candidate = (
+                    datetime.strptime(earliest, "%Y-%m-%d") + timedelta(weeks=WEEKDAY_LOOKBACK_WEEKS)
+                ).strftime("%Y-%m-%d")
+                if candidate <= max_date:
+                    min_date = candidate
+
+            return {"ok": True, "min_date": min_date, "max_date": max_date}
+        finally:
+            conn.close()
+
     @router.get("/backtest")
     def backtest(
         date: str,
@@ -116,6 +212,7 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
         weight_avg_7d: float | None = None,
         weight_avg_14d: float | None = None,
         weight_avg_3d: float | None = None,
+        weight_avg_5d: float | None = None,
         user: str = Depends(get_current_user),
     ):
         days = max(1, min(days, 5))
@@ -125,18 +222,24 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
             "weight_avg_7d": weight_avg_7d,
             "weight_avg_14d": weight_avg_14d,
             "weight_avg_3d": weight_avg_3d,
+            "weight_avg_5d": weight_avg_5d,
         }
         overrides = {k: v for k, v in overrides.items() if v is not None}
 
         conn = get_db()
         try:
-            today = today_kst()
+            # 대상 상품 = 판매량이 수집된 기간 전체 합산 기준 상위 BACKTEST_TOP_N개.
+            # (예전엔 "오늘 recommended_qty가 있는 상품"으로 걸렀는데, 그러면 오늘 재고수집
+            # (/collect, EZAdmin IO30)이 안 돌면 대상 자체가 비어버렸다. expected_sales_today/
+            # 커버리지 시뮬레이션 둘 다 sales_qty 히스토리만으로 계산되니 재고 데이터와 무관하게
+            # 판매량 기준으로 뽑아도 된다.)
             codes = [
                 r["yusas_code"]
                 for r in conn.execute(
                     "SELECT yusas_code FROM order_recommendation_daily "
-                    "WHERE date = ? AND recommended_qty IS NOT NULL",
-                    (today,),
+                    "WHERE sales_qty IS NOT NULL "
+                    "GROUP BY yusas_code ORDER BY SUM(sales_qty) DESC LIMIT ?",
+                    (BACKTEST_TOP_N,),
                 ).fetchall()
             ]
             name_map = load_wonbe_product_name_map()
@@ -146,19 +249,26 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
             ]
 
             items = []
-            for target_date in target_dates:
+            for calc_date in target_dates:
+                # expected_sales_today는 calc_date+ORDER_LEAD_DAYS(발주가 실제로 커버하는 날)의
+                # 예측이므로, 그 날의 실제 판매량과 비교해야 한다 — calc_date 자신이 아니다.
+                actual_date = (
+                    datetime.strptime(calc_date, "%Y-%m-%d") + timedelta(days=ORDER_LEAD_DAYS)
+                ).strftime("%Y-%m-%d")
                 for code in codes:
                     signals = calc_expected_sales_today_for_date(
-                        conn, code, target_date, get_setting, overrides or None
+                        conn, code, calc_date, get_setting, overrides or None
                     )
                     expected = signals["expected_sales_today"]
-                    row = get_row(conn, target_date, code)
+                    row = get_row(conn, actual_date, code)
                     actual = row["sales_qty"] if row is not None else None
                     forecast_error = calc_forecast_error(expected, actual)
                     absolute_error = abs(forecast_error) if forecast_error is not None else None
                     within_20_percent = calc_within_20_percent(absolute_error, actual)
+
                     items.append({
-                        "date": target_date,
+                        "date": calc_date,
+                        "actual_date": actual_date,
                         "yusas_code": code,
                         "product_name": name_map.get(code, ""),
                         "expected_sales_today": expected,
@@ -182,7 +292,8 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
             return {
                 "ok": True, "date": date,
                 "sample_count": len(hit_flags), "mae": mae, "wape": wape, "bias": bias,
-                "hit_rate_20pct": hit_rate_20pct, "items": items,
+                "hit_rate_20pct": hit_rate_20pct,
+                "items": items,
             }
         finally:
             conn.close()
@@ -201,22 +312,9 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
             items = []
             for r in rows:
                 coverage_days = int(r["coverage_days_used"] or 1)
-                target_dates = [
-                    (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=offset)).strftime("%Y-%m-%d")
-                    for offset in range(coverage_days)
-                ]
-                placeholders = ",".join("?" * len(target_dates))
-                sales_rows = conn.execute(
-                    f"SELECT date, sales_qty FROM order_recommendation_daily "
-                    f"WHERE yusas_code = ? AND date IN ({placeholders})",
-                    (r["yusas_code"], *target_dates),
-                ).fetchall()
-                sales_by_date = {sr["date"]: sr["sales_qty"] for sr in sales_rows}
-                if len(sales_by_date) < len(target_dates) or any(
-                    sales_by_date.get(d) is None for d in target_dates
-                ):
+                actual_coverage_sales = _actual_coverage_sales(conn, r["yusas_code"], date, coverage_days)
+                if actual_coverage_sales is None:
                     continue
-                actual_coverage_sales = sum(sales_by_date[d] for d in target_dates)
                 recommended_qty = r["recommended_qty"]
                 forecast_error = calc_forecast_error(recommended_qty, actual_coverage_sales)
                 absolute_error = abs(forecast_error) if forecast_error is not None else None

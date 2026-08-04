@@ -9,6 +9,11 @@ WEEKDAY_LOOKBACK_WEEKS = 3
 WEEKDAY_MIN_WEEKS = 3
 FALLBACK_WINDOW_DAYS = 14
 
+# 발주 리드타임 — 오늘(date) 넣은 발주가 실제로 커버하는 첫날은 오늘이 아니라
+# 오늘+ORDER_LEAD_DAYS다. 그래서 요일 신호는 date 자신이 아니라 date+ORDER_LEAD_DAYS의
+# 요일로 계산한다(백테스트로 확인: 다음날 실제값과 비교했을 때 이 쪽이 더 정확했음).
+ORDER_LEAD_DAYS = 1
+
 
 def _date_minus(date: str, days: int) -> str:
     return (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -69,6 +74,7 @@ DEFAULT_WEIGHT_PREVIOUS_DAY = 0.25
 DEFAULT_WEIGHT_AVG_7D = 0.20
 DEFAULT_WEIGHT_AVG_14D = 0.15
 DEFAULT_WEIGHT_AVG_3D = 0.20
+DEFAULT_WEIGHT_AVG_5D = 0.0
 
 MODEL_VERSION = "weighted_v1"
 
@@ -84,6 +90,8 @@ def calc_expected_sales_today(
     weight_avg_14d: float,
     avg_sales_3d=None,
     weight_avg_3d: float = 0.0,
+    avg_sales_5d=None,
+    weight_avg_5d: float = 0.0,
 ):
     weighted_sum = 0.0
     weight_sum = 0.0
@@ -93,6 +101,7 @@ def calc_expected_sales_today(
         (avg_sales_7d, weight_avg_7d),
         (avg_sales_14d, weight_avg_14d),
         (avg_sales_3d, weight_avg_3d),
+        (avg_sales_5d, weight_avg_5d),
     ):
         if value is not None:
             weighted_sum += value * weight
@@ -116,12 +125,16 @@ def calc_expected_sales_for_coverage(
     weight_avg_14d: float,
     avg_sales_3d=None,
     weight_avg_3d: float = 0.0,
+    avg_sales_5d=None,
+    weight_avg_5d: float = 0.0,
 ):
-    """date부터 coverage_days일치(포함, round()로 정수화) 각 날짜를 따로 예측해서 합산한다.
+    """date+ORDER_LEAD_DAYS부터 coverage_days일치(포함, round()로 정수화) 각 날짜를
+    따로 예측해서 합산한다 — date에 발주해도 실제로 커버되는 건 리드타임 이후부터라서
+    오늘(date) 자신은 커버리지에 포함하지 않는다.
 
     날짜마다 weekday_average_sales만 그 날짜 자신의 요일평균으로 새로 계산하고,
-    previous_day_sales_qty/avg_sales_7d/avg_sales_14d/avg_sales_3d는 date(오늘) 시점 기준값을
-    그대로 재사용한다 — 미래 시점의 실제 최근 추세는 알 수 없기 때문."""
+    previous_day_sales_qty/avg_sales_7d/avg_sales_14d/avg_sales_3d/avg_sales_5d는 date(오늘)
+    시점 기준값을 그대로 재사용한다 — 미래 시점의 실제 최근 추세는 알 수 없기 때문."""
     num_days = round(coverage_days)
     if num_days <= 0:
         return None
@@ -129,12 +142,12 @@ def calc_expected_sales_for_coverage(
     total = 0.0
     any_value = False
     for offset in range(num_days):
-        target_date = _date_plus(date, offset)
+        target_date = _date_plus(date, offset + ORDER_LEAD_DAYS)
         weekday_average_sales = calc_weekday_average_sales(conn, yusas_code, target_date)
         daily_expected = calc_expected_sales_today(
             weekday_average_sales, previous_day_sales_qty, avg_sales_7d, avg_sales_14d,
             weight_weekday_average, weight_previous_day, weight_avg_7d, weight_avg_14d,
-            avg_sales_3d, weight_avg_3d,
+            avg_sales_3d, weight_avg_3d, avg_sales_5d, weight_avg_5d,
         )
         if daily_expected is not None:
             total += daily_expected
@@ -143,10 +156,13 @@ def calc_expected_sales_for_coverage(
     return total if any_value else None
 
 
-def calc_recommended_qty(coverage_period_expected_sales, stock_qty, incoming_qty, safety_stock_qty: float):
-    if coverage_period_expected_sales is None or stock_qty is None or incoming_qty is None:
+def calc_recommended_qty(coverage_period_expected_sales, safety_stock_qty: float):
+    """추천발주량 = 커버리지 기간 동안 팔릴 것으로 예상되는 순수 수요(+안전재고).
+    재고/미송과는 무관한 수요 예측치다 — 그 둘을 반영해서 실제로 지금 발주해야 할
+    수량은 확정수량(default_confirmed_qty_for_row)에서 따로 계산한다."""
+    if coverage_period_expected_sales is None:
         return None
-    return max(0, math.ceil(coverage_period_expected_sales + safety_stock_qty) - stock_qty - incoming_qty)
+    return math.ceil(coverage_period_expected_sales + safety_stock_qty)
 
 
 def calc_change_and_rate(today_value, previous_value):
@@ -185,7 +201,8 @@ def _setting_weight(get_setting, key: str, default: float) -> float:
 def calc_expected_sales_today_for_date(
     conn, yusas_code: str, date: str, get_setting, weight_overrides: dict | None = None
 ) -> dict:
-    """date 기준으로 그 이전 데이터만 사용해 예상판매량을 계산한다.
+    """date 기준으로 그 이전 데이터만 사용해, date에 발주하면 실제로 커버되는 첫날
+    (date+ORDER_LEAD_DAYS)의 예상판매량을 계산한다.
     compute_row와 백테스트가 공유하는 순수 계산 함수 — DB에 아무것도 쓰지 않는다.
 
     weight_overrides에 값이 있으면(0.0 포함) 설정값 대신 그 값을 쓴다(백테스트 미리보기용)."""
@@ -194,13 +211,15 @@ def calc_expected_sales_today_for_date(
     previous_day_sales_qty = prev_row["sales_qty"] if prev_row is not None else None
 
     sales_3d, count_3d = calc_sales_window(conn, yusas_code, date, 3)
+    sales_5d, count_5d = calc_sales_window(conn, yusas_code, date, 5)
     sales_7d, count_7d = calc_sales_window(conn, yusas_code, date, 7)
     sales_14d, count_14d = calc_sales_window(conn, yusas_code, date, 14)
     avg_sales_3d = (sales_3d / count_3d) if sales_3d is not None and count_3d else None
+    avg_sales_5d = (sales_5d / count_5d) if sales_5d is not None and count_5d else None
     avg_sales_7d = (sales_7d / count_7d) if sales_7d is not None and count_7d else None
     avg_sales_14d = (sales_14d / count_14d) if sales_14d is not None and count_14d else None
 
-    weekday_average_sales = calc_weekday_average_sales(conn, yusas_code, date)
+    weekday_average_sales = calc_weekday_average_sales(conn, yusas_code, _date_plus(date, ORDER_LEAD_DAYS))
 
     def _weight(key: str, setting_key: str, default: float) -> float:
         override = (weight_overrides or {}).get(key)
@@ -217,22 +236,25 @@ def calc_expected_sales_today_for_date(
     weight_avg_7d = _weight("weight_avg_7d", "order_recommendation_weight_avg_7d", DEFAULT_WEIGHT_AVG_7D)
     weight_avg_14d = _weight("weight_avg_14d", "order_recommendation_weight_avg_14d", DEFAULT_WEIGHT_AVG_14D)
     weight_avg_3d = _weight("weight_avg_3d", "order_recommendation_weight_avg_3d", DEFAULT_WEIGHT_AVG_3D)
+    weight_avg_5d = _weight("weight_avg_5d", "order_recommendation_weight_avg_5d", DEFAULT_WEIGHT_AVG_5D)
 
     expected_sales_today = calc_expected_sales_today(
         weekday_average_sales, previous_day_sales_qty, avg_sales_7d, avg_sales_14d,
         weight_weekday_average, weight_previous_day, weight_avg_7d, weight_avg_14d,
-        avg_sales_3d, weight_avg_3d,
+        avg_sales_3d, weight_avg_3d, avg_sales_5d, weight_avg_5d,
     )
 
     return {
         "previous_day_sales_qty": previous_day_sales_qty,
-        "sales_3d": sales_3d, "sales_7d": sales_7d, "sales_14d": sales_14d,
-        "avg_sales_3d": avg_sales_3d, "avg_sales_7d": avg_sales_7d, "avg_sales_14d": avg_sales_14d,
+        "sales_3d": sales_3d, "sales_5d": sales_5d, "sales_7d": sales_7d, "sales_14d": sales_14d,
+        "avg_sales_3d": avg_sales_3d, "avg_sales_5d": avg_sales_5d,
+        "avg_sales_7d": avg_sales_7d, "avg_sales_14d": avg_sales_14d,
         "weekday_average_sales": weekday_average_sales,
         "expected_sales_today": expected_sales_today,
         "weight_weekday_average": weight_weekday_average,
         "weight_previous_day": weight_previous_day,
         "weight_avg_7d": weight_avg_7d,
+        "weight_avg_5d": weight_avg_5d,
         "weight_avg_14d": weight_avg_14d,
         "weight_avg_3d": weight_avg_3d,
     }
@@ -251,18 +273,19 @@ def coverage_days_for_expected_sales(expected_sales) -> float:
     return 7.0
 
 
-def default_confirmed_qty_for_row(expected_sales_today, recommended_qty, ezadmin_lack_qty):
-    """확정수량 기본값(자동 채움). 예상판매량이 3개 미만이면 예측 기반 추천발주는
-    신뢰하지 않고(추천발주량도 0으로 강제) 실제 부족수량 그대로를 기본값으로 쓴다.
-    3개 이상이면 부족수량에 추천발주량을 더한 값을 쓴다 — recommended_qty 자체가
-    calc_recommended_qty 안에서 이미 미송(incoming_qty)을 뺀 값이라, 여기서 또
-    빼면 이중 차감이 되므로 더하기만 한다.
+def default_confirmed_qty_for_row(expected_sales_today, recommended_qty, ezadmin_lack_qty, stock_qty, incoming_qty):
+    """확정수량 기본값(자동 채움) = 지금 실제로 추가 발주해야 할 수량.
+    예상판매량이 3개 미만이면 예측 기반 추천발주는 신뢰하지 않고(추천발주량도 0으로
+    강제) 부족수량 그대로를 기본값으로 쓴다(재고/미송은 무시).
+    3개 이상이면 (부족수량 + 추천발주량) 총필요량에서 (재고 + 미송) 총가용량을 뺀
+    값을 쓴다 — 미송이 커버리지 수요보다 많이 남으면 그 잉여분이 부족수량도
+    상쇄하도록, 부족수량과 추천발주량을 먼저 더한 뒤에 한 번만 뺀다.
     필요한 값이 하나라도 없으면(None) 계산하지 않고 None을 반환한다."""
     if expected_sales_today is not None and expected_sales_today < 3:
         return ezadmin_lack_qty
-    if ezadmin_lack_qty is None or recommended_qty is None:
+    if ezadmin_lack_qty is None or recommended_qty is None or stock_qty is None or incoming_qty is None:
         return None
-    return ezadmin_lack_qty + recommended_qty
+    return max(0, (ezadmin_lack_qty + recommended_qty) - stock_qty - incoming_qty)
 
 
 def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
@@ -284,15 +307,15 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
         signals["weight_weekday_average"], signals["weight_previous_day"],
         signals["weight_avg_7d"], signals["weight_avg_14d"],
         signals["avg_sales_3d"], signals["weight_avg_3d"],
+        signals["avg_sales_5d"], signals["weight_avg_5d"],
     )
-    recommended_qty = calc_recommended_qty(
-        coverage_period_expected_sales, row["stock_qty"], row["incoming_qty"], safety_stock_qty
-    )
+    recommended_qty = calc_recommended_qty(coverage_period_expected_sales, safety_stock_qty)
     if signals["expected_sales_today"] is not None and signals["expected_sales_today"] < 3:
         recommended_qty = 0
 
     confirmed_qty_default = default_confirmed_qty_for_row(
-        signals["expected_sales_today"], recommended_qty, row["ezadmin_lack_qty"]
+        signals["expected_sales_today"], recommended_qty, row["ezadmin_lack_qty"],
+        row["stock_qty"], row["incoming_qty"],
     )
 
     prev_ad_budget = prev_row["ad_budget"] if prev_row is not None else None

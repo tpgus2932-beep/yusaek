@@ -57,6 +57,32 @@ export default function OrderRecommendationBacktestSection({ daily }) {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
+  const [dateRange, setDateRange] = useState(null); // {min_date, max_date} | null(로딩 전) — 실제 판매량이 수집된 날짜 범위
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API}/order-recommendation/backtest/date-range`, {
+          headers: getAuthHeaders(),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (cancelled || !res.ok || !data.ok) return;
+        setDateRange({ min_date: data.min_date, max_date: data.max_date });
+        // 초기값(어제)이 실제 수집 범위 밖이면(백필 미완료/최근 수집 지연 등) 범위 안으로 당겨온다.
+        setDate((prev) => {
+          if (data.min_date && prev < data.min_date) return data.min_date;
+          if (data.max_date && prev > data.max_date) return data.max_date;
+          return prev;
+        });
+      } catch {
+        // 조회 실패 시 날짜 제한 없이(기존 정적 범위로) 진행
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -80,6 +106,11 @@ export default function OrderRecommendationBacktestSection({ daily }) {
       clearTimeout(timer);
     };
   }, [date, days, weights]);
+
+  const resetWeights = () => {
+    setWeights({ ...DEFAULT_WEIGHTS });
+    setSaveMessage('');
+  };
 
   const saveWeights = async () => {
     setSaveMessage('저장 중...');
@@ -106,10 +137,16 @@ export default function OrderRecommendationBacktestSection({ daily }) {
             type="date"
             className={styles.backtestDateInput}
             value={date}
-            min={minBacktestDateStr()}
-            max={yesterdayDateStr()}
+            min={dateRange?.min_date || minBacktestDateStr()}
+            max={dateRange?.max_date || yesterdayDateStr()}
+            disabled={dateRange != null && !dateRange.min_date}
             onChange={(e) => setDate(e.target.value)}
           />
+          {dateRange != null && !dateRange.min_date && (
+            <span className={styles.backtestSaveMsg}>
+              선택 가능한 날짜가 없습니다 (같은요일평균 계산에 필요한 3주치 판매량이 아직 안 쌓였습니다)
+            </span>
+          )}
         </div>
         <div className={styles.backtestField}>
           <label>기간(일수, 최대 5일)</label>
@@ -138,6 +175,9 @@ export default function OrderRecommendationBacktestSection({ daily }) {
             />
           </div>
         ))}
+        <button type="button" className={styles.backtestSaveBtn} onClick={resetWeights}>
+          기본값으로
+        </button>
         <button type="button" className={styles.backtestSaveBtn} onClick={saveWeights}>
           이 가중치로 저장
         </button>
@@ -175,7 +215,8 @@ export default function OrderRecommendationBacktestSection({ daily }) {
         <table className={styles.dailyTable}>
           <thead>
             <tr>
-              <th>날짜</th>
+              <th>발주일</th>
+              <th>비교일(실제판매)</th>
               <th>상품명</th>
               <th>예상판매량</th>
               <th>실제판매량</th>
@@ -187,6 +228,7 @@ export default function OrderRecommendationBacktestSection({ daily }) {
             {(result?.items || []).map((item) => (
               <tr key={`${item.date}-${item.yusas_code}`}>
                 <td>{item.date}</td>
+                <td>{item.actual_date || '-'}</td>
                 <td>{item.product_name || '-'}</td>
                 <td>{item.expected_sales_today != null ? item.expected_sales_today.toFixed(1) : '-'}</td>
                 <td>{item.actual_sales_qty ?? '-'}</td>
