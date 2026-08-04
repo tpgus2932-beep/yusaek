@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
 import html2canvas from 'html2canvas';
+import * as XLSX from 'xlsx';
 import styles from './AttendanceAdminPage.module.css';
 import { COLLAB_API_BASE } from '../../lib/api';
 import ScheduleTab from './ScheduleTab';
@@ -31,6 +32,21 @@ const DAILY_BANK_CODES = {
   아이엠뱅크: '031', 신협: '048', 제주: '035', 부산: '032', 씨티: '027', HSBC: '054',
 };
 const DAILY_BANK_OPTIONS = [...Object.keys(DAILY_BANK_CODES), '직접입력:'];
+
+const copyTextToClipboard = async (text) => {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  ta.remove();
+};
 
 const copySalaryCardImage = async (element) => {
   if (!element) throw new Error('복사할 급여명세서를 찾을 수 없습니다.');
@@ -1231,6 +1247,35 @@ export default function AttendanceAdminPage() {
     setPendingTransferCopy({ type: 'fixed', title: `${fixedPayrollMonth}월 고정 알바 미입금 정보`, rows });
   };
 
+  const exportFixedPayrollExcel = () => {
+    const header = [
+      '이름', '구분', '시급', '근무시간(H)', '기본급', '주휴수당', '수당', '세전합계',
+      '소득세', '지방소득세', '공제합계', '실지급액', '입금상태', '은행', '예금주', '계좌번호',
+    ];
+    const body = displayedFixedPayrollRows.map((row) => [
+      row.name,
+      (row.workArea || 'back') === 'front' ? '프론트' : '백',
+      row.salary.hourlyRate,
+      Number(row.salary.monthlyHours.toFixed(1)),
+      row.salary.basicPay,
+      row.salary.holTotal,
+      row.salary.allowanceTotal,
+      row.salary.totalPay,
+      row.salary.incomeTax,
+      row.salary.localTax,
+      row.salary.deduction,
+      row.salary.netPay,
+      row.paymentCompleted ? '입금완료' : '미입금',
+      row.bankName || '',
+      row.accountHolder || '',
+      row.accountNumber || '',
+    ]);
+    const sheet = XLSX.utils.aoa_to_sheet([header, ...body]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, '급여조회');
+    XLSX.writeFile(workbook, `${fixedPayrollYear}년_${fixedPayrollMonth}월_급여조회.xlsx`);
+  };
+
   const copyUnpaidPaymentRequests = () => {
     setPaymentRequestCopyMessage('');
     const unpaid = paymentRequests.filter((entry) => !entry.paymentCompleted);
@@ -1296,7 +1341,7 @@ export default function AttendanceAdminPage() {
     setTransferConfirmBusy(true);
     setTransferConfirmError('');
     try {
-      await navigator.clipboard.writeText(pendingTransferCopy.rows.map((row) => row.excel).join('\n'));
+      await copyTextToClipboard(pendingTransferCopy.rows.map((row) => row.excel).join('\n'));
       const responses = await Promise.all(pendingTransferCopy.rows.map((row) => (
         pendingTransferCopy.type === 'daily'
           ? fetch(`${COLLAB_API_BASE}/attendance/daily-workers/${row.id}/payment`, {
@@ -2613,6 +2658,9 @@ export default function AttendanceAdminPage() {
                     </button>
                     <button className={styles.copyUnpaidBtn} onClick={copyUnpaidFixedWorkers} disabled={fixedPayrollLoading || displayedFixedPayrollRows.length === 0}>
                       미입금 정보 복사
+                    </button>
+                    <button className={styles.copyUnpaidBtn} onClick={exportFixedPayrollExcel} disabled={fixedPayrollLoading || displayedFixedPayrollRows.length === 0}>
+                      엑셀 다운로드
                     </button>
                   </div>
                   {fixedPayrollError && <div className={styles.errorMsg}>{fixedPayrollError}</div>}

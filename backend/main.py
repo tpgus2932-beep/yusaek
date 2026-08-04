@@ -32,7 +32,7 @@ import xlwt
 
 from passlib.context import CryptContext
 from jose import jwt, JWTError
-from api.amood_hapbae import router as amood_hapbae_router, SHARED_COST_BASE_PATH
+from api.amood_hapbae import router as amood_hapbae_router
 from api.wonbe_routes import (
     build_wonbe_router,
     JANGGI_DB_PATH as _JANGGI_DB_PATH,
@@ -607,6 +607,37 @@ class _TursoHTTPConn:
         response = first.get("response", {})
         result = response.get("result", {})
         cur._load_result(result)
+        return cur
+
+    def executemany(self, sql: str, seq_of_params):
+        seq_of_params = list(seq_of_params)
+        cur = _TursoHTTPCursor()
+        if not seq_of_params:
+            return cur
+        requests = [
+            {"type": "execute", "stmt": {"sql": sql, "args": [_py_to_turso_arg(v) for v in params]}}
+            for params in seq_of_params
+        ]
+        requests.append({"type": "close"})
+        resp = _get_turso_http_client().post(
+            _turso_http_url(),
+            headers={
+                "Authorization": f"Bearer {TURSO_AUTH_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={"requests": requests},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        for entry in results:
+            if entry.get("type") == "error":
+                msg = entry.get("error", {}).get("message", "Turso HTTP error")
+                raise RuntimeError(f"Turso: {msg}")
+        if len(results) >= 2:
+            response = results[-2].get("response", {})
+            result = response.get("result", {})
+            cur._load_result(result)
         return cur
 
     def commit(self):
@@ -1467,6 +1498,7 @@ app.include_router(
         get_db=_get_order_recommendation_db,
         get_setting=_get_setting,
         set_setting=_set_setting,
+        get_shared_db=_get_shared_db,
     )
 )
 for _ez_column, _ez_fn in build_ezadmin_collectors(_get_setting).items():
@@ -1521,12 +1553,35 @@ app.include_router(
     )
 )
 
+def _init_client_cancel_soldout_logs():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS client_cancel_soldout_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            username TEXT NOT NULL,
+            action TEXT NOT NULL,
+            summary_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_client_cancel_soldout_logs_created_at "
+        "ON client_cancel_soldout_logs(created_at DESC)"
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_client_cancel_soldout_logs()
+
 app.include_router(
     build_client_cancel_soldout_router(
         get_current_user=_get_current_user,
         get_setting=_get_setting,
         get_db=_get_shared_db,
-        cost_base_path=SHARED_COST_BASE_PATH,
+        cost_base_path=WONBE_DB_PATH,
     )
 )
 
@@ -1624,7 +1679,7 @@ app.include_router(
     build_order_router(
         require_admin=_require_admin,
         get_db=_get_db,
-        order_cost_base_path=SHARED_COST_BASE_PATH,
+        order_cost_base_path=WONBE_DB_PATH,
         get_setting=_get_setting,
         get_shared_db=_get_shared_db,
         is_render=_IS_RENDER,
