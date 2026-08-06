@@ -41,6 +41,7 @@ const App = () => {
   const isCollabPortalRoute = pathname === '/collab';
   const isAttendanceRoute = pathname === '/attendance';
   const isAttendanceAdminRoute = pathname === '/attendance-admin';
+  const isPaymentRequestRoute = pathname === '/payment-request';
   const isGuidebookRoute = pathname === '/guidebook';
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'dashboard');
   const [topMode, setTopMode] = useState('home'); // 'home' | 'db-manager' | 'inventory-dashboard' | 'order-dashboard'
@@ -210,6 +211,7 @@ const App = () => {
   // 출퇴근 페이지 — 로그인 불필요, 최우선 처리
   if (isAttendanceRoute) return <AttendancePage />;
   if (isAttendanceAdminRoute) return <AttendanceAdminPage />;
+  if (isPaymentRequestRoute) return <AttendanceAdminPage initialTab="paymentRequest" paymentRequestOnly />;
   if (isGuidebookRoute) return <GuidebookPage />;
 
   if (!authChecked) {

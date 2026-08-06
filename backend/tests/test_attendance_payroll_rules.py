@@ -310,6 +310,21 @@ def test_member_work_area_defaults_to_back_and_can_move_without_record_changes(t
     member = client.get("/attendance/members").json()[0]
     assert member["workArea"] == "back"
 
+    response = client.patch(
+        f"/attendance/members/{member['id']}/account",
+        json={
+            "pin": "1234",
+            "bankName": "국민",
+            "accountHolder": "기존직원",
+            "accountNumber": "123-456",
+            "residentRegistrationNumber": "900101-1234567",
+        },
+    )
+    assert response.status_code == 200
+    accounts = client.get("/attendance/members/accounts", params={"pin": "1234"}).json()
+    assert accounts[0]["accountNumber"] == "123456"
+    assert accounts[0]["residentRegistrationNumber"] == "9001011234567"
+
     conn = get_db()
     conn.execute(
         "INSERT INTO attendance_records (member_name, date, type, timestamp) VALUES (?, ?, ?, ?)",
@@ -469,6 +484,17 @@ def test_studio_payment_registration_lookup_and_status(tmp_path):
     assert response.json()[0]["accountNumber"] == "123456"
     assert response.json()[0]["modelPayment"] == 100000
     assert response.json()[0]["vatAmount"] == 20000
+    response = client.get(
+        "/attendance/studio-payments",
+        params={"pin": "1234", "date_from": "2026-08-01", "date_to": "2026-08-04"},
+    )
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()] == [payment_id]
+    response = client.get(
+        "/attendance/studio-payments",
+        params={"pin": "1234", "date_from": "2026-08-04", "date_to": "2026-08-01"},
+    )
+    assert response.status_code == 400
     history = client.get(
         "/attendance/studio-payments/history",
         params={"pin": "1234", "studio_name": "A스튜디오"},

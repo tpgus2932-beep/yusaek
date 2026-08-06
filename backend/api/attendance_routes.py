@@ -54,6 +54,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             CREATE TABLE IF NOT EXISTS attendance_members (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 name       TEXT UNIQUE NOT NULL,
+                resident_registration_number TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             )
             """
@@ -198,6 +199,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             ("bank_name", "ALTER TABLE attendance_members ADD COLUMN bank_name TEXT NOT NULL DEFAULT ''"),
             ("account_holder", "ALTER TABLE attendance_members ADD COLUMN account_holder TEXT NOT NULL DEFAULT ''"),
             ("account_number", "ALTER TABLE attendance_members ADD COLUMN account_number TEXT NOT NULL DEFAULT ''"),
+            ("resident_registration_number", "ALTER TABLE attendance_members ADD COLUMN resident_registration_number TEXT NOT NULL DEFAULT ''"),
         ):
             if column not in member_cols:
                 conn.execute(ddl)
@@ -555,6 +557,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         bankName: str
         accountHolder: str
         accountNumber: str
+        residentRegistrationNumber: str = ""
 
     class FixedWorkerPaymentUpdate(BaseModel):
         pin: str
@@ -706,7 +709,8 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         _check_pin(pin)
         conn = get_db()
         rows = conn.execute(
-            "SELECT id, bank_name, account_holder, account_number FROM attendance_members ORDER BY name"
+            "SELECT id, bank_name, account_holder, account_number, resident_registration_number "
+            "FROM attendance_members ORDER BY name"
         ).fetchall()
         conn.close()
         return [
@@ -715,6 +719,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
                 "bankName": row["bank_name"],
                 "accountHolder": row["account_holder"],
                 "accountNumber": row["account_number"],
+                "residentRegistrationNumber": row["resident_registration_number"],
             }
             for row in rows
         ]
@@ -725,16 +730,20 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         bank_name = body.bankName.strip()
         account_holder = body.accountHolder.strip()
         account_number = re.sub(r"[^0-9]", "", body.accountNumber)
+        resident_number = re.sub(r"[^0-9]", "", body.residentRegistrationNumber)
         if not all((bank_name, account_holder, account_number)):
             raise HTTPException(status_code=400, detail="은행, 예금주, 계좌번호를 모두 입력하세요.")
+        if resident_number and len(resident_number) != 13:
+            raise HTTPException(status_code=400, detail="주민등록번호 13자리를 정확히 입력하세요.")
         conn = get_db()
         row = conn.execute("SELECT id FROM attendance_members WHERE id = ?", (member_id,)).fetchone()
         if not row:
             conn.close()
             raise HTTPException(status_code=404, detail="직원을 찾을 수 없습니다.")
         conn.execute(
-            "UPDATE attendance_members SET bank_name = ?, account_holder = ?, account_number = ? WHERE id = ?",
-            (bank_name, account_holder, account_number, member_id),
+            "UPDATE attendance_members SET bank_name = ?, account_holder = ?, account_number = ?, "
+            "resident_registration_number = ? WHERE id = ?",
+            (bank_name, account_holder, account_number, resident_number, member_id),
         )
         conn.commit()
         conn.close()
@@ -1401,14 +1410,36 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         }
 
     @router.get("/studio-payments")
-    def list_studio_payments(pin: str = "", date: str = ""):
+    def list_studio_payments(
+        pin: str = "",
+        date: str = "",
+        date_from: str = "",
+        date_to: str = "",
+    ):
         _check_pin(pin)
+        if date:
+            date_from = date
+            date_to = date
+        for value in (date_from, date_to):
+            if value:
+                try:
+                    datetime.strptime(value, "%Y-%m-%d")
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="조회 날짜 형식이 올바르지 않습니다.")
+        if date_from and date_to and date_from > date_to:
+            raise HTTPException(status_code=400, detail="조회 시작일은 종료일보다 늦을 수 없습니다.")
         conn = get_db()
         query = "SELECT * FROM attendance_studio_payments"
         params = []
-        if date:
-            query += " WHERE shoot_date = ?"
-            params.append(date)
+        conditions = []
+        if date_from:
+            conditions.append("shoot_date >= ?")
+            params.append(date_from)
+        if date_to:
+            conditions.append("shoot_date <= ?")
+            params.append(date_to)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY shoot_date DESC, id DESC"
         rows = conn.execute(query, params).fetchall()
         conn.close()

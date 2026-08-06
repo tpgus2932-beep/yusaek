@@ -498,6 +498,9 @@
   gap: 8px;
   margin-bottom: 14px;
 }
+.studioPaymentFilter {
+  grid-template-columns: repeat(2, minmax(180px, 280px)) auto;
+}
 .paymentRequestCard {
   position: relative;
   display: grid;
@@ -578,6 +581,7 @@
   }
   .paymentRequestGrid { grid-template-columns: 1fr 1fr; }
   .paymentRequestContentField { grid-column: span 2; }
+  .studioPaymentFilter { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .paymentRequestCard { grid-template-columns: 1fr auto; }
   .paymentRequestCard .dailyWorkerAccount,
   .paymentRequestCard .paymentRequestDetails { grid-column: 1; }

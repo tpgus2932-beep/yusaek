@@ -144,12 +144,12 @@ const DailySalaryCard = ({ result }) => {
 };
 
 
-export default function AttendanceAdminPage() {
+export default function AttendanceAdminPage({ initialTab = 'members', paymentRequestOnly = false }) {
   const [pinAuth, setPinAuth] = useState(false);
   const [pin, setPin] = useState('');
   const [pinError, setPinError] = useState('');
   const [pinBusy, setPinBusy] = useState(false);
-  const [tab, setTab] = useState('members');
+  const [tab, setTab] = useState(initialTab);
   const [payrollMode, setPayrollMode] = useState('fixed');
 
   // 직원 관리
@@ -254,7 +254,8 @@ export default function AttendanceAdminPage() {
     studioName: '', usageTime: '', amount: '', vatAmount: '', bankName: '국민', customBank: '',
     accountNumber: '', accountHolder: '', modelName: '', modelPayment: '', shootDate: todayStr,
   });
-  const [studioPaymentFilterDate, setStudioPaymentFilterDate] = useState(todayStr);
+  const [studioPaymentFilterFrom, setStudioPaymentFilterFrom] = useState(todayStr);
+  const [studioPaymentFilterTo, setStudioPaymentFilterTo] = useState(todayStr);
   const [studioPaymentLoading, setStudioPaymentLoading] = useState(false);
   const [studioPaymentError, setStudioPaymentError] = useState('');
   const [studioPaymentCopyMessage, setStudioPaymentCopyMessage] = useState('');
@@ -346,6 +347,7 @@ export default function AttendanceAdminPage() {
   const openMemberAccountEdit = (member) => {
     const account = memberAccounts[member.id] || {};
     const listedBank = Boolean(DAILY_BANK_CODES[account.bankName]);
+    const residentDigits = String(account.residentRegistrationNumber || '').replace(/\D/g, '');
     setEditingMemberAccount({
       id: member.id,
       name: member.name,
@@ -354,6 +356,9 @@ export default function AttendanceAdminPage() {
       customBank: listedBank ? '' : (account.bankName || ''),
       accountHolder: account.accountHolder || '',
       accountNumber: account.accountNumber || '',
+      residentRegistrationNumber: residentDigits.length > 6
+        ? `${residentDigits.slice(0, 6)}-${residentDigits.slice(6)}`
+        : residentDigits,
     });
     setMemberAccountError('');
   };
@@ -363,8 +368,13 @@ export default function AttendanceAdminPage() {
     const bankName = editingMemberAccount.bank === '직접입력:'
       ? editingMemberAccount.customBank.trim()
       : editingMemberAccount.bank;
+    const residentDigits = editingMemberAccount.residentRegistrationNumber.replace(/\D/g, '');
     if (!bankName || !editingMemberAccount.accountHolder.trim() || !editingMemberAccount.accountNumber.trim()) {
       setMemberAccountError('은행, 예금주, 계좌번호를 모두 입력하세요.');
+      return;
+    }
+    if (residentDigits && residentDigits.length !== 13) {
+      setMemberAccountError('주민등록번호 13자리를 정확히 입력하세요.');
       return;
     }
     const res = await fetch(`${COLLAB_API_BASE}/attendance/members/${editingMemberAccount.id}/account`, {
@@ -375,6 +385,7 @@ export default function AttendanceAdminPage() {
         bankName,
         accountHolder: editingMemberAccount.accountHolder.trim(),
         accountNumber: editingMemberAccount.accountNumber.trim(),
+        residentRegistrationNumber: residentDigits,
       }),
     });
     const data = await res.json().catch(() => ({}));
@@ -544,10 +555,18 @@ export default function AttendanceAdminPage() {
   };
 
   const loadStudioPayments = async () => {
+    if (studioPaymentFilterFrom && studioPaymentFilterTo && studioPaymentFilterFrom > studioPaymentFilterTo) {
+      setStudioPaymentError('조회 시작일은 종료일보다 늦을 수 없습니다.');
+      return;
+    }
     setStudioPaymentLoading(true);
     setStudioPaymentError('');
     try {
-      const params = new URLSearchParams({ pin, date: studioPaymentFilterDate });
+      const params = new URLSearchParams({
+        pin,
+        date_from: studioPaymentFilterFrom,
+        date_to: studioPaymentFilterTo,
+      });
       const res = await fetch(`${COLLAB_API_BASE}/attendance/studio-payments?${params}`);
       const data = await res.json().catch(() => []);
       if (!res.ok) throw new Error(data.detail || '스튜디오 입금 조회에 실패했습니다.');
@@ -586,7 +605,8 @@ export default function AttendanceAdminPage() {
       if (!res.ok) throw new Error(data.detail || '스튜디오 입금 등록에 실패했습니다.');
       setStudioForm((current) => ({ ...current, studioName: '', usageTime: '', amount: '', vatAmount: '', accountNumber: '', accountHolder: '', modelName: '', modelPayment: '' }));
       setLastStudioHistoryPromptName('');
-      setStudioPaymentFilterDate(studioForm.shootDate);
+      setStudioPaymentFilterFrom(studioForm.shootDate);
+      setStudioPaymentFilterTo(studioForm.shootDate);
       setStudioPayments([data]);
     } catch (error) {
       setStudioPaymentError(error.message || '스튜디오 입금 등록에 실패했습니다.');
@@ -1333,7 +1353,10 @@ export default function AttendanceAdminPage() {
       excel: [DAILY_BANK_CODES[entry.bankName], entry.accountNumber, entry.amount + (entry.vatAmount || 0),
         entry.accountHolder, '주식회사유색', `${entry.studioName} 스튜디오 입금`].join('\t'),
     }));
-    setPendingTransferCopy({ type: 'studio', title: `${studioPaymentFilterDate} 스튜디오 미입금 정보`, rows });
+    const filterLabel = studioPaymentFilterFrom === studioPaymentFilterTo
+      ? studioPaymentFilterFrom
+      : `${studioPaymentFilterFrom} ~ ${studioPaymentFilterTo}`;
+    setPendingTransferCopy({ type: 'studio', title: `${filterLabel} 스튜디오 미입금 정보`, rows });
   };
 
   const confirmTransferCopy = async () => {
@@ -1723,7 +1746,7 @@ export default function AttendanceAdminPage() {
   return (
     <div className={styles.page}>
       <nav className={styles.nav}>
-        <span className={styles.navTitle}>⚙️ 출퇴근 관리</span>
+        <span className={styles.navTitle}>{paymentRequestOnly ? '💸 입금요청' : '⚙️ 출퇴근 관리'}</span>
         <div className={styles.navActions}>
           <button className={styles.navSecBtn} onClick={() => setShowPinChange(true)}>PIN 변경</button>
           <button className={styles.navBtn} onClick={goBack}>닫기</button>
@@ -1732,7 +1755,7 @@ export default function AttendanceAdminPage() {
 
       <div className={styles.content}>
         {/* 탭 */}
-        <div className={styles.tabBar}>
+        {!paymentRequestOnly && <div className={styles.tabBar}>
           <button
             className={`${styles.tabBtn} ${tab === 'members' ? styles.tabActive : ''}`}
             onClick={() => setTab('members')}
@@ -1757,13 +1780,7 @@ export default function AttendanceAdminPage() {
           >
             🧾 급여 계산
           </button>
-          <button
-            className={`${styles.tabBtn} ${tab === 'paymentRequest' ? styles.tabActive : ''}`}
-            onClick={() => setTab('paymentRequest')}
-          >
-            💸 입금 요청
-          </button>
-        </div>
+        </div>}
 
         {tab === 'payroll' && (
           <div className={styles.payrollSubTabs}>
@@ -1931,12 +1948,13 @@ export default function AttendanceAdminPage() {
                 </div>
                 <div className={styles.card}>
                   <div className={styles.dailyListHeader}><strong>스튜디오 입금 목록</strong><span>{studioPayments.length}건</span></div>
-                  <div className={styles.paymentRequestFilter}>
-                    <label className={styles.dailyField}><span>조회 날짜</span><input type="date" className={styles.filterInput} value={studioPaymentFilterDate} onChange={(e) => setStudioPaymentFilterDate(e.target.value)} /></label>
+                  <div className={`${styles.paymentRequestFilter} ${styles.studioPaymentFilter}`}>
+                    <label className={styles.dailyField}><span>조회 시작일</span><input type="date" className={styles.filterInput} value={studioPaymentFilterFrom} onChange={(e) => setStudioPaymentFilterFrom(e.target.value)} /></label>
+                    <label className={styles.dailyField}><span>조회 종료일</span><input type="date" className={styles.filterInput} value={studioPaymentFilterTo} onChange={(e) => setStudioPaymentFilterTo(e.target.value)} /></label>
                     <button className={`${styles.searchBtn} ${styles.dailySearchBtn}`} onClick={loadStudioPayments} disabled={studioPaymentLoading}>조회</button>
                   </div>
                   {studioPaymentCopyMessage && <div className={styles.dailyCopyMessage}>{studioPaymentCopyMessage}</div>}
-                  {!studioPayments.length ? <div className={styles.emptyMsg}>해당 날짜에 등록된 스튜디오 입금이 없습니다.</div> : (
+                  {!studioPayments.length ? <div className={styles.emptyMsg}>해당 기간에 등록된 스튜디오 입금이 없습니다.</div> : (
                     <div className={styles.dailyWorkerScroll}>{studioPayments.map((entry) => (
                       <article key={entry.id} className={`${styles.studioPaymentCard} ${entry.paymentCompleted ? styles.dailyWorkerCardPaid : ''}`}>
                         <label className={styles.transferSelectBox} onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedStudioPaymentIds.has(entry.id)} disabled={entry.paymentCompleted} onChange={(e) => setSelectedStudioPaymentIds((current) => { const next = new Set(current); if (e.target.checked) next.add(entry.id); else next.delete(entry.id); return next; })} /></label>
@@ -2880,6 +2898,22 @@ export default function AttendanceAdminPage() {
               <label className={styles.editLabel}>
                 계좌번호
                 <input className={styles.editInput} inputMode="numeric" value={editingMemberAccount.accountNumber} onChange={(e) => setEditingMemberAccount((current) => ({ ...current, accountNumber: e.target.value }))} />
+              </label>
+              <label className={styles.editLabel}>
+                주민등록번호
+                <input
+                  className={styles.editInput}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  maxLength={14}
+                  placeholder="000000-0000000"
+                  value={editingMemberAccount.residentRegistrationNumber}
+                  onChange={(e) => {
+                    const digits = e.target.value.replace(/\D/g, '').slice(0, 13);
+                    const value = digits.length > 6 ? `${digits.slice(0, 6)}-${digits.slice(6)}` : digits;
+                    setEditingMemberAccount((current) => ({ ...current, residentRegistrationNumber: value }));
+                  }}
+                />
               </label>
             </div>
             {memberAccountError && <div className={styles.pinError}>{memberAccountError}</div>}

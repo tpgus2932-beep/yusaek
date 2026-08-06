@@ -1,4 +1,4 @@
-import { Bell, CalendarDays, ClipboardList, DatabaseZap, Key, Warehouse } from 'lucide-react';
+import { Bell, CalendarDays, CircleDollarSign, ClipboardList, DatabaseZap, Key, Warehouse } from 'lucide-react';
 import { useState } from 'react';
 import styles from './Header.module.css';
 import { COLLAB_API_BASE, LOCAL_API_BASE, getAuthHeaders } from '../../lib/api';
@@ -150,6 +150,16 @@ const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode })
                     <CalendarDays size={15} />
                     행사 일정
                 </button>
+                <a
+                    href="/payment-request"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={styles.paymentRequestLink}
+                    title="입금요청 열기"
+                >
+                    <CircleDollarSign size={15} />
+                    입금요청
+                </a>
                 <a
                     href="/attendance"
                     target="_blank"
