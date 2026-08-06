@@ -1270,26 +1270,33 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
   const exportFixedPayrollExcel = () => {
     const header = [
       '이름', '구분', '시급', '근무시간(H)', '기본급', '주휴수당', '수당', '세전합계',
-      '소득세', '지방소득세', '공제합계', '실지급액', '입금상태', '은행', '예금주', '계좌번호',
+      '소득세', '지방소득세', '공제합계', '실지급액', '입금상태', '은행', '예금주', '계좌번호', '주민등록번호',
     ];
-    const body = displayedFixedPayrollRows.map((row) => [
-      row.name,
-      (row.workArea || 'back') === 'front' ? '프론트' : '백',
-      row.salary.hourlyRate,
-      Number(row.salary.monthlyHours.toFixed(1)),
-      row.salary.basicPay,
-      row.salary.holTotal,
-      row.salary.allowanceTotal,
-      row.salary.totalPay,
-      row.salary.incomeTax,
-      row.salary.localTax,
-      row.salary.deduction,
-      row.salary.netPay,
-      row.paymentCompleted ? '입금완료' : '미입금',
-      row.bankName || '',
-      row.accountHolder || '',
-      row.accountNumber || '',
-    ]);
+    const body = displayedFixedPayrollRows.map((row) => {
+      const residentDigits = (row.residentRegistrationNumber || '').replace(/\D/g, '');
+      const formattedResidentNumber = residentDigits.length === 13
+        ? `${residentDigits.slice(0, 6)}-${residentDigits.slice(6)}`
+        : '';
+      return [
+        row.name,
+        (row.workArea || 'back') === 'front' ? '프론트' : '백',
+        row.salary.hourlyRate,
+        Number(row.salary.monthlyHours.toFixed(1)),
+        row.salary.basicPay,
+        row.salary.holTotal,
+        row.salary.allowanceTotal,
+        row.salary.totalPay,
+        row.salary.incomeTax,
+        row.salary.localTax,
+        row.salary.deduction,
+        row.salary.netPay,
+        row.paymentCompleted ? '입금완료' : '미입금',
+        row.bankName || '',
+        row.accountHolder || '',
+        row.accountNumber || '',
+        formattedResidentNumber,
+      ];
+    });
     const sheet = XLSX.utils.aoa_to_sheet([header, ...body]);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, sheet, '급여조회');
