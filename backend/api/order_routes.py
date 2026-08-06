@@ -17,12 +17,20 @@ from openpyxl import load_workbook, Workbook
 import xlwt
 
 from services.top90_client import execute_main_orders, Top90Error
+from services.order_history_store import init_order_history_table, record_order_history
 from sdk.ably import AblyClient
 from sdk.ezadmin import EzAdminClient, EzAdminSessionExpired
-from api.wonbe_routes import load_wonbe_option_sno_map
+from api.wonbe_routes import (
+    load_wonbe_option_sno_map,
+    load_wonbe_client_info_by_code,
+    load_wonbe_product_name_map,
+)
+from services.misong_lookup import load_misong_qty_by_code
 
 _EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+_JINMONEY_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "assets" / "jinmoney_order_template.xlsx"
+_JINMONEY_RECEIPT_RE = re.compile(r"org_value=['\"]([^'\"]*)['\"]", re.IGNORECASE)
 
 
 def build_order_router(
@@ -32,6 +40,7 @@ def build_order_router(
     order_cost_base_path: Path,
     get_setting,
     get_shared_db,
+    get_user_display,
     is_render: bool = False,
 ):
     router = APIRouter()
@@ -74,6 +83,57 @@ def build_order_router(
         quoted = urllib.parse.quote(safe_name)
         return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
 
+    def _jinmoney_receipt_qty(value) -> int:
+        raw = str(value or "")
+        match = _JINMONEY_RECEIPT_RE.search(raw)
+        text = match.group(1) if match else _ez_val(raw)
+        number = re.search(r"-?\d[\d,]*", text)
+        return int(number.group(0).replace(",", "")) if number else 0
+
+    def _jinmoney_size(option_text: str) -> str:
+        normalized = re.sub(r"[\[\](){}]", "-", option_text.upper())
+        match = re.search(r"(?:^|[-\s/])(2XL|XL|L|M|S)(?=$|[-\s/])", normalized)
+        return match.group(1) if match else ""
+
+    def _jinmoney_map_item(supply_product_name: str, option_text: str):
+        match = re.match(r"^\s*진머니\s+(.+?)\s*$", supply_product_name, re.IGNORECASE)
+        if not match:
+            return None, "공급처상품명에서 '진머니 제품명' 형식을 확인할 수 없습니다."
+
+        source_product = re.sub(r"\s+", "", match.group(1)).lower()
+        option = re.sub(r"\s+", "", option_text).lower()
+        size = _jinmoney_size(option_text)
+        if not size:
+            return None, "옵션에서 S/M/L/XL 사이즈를 찾을 수 없습니다."
+
+        if source_product in {"1004", "w1004"}:
+            if "연청" in option:
+                product_code = "w1004-1"
+            elif "흑청" in option:
+                product_code = "w1004-2"
+            else:
+                return None, "1004 옵션에서 연청/흑청을 찾을 수 없습니다."
+        elif source_product in {"1007", "w1007"}:
+            if "흑청" in option:
+                product_code = "W1007"
+            elif "중청" in option:
+                product_code = "w1007-1"
+            elif "연청" in option:
+                product_code = "w1007-2"
+            else:
+                return None, "w1007 옵션에서 흑청/중청/연청을 찾을 수 없습니다."
+        elif source_product in {"1011", "w1011"}:
+            if "슬림" in option:
+                product_code = "1011"
+            elif "베이직" in option:
+                product_code = "1011-1"
+            else:
+                return None, "w1011 옵션에서 슬림/베이직을 찾을 수 없습니다."
+        else:
+            return None, f"아직 등록되지 않은 진머니 제품명입니다: {match.group(1)}"
+
+        return {"productCode": product_code, "size": size}, None
+
     def _clean_product_name(v) -> str:
         if v is None:
             return ""
@@ -103,15 +163,9 @@ def build_order_router(
         s = re.sub(r"\s+", " ", s).strip()
         return s.lower()
 
-    def _build_daily_sales_cost_map(path: Path) -> dict[str, object]:
-        if not path.exists():
-            raise FileNotFoundError(f"원가베이스 파일이 없습니다: {path}")
-        wb = load_workbook(path, data_only=True)
-        ws = wb.active
+    def _build_daily_sales_cost_map() -> dict[str, object]:
         out: dict[str, object] = {}
-        for row in ws.iter_rows(min_row=1, values_only=True):
-            code = row[COST_BASE_CODE_COL] if len(row) > COST_BASE_CODE_COL else None
-            match_name = row[COST_BASE_MATCH_COL] if len(row) > COST_BASE_MATCH_COL else None
+        for code, match_name in load_wonbe_product_name_map().items():
             if match_name is None:
                 continue
             key = _normalize_daily_sales(match_name)
@@ -182,17 +236,6 @@ def build_order_router(
                 )
         return out
 
-    def _read_cost_base_df(path: Path) -> pd.DataFrame:
-        ext = path.suffix.lower()
-        if ext in (".xlsx", ".xlsm"):
-            return pd.read_excel(path, dtype=str, engine="openpyxl")
-        if ext == ".xls":
-            try:
-                return pd.read_excel(path, dtype=str, engine="xlrd")
-            except Exception:
-                return pd.read_excel(path, dtype=str)
-        return pd.read_excel(path, dtype=str)
-
     def _read_order_excel_df(path: Path) -> pd.DataFrame:
         ext = path.suffix.lower()
         last_error = None
@@ -231,23 +274,14 @@ def build_order_router(
 
         raise ValueError(f"엑셀 형식을 읽을 수 없습니다. 파일 형식 또는 손상 여부를 확인하세요. ({last_error})")
 
-    def _load_cost_base_items(path: Path) -> list[dict]:
-        if not path.exists():
-            return []
-        df = _read_cost_base_df(path)
-        if df.shape[1] < COST_BASE_REQUIRED_COLS:
-            return []
-        codes = df.iloc[:, COST_BASE_CODE_COL].map(_safe_str).tolist()
-        names = df.iloc[:, COST_BASE_MATCH_COL].map(_safe_str).tolist()
-        out = []
-        for code, name in zip(codes, names):
-            if not code:
-                continue
-            out.append({"name": name, "code": code})
-        return out
+    def _load_cost_base_items() -> list[dict]:
+        return [
+            {"name": name, "code": code}
+            for code, name in load_wonbe_product_name_map().items()
+        ]
 
-    def _load_cost_base_name_map(path: Path) -> dict[str, str]:
-        items = _load_cost_base_items(path)
+    def _load_cost_base_name_map() -> dict[str, str]:
+        items = _load_cost_base_items()
         m: dict[str, str] = {}
         for it in items:
             code = _norm_code(it.get("code", ""))
@@ -277,7 +311,7 @@ def build_order_router(
         q_norm = (q or "").strip().lower()
         if limit <= 0 or limit > 100:
             limit = 20
-        items = _load_cost_base_items(order_cost_base_path)
+        items = _load_cost_base_items()
         if q_norm:
             items = [
                 it
@@ -299,7 +333,7 @@ def build_order_router(
 
     @router.get("/order/registered/list")
     def order_registered_list(admin: str = Depends(require_admin)):
-        name_map = _load_cost_base_name_map(order_cost_base_path)
+        name_map = _load_cost_base_name_map()
         conn = get_db()
         rows = conn.execute(
             "SELECT code, qty, created_at, updated_at FROM order_registered_codes ORDER BY code ASC"
@@ -499,7 +533,7 @@ def build_order_router(
         if ext not in {".xlsx", ".xlsm"}:
             raise HTTPException(status_code=400, detail="xlsx/xlsm만 업로드 가능합니다.")
         if not order_cost_base_path.exists():
-            raise HTTPException(status_code=400, detail=f"원가베이스 파일이 없습니다: {order_cost_base_path}")
+            raise HTTPException(status_code=400, detail=f"원가베이스 DB가 없습니다: {order_cost_base_path}")
 
         raw = await file.read()
         if not raw:
@@ -519,7 +553,7 @@ def build_order_router(
                 pass
 
         in_ws = in_wb.active
-        cost_map = _build_daily_sales_cost_map(order_cost_base_path)
+        cost_map = _build_daily_sales_cost_map()
         base_rows = _build_daily_sales_rows(in_ws, skip_header=skip_header)
 
         rows: list[dict] = []
@@ -564,7 +598,7 @@ def build_order_router(
         if ext not in {".xlsx", ".xlsm"}:
             raise HTTPException(status_code=400, detail="xlsx/xlsm만 업로드 가능합니다.")
         if not order_cost_base_path.exists():
-            raise HTTPException(status_code=400, detail=f"원가베이스 파일이 없습니다: {order_cost_base_path}")
+            raise HTTPException(status_code=400, detail=f"원가베이스 DB가 없습니다: {order_cost_base_path}")
 
         raw = await file.read()
         if not raw:
@@ -584,7 +618,7 @@ def build_order_router(
                 pass
 
         in_ws = in_wb.active
-        cost_map = _build_daily_sales_cost_map(order_cost_base_path)
+        cost_map = _build_daily_sales_cost_map()
         base_rows = _build_daily_sales_rows(in_ws, skip_header=skip_header)
         rows: list[dict] = []
         for row in base_rows:
@@ -642,24 +676,6 @@ def build_order_router(
 
     # ── 인기재고 (에이블리 상품별 판매 통계 랭킹) ────────────────────────────────
     POPULAR_GOODS_SNAPSHOT_KEY = "order_popular_goods"
-
-    def _load_misong_qty_by_code() -> dict[str, int]:
-        """상품코드 → 미송수량(노예김승일 미송관리, misong_items 테이블) 합계. 실패 시 빈 매핑."""
-        conn = get_shared_db()
-        try:
-            rows = conn.execute(
-                "SELECT original_f, SUM(F) AS qty FROM misong_items "
-                "WHERE TRIM(original_f) != '' GROUP BY original_f"
-            ).fetchall()
-            return {
-                " ".join(str(r["original_f"] or "").split()): int(r["qty"] or 0)
-                for r in rows
-                if " ".join(str(r["original_f"] or "").split())
-            }
-        except Exception:
-            return {}
-        finally:
-            conn.close()
 
     def _init_popular_goods_snapshot_table(conn):
         conn.execute("""
@@ -796,11 +812,15 @@ def build_order_router(
 
         # 옵션번호 → 상품코드(DB관리 원가베이스유) → 재고/접수(EZAdmin I100) 매칭.
         option_to_product_id = load_wonbe_option_sno_map()
+        client_info_by_code = load_wonbe_client_info_by_code()
         for item in items:
             item["product_id"] = option_to_product_id.get(str(item.get("goods_option_sno") or ""))
+            client_info = client_info_by_code.get(item["product_id"] or "", {})
+            item["client"] = client_info.get("거래처", "")
+            item["client_product_name"] = client_info.get("거래처상품명", "")
 
         # 상품코드 → 미송수량(노예김승일 미송관리). 없으면 0.
-        misong_qty_by_code = _load_misong_qty_by_code()
+        misong_qty_by_code = load_misong_qty_by_code(get_shared_db)
         for item in items:
             item["misong_qty"] = misong_qty_by_code.get(item.get("product_id") or "", 0)
 
@@ -850,6 +870,143 @@ def build_order_router(
             "items": items,
             "need_ezadmin_session": need_ezadmin_session,
         }
+    # ── 진머니 발주서 (EZAdmin I100 접수수량 조회) ─────────────────────────────
+    @router.post("/order/jinmoney/export")
+    async def jinmoney_order_export(admin: str = Depends(require_admin)):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+        if not _JINMONEY_TEMPLATE_PATH.exists():
+            raise HTTPException(status_code=500, detail="진머니 주문서 템플릿이 없습니다.")
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        jinmoney_query = urllib.parse.quote("진머니")
+        par = (
+            "auto_search=&search_all_product=&multi_supply_group=&multi_supply=&str_supply_code=0"
+            f"&tags_string=&product_tag_include_type=1&query_type=brand&query_str={jinmoney_query}"
+            "&stock_type=0&stock_start=&stock_end=&notrans_day=&notrans_cnt=&notrans_status=0&stock_status=0"
+            f"&start_date={today}&start_hour=00%3A00%3A00&end_date={today}&end_hour=23%3A59%3A59"
+            "&date_period_sel=1&work_type=stockin&work_start=&work_end=&inout_type=0&product_date="
+            f"&start_date2={today}&end_date2={today}&date_period_sel2=1&products_sort=1&category=0"
+            "&except_soldout=0&temp_soldout=0&location=0"
+        )
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": f"{_EZADMIN_BASE}/template40.htm?template=I100",
+        }
+
+        raw_items = []
+        try:
+            async with httpx.AsyncClient(timeout=120.0, verify=False, follow_redirects=True) as client:
+                page = 1
+                while True:
+                    response = await client.post(
+                        f"{_EZADMIN_BASE}/function.htm",
+                        data={
+                            "_search": "false",
+                            "nd": str(int(datetime.now().timestamp() * 1000)),
+                            "rows": "5000",
+                            "page": str(page),
+                            "sidx": "",
+                            "sord": "asc",
+                            "template": "I100",
+                            "action": "search",
+                            "page_code": "I100",
+                            "par": par,
+                        },
+                        cookies={"PHPSESSID": phpsessid},
+                        headers=headers,
+                    )
+                    if response.status_code >= 400:
+                        raise HTTPException(status_code=502, detail=f"이지어드민 조회 실패 (HTTP {response.status_code})")
+                    try:
+                        data = response.json()
+                    except Exception:
+                        return {"ok": False, "need_session": True}
+                    if not isinstance(data, dict) or "rows" not in data:
+                        return {"ok": False, "need_session": True}
+
+                    for row in data.get("rows") or []:
+                        cell = row.get("cell", row) or {}
+                        supply_product_name = _ez_val(
+                            cell.get("brand") or cell.get("supply_product_name")
+                        )
+                        if not re.match(r"^\s*진머니(?:\s|$)", supply_product_name, re.IGNORECASE):
+                            continue
+                        # I100 응답 기준:
+                        # before_trans = 화면의 "접수", stock_in_standby = "입고대기"
+                        receipt_qty = _jinmoney_receipt_qty(cell.get("before_trans"))
+                        if receipt_qty <= 0:
+                            continue
+                        raw_items.append({
+                            "supplyProductName": supply_product_name,
+                            "option": _ez_val(cell.get("options")),
+                            "receiptQty": receipt_qty,
+                        })
+
+                    total_pages = int(data.get("total") or 1)
+                    if page >= total_pages or page >= 50:
+                        break
+                    page += 1
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"이지어드민 연결 실패: {type(exc).__name__}")
+
+        if not raw_items:
+            raise HTTPException(status_code=404, detail="접수 수량이 있는 진머니 상품이 없습니다.")
+
+        aggregated = {}
+        unmatched = []
+        for item in raw_items:
+            mapped, reason = _jinmoney_map_item(item["supplyProductName"], item["option"])
+            if not mapped:
+                unmatched.append({**item, "reason": reason})
+                continue
+            key = (mapped["productCode"], mapped["size"])
+            aggregated[key] = aggregated.get(key, 0) + item["receiptQty"]
+
+        if unmatched:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "매칭되지 않은 진머니 상품이 있어 발주서 생성을 중단했습니다.",
+                    "unmatched": unmatched,
+                },
+            )
+
+        output_rows = [
+            {"productCode": code, "size": size, "qty": qty}
+            for (code, size), qty in sorted(aggregated.items())
+        ]
+        if len(output_rows) > 28:
+            raise HTTPException(status_code=400, detail="주문서 입력 가능 행(28개)을 초과했습니다.")
+
+        workbook = load_workbook(_JINMONEY_TEMPLATE_PATH)
+        sheet = workbook["진머니 주문서양식"]
+        for row_number in range(6, 34):
+            sheet.cell(row_number, 1).value = row_number - 5
+            for column in range(2, 5):
+                sheet.cell(row_number, column).value = None
+        for index, item in enumerate(output_rows, start=6):
+            sheet.cell(index, 2).value = item["productCode"]
+            sheet.cell(index, 3).value = item["size"]
+            sheet.cell(index, 4).value = item["qty"]
+        sheet["D34"] = "=SUM(D6:D33)"
+
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        now = datetime.now()
+        filename = f"{now.month}월 {now.day}일 진머니 발주서.xlsx"
+        return Response(
+            content=buffer.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": _content_disposition(filename),
+                "X-Jinmoney-Items": str(len(output_rows)),
+            },
+        )
 
     # ── 메인발주 목록 (EZAdmin IO30 미출고/부족 상품 조회) ───────────────────────
     @router.post("/order/main-order/list")
@@ -961,6 +1118,95 @@ def build_order_router(
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+        result_by_store = {}
+        for s in result.get("success") or []:
+            result_by_store[s["store_name"]] = {"result_status": "success"}
+        for f in result.get("failed") or []:
+            result_by_store[f["store_name"]] = {"result_status": "failed", "reason": f.get("reason", "")}
+        record_order_history(
+            get_db,
+            execution_id=str(uuid.uuid4()),
+            recorded_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            action_type="order_execute",
+            items=items,
+            username=admin,
+            display_name=get_user_display(admin),
+            result_by_store=result_by_store,
+        )
+
         return {"ok": True, **result}
+
+    # ── 발주내역 (TSV 복사 / 발주 실행 기록) ──────────────────────────────────
+    @router.post("/order/main-order/record-tsv-copy")
+    async def main_order_record_tsv_copy(payload: dict = Body(...), admin: str = Depends(require_admin)):
+        items = payload.get("items") or []
+        record_order_history(
+            get_db,
+            execution_id=str(uuid.uuid4()),
+            recorded_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            action_type="tsv_copy",
+            items=items,
+            username=admin,
+            display_name=get_user_display(admin),
+        )
+        return {"ok": True}
+
+    @router.get("/order/main-order/history")
+    def main_order_history(
+        offset: int = 0,
+        limit: int = 50,
+        date_from: str = "",
+        date_to: str = "",
+        action_type: str = "",
+        q: str = "",
+        admin: str = Depends(require_admin),
+    ):
+        offset = max(0, offset)
+        limit = min(max(1, limit), 200)
+        clauses = []
+        params = []
+        if date_from:
+            clauses.append("recorded_at >= ?")
+            params.append(f"{date_from} 00:00:00")
+        if date_to:
+            clauses.append("recorded_at <= ?")
+            params.append(f"{date_to} 23:59:59")
+        if action_type:
+            clauses.append("action_type = ?")
+            params.append(action_type)
+        if q.strip():
+            like = f"%{q.strip()}%"
+            clauses.append(
+                "(product_code LIKE ? OR product_name LIKE ? OR store_name LIKE ? "
+                "OR recorded_by_username LIKE ? OR recorded_by_display_name LIKE ?)"
+            )
+            params.extend([like, like, like, like, like])
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        init_order_history_table(get_db)
+        conn = get_db()
+        try:
+            total = conn.execute(f"SELECT COUNT(*) FROM order_history{where}", params).fetchone()[0]
+            rows = conn.execute(
+                f"SELECT * FROM order_history{where} ORDER BY recorded_at DESC, id DESC LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            ).fetchall()
+            return {"ok": True, "total": total, "rows": [dict(row) for row in rows]}
+        finally:
+            conn.close()
+
+    @router.delete("/order/main-order/history")
+    def main_order_history_delete(payload: dict = Body(...), admin: str = Depends(require_admin)):
+        ids = [int(i) for i in (payload.get("ids") or []) if str(i).strip().lstrip("-").isdigit()]
+        if not ids:
+            raise HTTPException(status_code=400, detail="삭제할 항목 필요")
+        init_order_history_table(get_db)
+        conn = get_db()
+        try:
+            placeholders = ", ".join("?" for _ in ids)
+            cur = conn.execute(f"DELETE FROM order_history WHERE id IN ({placeholders})", ids)
+            conn.commit()
+            return {"ok": True, "deleted": cur.rowcount}
+        finally:
+            conn.close()
 
     return router

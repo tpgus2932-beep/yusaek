@@ -88,6 +88,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
                 account_number      TEXT NOT NULL DEFAULT '',
                 resident_registration_number TEXT NOT NULL DEFAULT '',
                 payment_completed   INTEGER NOT NULL DEFAULT 0,
+                hourly_rate        INTEGER NOT NULL,
                 created_at          TEXT NOT NULL,
                 UNIQUE(name, date)
             )
@@ -105,6 +106,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             ("account_number", "ALTER TABLE attendance_daily_workers ADD COLUMN account_number TEXT NOT NULL DEFAULT ''"),
             ("resident_registration_number", "ALTER TABLE attendance_daily_workers ADD COLUMN resident_registration_number TEXT NOT NULL DEFAULT ''"),
             ("payment_completed", "ALTER TABLE attendance_daily_workers ADD COLUMN payment_completed INTEGER NOT NULL DEFAULT 0"),
+            ("hourly_rate", "ALTER TABLE attendance_daily_workers ADD COLUMN hourly_rate INTEGER NOT NULL DEFAULT 10400"),
         ):
             if column not in daily_worker_cols:
                 conn.execute(ddl)
@@ -171,6 +173,10 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             conn.execute(
                 "ALTER TABLE attendance_members ADD COLUMN hourly_rate INTEGER NOT NULL DEFAULT 0"
             )
+        if "pay_type" not in member_cols:
+            conn.execute(
+                "ALTER TABLE attendance_members ADD COLUMN pay_type TEXT NOT NULL DEFAULT 'hourly'"
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS attendance_member_hourly_rate_history (
@@ -185,6 +191,22 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_member_hourly_rate_history_member_date "
             "ON attendance_member_hourly_rate_history(member_id, effective_date)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance_piece_work_records (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                member_id   INTEGER NOT NULL,
+                work_date   TEXT NOT NULL,
+                job_count   INTEGER NOT NULL,
+                unit_amount INTEGER NOT NULL,
+                created_at  TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_piece_work_member_date "
+            "ON attendance_piece_work_records(member_id, work_date)"
         )
         history_bootstrap_now = datetime.now(timezone.utc).astimezone(KST)
         conn.execute(
@@ -261,6 +283,10 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         if "vat_amount" not in studio_payment_cols:
             conn.execute(
                 "ALTER TABLE attendance_studio_payments ADD COLUMN vat_amount INTEGER NOT NULL DEFAULT 0"
+            )
+        if "model_member_id" not in studio_payment_cols:
+            conn.execute(
+                "ALTER TABLE attendance_studio_payments ADD COLUMN model_member_id INTEGER"
             )
         conn.execute(
             """
@@ -552,6 +578,10 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         pin: str
         workArea: str
 
+    class MemberPayTypeUpdate(BaseModel):
+        pin: str
+        payType: str
+
     class MemberAccountUpdate(BaseModel):
         pin: str
         bankName: str
@@ -572,6 +602,19 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
     class FixedAllowancesUpdate(BaseModel):
         pin: str
         allowances: list[FixedAllowanceItem]
+
+    class PieceWorkCreate(BaseModel):
+        pin: str
+        memberId: int
+        date: str
+        jobCount: int
+        unitAmount: int
+
+    class PieceWorkUpdate(PieceWorkCreate):
+        pass
+
+    class PieceWorkDelete(BaseModel):
+        pin: str
 
     class RecordCreate(BaseModel):
         member_name: str
@@ -612,6 +655,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         date: str
         startTime: str
         endTime: str
+        hourlyRate: int
         bankName: str = ""
         accountHolder: str = ""
         accountNumber: str = ""
@@ -663,8 +707,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         bankName: str
         accountNumber: str
         accountHolder: str
-        modelName: str
-        modelPayment: int
+        modelMemberId: int
         shootDate: str
 
     class StudioPaymentUpdate(StudioPaymentCreate):
@@ -675,7 +718,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
     def list_members():
         conn = get_db()
         rows = conn.execute(
-            "SELECT id, name, include_in_schedule, work_area, hourly_rate "
+            "SELECT id, name, include_in_schedule, work_area, hourly_rate, pay_type "
             "FROM attendance_members ORDER BY name"
         ).fetchall()
         history_rows = conn.execute(
@@ -697,6 +740,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
                 "includeInSchedule": bool(r["include_in_schedule"]),
                 "workArea": r["work_area"] if r["work_area"] in ("back", "front") else "back",
                 "hourlyRate": r["hourly_rate"] if r["hourly_rate"] > 0 else None,
+                "payType": r["pay_type"] if r["pay_type"] in ("hourly", "piece", "studio") else "hourly",
                 "hourlyRateHistory": histories.get(r["id"], []),
             }
             for r in rows
@@ -830,6 +874,139 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.close()
         return {"ok": True, "paymentCompleted": body.completed}
 
+    # ── 건당 알바 ──────────────────────────────────────
+    def _piece_work_row_to_dict(row):
+        return {
+            "id": row["id"],
+            "memberId": row["member_id"],
+            "name": row["member_name"],
+            "workArea": row["work_area"] if row["work_area"] in ("back", "front") else "back",
+            "date": row["work_date"],
+            "jobCount": row["job_count"],
+            "unitAmount": row["unit_amount"],
+            "totalAmount": row["job_count"] * row["unit_amount"],
+        }
+
+    def _validate_piece_work(conn, member_id: int, date: str, job_count: int, unit_amount: int):
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="근무날짜 형식이 올바르지 않습니다.")
+        if job_count <= 0 or unit_amount <= 0:
+            raise HTTPException(status_code=400, detail="건수와 건당금액은 1 이상 입력하세요.")
+        member = conn.execute(
+            "SELECT id, pay_type FROM attendance_members WHERE id = ?", (member_id,)
+        ).fetchone()
+        if not member:
+            raise HTTPException(status_code=404, detail="직원을 찾을 수 없습니다.")
+        if member["pay_type"] != "piece":
+            raise HTTPException(status_code=400, detail="급여방식이 건당인 직원만 등록할 수 있습니다.")
+
+    @router.get("/piece-work-records")
+    def list_piece_work_records(
+        pin: str = "", date_from: str = "", date_to: str = "", member_id: int | None = None
+    ):
+        _check_pin(pin)
+        if date_from:
+            try:
+                datetime.strptime(date_from, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="조회 시작일 형식이 올바르지 않습니다.")
+        if date_to:
+            try:
+                datetime.strptime(date_to, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="조회 종료일 형식이 올바르지 않습니다.")
+        if date_from and date_to and date_from > date_to:
+            raise HTTPException(status_code=400, detail="조회 시작일은 종료일보다 늦을 수 없습니다.")
+        conn = get_db()
+        query = (
+            "SELECT p.id, p.member_id, p.work_date, p.job_count, p.unit_amount, "
+            "m.name AS member_name, m.work_area FROM attendance_piece_work_records p "
+            "JOIN attendance_members m ON m.id = p.member_id WHERE 1=1"
+        )
+        params = []
+        if date_from:
+            query += " AND p.work_date >= ?"
+            params.append(date_from)
+        if date_to:
+            query += " AND p.work_date <= ?"
+            params.append(date_to)
+        if member_id is not None:
+            query += " AND p.member_id = ?"
+            params.append(member_id)
+        query += " ORDER BY p.work_date DESC, p.id DESC"
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        return [_piece_work_row_to_dict(row) for row in rows]
+
+    @router.post("/piece-work-records")
+    def add_piece_work_record(body: PieceWorkCreate):
+        _check_pin(body.pin)
+        conn = get_db()
+        try:
+            _validate_piece_work(conn, body.memberId, body.date, body.jobCount, body.unitAmount)
+            cursor = conn.execute(
+                "INSERT INTO attendance_piece_work_records "
+                "(member_id, work_date, job_count, unit_amount, created_at) VALUES (?, ?, ?, ?, ?)",
+                (body.memberId, body.date, body.jobCount, body.unitAmount, _now_kst().isoformat()),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT p.id, p.member_id, p.work_date, p.job_count, p.unit_amount, "
+                "m.name AS member_name, m.work_area FROM attendance_piece_work_records p "
+                "JOIN attendance_members m ON m.id = p.member_id WHERE p.id = ?",
+                (cursor.lastrowid,),
+            ).fetchone()
+            return _piece_work_row_to_dict(row)
+        except HTTPException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    @router.patch("/piece-work-records/{record_id}")
+    def update_piece_work_record(record_id: int, body: PieceWorkUpdate):
+        _check_pin(body.pin)
+        conn = get_db()
+        try:
+            exists = conn.execute(
+                "SELECT id FROM attendance_piece_work_records WHERE id = ?", (record_id,)
+            ).fetchone()
+            if not exists:
+                raise HTTPException(status_code=404, detail="건당 알바 기록을 찾을 수 없습니다.")
+            _validate_piece_work(conn, body.memberId, body.date, body.jobCount, body.unitAmount)
+            conn.execute(
+                "UPDATE attendance_piece_work_records SET member_id = ?, work_date = ?, "
+                "job_count = ?, unit_amount = ? WHERE id = ?",
+                (body.memberId, body.date, body.jobCount, body.unitAmount, record_id),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT p.id, p.member_id, p.work_date, p.job_count, p.unit_amount, "
+                "m.name AS member_name, m.work_area FROM attendance_piece_work_records p "
+                "JOIN attendance_members m ON m.id = p.member_id WHERE p.id = ?",
+                (record_id,),
+            ).fetchone()
+            return _piece_work_row_to_dict(row)
+        except HTTPException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    @router.delete("/piece-work-records/{record_id}")
+    def delete_piece_work_record(record_id: int, body: PieceWorkDelete):
+        _check_pin(body.pin)
+        conn = get_db()
+        cursor = conn.execute("DELETE FROM attendance_piece_work_records WHERE id = ?", (record_id,))
+        if cursor.rowcount == 0:
+            conn.close()
+            raise HTTPException(status_code=404, detail="건당 알바 기록을 찾을 수 없습니다.")
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+
     # ── 근무표 포함 여부 변경 (PIN 필요) ─────────────────
     @router.patch("/members/{member_id}/schedule-visibility")
     def set_member_schedule_visibility(member_id: int, body: MemberScheduleVisibility):
@@ -865,6 +1042,26 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.close()
         return {"ok": True, "workArea": work_area}
 
+    @router.patch("/members/{member_id}/pay-type")
+    def set_member_pay_type(member_id: int, body: MemberPayTypeUpdate):
+        _check_pin(body.pin)
+        pay_type = body.payType.strip().lower()
+        if pay_type not in ("hourly", "piece", "studio"):
+            raise HTTPException(status_code=400, detail="급여방식이 올바르지 않습니다.")
+        conn = get_db()
+        member = conn.execute(
+            "SELECT id FROM attendance_members WHERE id = ?", (member_id,)
+        ).fetchone()
+        if not member:
+            conn.close()
+            raise HTTPException(status_code=404, detail="직원을 찾을 수 없습니다.")
+        conn.execute(
+            "UPDATE attendance_members SET pay_type = ? WHERE id = ?", (pay_type, member_id)
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "payType": pay_type}
+
     # ── 직원 추가 (PIN 필요) ────────────────────────────
     @router.post("/members")
     def add_member(body: MemberCreate):
@@ -899,6 +1096,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         conn.execute("DELETE FROM attendance_schedule_overrides WHERE member_id = ?", (member_id,))
         conn.execute("DELETE FROM attendance_schedule_memos WHERE member_id = ?", (member_id,))
         conn.execute("DELETE FROM attendance_fixed_worker_payments WHERE member_id = ?", (member_id,))
+        conn.execute("DELETE FROM attendance_piece_work_records WHERE member_id = ?", (member_id,))
         conn.commit()
         conn.close()
         return {"ok": True}
@@ -1071,6 +1269,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             "accountNumber": row["account_number"],
             "residentRegistrationNumber": row["resident_registration_number"],
             "paymentCompleted": bool(row["payment_completed"]),
+            "hourlyRate": row["hourly_rate"],
         }
 
     @router.get("/daily-workers")
@@ -1080,7 +1279,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         query = (
             "SELECT d.id, d.name, d.date, d.start_time, d.end_time, "
             "d.bank_name, d.account_holder, d.account_number, "
-            "d.resident_registration_number, d.payment_completed, "
+            "d.resident_registration_number, d.payment_completed, d.hourly_rate, "
             "i.timestamp AS check_in_timestamp, o.timestamp AS check_out_timestamp "
             "FROM attendance_daily_workers d "
             "LEFT JOIN attendance_records i ON i.id = d.check_in_record_id "
@@ -1104,6 +1303,8 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         name = body.name.strip()
         if not name:
             raise HTTPException(status_code=400, detail="이름을 입력하세요.")
+        if body.hourlyRate <= 0:
+            raise HTTPException(status_code=400, detail="시급을 1원 이상 입력하세요.")
         bank_name = body.bankName.strip()
         account_holder = body.accountHolder.strip()
         account_number = re.sub(r"[^0-9]", "", body.accountNumber)
@@ -1137,13 +1338,13 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             conn.execute(
                 "INSERT INTO attendance_daily_workers "
                 "(name, date, start_time, end_time, check_in_record_id, check_out_record_id, "
-                "bank_name, account_holder, account_number, resident_registration_number, payment_completed, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+                "bank_name, account_holder, account_number, resident_registration_number, payment_completed, hourly_rate, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
                 (
                     name, body.date, body.startTime, body.endTime,
                     in_cursor.lastrowid, out_cursor.lastrowid,
                     bank_name, account_holder, account_number,
-                    resident_registration_number, _now_kst().isoformat(),
+                    resident_registration_number, body.hourlyRate, _now_kst().isoformat(),
                 ),
             )
             conn.commit()
@@ -1405,9 +1606,36 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             "vatAmount": row["vat_amount"],
             "bankName": row["bank_name"], "accountNumber": row["account_number"],
             "accountHolder": row["account_holder"], "modelName": row["model_name"],
+            "modelMemberId": row["model_member_id"],
             "modelPayment": row["model_payment"], "shootDate": row["shoot_date"],
             "paymentCompleted": bool(row["payment_completed"]),
         }
+
+    def _resolve_hourly_rate_for_date(conn, member_id: int, date: str, fallback_rate: int) -> int:
+        row = conn.execute(
+            "SELECT hourly_rate FROM attendance_member_hourly_rate_history "
+            "WHERE member_id = ? AND effective_date <= ? "
+            "ORDER BY effective_date DESC, id DESC LIMIT 1",
+            (member_id, date),
+        ).fetchone()
+        return row["hourly_rate"] if row and row["hourly_rate"] else fallback_rate
+
+    def _validate_studio_model(conn, model_member_id: int, usage_time: str):
+        try:
+            usage_hours = float(usage_time)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="이용시간은 숫자로 입력하세요.")
+        if usage_hours <= 0:
+            raise HTTPException(status_code=400, detail="이용시간은 0보다 커야 합니다.")
+        member = conn.execute(
+            "SELECT id, name, hourly_rate, pay_type FROM attendance_members WHERE id = ?",
+            (model_member_id,),
+        ).fetchone()
+        if not member:
+            raise HTTPException(status_code=404, detail="모델을 찾을 수 없습니다.")
+        if member["pay_type"] != "studio":
+            raise HTTPException(status_code=400, detail="급여방식이 스튜디오인 직원만 등록할 수 있습니다.")
+        return member, usage_hours
 
     @router.get("/studio-payments")
     def list_studio_payments(
@@ -1415,6 +1643,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         date: str = "",
         date_from: str = "",
         date_to: str = "",
+        member_id: int | None = None,
     ):
         _check_pin(pin)
         if date:
@@ -1438,6 +1667,9 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         if date_to:
             conditions.append("shoot_date <= ?")
             params.append(date_to)
+        if member_id is not None:
+            conditions.append("model_member_id = ?")
+            params.append(member_id)
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY shoot_date DESC, id DESC"
@@ -1472,12 +1704,19 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         bank_name = body.bankName.strip()
         account_number = re.sub(r"[^0-9]", "", body.accountNumber)
         account_holder = body.accountHolder.strip()
-        model_name = body.modelName.strip()
-        if not all((studio_name, usage_time, bank_name, account_number, account_holder, model_name)):
+        if not all((studio_name, usage_time, bank_name, account_number, account_holder)):
             raise HTTPException(status_code=400, detail="스튜디오 입금 정보를 모두 입력하세요.")
-        if body.amount <= 0 or body.vatAmount < 0 or body.modelPayment < 0:
+        if body.amount <= 0 or body.vatAmount < 0:
             raise HTTPException(status_code=400, detail="입금액을 확인하세요.")
         conn = get_db()
+        try:
+            member, usage_hours = _validate_studio_model(conn, body.modelMemberId, usage_time)
+        except HTTPException:
+            conn.close()
+            raise
+        model_name = member["name"]
+        rate = _resolve_hourly_rate_for_date(conn, member["id"], body.shootDate, member["hourly_rate"])
+        model_payment = round(rate * usage_hours)
         assignee = conn.execute(
             "SELECT username, display_name FROM users WHERE display_name = ? LIMIT 1",
             ("김승일",),
@@ -1494,10 +1733,10 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         cursor = conn.execute(
             "INSERT INTO attendance_studio_payments "
             "(studio_name, usage_time, amount, vat_amount, bank_name, account_number, account_holder, "
-            "model_name, model_payment, shoot_date, payment_completed, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+            "model_name, model_member_id, model_payment, shoot_date, payment_completed, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
             (studio_name, usage_time, body.amount, body.vatAmount, bank_name, account_number, account_holder,
-             model_name, body.modelPayment, body.shootDate, _now_kst().isoformat()),
+             model_name, member["id"], model_payment, body.shootDate, _now_kst().isoformat()),
         )
         conn.execute(
             "INSERT INTO requests "
@@ -1545,18 +1784,25 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         bank_name = body.bankName.strip()
         account_number = re.sub(r"[^0-9]", "", body.accountNumber)
         account_holder = body.accountHolder.strip()
-        model_name = body.modelName.strip()
-        if not all((studio_name, usage_time, bank_name, account_number, account_holder, model_name)):
+        if not all((studio_name, usage_time, bank_name, account_number, account_holder)):
             raise HTTPException(status_code=400, detail="스튜디오 입금 정보를 모두 입력하세요.")
-        if body.amount <= 0 or body.vatAmount < 0 or body.modelPayment < 0:
+        if body.amount <= 0 or body.vatAmount < 0:
             raise HTTPException(status_code=400, detail="입금액을 확인하세요.")
         conn = get_db()
+        try:
+            member, usage_hours = _validate_studio_model(conn, body.modelMemberId, usage_time)
+        except HTTPException:
+            conn.close()
+            raise
+        model_name = member["name"]
+        rate = _resolve_hourly_rate_for_date(conn, member["id"], body.shootDate, member["hourly_rate"])
+        model_payment = round(rate * usage_hours)
         conn.execute(
             "UPDATE attendance_studio_payments SET studio_name = ?, usage_time = ?, amount = ?, vat_amount = ?, "
-            "bank_name = ?, account_number = ?, account_holder = ?, model_name = ?, "
+            "bank_name = ?, account_number = ?, account_holder = ?, model_name = ?, model_member_id = ?, "
             "model_payment = ?, shoot_date = ? WHERE id = ?",
             (studio_name, usage_time, body.amount, body.vatAmount, bank_name, account_number, account_holder,
-             model_name, body.modelPayment, body.shootDate, payment_id),
+             model_name, member["id"], model_payment, body.shootDate, payment_id),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM attendance_studio_payments WHERE id = ?", (payment_id,)).fetchone()

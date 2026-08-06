@@ -4,7 +4,7 @@ import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
 const PAGE_SIZE = 50;
-const EDITABLE_COLS = ["상품명합", "거래처합", "원가", "거래처주소", "등록일"];
+const EDITABLE_COLS = ["상품명합", "거래처합", "거래처", "원가", "거래처주소", "등록일"];
 const ALL_COLS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국"];
 const VISIBLE_COLS_STORAGE_KEY = "wonbe_visible_cols";
 

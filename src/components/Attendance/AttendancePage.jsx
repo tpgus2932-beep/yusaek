@@ -1,10 +1,13 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import styles from './AttendancePage.module.css';
 import { COLLAB_API_BASE } from '../../lib/api';
 
 export default function AttendancePage() {
   const [members, setMembers] = useState([]);
   const [selectedName, setSelectedName] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerArea, setPickerArea] = useState(null);
+  const pickerRef = useRef(null);
   const [todayRecords, setTodayRecords] = useState([]);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState({ msg: '', type: '', show: false });
@@ -19,7 +22,10 @@ export default function AttendancePage() {
   const loadMembers = useCallback(async () => {
     try {
       const res = await fetch(`${COLLAB_API_BASE}/attendance/members`);
-      if (res.ok) setMembers(await res.json());
+      if (res.ok) {
+        const data = await res.json();
+        setMembers(data.filter((m) => m.payType !== 'studio'));
+      }
     } catch {}
   }, []);
 
@@ -36,6 +42,15 @@ export default function AttendancePage() {
     const t = setInterval(loadToday, 30_000);
     return () => clearInterval(t);
   }, [loadMembers, loadToday]);
+
+  useEffect(() => {
+    if (!pickerOpen) return undefined;
+    const handleOutside = (e) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target)) setPickerOpen(false);
+    };
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
+  }, [pickerOpen]);
 
   const showToast = (msg, type = '') => {
     setToast({ msg, type, show: true });
@@ -68,6 +83,29 @@ export default function AttendancePage() {
 
   const fmtTime = (iso) =>
     new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+
+  const membersByArea = useMemo(() => {
+    const groups = { back: [], front: [] };
+    members.forEach((m) => {
+      groups[m.workArea === 'front' ? 'front' : 'back'].push(m);
+    });
+    return groups;
+  }, [members]);
+
+  const openPicker = () => {
+    setPickerArea(null);
+    setPickerOpen(true);
+  };
+
+  const closePicker = () => {
+    setPickerOpen(false);
+    setPickerArea(null);
+  };
+
+  const choosePickerName = (name) => {
+    setSelectedName(name);
+    closePicker();
+  };
 
   // 이름별로 출근·퇴근 한 줄로 묶기
   const groupedToday = useMemo(() => {
@@ -107,16 +145,38 @@ export default function AttendancePage() {
         {/* 이름 선택 + 버튼 */}
         <div className={styles.card}>
           <label className={styles.selectLabel}>이름 선택</label>
-          <select
-            className={styles.nameSelect}
-            value={selectedName}
-            onChange={(e) => setSelectedName(e.target.value)}
-          >
-            <option value="">-- 이름을 선택하세요 --</option>
-            {members.map((m) => (
-              <option key={m.id} value={m.name}>{m.name}</option>
-            ))}
-          </select>
+          <div className={styles.pickerAnchor} ref={pickerRef}>
+            <button type="button" className={styles.nameTrigger} onClick={() => (pickerOpen ? closePicker() : openPicker())}>
+              <span className={selectedName ? styles.nameTriggerValue : styles.nameTriggerPlaceholder}>
+                {selectedName || '-- 이름을 선택하세요 --'}
+              </span>
+              <span className={styles.nameTriggerArrow}>▾</span>
+            </button>
+
+            {pickerOpen && (
+              <div className={styles.pickerDropdown}>
+                {pickerArea === null ? (
+                  <>
+                    <div className={styles.pickerRow} onClick={() => setPickerArea('back')}>백</div>
+                    <div className={styles.pickerRow} onClick={() => setPickerArea('front')}>프론트</div>
+                  </>
+                ) : (
+                  <>
+                    <div className={`${styles.pickerRow} ${styles.pickerRowBack}`} onClick={() => setPickerArea(null)}>‹ 뒤로</div>
+                    {membersByArea[pickerArea].length === 0 ? (
+                      <div className={styles.pickerRowEmpty}>등록된 직원이 없습니다.</div>
+                    ) : (
+                      membersByArea[pickerArea].map((m) => (
+                        <div key={m.id} className={styles.pickerRow} onClick={() => choosePickerName(m.name)}>
+                          {m.name}
+                        </div>
+                      ))
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
 
           <div className={styles.actionBtns}>
             <button

@@ -5,6 +5,20 @@ import * as XLSX from "xlsx";
 import XLSXStyle from "xlsx-js-style";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
+import { getDownloadFilename } from "../../lib/download";
+
+const getJinmoneyDownloadFilename = (res) => {
+  const disposition = res.headers.get("content-disposition") || "";
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1].replace(/"/g, ""));
+    } catch {
+      // Fall through to the existing filename parser.
+    }
+  }
+  return getDownloadFilename(res, "진머니 발주서.xlsx");
+};
 
 const formatDateLocal = (d) => {
   const y = d.getFullYear();
@@ -36,6 +50,25 @@ const stickyThStyle = {
   zIndex: 1,
 };
 
+// 옵션명(예: "블랙-M", "블랙 M")을 색상/사이즈로 분리 - NoyeKim/purchase-manager.html의
+// splitColorSize와 동일한 규칙(대시 우선, 없으면 마지막 공백 토큰을 사이즈로 간주).
+const splitOptionColorSize = (optionName) => {
+  let color = String(optionName ?? "").trim().replace(/^\[|\]$/g, "").trim();
+  if (!color) return { color: "", size: "" };
+
+  const dashed = color.split("-").map((part) => part.trim()).filter(Boolean);
+  if (dashed.length >= 2) {
+    return { color: dashed[0], size: dashed.slice(1).join("-") };
+  }
+
+  const parts = color.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return { color: parts.slice(0, -1).join(" "), size: parts[parts.length - 1] };
+  }
+
+  return { color, size: "" };
+};
+
 export default function OrderPage() {
   const [activeTab, setActiveTab] = useState("standard");
   const [lizardFile, setLizardFile] = useState(null);
@@ -52,6 +85,7 @@ export default function OrderPage() {
   const [popularNeedEzadminSession, setPopularNeedEzadminSession] = useState(false);
   const [popularLiveFetchEnabled, setPopularLiveFetchEnabled] = useState(true);
   const [popularUpdatedAt, setPopularUpdatedAt] = useState(null);
+  const [popularPinned, setPopularPinned] = useState([]);
 
   useEffect(() => {
     const loadSaved = async () => {
@@ -83,6 +117,7 @@ export default function OrderPage() {
       const params = new URLSearchParams({
         start_date: popularStartDate,
         end_date: popularEndDate,
+        limit: "200",
       });
       const res = await fetch(`${API}/order/popular-goods?${params.toString()}`, {
         headers: { ...getAuthHeaders() },
@@ -104,10 +139,104 @@ export default function OrderPage() {
     }
   };
 
+  const handleAddPopularPinned = (item) => {
+    const input = window.prompt(`${item.goods_name} / ${item.goods_option_name}\n수량을 입력하세요`, "");
+    if (input === null) return;
+    const qty = Number(input);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      setPopularMessage("올바른 숫자를 입력하세요.");
+      return;
+    }
+    const key = item.goods_option_sno ?? `${item.goods_name}-${item.goods_option_name}`;
+    const { color, size } = splitOptionColorSize(item.goods_option_name);
+    setPopularPinned((prev) => [
+      ...prev.filter((p) => p.key !== key),
+      {
+        key,
+        client: item.client || "",
+        client_product_name: item.client_product_name || "",
+        goods_name: item.goods_name || "",
+        color,
+        size,
+        qty,
+      },
+    ]);
+  };
+
+  const handleRemovePopularPinned = (key) => {
+    setPopularPinned((prev) => prev.filter((p) => p.key !== key));
+  };
+
+  const copyPopularPinnedTsv = async () => {
+    if (!popularPinned.length) {
+      setPopularMessage("담아둔 항목이 없습니다.");
+      return;
+    }
+    const tsv = popularPinned
+      .map((p) => [p.client, "주문", p.client_product_name, p.color, p.size, p.qty].join("\t"))
+      .join("\n");
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(tsv);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = tsv;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      setPopularMessage(`엑셀 복사 완료 (${popularPinned.length}행)`);
+    } catch (err) {
+      setPopularMessage(`복사 실패: ${err.message || ""}`);
+    }
+  };
+
   const [mainOrderItems, setMainOrderItems] = useState([]);
   const [mainOrderLoading, setMainOrderLoading] = useState(false);
   const [mainOrderMessage, setMainOrderMessage] = useState("");
   const [mainOrderSelected, setMainOrderSelected] = useState(new Set());
+  const [jinmoneyLoading, setJinmoneyLoading] = useState(false);
+  const [jinmoneyMessage, setJinmoneyMessage] = useState("");
+  const [jinmoneyUnmatched, setJinmoneyUnmatched] = useState([]);
+
+  const createJinmoneyOrder = async () => {
+    setJinmoneyLoading(true);
+    setJinmoneyMessage("");
+    setJinmoneyUnmatched([]);
+    try {
+      const res = await fetch(`${API}/order/jinmoney/export`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const data = await res.json().catch(() => ({}));
+        if (data?.need_session) {
+          openEzadminModal(createJinmoneyOrder);
+          return;
+        }
+        const detail = data?.detail;
+        if (detail?.unmatched) setJinmoneyUnmatched(detail.unmatched);
+        throw new Error(detail?.message || (typeof detail === "string" ? detail : "진머니 발주서 생성 실패"));
+      }
+      if (!res.ok) throw new Error("진머니 발주서 생성 실패");
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = getJinmoneyDownloadFilename(res);
+      anchor.click();
+      URL.revokeObjectURL(url);
+      const count = res.headers.get("x-jinmoney-items") || "0";
+      setJinmoneyMessage(`진머니 발주서 생성 완료: ${count}개 품목`);
+    } catch (error) {
+      setJinmoneyMessage(error.message || "진머니 발주서 생성 실패");
+    } finally {
+      setJinmoneyLoading(false);
+    }
+  };
 
   const fetchMainOrderList = async () => {
     try {
@@ -644,6 +773,9 @@ export default function OrderPage() {
             <button className={styles.secondaryBtn} onClick={handleDomaeKimOrder}>
               도매킴 발주
             </button>
+            <button className={styles.secondaryBtn} onClick={createJinmoneyOrder} disabled={jinmoneyLoading}>
+              {jinmoneyLoading ? "진머니 생성 중..." : "진머니 발주"}
+            </button>
           </div>
           <div className={styles.statusMsg}>
             <strong>처리 기준:</strong> B열 첫 번째 띄어쓰기 왼쪽 거래처명 기준으로 각 발주 양식을 생성합니다.
@@ -651,6 +783,29 @@ export default function OrderPage() {
           {lizardMessage && (
             <div className={styles.statusMsg}>
               <strong>{lizardMessage}</strong>
+            </div>
+          )}
+          {jinmoneyMessage && (
+            <div className={styles.statusMsg}><strong>{jinmoneyMessage}</strong></div>
+          )}
+          {jinmoneyUnmatched.length > 0 && (
+            <div className={styles.statusMsg}>
+              <strong>매칭되지 않은 진머니 상품 — 발주서가 생성되지 않았습니다.</strong>
+              <div className={styles.tableWrap} style={{ marginTop: "0.75rem", maxHeight: "50vh", overflowY: "auto" }}>
+                <table className={styles.table}>
+                  <thead><tr><th>공급처상품명</th><th>옵션</th><th>접수</th><th>원인</th></tr></thead>
+                  <tbody>
+                    {jinmoneyUnmatched.map((item, index) => (
+                      <tr key={`${item.supplyProductName}-${item.option}-${index}`}>
+                        <td>{item.supplyProductName}</td>
+                        <td>{item.option}</td>
+                        <td>{item.receiptQty}</td>
+                        <td>{item.reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </section>
@@ -765,7 +920,7 @@ export default function OrderPage() {
       {activeTab === "popular-goods" && (
         <section className={styles.card}>
           <div className={styles.cardHeader}>
-            <h3 className={styles.cardTitle}>인기재고 (판매수량 상위 50개)</h3>
+            <h3 className={styles.cardTitle}>인기재고 (판매수량 상위 200개)</h3>
           </div>
           {popularLiveFetchEnabled ? (
             <div className={pageStyles.dateRow}>
@@ -808,6 +963,48 @@ export default function OrderPage() {
               </button>
             </div>
           )}
+          <div className={pageStyles.dateRow}>
+            <strong>담은 목록: {popularPinned.length}건</strong>
+            <button
+              className={styles.primaryBtn}
+              onClick={copyPopularPinnedTsv}
+              disabled={!popularPinned.length}
+            >
+              복사
+            </button>
+          </div>
+          {popularPinned.length > 0 && (
+            <div className={styles.tableWrap} style={{ maxHeight: "240px", overflowY: "auto", marginBottom: 16 }}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={stickyThStyle}>거래처</th>
+                    <th style={stickyThStyle}>거래처상품명</th>
+                    <th style={stickyThStyle}>색상</th>
+                    <th style={stickyThStyle}>사이즈</th>
+                    <th style={stickyThStyle}>수량</th>
+                    <th style={stickyThStyle}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {popularPinned.map((p) => (
+                    <tr key={p.key}>
+                      <td>{p.client || "-"}</td>
+                      <td>{p.client_product_name || "-"}</td>
+                      <td>{p.color || "-"}</td>
+                      <td>{p.size || "-"}</td>
+                      <td>{p.qty}</td>
+                      <td>
+                        <button className={styles.ghostBtn} onClick={() => handleRemovePopularPinned(p.key)}>
+                          삭제
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           {popularItems.length === 0 ? (
             <div className={styles.statusMsg}>
               {popularLiveFetchEnabled
@@ -820,6 +1017,7 @@ export default function OrderPage() {
                 <thead>
                   <tr>
                     <th style={stickyThStyle}>순위</th>
+                    <th style={stickyThStyle}>거래처</th>
                     <th style={stickyThStyle}>상품명</th>
                     <th style={stickyThStyle}>옵션명</th>
                     <th style={stickyThStyle}>옵션번호</th>
@@ -829,6 +1027,7 @@ export default function OrderPage() {
                     <th style={stickyThStyle}>일평균 판매수량</th>
                     <th style={stickyThStyle}>미송수량</th>
                     <th style={stickyThStyle}>장바구니</th>
+                    <th style={stickyThStyle}></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -837,6 +1036,7 @@ export default function OrderPage() {
                     return (
                       <tr key={item.goods_option_sno ?? idx}>
                         <td>{item.rank ?? idx + 1}</td>
+                        <td>{item.client || "-"}</td>
                         <td className={isGrouped ? pageStyles.groupedNameCell : undefined}>
                           {isGrouped ? "└ " : ""}
                           {item.goods_name}
@@ -849,6 +1049,11 @@ export default function OrderPage() {
                         <td>{(item.avg_order_count ?? 0).toLocaleString()}</td>
                         <td>{(item.misong_qty ?? 0).toLocaleString()}</td>
                         <td>{(item.cart_count ?? 0).toLocaleString()}</td>
+                        <td>
+                          <button className={styles.secondaryBtn} onClick={() => handleAddPopularPinned(item)}>
+                            추가
+                          </button>
+                        </td>
                       </tr>
                     );
                   })}

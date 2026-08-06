@@ -1065,7 +1065,11 @@ def build_returns_router(
                 g_opt  = option_slash_to_space(lowercase_size_words(option_str))
 
                 order_item_sno      = order_item.get("sno")
+                # exchange_goods_option = 교환으로 새로 받을 옵션(신규상품), original_goods_option =
+                # 고객이 실제로 반품 발송하는 원래 옵션(기존상품). 입고처리는 물리적으로 돌아오는
+                # 원래 옵션 기준으로 해야 하므로 둘을 분리해서 각각 보관한다.
                 exchange_option_sno = (exchange_item.get("exchange_goods_option") or {}).get("sno")
+                original_option_sno = (order_item.get("original_goods_option") or {}).get("sno")
 
                 rows.append({
                     "F_name":              f_name,
@@ -1078,6 +1082,7 @@ def build_returns_router(
                     "ORDER_SNO":           order_sno,
                     "ORDER_ITEM_SNO":      order_item_sno,
                     "EXCHANGE_OPTION_SNO": exchange_option_sno,
+                    "ORIGINAL_OPTION_SNO": original_option_sno,
                     "EXCHANGE_SNO":        exchange_sno,
                     "EXCHANGE_STATUS":     ex_status,
                     "REASON_IMAGES":       reason_images,
@@ -1615,6 +1620,7 @@ def build_returns_router(
                     "order_sno": _clean_sno(row.get("ORDER_SNO")),
                     "order_item_sno": _clean_sno(row.get("ORDER_ITEM_SNO")),
                     "exchange_option_sno": _clean_sno(row.get("EXCHANGE_OPTION_SNO")),
+                    "original_option_sno": _clean_sno(row.get("ORIGINAL_OPTION_SNO")),
                     "exchange_sno": _clean_sno(row.get("EXCHANGE_SNO")),
                     "ably_status": _clean_sno(row.get("EXCHANGE_STATUS")),
                     "images": list(row.get("REASON_IMAGES") or []),
@@ -1809,6 +1815,7 @@ def build_returns_router(
                     "order_sno": _clean_sno(row.get("ORDER_SNO")),
                     "order_item_sno": _clean_sno(row.get("ORDER_ITEM_SNO")),
                     "exchange_option_sno": _clean_sno(row.get("EXCHANGE_OPTION_SNO")),
+                    "original_option_sno": _clean_sno(row.get("ORIGINAL_OPTION_SNO")),
                     "exchange_sno": _clean_sno(row.get("EXCHANGE_SNO")),
                     "ably_status": _clean_sno(row.get("EXCHANGE_STATUS")),
                     "images": list(row.get("REASON_IMAGES") or []),
@@ -2949,8 +2956,10 @@ def build_returns_router(
         """선택된 반품/교환 항목을 이지어드민 입고처리(I100)한다.
 
         반품 항목은 item.option_code(에이블리 option_stock_sync_code), 교환 항목은
-        item.exchange_option_sno를 원가베이스유의 옵션번호와 매칭해 상품코드를
-        찾고, 그 상품코드로 입고처리한다.
+        item.original_option_sno(고객이 실제로 반품 발송하는 원래 옵션)를 원가베이스유의
+        옵션번호와 매칭해 상품코드를 찾고, 그 상품코드로 입고처리한다. 교환목표 옵션인
+        exchange_option_sno로 매칭하면 물리적으로 들어오는 상품과 다른(교환 후) 상품코드로
+        입고되므로 절대 쓰지 않는다.
         """
         items = payload.get("items", [])
         if not items:
@@ -2974,7 +2983,7 @@ def build_returns_router(
             result = {"id": item.get("id"), "scan": item.get("scan"), "ok": False, "error": None}
             state_item = by_id.get(item.get("id"))
             try:
-                option_code = str(item.get("option_code") or item.get("exchange_option_sno") or "").strip()
+                option_code = str(item.get("option_code") or item.get("original_option_sno") or "").strip()
                 if not option_code:
                     raise ValueError("option_stock_sync_code 없음")
                 product_id = option_sno_map.get(option_code)
@@ -3006,14 +3015,15 @@ def build_returns_router(
     @router.post("/returns/resolve-product-codes")
     async def returns_resolve_product_codes(payload: dict = Body(...), user: str = Depends(get_current_user)):
         """item.option_code(반품, 에이블리 option_stock_sync_code) 또는
-        item.exchange_option_sno(교환)를 원가베이스유 옵션번호와 매칭해
-        상품코드만 돌려준다 (재고 변경 없음) - 김승일보내기처럼 입고처리 없이
-        상품코드만 필요한 곳에서 재사용."""
+        item.original_option_sno(교환, 고객이 실제로 반품 발송하는 원래 옵션)를 원가베이스유
+        옵션번호와 매칭해 상품코드만 돌려준다 (재고 변경 없음) - 김승일보내기처럼 입고처리
+        없이 상품코드만 필요한 곳에서 재사용. exchange_option_sno(교환목표 옵션)는 물리적으로
+        돌아오는 상품과 다르므로 여기서 쓰지 않는다."""
         items = payload.get("items", [])
         option_sno_map = load_wonbe_option_sno_map()
         results = []
         for item in items:
-            option_code = str(item.get("option_code") or item.get("exchange_option_sno") or "").strip()
+            option_code = str(item.get("option_code") or item.get("original_option_sno") or "").strip()
             product_id = option_sno_map.get(option_code) if option_code else None
             results.append({"id": item.get("id"), "product_id": product_id})
         return {"ok": True, "results": results}

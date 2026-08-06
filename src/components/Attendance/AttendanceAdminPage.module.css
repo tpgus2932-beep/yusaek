@@ -187,7 +187,7 @@
 .dailyField .filterInput { width: 100%; min-width: 0; }
 .payrollSubTabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 8px;
   padding: 6px;
   margin-bottom: 12px;
@@ -357,6 +357,28 @@
   border-radius: 12px;
   background: #f8fafc;
   margin-bottom: 8px;
+}
+.pieceWorkerCard {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(150px, .8fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+  margin-bottom: 8px;
+}
+.pieceWorkerCard > div:first-child,
+.pieceWorkerCard .dailyWorkerAmount {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.pieceWorkerCard > div:first-child span,
+.pieceWorkerCard .dailyWorkerAmount small {
+  color: #94a3b8;
+  font-size: 12px;
 }
 .dailyWorkerCardPaid {
   background: #e5e7eb;
@@ -566,6 +588,8 @@
   .dailyFilterRow { grid-template-columns: 1fr auto; }
   .fixedPayrollFilters { grid-template-columns: 1fr 1fr; }
   .dailyWorkerSummary { grid-template-columns: 1fr 1fr; }
+  .pieceWorkerCard { grid-template-columns: 1fr auto; }
+  .pieceWorkerCard .dailyWorkerActions { grid-column: 2; grid-row: 1 / span 2; }
   .dailyWorkerAmount { align-items: flex-start; }
   .dailyWorkerExpandHint { justify-self: end; }
   .dailyWorkerDetail { grid-template-columns: 1fr; }

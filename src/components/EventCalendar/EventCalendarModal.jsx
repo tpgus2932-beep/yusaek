@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CalendarDays, Check, ChevronLeft, ChevronRight, Eye, EyeOff, Plus, Trash2, X } from 'lucide-react';
+import { CalendarDays, Check, ChevronLeft, ChevronRight, Eye, EyeOff, Pencil, Plus, Trash2, X } from 'lucide-react';
 import styles from './EventCalendarModal.module.css';
 import { COLLAB_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
@@ -50,6 +50,7 @@ const EventCalendarModal = ({ onClose }) => {
     const [selectedEventIds, setSelectedEventIds] = useState(() => new Set());
     const [focusedEventIds, setFocusedEventIds] = useState(() => new Set());
     const [showForm, setShowForm] = useState(false);
+    const [editingEventId, setEditingEventId] = useState(null);
     const [detailEvent, setDetailEvent] = useState(null);
     const [highlightedEventId, setHighlightedEventId] = useState(null);
     const [formError, setFormError] = useState('');
@@ -149,12 +150,38 @@ const EventCalendarModal = ({ onClose }) => {
     };
 
     const openForm = () => {
-        setForm((current) => ({
-            ...current,
+        setEditingEventId(null);
+        setForm({
             region: activeTab === 'all' ? 'korea' : activeTab,
-        }));
+            title: '',
+            content: '',
+            md: '',
+            startDate: '',
+            endDate: '',
+        });
         setFormError('');
         setShowForm(true);
+    };
+
+    const openEditForm = (eventItem) => {
+        setEditingEventId(eventItem.id);
+        setForm({
+            region: eventItem.region,
+            title: eventItem.title,
+            content: eventItem.content,
+            md: eventItem.md,
+            startDate: eventItem.startDate,
+            endDate: eventItem.endDate,
+        });
+        setFormError('');
+        setDetailEvent(null);
+        setShowForm(true);
+    };
+
+    const closeForm = () => {
+        setShowForm(false);
+        setEditingEventId(null);
+        setFormError('');
     };
 
     const submitEvent = async (event) => {
@@ -173,23 +200,32 @@ const EventCalendarModal = ({ onClose }) => {
         }
 
         try {
-            const res = await fetch(`${API}/shopping-events`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                body: JSON.stringify({
-                    region: form.region,
-                    title,
-                    content,
-                    md,
-                    start_date: form.startDate,
-                    end_date: form.endDate,
-                }),
-            });
+            const isEditing = Boolean(editingEventId);
+            const res = await fetch(
+                isEditing ? `${API}/shopping-events/${editingEventId}` : `${API}/shopping-events`,
+                {
+                    method: isEditing ? 'PATCH' : 'POST',
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                    body: JSON.stringify({
+                        region: form.region,
+                        title,
+                        content,
+                        md,
+                        start_date: form.startDate,
+                        end_date: form.endDate,
+                    }),
+                },
+            );
             if (handleUnauthorized(res)) return;
             const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || 'Failed to create event');
+            if (!res.ok) throw new Error(data?.detail || (isEditing ? 'Failed to update event' : 'Failed to create event'));
 
-            setEvents((current) => [...current, fromApiEvent(data.event)]);
+            const savedEvent = fromApiEvent(data.event);
+            setEvents((current) => (
+                isEditing
+                    ? current.map((item) => (item.id === savedEvent.id ? savedEvent : item))
+                    : [...current, savedEvent]
+            ));
             setViewDate(parseDate(form.startDate));
             setActiveTab(form.region);
             setForm({
@@ -202,8 +238,9 @@ const EventCalendarModal = ({ onClose }) => {
             });
             setFormError('');
             setShowForm(false);
+            setEditingEventId(null);
         } catch (err) {
-            setFormError(err.message || '행사 등록에 실패했습니다.');
+            setFormError(err.message || (editingEventId ? '행사 수정에 실패했습니다.' : '행사 등록에 실패했습니다.'));
         }
     };
 
@@ -453,10 +490,10 @@ const EventCalendarModal = ({ onClose }) => {
                         <form className={styles.eventForm} onSubmit={submitEvent}>
                             <div className={styles.formHeader}>
                                 <div>
-                                    <span>NEW EVENT</span>
-                                    <h3>행사 추가</h3>
+                                    <span>{editingEventId ? 'EDIT EVENT' : 'NEW EVENT'}</span>
+                                    <h3>{editingEventId ? '행사 수정' : '행사 추가'}</h3>
                                 </div>
-                                <button type="button" className={styles.iconButton} onClick={() => setShowForm(false)} aria-label="행사 추가 닫기">
+                                <button type="button" className={styles.iconButton} onClick={closeForm} aria-label={`행사 ${editingEventId ? '수정' : '추가'} 닫기`}>
                                     <X size={20} />
                                 </button>
                             </div>
@@ -491,8 +528,8 @@ const EventCalendarModal = ({ onClose }) => {
                             </div>
                             {formError ? <p className={styles.formError}>{formError}</p> : null}
                             <div className={styles.formActions}>
-                                <button type="button" className={styles.cancelButton} onClick={() => setShowForm(false)}>취소</button>
-                                <button type="submit" className={styles.saveButton}>행사 등록</button>
+                                <button type="button" className={styles.cancelButton} onClick={closeForm}>취소</button>
+                                <button type="submit" className={styles.saveButton}>{editingEventId ? '수정 저장' : '행사 등록'}</button>
                             </div>
                         </form>
                     </div>
@@ -528,9 +565,14 @@ const EventCalendarModal = ({ onClose }) => {
                                 <h4>전달 MD</h4>
                                 <p>{detailEvent.md}</p>
                             </section>
-                            <button type="button" className={styles.detailCloseButton} onClick={() => setDetailEvent(null)}>
-                                확인
-                            </button>
+                            <div className={styles.detailActions}>
+                                <button type="button" className={styles.detailEditButton} onClick={() => openEditForm(detailEvent)}>
+                                    <Pencil size={15} /> 수정
+                                </button>
+                                <button type="button" className={styles.detailCloseButton} onClick={() => setDetailEvent(null)}>
+                                    확인
+                                </button>
+                            </div>
                         </article>
                     </div>
                 ) : null}

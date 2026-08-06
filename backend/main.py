@@ -134,6 +134,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition", "X-Jinmoney-Items"],
 )
 
 BARCODE_STATES: dict[str, dict] = {}
@@ -1682,6 +1683,7 @@ app.include_router(
         order_cost_base_path=WONBE_DB_PATH,
         get_setting=_get_setting,
         get_shared_db=_get_shared_db,
+        get_user_display=_get_user_display,
         is_render=_IS_RENDER,
     )
 )
