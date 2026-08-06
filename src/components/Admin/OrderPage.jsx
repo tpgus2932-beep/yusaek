@@ -4,6 +4,20 @@ import * as XLSX from "xlsx";
 import XLSXStyle from "xlsx-js-style";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
+import { getDownloadFilename } from "../../lib/download";
+
+const getJinmoneyDownloadFilename = (res) => {
+  const disposition = res.headers.get("content-disposition") || "";
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1].replace(/"/g, ""));
+    } catch {
+      // Fall through to the existing filename parser.
+    }
+  }
+  return getDownloadFilename(res, "진머니 발주서.xlsx");
+};
 
 const stickyThStyle = {
   position: "sticky",
@@ -23,6 +37,47 @@ export default function OrderPage() {
   const [mainOrderLoading, setMainOrderLoading] = useState(false);
   const [mainOrderMessage, setMainOrderMessage] = useState("");
   const [mainOrderSelected, setMainOrderSelected] = useState(new Set());
+  const [jinmoneyLoading, setJinmoneyLoading] = useState(false);
+  const [jinmoneyMessage, setJinmoneyMessage] = useState("");
+  const [jinmoneyUnmatched, setJinmoneyUnmatched] = useState([]);
+
+  const createJinmoneyOrder = async () => {
+    setJinmoneyLoading(true);
+    setJinmoneyMessage("");
+    setJinmoneyUnmatched([]);
+    try {
+      const res = await fetch(`${API}/order/jinmoney/export`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const data = await res.json().catch(() => ({}));
+        if (data?.need_session) {
+          openEzadminModal(createJinmoneyOrder);
+          return;
+        }
+        const detail = data?.detail;
+        if (detail?.unmatched) setJinmoneyUnmatched(detail.unmatched);
+        throw new Error(detail?.message || (typeof detail === "string" ? detail : "진머니 발주서 생성 실패"));
+      }
+      if (!res.ok) throw new Error("진머니 발주서 생성 실패");
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = getJinmoneyDownloadFilename(res);
+      anchor.click();
+      URL.revokeObjectURL(url);
+      const count = res.headers.get("x-jinmoney-items") || "0";
+      setJinmoneyMessage(`진머니 발주서 생성 완료: ${count}개 품목`);
+    } catch (error) {
+      setJinmoneyMessage(error.message || "진머니 발주서 생성 실패");
+    } finally {
+      setJinmoneyLoading(false);
+    }
+  };
 
   const fetchMainOrderList = async () => {
     try {
@@ -553,6 +608,9 @@ export default function OrderPage() {
             <button className={styles.secondaryBtn} onClick={handleDomaeKimOrder}>
               도매킴 발주
             </button>
+            <button className={styles.secondaryBtn} onClick={createJinmoneyOrder} disabled={jinmoneyLoading}>
+              {jinmoneyLoading ? "진머니 생성 중..." : "진머니 발주"}
+            </button>
           </div>
           <div className={styles.statusMsg}>
             <strong>처리 기준:</strong> B열 첫 번째 띄어쓰기 왼쪽 거래처명 기준으로 각 발주 양식을 생성합니다.
@@ -560,6 +618,29 @@ export default function OrderPage() {
           {lizardMessage && (
             <div className={styles.statusMsg}>
               <strong>{lizardMessage}</strong>
+            </div>
+          )}
+          {jinmoneyMessage && (
+            <div className={styles.statusMsg}><strong>{jinmoneyMessage}</strong></div>
+          )}
+          {jinmoneyUnmatched.length > 0 && (
+            <div className={styles.statusMsg}>
+              <strong>매칭되지 않은 진머니 상품 — 발주서가 생성되지 않았습니다.</strong>
+              <div className={styles.tableWrap} style={{ marginTop: "0.75rem", maxHeight: "50vh", overflowY: "auto" }}>
+                <table className={styles.table}>
+                  <thead><tr><th>공급처상품명</th><th>옵션</th><th>접수</th><th>원인</th></tr></thead>
+                  <tbody>
+                    {jinmoneyUnmatched.map((item, index) => (
+                      <tr key={`${item.supplyProductName}-${item.option}-${index}`}>
+                        <td>{item.supplyProductName}</td>
+                        <td>{item.option}</td>
+                        <td>{item.receiptQty}</td>
+                        <td>{item.reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </section>
@@ -670,6 +751,7 @@ export default function OrderPage() {
           )}
         </section>
       )}
+
     </div>
   );
 }

@@ -80,25 +80,69 @@
   text-transform: uppercase;
   margin-bottom: 8px;
 }
-.nameSelect {
+.nameTrigger {
   width: 100%;
-  padding: 14px 40px 14px 16px;
+  padding: 14px 16px;
   font-size: 16px;
   border: 2px solid #e2e8f0;
   border-radius: 12px;
   background: #f8fafc;
   color: #1e293b;
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24'%3E%3Cpath fill='%2364748b' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   outline: none;
   cursor: pointer;
   transition: border-color 0.2s;
   font-family: inherit;
+  text-align: left;
 }
-.nameSelect:focus { border-color: #2563eb; }
+.nameTrigger:focus { border-color: #2563eb; }
+.nameTriggerValue { color: #1e293b; font-weight: 700; }
+.nameTriggerPlaceholder { color: #94a3b8; }
+.nameTriggerArrow { color: #64748b; font-size: 14px; }
+
+/* ── 이름 선택 피커 (2단계: 구분 → 이름, 네이티브 셀렉트 형태) ── */
+.pickerAnchor { position: relative; }
+.pickerDropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+  max-height: 280px;
+  overflow-y: auto;
+}
+.pickerRow {
+  padding: 12px 16px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #1e293b;
+  cursor: pointer;
+  border-bottom: 1px solid #f1f5f9;
+}
+.pickerRow:last-child { border-bottom: none; }
+.pickerRow:hover,
+.pickerRow:active {
+  background: #2563eb;
+  color: #fff;
+}
+.pickerRowBack {
+  color: #2563eb;
+  font-weight: 700;
+  background: #f8fafc;
+}
+.pickerRowEmpty {
+  padding: 16px;
+  text-align: center;
+  color: #cbd5e1;
+  font-size: 14px;
+}
 
 /* ── 출근/퇴근 버튼 ── */
 .actionBtns {

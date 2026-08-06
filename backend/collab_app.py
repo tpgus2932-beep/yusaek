@@ -98,6 +98,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition", "X-Jinmoney-Items"],
 )
 
 app.include_router(

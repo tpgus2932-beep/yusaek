@@ -205,6 +205,19 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
   const [editingDailyAccount, setEditingDailyAccount] = useState(null);
   const [expandedDailyWorkerId, setExpandedDailyWorkerId] = useState(null);
   const [editingDailyResident, setEditingDailyResident] = useState(null);
+
+  // 건당 알바
+  const [pieceWorkers, setPieceWorkers] = useState([]);
+  const [pieceArea, setPieceArea] = useState('back');
+  const [pieceMemberId, setPieceMemberId] = useState('');
+  const [pieceDate, setPieceDate] = useState(todayStr);
+  const [pieceJobCount, setPieceJobCount] = useState('');
+  const [pieceUnitAmount, setPieceUnitAmount] = useState('');
+  const [pieceFilterFrom, setPieceFilterFrom] = useState(todayStr);
+  const [pieceFilterTo, setPieceFilterTo] = useState(todayStr);
+  const [pieceLoading, setPieceLoading] = useState(false);
+  const [pieceError, setPieceError] = useState('');
+  const [editingPieceWorker, setEditingPieceWorker] = useState(null);
   const [fixedPayrollYear, setFixedPayrollYear] = useState(() => new Date().getFullYear());
   const [fixedPayrollMonth, setFixedPayrollMonth] = useState(() => new Date().getMonth() + 1);
   const [fixedPayrollArea, setFixedPayrollArea] = useState('all');
@@ -237,7 +250,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
   const [studioPayments, setStudioPayments] = useState([]);
   const [studioForm, setStudioForm] = useState({
     studioName: '', usageTime: '', amount: '', vatAmount: '', bankName: '국민', customBank: '',
-    accountNumber: '', accountHolder: '', modelName: '', modelPayment: '', shootDate: todayStr,
+    accountNumber: '', accountHolder: '', modelMemberId: '', shootDate: todayStr,
   });
   const [studioPaymentFilterFrom, setStudioPaymentFilterFrom] = useState(todayStr);
   const [studioPaymentFilterTo, setStudioPaymentFilterTo] = useState(todayStr);
@@ -424,6 +437,28 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
     if (pinAuth && tab === 'payroll' && payrollMode === 'daily') loadDailyWorkers();
   }, [pinAuth, tab, payrollMode, loadDailyWorkers]);
 
+  const loadPieceWorkers = useCallback(async () => {
+    setPieceLoading(true);
+    setPieceError('');
+    try {
+      const params = new URLSearchParams({ pin });
+      if (pieceFilterFrom) params.append('date_from', pieceFilterFrom);
+      if (pieceFilterTo) params.append('date_to', pieceFilterTo);
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/piece-work-records?${params}`);
+      const data = await res.json().catch(() => []);
+      if (!res.ok) throw new Error(data?.detail || '건당 알바 기록 조회에 실패했습니다.');
+      setPieceWorkers(Array.isArray(data) ? data : []);
+    } catch (error) {
+      setPieceError(error.message || '건당 알바 기록 조회에 실패했습니다.');
+    } finally {
+      setPieceLoading(false);
+    }
+  }, [pin, pieceFilterFrom, pieceFilterTo]);
+
+  useEffect(() => {
+    if (pinAuth && tab === 'payroll' && payrollMode === 'piece') loadPieceWorkers();
+  }, [pinAuth, tab, payrollMode, loadPieceWorkers]);
+
   const loadPaymentRequests = useCallback(async () => {
     setPaymentRequestLoading(true);
     setPaymentRequestError('');
@@ -564,31 +599,42 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
     }
   };
 
+  const formatStudioApiError = (detail, fallback) => {
+    if (!detail) return fallback;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+      const joined = detail.map((item) => (typeof item === 'string' ? item : item?.msg)).filter(Boolean).join(', ');
+      return joined || fallback;
+    }
+    if (typeof detail === 'object') return detail.message || fallback;
+    return fallback;
+  };
+
   const addStudioPayment = async () => {
     const bankName = studioForm.bankName === '직접입력:' ? studioForm.customBank.trim() : studioForm.bankName;
     const amount = Number(studioForm.amount);
     const vatAmount = Number(studioForm.vatAmount || 0);
-    const modelPayment = Number(studioForm.modelPayment);
+    const usageHours = Number(studioForm.usageTime);
     setStudioPaymentError('');
-    if (!studioForm.studioName.trim() || !studioForm.usageTime.trim() || !bankName
+    if (!studioForm.studioName.trim() || !studioForm.usageTime || !bankName
       || !studioForm.accountNumber.trim() || !studioForm.accountHolder.trim()
-      || !studioForm.modelName.trim() || !studioForm.shootDate) {
+      || !studioForm.modelMemberId || !studioForm.shootDate) {
       setStudioPaymentError('스튜디오 입금 정보를 모두 입력하세요.');
       return;
     }
-    if (!Number.isInteger(amount) || amount <= 0 || !Number.isInteger(vatAmount) || vatAmount < 0 || !Number.isInteger(modelPayment) || modelPayment < 0) {
-      setStudioPaymentError('입금액과 모델지급액을 확인하세요.');
+    if (!Number.isInteger(amount) || amount <= 0 || !Number.isInteger(vatAmount) || vatAmount < 0 || !Number.isFinite(usageHours) || usageHours <= 0) {
+      setStudioPaymentError('입금액과 이용시간을 확인하세요.');
       return;
     }
     setStudioPaymentLoading(true);
     try {
       const res = await fetch(`${COLLAB_API_BASE}/attendance/studio-payments`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...studioForm, pin, bankName, amount, vatAmount, modelPayment }),
+        body: JSON.stringify({ ...studioForm, pin, bankName, amount, vatAmount, modelMemberId: Number(studioForm.modelMemberId) }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || '스튜디오 입금 등록에 실패했습니다.');
-      setStudioForm((current) => ({ ...current, studioName: '', usageTime: '', amount: '', vatAmount: '', accountNumber: '', accountHolder: '', modelName: '', modelPayment: '' }));
+      if (!res.ok) throw new Error(formatStudioApiError(data.detail, '스튜디오 입금 등록에 실패했습니다.'));
+      setStudioForm((current) => ({ ...current, studioName: '', usageTime: '', amount: '', vatAmount: '', accountNumber: '', accountHolder: '', modelMemberId: '' }));
       setLastStudioHistoryPromptName('');
       setStudioPaymentFilterFrom(studioForm.shootDate);
       setStudioPaymentFilterTo(studioForm.shootDate);
@@ -618,7 +664,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
         customBank: listedBank ? '' : history.bankName,
         accountNumber: history.accountNumber || '',
         accountHolder: history.accountHolder || '',
-        modelName: history.modelName || '',
+        modelMemberId: history.modelMemberId != null ? String(history.modelMemberId) : '',
       }));
     } catch {
       // 과거 이력 자동입력은 선택 기능이므로 직접 입력을 계속할 수 있다.
@@ -668,10 +714,10 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
     try {
       const res = await fetch(`${COLLAB_API_BASE}/attendance/studio-payments/${editingStudioPayment.id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...editingStudioPayment, pin, amount: Number(editingStudioPayment.amount), vatAmount: Number(editingStudioPayment.vatAmount || 0), modelPayment: Number(editingStudioPayment.modelPayment) }),
+        body: JSON.stringify({ ...editingStudioPayment, pin, amount: Number(editingStudioPayment.amount), vatAmount: Number(editingStudioPayment.vatAmount || 0), modelMemberId: Number(editingStudioPayment.modelMemberId) }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || '수정에 실패했습니다.');
+      if (!res.ok) throw new Error(formatStudioApiError(data.detail, '수정에 실패했습니다.'));
       setStudioPayments((current) => current.map((item) => item.id === data.id ? data : item));
       setEditingStudioPayment(null);
     } catch (error) {
@@ -857,6 +903,83 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
     }
   };
 
+  const addPieceWorker = async () => {
+    const memberId = Number(pieceMemberId);
+    const jobCount = Number(pieceJobCount);
+    const unitAmount = Number(pieceUnitAmount);
+    if (!memberId) {
+      setPieceError('직원을 선택하세요.');
+      return;
+    }
+    if (!Number.isInteger(jobCount) || jobCount <= 0 || !Number.isInteger(unitAmount) || unitAmount <= 0) {
+      setPieceError('건수와 건당금액을 1 이상 입력하세요.');
+      return;
+    }
+    setPieceLoading(true);
+    setPieceError('');
+    try {
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/piece-work-records`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin, memberId, date: pieceDate, jobCount, unitAmount }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || '건당 알바 등록에 실패했습니다.');
+      setPieceMemberId('');
+      setPieceJobCount('');
+      setPieceUnitAmount('');
+      await loadPieceWorkers();
+    } catch (error) {
+      setPieceError(error.message || '건당 알바 등록에 실패했습니다.');
+    } finally {
+      setPieceLoading(false);
+    }
+  };
+
+  const savePieceWorkerEdit = async () => {
+    if (!editingPieceWorker) return;
+    const memberId = Number(editingPieceWorker.memberId);
+    const jobCount = Number(editingPieceWorker.jobCount);
+    const unitAmount = Number(editingPieceWorker.unitAmount);
+    if (!memberId || !Number.isInteger(jobCount) || jobCount <= 0 || !Number.isInteger(unitAmount) || unitAmount <= 0) {
+      setPieceError('직원, 건수, 건당금액을 확인하세요.');
+      return;
+    }
+    setPieceLoading(true);
+    setPieceError('');
+    try {
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/piece-work-records/${editingPieceWorker.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin, memberId, date: editingPieceWorker.date, jobCount, unitAmount }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || '건당 알바 수정에 실패했습니다.');
+      setEditingPieceWorker(null);
+      await loadPieceWorkers();
+    } catch (error) {
+      setPieceError(error.message || '건당 알바 수정에 실패했습니다.');
+    } finally {
+      setPieceLoading(false);
+    }
+  };
+
+  const deletePieceWorker = async (entry) => {
+    if (!window.confirm(`${entry.name}님의 ${entry.date} 건당 기록을 삭제할까요?`)) return;
+    setPieceError('');
+    const res = await fetch(`${COLLAB_API_BASE}/attendance/piece-work-records/${entry.id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setPieceError(data.detail || '건당 알바 삭제에 실패했습니다.');
+      return;
+    }
+    await loadPieceWorkers();
+  };
+
   // ── 같은 날짜+이름 → 한 줄로 묶기 ─────────────────
   const groupedRecords = useMemo(() => {
     const map = {};
@@ -882,6 +1005,30 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
     () => members.filter((member) => (member.workArea || 'back') === memberArea),
     [members, memberArea],
   );
+
+  const selectablePieceMembers = useMemo(
+    () => members.filter((member) => (
+      member.payType === 'piece' && (member.workArea || 'back') === pieceArea
+    )),
+    [members, pieceArea],
+  );
+
+  const selectableStudioModels = useMemo(
+    () => members.filter((member) => member.payType === 'studio'),
+    [members],
+  );
+
+  const studioSelectedModel = useMemo(
+    () => selectableStudioModels.find((member) => String(member.id) === String(studioForm.modelMemberId)),
+    [selectableStudioModels, studioForm.modelMemberId],
+  );
+
+  const studioEstimatedPayment = useMemo(() => {
+    if (!studioSelectedModel) return 0;
+    const hours = Number(studioForm.usageTime);
+    if (!Number.isFinite(hours) || hours <= 0) return 0;
+    return Math.round((studioSelectedModel.hourlyRate || 0) * hours);
+  }, [studioSelectedModel, studioForm.usageTime]);
 
   const displayedFixedPayrollRows = useMemo(
     () => fixedPayrollRows.filter((row) => (
@@ -925,6 +1072,27 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
       body: JSON.stringify({ pin, includeInSchedule }),
     });
     loadMembers();
+  };
+
+  const updateMemberPayType = async (member, payType) => {
+    setAddError('');
+    const res = await fetch(`${COLLAB_API_BASE}/attendance/members/${member.id}/pay-type`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin, payType }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setAddError(data.detail || '급여방식 변경에 실패했습니다.');
+      return;
+    }
+    setMembers((current) => current.map((item) => (
+      item.id === member.id ? { ...item, payType } : item
+    )));
+    if (payType !== 'piece' && String(member.id) === String(pieceMemberId)) setPieceMemberId('');
+    if (payType !== 'studio' && String(member.id) === String(studioForm.modelMemberId)) {
+      setStudioForm((current) => ({ ...current, modelMemberId: '' }));
+    }
   };
 
   const openMemberEdit = (member) => {
@@ -1097,6 +1265,72 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
     };
   };
 
+  const calcPieceSalaryData = (entries, cfg) => {
+    const { deductPct, memberName, year, month, allowances = [] } = cfg;
+    const pieceCount = entries.reduce((sum, entry) => sum + Number(entry.jobCount || 0), 0);
+    const piecePay = entries.reduce((sum, entry) => sum + Number(entry.totalAmount || 0), 0);
+    const allowanceTotal = allowances.reduce((sum, allowance) => sum + (Number(allowance.amount) || 0), 0);
+    const totalPay = piecePay + allowanceTotal;
+    const incomeTax = Math.round(totalPay * (deductPct / 100));
+    const localTax = Math.round(incomeTax * 0.1);
+    const deduction = incomeTax + localTax;
+    return {
+      member: memberName,
+      year,
+      month,
+      payType: 'piece',
+      deductPct,
+      pieceCount,
+      piecePay,
+      pieceEntries: entries,
+      basicPay: piecePay,
+      holTotal: 0,
+      qualifyingWeeks: 0,
+      weeks: [],
+      allowances,
+      allowanceTotal,
+      totalPay,
+      incomeTax,
+      localTax,
+      deduction,
+      netPay: totalPay - deduction,
+      monthlyHours: 0,
+    };
+  };
+
+  const calcStudioSalaryData = (entries, cfg) => {
+    const { deductPct, memberName, year, month, allowances = [] } = cfg;
+    const studioCount = entries.length;
+    const studioPay = entries.reduce((sum, entry) => sum + Number(entry.modelPayment || 0), 0);
+    const allowanceTotal = allowances.reduce((sum, allowance) => sum + (Number(allowance.amount) || 0), 0);
+    const totalPay = studioPay + allowanceTotal;
+    const incomeTax = Math.round(totalPay * (deductPct / 100));
+    const localTax = Math.round(incomeTax * 0.1);
+    const deduction = incomeTax + localTax;
+    return {
+      member: memberName,
+      year,
+      month,
+      payType: 'studio',
+      deductPct,
+      studioCount,
+      studioPay,
+      studioEntries: entries,
+      basicPay: studioPay,
+      holTotal: 0,
+      qualifyingWeeks: 0,
+      weeks: [],
+      allowances,
+      allowanceTotal,
+      totalPay,
+      incomeTax,
+      localTax,
+      deduction,
+      netPay: totalPay - deduction,
+      monthlyHours: 0,
+    };
+  };
+
   const copyUnpaidDailyWorkers = async () => {
     setDailyCopyMessage('');
     const unpaid = dailyWorkers.filter((entry) => !entry.paymentCompleted);
@@ -1162,30 +1396,43 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
       const paymentParams = new URLSearchParams({
         pin, year: String(fixedPayrollYear), month: String(fixedPayrollMonth),
       });
-      const [paymentRes, ...recordResponses] = await Promise.all([
+      const pieceParams = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo });
+      const studioParams = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo });
+      const [paymentRes, pieceRes, studioRes, ...recordResponses] = await Promise.all([
         fetch(`${COLLAB_API_BASE}/attendance/fixed-worker-payments?${paymentParams}`),
+        fetch(`${COLLAB_API_BASE}/attendance/piece-work-records?${pieceParams}`),
+        fetch(`${COLLAB_API_BASE}/attendance/studio-payments?${studioParams}`),
         ...members.map((member) => {
           const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, name: member.name });
           return fetch(`${COLLAB_API_BASE}/attendance/records?${params}`);
         }),
       ]);
-      if (!paymentRes.ok || recordResponses.some((res) => !res.ok)) {
+      if (!paymentRes.ok || !pieceRes.ok || !studioRes.ok || recordResponses.some((res) => !res.ok)) {
         throw new Error('고정 알바 급여 조회에 실패했습니다.');
       }
       const payments = await paymentRes.json();
+      const pieceEntries = await pieceRes.json();
+      const studioEntries = await studioRes.json();
       const recordSets = await Promise.all(recordResponses.map((res) => res.json()));
       const rows = members.map((member, index) => {
-        const salary = calcSalaryData(recordSets[index], {
-          hourlyRate: salaryHourlyRate,
-          hourlyRateHistory: member.hourlyRateHistory || [],
-          holidayMin: salaryHolidayMin,
-          workDays: salaryWorkDays,
+        const commonCfg = {
           deductPct: salaryDeductPct,
           memberName: member.name,
           year: fixedPayrollYear,
           month: fixedPayrollMonth,
           allowances: fixedAllowancesByMember[member.id] || [],
-        });
+        };
+        const salary = member.payType === 'piece'
+          ? calcPieceSalaryData(pieceEntries.filter((entry) => entry.memberId === member.id), commonCfg)
+          : member.payType === 'studio'
+          ? calcStudioSalaryData(studioEntries.filter((entry) => entry.modelMemberId === member.id), commonCfg)
+          : calcSalaryData(recordSets[index], {
+            ...commonCfg,
+            hourlyRate: salaryHourlyRate,
+            hourlyRateHistory: member.hourlyRateHistory || [],
+            holidayMin: salaryHolidayMin,
+            workDays: salaryWorkDays,
+          });
         return {
           ...member,
           ...(memberAccounts[member.id] || {}),
@@ -1484,20 +1731,62 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
           });
         setDailySalaryResults(results);
       } else if (salaryMember) {
-        const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, name: salaryMember });
-        const res = await fetch(`${COLLAB_API_BASE}/attendance/records?${params}`);
-        if (!res.ok) throw new Error('출퇴근 기록 조회 실패');
-        const fetched = await res.json();
         const member = members.find((item) => item.name === salaryMember);
-        setSalaryResult(calcSalaryData(fetched, {
-          ...cfg,
-          memberName: salaryMember,
-          hourlyRate: salaryHourlyRate,
-          hourlyRateHistory: member?.hourlyRateHistory || [],
-        }));
+        if (member?.payType === 'piece') {
+          const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, member_id: String(member.id) });
+          const res = await fetch(`${COLLAB_API_BASE}/attendance/piece-work-records?${params}`);
+          if (!res.ok) throw new Error('건당 알바 기록 조회 실패');
+          const fetched = await res.json();
+          setSalaryResult(calcPieceSalaryData(fetched, {
+            ...cfg,
+            memberName: salaryMember,
+          }));
+        } else if (member?.payType === 'studio') {
+          const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, member_id: String(member.id) });
+          const res = await fetch(`${COLLAB_API_BASE}/attendance/studio-payments?${params}`);
+          if (!res.ok) throw new Error('스튜디오 기록 조회 실패');
+          const fetched = await res.json();
+          setSalaryResult(calcStudioSalaryData(fetched, {
+            ...cfg,
+            memberName: salaryMember,
+          }));
+        } else {
+          const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, name: salaryMember });
+          const res = await fetch(`${COLLAB_API_BASE}/attendance/records?${params}`);
+          if (!res.ok) throw new Error('출퇴근 기록 조회 실패');
+          const fetched = await res.json();
+          setSalaryResult(calcSalaryData(fetched, {
+            ...cfg,
+            memberName: salaryMember,
+            hourlyRate: salaryHourlyRate,
+            hourlyRateHistory: member?.hourlyRateHistory || [],
+          }));
+        }
       } else {
         if (!members.length) throw new Error('직원 목록이 없습니다.');
         const results = await Promise.all(members.map(async (mem) => {
+          if (mem.payType === 'piece') {
+            const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, member_id: String(mem.id) });
+            const res = await fetch(`${COLLAB_API_BASE}/attendance/piece-work-records?${params}`);
+            if (!res.ok) throw new Error(`${mem.name} 건당 기록 조회 실패`);
+            const fetched = await res.json();
+            return calcPieceSalaryData(fetched, {
+              ...cfg,
+              memberName: mem.name,
+              allowances: fixedAllowancesByMember[mem.id] || [],
+            });
+          }
+          if (mem.payType === 'studio') {
+            const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, member_id: String(mem.id) });
+            const res = await fetch(`${COLLAB_API_BASE}/attendance/studio-payments?${params}`);
+            if (!res.ok) throw new Error(`${mem.name} 스튜디오 기록 조회 실패`);
+            const fetched = await res.json();
+            return calcStudioSalaryData(fetched, {
+              ...cfg,
+              memberName: mem.name,
+              allowances: fixedAllowancesByMember[mem.id] || [],
+            });
+          }
           const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, name: mem.name });
           const res = await fetch(`${COLLAB_API_BASE}/attendance/records?${params}`);
           if (!res.ok) throw new Error(`${mem.name} 조회 실패`);
@@ -1770,6 +2059,9 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
             <button className={`${styles.payrollSubBtn} ${payrollMode === 'daily' ? styles.payrollSubActive : ''}`} onClick={() => setPayrollMode('daily')}>
               일일 알바
             </button>
+            <button className={`${styles.payrollSubBtn} ${payrollMode === 'piece' ? styles.payrollSubActive : ''}`} onClick={() => setPayrollMode('piece')}>
+              건당 알바
+            </button>
             <button className={`${styles.payrollSubBtn} ${payrollMode === 'salary' ? styles.payrollSubActive : ''}`} onClick={() => setPayrollMode('salary')}>
               급여 명세서
             </button>
@@ -1912,16 +2204,22 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
                   </div>
                   <div className={styles.paymentRequestGrid}>
                     <label className={styles.dailyField}><span>스튜디오 이름</span><input className={styles.filterInput} value={studioForm.studioName} onChange={(e) => { setStudioForm((v) => ({ ...v, studioName: e.target.value })); if (e.target.value.trim() !== lastStudioHistoryPromptName) setLastStudioHistoryPromptName(''); }} onBlur={applyStudioHistory} /></label>
-                    <label className={styles.dailyField}><span>시간</span><input className={styles.filterInput} value={studioForm.usageTime} onChange={(e) => setStudioForm((v) => ({ ...v, usageTime: e.target.value }))} placeholder="예: 3시간" /></label>
+                    <label className={styles.dailyField}><span>시간</span><input type="number" min="0.5" step="0.5" className={styles.filterInput} value={studioForm.usageTime} onChange={(e) => setStudioForm((v) => ({ ...v, usageTime: e.target.value }))} placeholder="예: 2.5" /></label>
                     <label className={styles.dailyField}><span>입금액</span><input type="number" min="1" className={styles.filterInput} value={studioForm.amount} onChange={(e) => setStudioForm((v) => ({ ...v, amount: e.target.value }))} /></label>
                     <label className={styles.dailyField}><span>부가세 (필요시)</span><input type="number" min="0" className={styles.filterInput} value={studioForm.vatAmount} onChange={(e) => setStudioForm((v) => ({ ...v, vatAmount: e.target.value }))} placeholder="미입력 시 0원" /></label>
                     <label className={styles.dailyField}><span>은행</span><select className={styles.filterInput} value={studioForm.bankName} onChange={(e) => setStudioForm((v) => ({ ...v, bankName: e.target.value }))}>{DAILY_BANK_OPTIONS.map((bank) => <option key={bank} value={bank}>{bank}</option>)}</select></label>
                     {studioForm.bankName === '직접입력:' && <label className={styles.dailyField}><span>은행명 직접입력</span><input className={styles.filterInput} value={studioForm.customBank} onChange={(e) => setStudioForm((v) => ({ ...v, customBank: e.target.value }))} /></label>}
                     <label className={styles.dailyField}><span>계좌</span><input className={styles.filterInput} inputMode="numeric" value={studioForm.accountNumber} onChange={(e) => setStudioForm((v) => ({ ...v, accountNumber: e.target.value }))} /></label>
                     <label className={styles.dailyField}><span>예금주</span><input className={styles.filterInput} value={studioForm.accountHolder} onChange={(e) => setStudioForm((v) => ({ ...v, accountHolder: e.target.value }))} /></label>
-                    <label className={styles.dailyField}><span>모델명</span><input className={styles.filterInput} value={studioForm.modelName} onChange={(e) => setStudioForm((v) => ({ ...v, modelName: e.target.value }))} /></label>
-                    <label className={styles.dailyField}><span>모델지급액</span><input type="number" min="0" className={styles.filterInput} value={studioForm.modelPayment} onChange={(e) => setStudioForm((v) => ({ ...v, modelPayment: e.target.value }))} /></label>
-                    <label className={styles.dailyField}><span>촬영예정일 ({new Date(`${studioForm.shootDate}T00:00:00`).toLocaleDateString('ko-KR', { weekday: 'short' })})</span><input type="date" className={styles.filterInput} value={studioForm.shootDate} onChange={(e) => setStudioForm((v) => ({ ...v, shootDate: e.target.value }))} /></label>
+                    <label className={styles.dailyField}>
+                      <span>모델명</span>
+                      <select className={styles.filterInput} value={studioForm.modelMemberId} onChange={(e) => setStudioForm((v) => ({ ...v, modelMemberId: e.target.value }))}>
+                        <option value="">모델 선택</option>
+                        {selectableStudioModels.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+                      </select>
+                    </label>
+                    <label className={styles.dailyField}><span>예상 모델 급여</span><div className={styles.filterInput}>{studioEstimatedPayment.toLocaleString()}원</div></label>
+                    <label className={styles.dailyField}><span>촬영예정일{studioForm.shootDate ? ` (${new Date(`${studioForm.shootDate}T00:00:00`).toLocaleDateString('ko-KR', { weekday: 'short' })})` : ''}</span><input type="date" className={styles.filterInput} value={studioForm.shootDate} onChange={(e) => setStudioForm((v) => ({ ...v, shootDate: e.target.value }))} /></label>
                   </div>
                   {studioPaymentError && <div className={styles.errorMsg}>{studioPaymentError}</div>}
                   <button className={styles.addBtn} onClick={addStudioPayment} disabled={studioPaymentLoading}>{studioPaymentLoading ? '등록 중...' : '등록'}</button>
@@ -1939,7 +2237,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
                       <article key={entry.id} className={`${styles.studioPaymentCard} ${entry.paymentCompleted ? styles.dailyWorkerCardPaid : ''}`}>
                         <label className={styles.transferSelectBox} onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedStudioPaymentIds.has(entry.id)} disabled={entry.paymentCompleted} onChange={(e) => setSelectedStudioPaymentIds((current) => { const next = new Set(current); if (e.target.checked) next.add(entry.id); else next.delete(entry.id); return next; })} /></label>
                         <button type="button" className={styles.studioPaymentSummary} onClick={() => setExpandedStudioPaymentId((id) => id === entry.id ? null : entry.id)}>
-                          <strong>{entry.studioName}</strong><span>{entry.usageTime}</span><span>{(entry.amount + (entry.vatAmount || 0)).toLocaleString()}원</span><span>{entry.shootDate}</span>
+                          <strong>{entry.studioName}</strong><span>{entry.usageTime}</span><span>{(entry.amount + (entry.vatAmount || 0)).toLocaleString()}원</span><span>{entry.shootDate}</span><span>{entry.modelName}</span><span>{entry.modelPayment.toLocaleString()}원</span>
                         </button>
                         {expandedStudioPaymentId === entry.id && <div className={styles.studioPaymentDetails}>
                           <span>입금액 {entry.amount.toLocaleString()}원</span><span>부가세 {(entry.vatAmount || 0).toLocaleString()}원</span><span>은행 {entry.bankName}</span><span>계좌 {entry.accountNumber}</span><span>예금주 {entry.accountHolder}</span><span>모델명 {entry.modelName}</span><span>모델지급액 {entry.modelPayment.toLocaleString()}원</span><span>촬영예정일 {entry.shootDate} ({new Date(`${entry.shootDate}T00:00:00`).toLocaleDateString('ko-KR', { weekday: 'short' })})</span>
@@ -2010,6 +2308,16 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
                   >
                     {memberAccounts[m.id]?.accountNumber ? '계좌조회' : '계좌등록'}
                   </button>
+                  <select
+                    className={styles.memberAccountBtn}
+                    value={m.payType || 'hourly'}
+                    onChange={(e) => updateMemberPayType(m, e.target.value)}
+                    aria-label={`${m.name} 급여방식`}
+                  >
+                    <option value="hourly">시급</option>
+                    <option value="piece">건당</option>
+                    <option value="studio">스튜디오</option>
+                  </select>
                 </li>
               ))}
             </ul>
@@ -2240,8 +2548,8 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
                     <thead>
                       <tr>
                         <th>직원</th>
-                        <th>근무시간</th>
-                        <th>기본급</th>
+                        <th>근무량</th>
+                        <th>기본/건당급여</th>
                         <th>주휴수당</th>
                         <th>총지급액</th>
                         <th>공제</th>
@@ -2252,7 +2560,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
                       {allSalaryResults.map((r) => (
                         <tr key={r.member}>
                           <td>{r.member}</td>
-                          <td>{r.monthlyHours.toFixed(1)}H</td>
+                          <td>{r.payType === 'piece' ? `${r.pieceCount}건` : r.payType === 'studio' ? `${r.studioCount}건` : `${r.monthlyHours.toFixed(1)}H`}</td>
                           <td>{r.basicPay.toLocaleString()}원</td>
                           <td>{r.holTotal.toLocaleString()}원</td>
                           <td>{r.totalPay.toLocaleString()}원</td>
@@ -2290,22 +2598,48 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
                 <div className={styles.slipName}>{salaryResult.member}</div>
 
                 <div className={styles.slipRows}>
-                  <div className={styles.slipRow}>
-                    <span className={styles.slipKey}>시급</span>
-                    <span className={styles.slipVal}>{salaryResult.hourlyRate.toLocaleString()}원</span>
-                  </div>
-                  <div className={styles.slipRow}>
-                    <span className={styles.slipKey}>월 근무시간</span>
-                    <span className={styles.slipVal}>{salaryResult.monthlyHours.toFixed(1)}H</span>
-                  </div>
-                  <div className={styles.slipRow}>
-                    <span className={styles.slipKey}>기본급</span>
-                    <span className={styles.slipVal}>{salaryResult.basicPay.toLocaleString()}원</span>
-                  </div>
-                  <div className={styles.slipRow}>
-                    <span className={styles.slipKey}>주휴수당 ({salaryResult.qualifyingWeeks}주)</span>
-                    <span className={styles.slipVal}>{salaryResult.holTotal.toLocaleString()}원</span>
-                  </div>
+                  {salaryResult.payType === 'piece' ? (
+                    <>
+                      <div className={styles.slipRow}>
+                        <span className={styles.slipKey}>월 총 건수</span>
+                        <span className={styles.slipVal}>{salaryResult.pieceCount.toLocaleString()}건</span>
+                      </div>
+                      <div className={styles.slipRow}>
+                        <span className={styles.slipKey}>건당 급여</span>
+                        <span className={styles.slipVal}>{salaryResult.piecePay.toLocaleString()}원</span>
+                      </div>
+                    </>
+                  ) : salaryResult.payType === 'studio' ? (
+                    <>
+                      <div className={styles.slipRow}>
+                        <span className={styles.slipKey}>월 촬영 건수</span>
+                        <span className={styles.slipVal}>{salaryResult.studioCount.toLocaleString()}건</span>
+                      </div>
+                      <div className={styles.slipRow}>
+                        <span className={styles.slipKey}>모델 급여</span>
+                        <span className={styles.slipVal}>{salaryResult.studioPay.toLocaleString()}원</span>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className={styles.slipRow}>
+                        <span className={styles.slipKey}>시급</span>
+                        <span className={styles.slipVal}>{salaryResult.hourlyRate.toLocaleString()}원</span>
+                      </div>
+                      <div className={styles.slipRow}>
+                        <span className={styles.slipKey}>월 근무시간</span>
+                        <span className={styles.slipVal}>{salaryResult.monthlyHours.toFixed(1)}H</span>
+                      </div>
+                      <div className={styles.slipRow}>
+                        <span className={styles.slipKey}>기본급</span>
+                        <span className={styles.slipVal}>{salaryResult.basicPay.toLocaleString()}원</span>
+                      </div>
+                      <div className={styles.slipRow}>
+                        <span className={styles.slipKey}>주휴수당 ({salaryResult.qualifyingWeeks}주)</span>
+                        <span className={styles.slipVal}>{salaryResult.holTotal.toLocaleString()}원</span>
+                      </div>
+                    </>
+                  )}
                   {salaryResult.allowances.map((a, i) => (
                     <div key={i} className={styles.slipRow}>
                       <span className={styles.slipKey}>{a.name}</span>
@@ -2330,9 +2664,23 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
                   </div>
                 </div>
 
-                <div className={styles.slipWeekLabel}>주별 근무 내역</div>
+                <div className={styles.slipWeekLabel}>{salaryResult.payType === 'piece' ? '건당 근무 내역' : salaryResult.payType === 'studio' ? '스튜디오 촬영 내역' : '주별 근무 내역'}</div>
                 <div className={styles.tableWrap}>
-                  <table className={styles.table}>
+                  {salaryResult.payType === 'piece' ? (
+                    <table className={styles.table}>
+                      <thead><tr><th>날짜</th><th>건수</th><th>건당금액</th><th>합산금액</th></tr></thead>
+                      <tbody>{salaryResult.pieceEntries.map((entry) => (
+                        <tr key={entry.id}><td>{entry.date}</td><td>{entry.jobCount}건</td><td>{entry.unitAmount.toLocaleString()}원</td><td>{entry.totalAmount.toLocaleString()}원</td></tr>
+                      ))}</tbody>
+                    </table>
+                  ) : salaryResult.payType === 'studio' ? (
+                    <table className={styles.table}>
+                      <thead><tr><th>촬영예정일</th><th>스튜디오</th><th>이용시간</th><th>모델 급여</th></tr></thead>
+                      <tbody>{salaryResult.studioEntries.map((entry) => (
+                        <tr key={entry.id}><td>{entry.shootDate}</td><td>{entry.studioName}</td><td>{entry.usageTime}</td><td>{entry.modelPayment.toLocaleString()}원</td></tr>
+                      ))}</tbody>
+                    </table>
+                  ) : <table className={styles.table}>
                     <thead>
                       <tr>
                         <th>주차</th>
@@ -2357,7 +2705,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
                         </tr>
                       ))}
                     </tbody>
-                  </table>
+                  </table>}
                 </div>
               </div>
             )}
@@ -2624,6 +2972,51 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
               </>
             )}
 
+            {payrollMode === 'piece' && (
+              <>
+                <div className={styles.card}>
+                  <div className={styles.dailyListHeader}><strong>건당 알바 추가</strong></div>
+                  <div className={styles.dailyFormGrid}>
+                    <label className={styles.dailyField}>
+                      <span>직원 구분</span>
+                      <select className={styles.filterInput} value={pieceArea} onChange={(e) => { setPieceArea(e.target.value); setPieceMemberId(''); }}>
+                        <option value="back">백</option><option value="front">프론트</option>
+                      </select>
+                    </label>
+                    <label className={styles.dailyField}>
+                      <span>이름</span>
+                      <select className={styles.filterInput} value={pieceMemberId} onChange={(e) => setPieceMemberId(e.target.value)}>
+                        <option value="">직원 선택</option>
+                        {selectablePieceMembers.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+                      </select>
+                    </label>
+                    <label className={styles.dailyField}><span>날짜</span><input type="date" className={styles.filterInput} value={pieceDate} onChange={(e) => setPieceDate(e.target.value)} /></label>
+                    <label className={styles.dailyField}><span>건수</span><input type="number" min="1" className={styles.filterInput} value={pieceJobCount} onChange={(e) => setPieceJobCount(e.target.value)} /></label>
+                    <label className={styles.dailyField}><span>건당금액</span><input type="number" min="1" className={styles.filterInput} value={pieceUnitAmount} onChange={(e) => setPieceUnitAmount(e.target.value)} /></label>
+                  </div>
+                  <div className={styles.dailyCopyMessage}>합산금액: {(Number(pieceJobCount || 0) * Number(pieceUnitAmount || 0)).toLocaleString()}원</div>
+                  {pieceError && <div className={styles.errorMsg}>{pieceError}</div>}
+                  <button className={styles.addBtn} onClick={addPieceWorker} disabled={pieceLoading}>{pieceLoading ? '저장 중...' : '등록 저장'}</button>
+                </div>
+                <div className={styles.card}>
+                  <div className={styles.dailyListHeader}><strong>건당 알바 기록</strong><span>{pieceWorkers.length}건</span></div>
+                  <div className={styles.dailyFilterRow}>
+                    <label className={styles.dailyField}><span>날짜 설정</span><div className={styles.dailyDateControl}><input type="date" className={styles.filterInput} value={pieceFilterFrom} onChange={(e) => setPieceFilterFrom(e.target.value)} /><span className={styles.dateRangeSeparator}>~</span><input type="date" className={styles.filterInput} value={pieceFilterTo} onChange={(e) => setPieceFilterTo(e.target.value)} /></div></label>
+                    <button className={`${styles.searchBtn} ${styles.dailySearchBtn}`} onClick={loadPieceWorkers} disabled={pieceLoading}>조회</button>
+                  </div>
+                  {pieceWorkers.length === 0 ? <div className={styles.emptyMsg}>등록된 건당 알바 기록이 없습니다.</div> : (
+                    <div className={styles.dailyWorkerScroll}>{pieceWorkers.map((entry) => (
+                      <article key={entry.id} className={styles.pieceWorkerCard}>
+                        <div><strong>{entry.name}</strong><span>{entry.date}</span></div>
+                        <div className={styles.dailyWorkerAmount}><small>합산금액</small><strong>{entry.totalAmount.toLocaleString()}원</strong></div>
+                        <div className={styles.dailyWorkerActions}><button className={styles.editMemberBtn} onClick={() => { setPieceError(''); setEditingPieceWorker({ ...entry }); }}>수정</button><button className={styles.delBtn} onClick={() => deletePieceWorker(entry)}>삭제</button></div>
+                      </article>
+                    ))}</div>
+                  )}
+                </div>
+              </>
+            )}
+
             {payrollMode === 'fixed' && (
               <>
                 <div className={styles.card}>
@@ -2694,7 +3087,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
                           </label>
                           <div><strong>{row.name}</strong><span>{fixedPayrollYear}년 {fixedPayrollMonth}월</span></div>
                           <div className={styles.dailyWorkerTime}>
-                            <span>{row.salary.monthlyHours.toFixed(1)}H</span>
+                            <span>{row.payType === 'piece' ? `${row.salary.pieceCount}건` : row.payType === 'studio' ? `${row.salary.studioCount}건` : `${row.salary.monthlyHours.toFixed(1)}H`}</span>
                             <small>실지급액 {row.salary.netPay.toLocaleString()}원</small>
                           </div>
                           <div className={styles.dailyWorkerAccount}>
@@ -2968,15 +3361,40 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
             <h3 className={styles.modalTitle}>스튜디오 입금 수정</h3>
             <div className={styles.editFields}>
               {[
-                ['studioName', '스튜디오 이름', 'text'], ['usageTime', '시간', 'text'], ['amount', '입금액', 'number'], ['vatAmount', '부가세 (필요시)', 'number'],
+                ['studioName', '스튜디오 이름', 'text'], ['usageTime', '시간', 'number'], ['amount', '입금액', 'number'], ['vatAmount', '부가세 (필요시)', 'number'],
                 ['bankName', '은행', 'text'], ['accountNumber', '계좌', 'text'], ['accountHolder', '예금주', 'text'],
-                ['modelName', '모델명', 'text'], ['modelPayment', '모델지급액', 'number'], ['shootDate', '촬영예정일', 'date'],
+                ['shootDate', '촬영예정일', 'date'],
               ].map(([key, label, type]) => (
                 <label key={key} className={styles.editLabel}>{label}<input type={type} className={styles.editInput} value={editingStudioPayment[key] ?? ''} onChange={(e) => setEditingStudioPayment((current) => ({ ...current, [key]: e.target.value }))} /></label>
               ))}
+              <label className={styles.editLabel}>
+                모델명
+                <select className={styles.editInput} value={editingStudioPayment.modelMemberId ?? ''} onChange={(e) => setEditingStudioPayment((current) => ({ ...current, modelMemberId: e.target.value }))}>
+                  <option value="">모델 선택</option>
+                  {selectableStudioModels.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+                </select>
+              </label>
             </div>
             {requestEditError && <div className={styles.pinError}>{requestEditError}</div>}
             <div className={styles.modalBtns}><button className={styles.pinSubmit} onClick={saveStudioPaymentEdit} disabled={requestEditSaving}>{requestEditSaving ? '저장 중...' : '저장'}</button><button className={styles.backLink} onClick={() => setEditingStudioPayment(null)}>취소</button></div>
+          </div>
+        </div>
+      )}
+
+      {editingPieceWorker && (
+        <div className={styles.modalOverlay} onClick={() => !pieceLoading && setEditingPieceWorker(null)}>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <h3 className={styles.modalTitle}>건당 알바 수정</h3>
+            <div className={styles.editFields}>
+              <label className={styles.editLabel}>직원 구분<select className={styles.editInput} value={editingPieceWorker.workArea || 'back'} onChange={(e) => setEditingPieceWorker((current) => ({ ...current, workArea: e.target.value, memberId: '' }))}><option value="back">백</option><option value="front">프론트</option></select></label>
+              <label className={styles.editLabel}>이름<select className={styles.editInput} value={editingPieceWorker.memberId} onChange={(e) => setEditingPieceWorker((current) => ({ ...current, memberId: Number(e.target.value) }))}><option value="">직원 선택</option>{members.filter((member) => member.payType === 'piece' && (member.workArea || 'back') === (editingPieceWorker.workArea || 'back')).map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></label>
+              <label className={styles.editLabel}>날짜<input type="date" className={styles.editInput} value={editingPieceWorker.date} onChange={(e) => setEditingPieceWorker((current) => ({ ...current, date: e.target.value }))} /></label>
+              <label className={styles.editLabel}>건수<input type="number" min="1" className={styles.editInput} value={editingPieceWorker.jobCount} onChange={(e) => setEditingPieceWorker((current) => ({ ...current, jobCount: e.target.value }))} /></label>
+              <label className={styles.editLabel}>건당금액<input type="number" min="1" className={styles.editInput} value={editingPieceWorker.unitAmount} onChange={(e) => setEditingPieceWorker((current) => ({ ...current, unitAmount: e.target.value }))} /></label>
+            </div>
+            <div className={styles.dailyCopyMessage}>합산금액: {(Number(editingPieceWorker.jobCount || 0) * Number(editingPieceWorker.unitAmount || 0)).toLocaleString()}원</div>
+            {pieceError && <div className={styles.pinError}>{pieceError}</div>}
+            <div className={styles.modalBtns}><button className={styles.pinSubmit} onClick={savePieceWorkerEdit} disabled={pieceLoading}>{pieceLoading ? '저장 중...' : '저장'}</button><button className={styles.backLink} onClick={() => setEditingPieceWorker(null)} disabled={pieceLoading}>취소</button></div>
           </div>
         </div>
       )}
