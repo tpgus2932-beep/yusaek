@@ -88,6 +88,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
                 account_number      TEXT NOT NULL DEFAULT '',
                 resident_registration_number TEXT NOT NULL DEFAULT '',
                 payment_completed   INTEGER NOT NULL DEFAULT 0,
+                hourly_rate        INTEGER NOT NULL,
                 created_at          TEXT NOT NULL,
                 UNIQUE(name, date)
             )
@@ -105,6 +106,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             ("account_number", "ALTER TABLE attendance_daily_workers ADD COLUMN account_number TEXT NOT NULL DEFAULT ''"),
             ("resident_registration_number", "ALTER TABLE attendance_daily_workers ADD COLUMN resident_registration_number TEXT NOT NULL DEFAULT ''"),
             ("payment_completed", "ALTER TABLE attendance_daily_workers ADD COLUMN payment_completed INTEGER NOT NULL DEFAULT 0"),
+            ("hourly_rate", "ALTER TABLE attendance_daily_workers ADD COLUMN hourly_rate INTEGER NOT NULL DEFAULT 10400"),
         ):
             if column not in daily_worker_cols:
                 conn.execute(ddl)
@@ -612,6 +614,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         date: str
         startTime: str
         endTime: str
+        hourlyRate: int
         bankName: str = ""
         accountHolder: str = ""
         accountNumber: str = ""
@@ -1071,6 +1074,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             "accountNumber": row["account_number"],
             "residentRegistrationNumber": row["resident_registration_number"],
             "paymentCompleted": bool(row["payment_completed"]),
+            "hourlyRate": row["hourly_rate"],
         }
 
     @router.get("/daily-workers")
@@ -1080,7 +1084,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         query = (
             "SELECT d.id, d.name, d.date, d.start_time, d.end_time, "
             "d.bank_name, d.account_holder, d.account_number, "
-            "d.resident_registration_number, d.payment_completed, "
+            "d.resident_registration_number, d.payment_completed, d.hourly_rate, "
             "i.timestamp AS check_in_timestamp, o.timestamp AS check_out_timestamp "
             "FROM attendance_daily_workers d "
             "LEFT JOIN attendance_records i ON i.id = d.check_in_record_id "
@@ -1104,6 +1108,8 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         name = body.name.strip()
         if not name:
             raise HTTPException(status_code=400, detail="이름을 입력하세요.")
+        if body.hourlyRate <= 0:
+            raise HTTPException(status_code=400, detail="시급을 1원 이상 입력하세요.")
         bank_name = body.bankName.strip()
         account_holder = body.accountHolder.strip()
         account_number = re.sub(r"[^0-9]", "", body.accountNumber)
@@ -1137,13 +1143,13 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             conn.execute(
                 "INSERT INTO attendance_daily_workers "
                 "(name, date, start_time, end_time, check_in_record_id, check_out_record_id, "
-                "bank_name, account_holder, account_number, resident_registration_number, payment_completed, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+                "bank_name, account_holder, account_number, resident_registration_number, payment_completed, hourly_rate, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
                 (
                     name, body.date, body.startTime, body.endTime,
                     in_cursor.lastrowid, out_cursor.lastrowid,
                     bank_name, account_holder, account_number,
-                    resident_registration_number, _now_kst().isoformat(),
+                    resident_registration_number, body.hourlyRate, _now_kst().isoformat(),
                 ),
             )
             conn.commit()

@@ -191,6 +191,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
   const [dailyDate, setDailyDate] = useState(todayStr);
   const [dailyStartTime, setDailyStartTime] = useState('09:00');
   const [dailyEndTime, setDailyEndTime] = useState('14:00');
+  const [dailyHourlyRate, setDailyHourlyRate] = useState('');
   const [dailyBank, setDailyBank] = useState('국민');
   const [dailyCustomBank, setDailyCustomBank] = useState('');
   const [dailyAccountHolder, setDailyAccountHolder] = useState('');
@@ -682,11 +683,16 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
 
   const addDailyWorker = async () => {
     const name = dailyName.trim();
+    const hourlyRate = Number(dailyHourlyRate);
     const residentNumberDigits = dailyResidentNumber.replace(/\D/g, '');
     const hasAccountInput = Boolean(dailyAccountHolder.trim() || dailyAccountNumber.trim() || dailyCustomBank.trim());
     const bankName = hasAccountInput ? (dailyBank === '직접입력:' ? dailyCustomBank.trim() : dailyBank) : '';
     if (!name) {
       setDailyError('이름을 입력하세요.');
+      return;
+    }
+    if (!Number.isInteger(hourlyRate) || hourlyRate <= 0) {
+      setDailyError('시급을 1원 이상 입력하세요.');
       return;
     }
     if (hasAccountInput && (!bankName || !dailyAccountHolder.trim() || !dailyAccountNumber.trim())) {
@@ -704,7 +710,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          pin, name, date: dailyDate, startTime: dailyStartTime, endTime: dailyEndTime,
+          pin, name, date: dailyDate, startTime: dailyStartTime, endTime: dailyEndTime, hourlyRate,
           bankName, accountHolder: dailyAccountHolder.trim(), accountNumber: dailyAccountNumber.trim(),
           residentRegistrationNumber: residentNumberDigits,
         }),
@@ -712,6 +718,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || '일일 알바 등록에 실패했습니다.');
       setDailyName('');
+      setDailyHourlyRate('');
       setDailyAccountHolder('');
       setDailyAccountNumber('');
       setDailyResidentNumber('');
@@ -794,6 +801,11 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
     await loadDailyWorkers();
   };
 
+  const getDailyWorkerHourlyRate = (entry) => {
+    const hourlyRate = Number(entry.hourlyRate);
+    return Number.isInteger(hourlyRate) && hourlyRate > 0 ? hourlyRate : 10400;
+  };
+
   const getDailyWorkerAmount = (entry) => {
     const year = Number(entry.date.slice(0, 4));
     const month = Number(entry.date.slice(5, 7));
@@ -801,7 +813,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
       { date: entry.date, type: '출근', timestamp: entry.checkInTimestamp },
       { date: entry.date, type: '퇴근', timestamp: entry.checkOutTimestamp },
     ], {
-      hourlyRate: salaryHourlyRate,
+      hourlyRate: getDailyWorkerHourlyRate(entry),
       holidayMin: salaryHolidayMin,
       workDays: salaryWorkDays,
       deductPct: salaryDeductPct,
@@ -1116,7 +1128,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
         { date: entry.date, type: '출근', timestamp: entry.checkInTimestamp },
         { date: entry.date, type: '퇴근', timestamp: entry.checkOutTimestamp },
       ], {
-        hourlyRate: salaryHourlyRate,
+        hourlyRate: getDailyWorkerHourlyRate(entry),
         holidayMin: salaryHolidayMin,
         workDays: salaryWorkDays,
         deductPct: salaryDeductPct,
@@ -1456,7 +1468,20 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
         }, {});
         const results = Object.entries(byName)
           .sort(([a], [b]) => a.localeCompare(b, 'ko-KR'))
-          .map(([name, workerRecords]) => calcSalaryData(workerRecords, { ...cfg, memberName: name }));
+          .map(([name, workerRecords]) => {
+            const workerEntries = entries
+              .filter((entry) => entry.name === name)
+              .sort((a, b) => a.date.localeCompare(b.date));
+            return calcSalaryData(workerRecords, {
+              ...cfg,
+              memberName: name,
+              hourlyRate: getDailyWorkerHourlyRate(workerEntries[0]),
+              hourlyRateHistory: workerEntries.map((entry) => ({
+                effectiveDate: entry.date,
+                hourlyRate: getDailyWorkerHourlyRate(entry),
+              })),
+            });
+          });
         setDailySalaryResults(results);
       } else if (salaryMember) {
         const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, name: salaryMember });
@@ -2387,6 +2412,10 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
                   <span>퇴근시간</span>
                   <input type="time" className={styles.filterInput} value={dailyEndTime} onChange={(e) => setDailyEndTime(e.target.value)} />
                 </label>
+                <label className={styles.dailyField}>
+                  <span>시급(원)</span>
+                  <input type="number" min="1" className={styles.filterInput} value={dailyHourlyRate} onChange={(e) => setDailyHourlyRate(e.target.value)} placeholder="필수 입력" />
+                </label>
               </div>
               <div className={styles.dailyAccountGrid}>
                 <label className={`${styles.dailyField} ${styles.dailyBankField}`}>
@@ -2501,7 +2530,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
                             <small>{calcDuration({ timestamp: entry.checkInTimestamp }, { timestamp: entry.checkOutTimestamp })}</small>
                           </span>
                           <span className={styles.dailyWorkerAmount}>
-                            <small>실지급액</small>
+                            <small>시급 {getDailyWorkerHourlyRate(entry).toLocaleString()}원 · 실지급액</small>
                             <strong>{getDailyWorkerAmount(entry).toLocaleString()}원</strong>
                           </span>
                           <span className={styles.dailyWorkerExpandHint}>{isExpanded ? '접기' : '상세보기'}</span>
