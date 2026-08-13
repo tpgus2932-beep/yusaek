@@ -254,6 +254,29 @@ def load_wonbe_option_sno_map() -> dict[str, str]:
     return sno_map
 
 
+def load_wonbe_client_info_by_code() -> dict[str, dict[str, str]]:
+    """상품코드 → {거래처, 거래처상품명, 색상, 사이즈} 매핑."""
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute(
+            "SELECT 상품코드, 거래처, 거래처상품명, 색상, 사이즈 FROM wonbe WHERE 상품코드 != ''"
+        ).fetchall()
+    finally:
+        conn.close()
+    info_map: dict[str, dict[str, str]] = {}
+    for r in rows:
+        code = str(r["상품코드"] or "").strip()
+        if code and code not in info_map:
+            info_map[code] = {
+                "거래처": r["거래처"] or "",
+                "거래처상품명": r["거래처상품명"] or "",
+                "색상": r["색상"] or "",
+                "사이즈": r["사이즈"] or "",
+            }
+    return info_map
+
+
 def load_wonbe_goods_sno_map() -> dict[str, list[tuple[str, str]]]:
     """에이블리상품번호(goods_sno) → [(옵션번호, 상품코드), ...] 매핑.
 
