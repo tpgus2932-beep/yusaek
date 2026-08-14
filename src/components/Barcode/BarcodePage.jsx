@@ -67,6 +67,11 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [kimsungilSearchLoading, setKimsungilSearchLoading] = useState(false);
   const [kimsungilSearchMessage, setKimsungilSearchMessage] = useState("");
   const [kimsungilSummonLoading, setKimsungilSummonLoading] = useState(false);
+  const [showKimsungilLog, setShowKimsungilLog] = useState(false);
+  const [kimsungilLogCode, setKimsungilLogCode] = useState("");
+  const [kimsungilLogRows, setKimsungilLogRows] = useState([]);
+  const [kimsungilLogLoading, setKimsungilLogLoading] = useState(false);
+  const [kimsungilLogMessage, setKimsungilLogMessage] = useState("");
   const [defectBaseHeaders, setDefectBaseHeaders] = useState(["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]);
   const [defectBaseRows, setDefectBaseRows] = useState([]);
   const [defectBasePath, setDefectBasePath] = useState("");
@@ -340,6 +345,31 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (!res.ok) throw new Error(data?.detail || "김승일 목록 조회 실패");
       setKimsungilList(data.kimsungil ?? []);
     } catch { /* ignore */ }
+  };
+
+  const fetchKimsungilLog = async (code) => {
+    try {
+      setKimsungilLogLoading(true);
+      setKimsungilLogMessage("");
+      const qs = code ? `?code=${encodeURIComponent(code)}` : "";
+      const res = await fetch(`${API}/barcode/kimsungil/log${qs}`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "김승일 로그 조회 실패");
+      setKimsungilLogRows(data.items ?? []);
+      if (!(data.items ?? []).length) setKimsungilLogMessage("기록이 없습니다.");
+    } catch (err) {
+      setKimsungilLogRows([]);
+      setKimsungilLogMessage(err.message || "김승일 로그 조회 실패");
+    } finally {
+      setKimsungilLogLoading(false);
+    }
+  };
+
+  const openKimsungilLog = (code) => {
+    setKimsungilLogCode(code);
+    setShowKimsungilLog(true);
+    fetchKimsungilLog(code);
   };
 
   const searchKimsungilByName = async () => {
@@ -1589,6 +1619,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                     <span style={{ fontSize:"0.75rem", fontWeight:700, padding:"0.2rem 0.5rem", borderRadius:"999px", backgroundColor:"rgba(56,182,255,0.15)", color:"#0a6fa8", border:"1px solid rgba(56,182,255,0.3)" }}>추가 {item.count}</span>
                     {(item.incoming_qty || 0) > 0 && <span className={styles.inlineTagIncoming}>입고 {item.incoming_qty}</span>}
                     <div className={styles.defectActions}>
+                      <button className={styles.ghostBtn} onClick={() => openKimsungilLog(item.code)}>로그</button>
                       <button className={styles.ghostBtn} onClick={() => handleKimsungilDec(item.code)}>-1</button>
                       <button className={styles.ghostBtn} onClick={() => handleKimsungilRemove(item.code)}>삭제</button>
                     </div>
@@ -1596,6 +1627,54 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 ))}
               </div>
             )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 김승일 로그 모달 */}
+      {showKimsungilLog && (
+        <div className={styles.modalOverlay} onClick={() => setShowKimsungilLog(false)}>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <h4 className={styles.modalTitle}>김승일 로그 — {kimsungilLogCode}</h4>
+              <div className={styles.modalActions}>
+                <button className={styles.secondaryBtn} onClick={() => fetchKimsungilLog(kimsungilLogCode)} disabled={kimsungilLogLoading}>
+                  {kimsungilLogLoading ? "불러오는 중..." : "새로고침"}
+                </button>
+                <button className={styles.secondaryBtn} onClick={() => setShowKimsungilLog(false)}>닫기</button>
+              </div>
+            </div>
+            <div className={styles.modalBody}>
+              {kimsungilLogMessage && (
+                <div className={styles.statusMsg}>
+                  <strong>{kimsungilLogMessage}</strong>
+                </div>
+              )}
+              {kimsungilLogRows.length > 0 && (
+                <div className={styles.tableWrap}>
+                  <table className={styles.table}>
+                    <thead>
+                      <tr>
+                        <th>시간</th>
+                        <th>방식</th>
+                        <th>상품명</th>
+                        <th>처리자</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {kimsungilLogRows.map((row) => (
+                        <tr key={row.id}>
+                          <td>{row.created_at}</td>
+                          <td>{row.method}</td>
+                          <td>{row.name}</td>
+                          <td>{row.display_name || row.username}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         </div>

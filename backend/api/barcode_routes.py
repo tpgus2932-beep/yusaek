@@ -662,6 +662,27 @@ def build_barcode_router(
             )
         return rows
 
+    def _kimsungil_display_name(state, code: str) -> str:
+        det = _find_item_detail_by_code(state, code)
+        base_row = _build_defect_base_lookup().get(code, {})
+        return base_row.get("g") or det.get("name") or ""
+
+    def _log_kimsungil_event(*, code: str, name: str, action: str, method: str, count_after: int, user: str):
+        now = datetime.now(_KST).isoformat()
+        conn = get_shared_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO kimsungil_log
+                    (created_at, code, name, action, method, count_after, username, display_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (now, code, name, action, method, count_after, user, get_user_display(user)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def _build_defect_csv(state) -> str:
         defect_counts = get_shared_defect_counts()
         defect_base_lookup = _build_defect_base_lookup()
@@ -2058,6 +2079,14 @@ def build_barcode_router(
         kimsungil_counts = dict(get_shared_kimsungil_counts())
         kimsungil_counts[code] = kimsungil_counts.get(code, 0) + 1
         set_shared_kimsungil_counts(kimsungil_counts)
+        _log_kimsungil_event(
+            code=code,
+            name=_kimsungil_display_name(state, code),
+            action="add",
+            method="검색 추가",
+            count_after=kimsungil_counts[code],
+            user=user,
+        )
 
         inv = state.get("current_invoice")
         return {
@@ -2083,6 +2112,14 @@ def build_barcode_router(
             if kimsungil_counts[code] <= 0:
                 del kimsungil_counts[code]
         set_shared_kimsungil_counts(kimsungil_counts)
+        _log_kimsungil_event(
+            code=code,
+            name=_kimsungil_display_name(state, code),
+            action="dec",
+            method="수량 차감",
+            count_after=kimsungil_counts.get(code, 0),
+            user=user,
+        )
 
         inv = state.get("current_invoice")
         return {
@@ -2103,6 +2140,14 @@ def build_barcode_router(
         kimsungil_counts = dict(get_shared_kimsungil_counts())
         kimsungil_counts.pop(code, None)
         set_shared_kimsungil_counts(kimsungil_counts)
+        _log_kimsungil_event(
+            code=code,
+            name=_kimsungil_display_name(state, code),
+            action="remove",
+            method="삭제",
+            count_after=0,
+            user=user,
+        )
 
         inv = state.get("current_invoice")
         return {
@@ -2125,6 +2170,14 @@ def build_barcode_router(
             qty = kimsungil_counts.pop(code, 0)
             defect_counts[code] = defect_counts.get(code, 0) + qty
             moved_total += qty
+            _log_kimsungil_event(
+                code=code,
+                name=_kimsungil_display_name(state, code),
+                action="summon",
+                method="김승일 소환술(불량 이동)",
+                count_after=0,
+                user=user,
+            )
 
         set_shared_kimsungil_counts(kimsungil_counts)
         set_shared_defect_counts(defect_counts)
@@ -2137,6 +2190,25 @@ def build_barcode_router(
             "defects": _get_defect_list(state),
             "kimsungil": _get_kimsungil_list(state),
         }
+
+    @router.get("/barcode/kimsungil/log")
+    def list_kimsungil_log(code: str = "", limit: int = 200, user: str = Depends(get_current_user)):
+        conditions = []
+        params: list = []
+        if code:
+            normalized = normalize_to_yusas(code) or code
+            conditions.append("code = ?")
+            params.append(normalized)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        conn = get_shared_db()
+        try:
+            rows = conn.execute(
+                f"SELECT * FROM kimsungil_log {where} ORDER BY created_at DESC, id DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+        return {"ok": True, "items": [dict(row) for row in rows]}
 
     @router.get("/barcode/defect/export")
     def export_defects(user: str = Depends(get_current_user)):

@@ -1441,6 +1441,31 @@ def _require_admin(user: str = Depends(_get_current_user)):
     return user
 
 
+def _init_kimsungil_log():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kimsungil_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            code TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL,
+            method TEXT NOT NULL DEFAULT '',
+            count_after INTEGER NOT NULL DEFAULT 0,
+            username TEXT NOT NULL DEFAULT '',
+            display_name TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_kimsungil_log_code ON kimsungil_log(code)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_kimsungil_log_created_at ON kimsungil_log(created_at DESC)")
+    conn.commit()
+    conn.close()
+
+
+_init_kimsungil_log()
+
 app.include_router(
     amood_hapbae_router,
     dependencies=[Depends(_get_current_user)],
