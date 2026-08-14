@@ -144,9 +144,10 @@ const DailySalaryCard = ({ result }) => {
 };
 
 
-export default function AttendanceAdminPage({ initialTab = 'members', paymentRequestOnly = false }) {
-  const [pinAuth, setPinAuth] = useState(false);
-  const [pin, setPin] = useState('');
+export default function AttendanceAdminPage({ initialTab = 'members', paymentRequestOnly = false, payrollOnly = false }) {
+  const standaloneMode = paymentRequestOnly || payrollOnly;
+  const [pinAuth, setPinAuth] = useState(standaloneMode);
+  const [pin, setPin] = useState(() => standaloneMode ? '1234' : '');
   const [pinError, setPinError] = useState('');
   const [pinBusy, setPinBusy] = useState(false);
   const [tab, setTab] = useState(initialTab);
@@ -248,10 +249,10 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
   const [selectedFixedTransferIds, setSelectedFixedTransferIds] = useState(new Set());
 
   // 입금 요청
-  const [paymentRequestMode, setPaymentRequestMode] = useState('personal');
   const [paymentRequests, setPaymentRequests] = useState([]);
   const [paymentRequestDate, setPaymentRequestDate] = useState(todayStr);
-  const [paymentRequestFilterDate, setPaymentRequestFilterDate] = useState(todayStr);
+  const [paymentRequestFilterFrom, setPaymentRequestFilterFrom] = useState(todayStr);
+  const [paymentRequestFilterTo, setPaymentRequestFilterTo] = useState(todayStr);
   const [paymentRequestBank, setPaymentRequestBank] = useState('국민');
   const [paymentRequestCustomBank, setPaymentRequestCustomBank] = useState('');
   const [paymentRequestHolder, setPaymentRequestHolder] = useState('');
@@ -476,11 +477,16 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
   }, [pinAuth, tab, payrollMode, loadPieceWorkers]);
 
   const loadPaymentRequests = useCallback(async () => {
+    if (paymentRequestFilterFrom && paymentRequestFilterTo && paymentRequestFilterFrom > paymentRequestFilterTo) {
+      setPaymentRequestError('조회 시작일은 종료일보다 늦을 수 없습니다.');
+      return;
+    }
     setPaymentRequestLoading(true);
     setPaymentRequestError('');
     try {
       const params = new URLSearchParams({ pin });
-      if (paymentRequestFilterDate) params.append('date', paymentRequestFilterDate);
+      if (paymentRequestFilterFrom) params.append('date_from', paymentRequestFilterFrom);
+      if (paymentRequestFilterTo) params.append('date_to', paymentRequestFilterTo);
       const res = await fetch(`${COLLAB_API_BASE}/attendance/payment-requests?${params}`);
       const data = await res.json().catch(() => []);
       if (!res.ok) throw new Error(data?.detail || '입금 요청 조회에 실패했습니다.');
@@ -491,15 +497,15 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
     } finally {
       setPaymentRequestLoading(false);
     }
-  }, [pin, paymentRequestFilterDate]);
+  }, [pin, paymentRequestFilterFrom, paymentRequestFilterTo]);
 
   useEffect(() => {
-    if (pinAuth && tab === 'paymentRequest' && paymentRequestMode === 'personal') loadPaymentRequests();
-  }, [pinAuth, tab, paymentRequestMode, loadPaymentRequests]);
+    if (pinAuth && tab === 'paymentRequest') loadPaymentRequests();
+  }, [pinAuth, tab, loadPaymentRequests]);
 
   useEffect(() => {
-    if (pinAuth && tab === 'paymentRequest' && paymentRequestMode === 'studio') loadStudioPayments();
-  }, [pinAuth, tab, paymentRequestMode]);
+    if (pinAuth && tab === 'payroll' && payrollMode === 'studio-payment') loadStudioPayments();
+  }, [pinAuth, tab, payrollMode]);
 
   const addPaymentRequest = async () => {
     const bankName = paymentRequestBank === '직접입력:'
@@ -544,7 +550,8 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
       setPaymentRequestAmount('');
       setPaymentRequestContent('');
       setPaymentRequestResident('');
-      setPaymentRequestFilterDate(paymentRequestDate);
+      setPaymentRequestFilterFrom(paymentRequestDate);
+      setPaymentRequestFilterTo(paymentRequestDate);
       setPaymentRequests([data]);
       setSelectedPaymentRequestIds(new Set());
     } catch (error) {
@@ -1595,7 +1602,10 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
       ].join('\t'),
     }));
     setTransferConfirmError('');
-    setPendingTransferCopy({ type: 'request', title: `${paymentRequestFilterDate} 입금 요청 미입금 정보`, rows });
+    const filterLabel = paymentRequestFilterFrom === paymentRequestFilterTo
+      ? paymentRequestFilterFrom
+      : `${paymentRequestFilterFrom} ~ ${paymentRequestFilterTo}`;
+    setPendingTransferCopy({ type: 'request', title: `${filterLabel} 입금 요청 미입금 정보`, rows });
   };
 
   const copyUnpaidStudioPayments = () => {
@@ -2067,16 +2077,16 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
   return (
     <div className={styles.page}>
       <nav className={styles.nav}>
-        <span className={styles.navTitle}>{paymentRequestOnly ? '💸 입금요청' : '⚙️ 출퇴근 관리'}</span>
+        <span className={styles.navTitle}>{paymentRequestOnly ? '💸 입금요청' : payrollOnly ? '🧾 급여계산' : '⚙️ 출퇴근 관리'}</span>
         <div className={styles.navActions}>
-          <button className={styles.navSecBtn} onClick={() => setShowPinChange(true)}>PIN 변경</button>
+          {!standaloneMode && <button className={styles.navSecBtn} onClick={() => setShowPinChange(true)}>PIN 변경</button>}
           <button className={styles.navBtn} onClick={goBack}>닫기</button>
         </div>
       </nav>
 
       <div className={styles.content}>
         {/* 탭 */}
-        {!paymentRequestOnly && <div className={styles.tabBar}>
+        {!paymentRequestOnly && !payrollOnly && <div className={styles.tabBar}>
           <button
             className={`${styles.tabBtn} ${tab === 'members' ? styles.tabActive : ''}`}
             onClick={() => setTab('members')}
@@ -2095,12 +2105,6 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
           >
             📅 스케줄관리
           </button>
-          <button
-            className={`${styles.tabBtn} ${tab === 'payroll' ? styles.tabActive : ''}`}
-            onClick={() => setTab('payroll')}
-          >
-            🧾 급여 계산
-          </button>
         </div>}
 
         {tab === 'payroll' && (
@@ -2114,6 +2118,9 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
             <button className={`${styles.payrollSubBtn} ${payrollMode === 'piece' ? styles.payrollSubActive : ''}`} onClick={() => setPayrollMode('piece')}>
               건당 알바
             </button>
+            <button className={`${styles.payrollSubBtn} ${payrollMode === 'studio-payment' ? styles.payrollSubActive : ''}`} onClick={() => setPayrollMode('studio-payment')}>
+              스튜디오 입금
+            </button>
             <button className={`${styles.payrollSubBtn} ${payrollMode === 'salary' ? styles.payrollSubActive : ''}`} onClick={() => setPayrollMode('salary')}>
               급여 명세서
             </button>
@@ -2121,13 +2128,9 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
         )}
 
         {/* ── 입금 요청 탭 ── */}
-        {tab === 'paymentRequest' && (
+        {(tab === 'paymentRequest' || (tab === 'payroll' && payrollMode === 'studio-payment')) && (
           <>
-            <div className={styles.memberAreaTabs}>
-              <button className={`${styles.memberAreaTab} ${paymentRequestMode === 'personal' ? styles.memberAreaTabActive : ''}`} onClick={() => setPaymentRequestMode('personal')}>개인요청</button>
-              <button className={`${styles.memberAreaTab} ${paymentRequestMode === 'studio' ? styles.memberAreaTabActive : ''}`} onClick={() => setPaymentRequestMode('studio')}>스튜디오 입금</button>
-            </div>
-            {paymentRequestMode === 'personal' && (
+            {tab === 'paymentRequest' && (
               <>
             <div className={styles.card}>
               <div className={styles.dailyListHeader}>
@@ -2196,10 +2199,14 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
                 <strong>입금 요청 목록</strong>
                 <span>{paymentRequests.length}건</span>
               </div>
-              <div className={styles.paymentRequestFilter}>
+              <div className={`${styles.paymentRequestFilter} ${styles.studioPaymentFilter}`}>
                 <label className={styles.dailyField}>
-                  <span>조회 날짜</span>
-                  <input type="date" className={styles.filterInput} value={paymentRequestFilterDate} onChange={(e) => setPaymentRequestFilterDate(e.target.value)} />
+                  <span>조회 시작일</span>
+                  <input type="date" className={styles.filterInput} value={paymentRequestFilterFrom} onChange={(e) => setPaymentRequestFilterFrom(e.target.value)} />
+                </label>
+                <label className={styles.dailyField}>
+                  <span>조회 종료일</span>
+                  <input type="date" className={styles.filterInput} value={paymentRequestFilterTo} onChange={(e) => setPaymentRequestFilterTo(e.target.value)} />
                 </label>
                 <button className={`${styles.searchBtn} ${styles.dailySearchBtn}`} onClick={loadPaymentRequests} disabled={paymentRequestLoading}>조회</button>
               </div>
@@ -2207,7 +2214,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
               {paymentRequestLoading && paymentRequests.length === 0 ? (
                 <div className={styles.loadingMsg}>불러오는 중...</div>
               ) : paymentRequests.length === 0 ? (
-                <div className={styles.emptyMsg}>해당 날짜에 등록된 입금 요청이 없습니다.</div>
+                <div className={styles.emptyMsg}>해당 기간에 등록된 입금 요청이 없습니다.</div>
               ) : (
                 <div className={styles.dailyWorkerScroll}>
                   {paymentRequests.map((entry) => {
@@ -2247,7 +2254,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
             </div>
               </>
             )}
-            {paymentRequestMode === 'studio' && (
+            {tab === 'payroll' && payrollMode === 'studio-payment' && (
               <>
                 <div className={styles.card}>
                   <div className={styles.dailyListHeader}>

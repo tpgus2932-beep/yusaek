@@ -161,6 +161,15 @@ const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode })
                     입금요청
                 </a>
                 <a
+                    href="/payroll"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={styles.attendanceLink}
+                    title="급여계산 열기"
+                >
+                    🧾 급여계산
+                </a>
+                <a
                     href="/attendance"
                     target="_blank"
                     rel="noopener noreferrer"

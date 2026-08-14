@@ -249,6 +249,27 @@ def test_payment_request_registration_lookup_and_payment_status(tmp_path):
         "paymentCompleted": False,
     }]
 
+    response = client.get(
+        "/attendance/payment-requests",
+        params={"pin": "1234", "date_from": "2026-08-01", "date_to": "2026-08-05"},
+    )
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == [request_id]
+
+    response = client.get(
+        "/attendance/payment-requests",
+        params={"pin": "1234", "date_from": "2026-08-04", "date_to": "2026-08-05"},
+    )
+    assert response.status_code == 200
+    assert response.json() == []
+
+    response = client.get(
+        "/attendance/payment-requests",
+        params={"pin": "1234", "date_from": "2026-08-05", "date_to": "2026-08-01"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "조회 시작일은 종료일보다 늦을 수 없습니다."
+
     response = client.patch(f"/attendance/payment-requests/{request_id}", json={
         "pin": "1234", "date": "2026-08-03", "bankName": "국민",
         "accountHolder": "홍길동", "accountNumber": "999-888", "amount": 130000,
@@ -440,6 +461,54 @@ def test_member_hourly_rate_override_can_be_set_and_cleared(tmp_path):
     cleared_member = client.get("/attendance/members").json()[0]
     assert cleared_member["hourlyRate"] is None
     assert cleared_member["hourlyRateHistory"][-1]["hourlyRate"] is None
+
+
+def test_daily_worker_registration_creates_kimsungil_payment_request(tmp_path):
+    db_path = tmp_path / "attendance.db"
+
+    def get_db():
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    settings = {ATTENDANCE_DEFAULT_SCHEDULE_KEY: "done", ATTENDANCE_DEFAULT_RECORDS_KEY: "done"}
+    app = FastAPI()
+    app.include_router(build_attendance_router(
+        get_db=get_db, get_setting=settings.get, set_setting=settings.__setitem__,
+        hash_pin=lambda value: value, verify_pin=lambda value, hashed: value == hashed,
+    ))
+    client = TestClient(app)
+    conn = get_db()
+    conn.execute("CREATE TABLE users (username TEXT PRIMARY KEY, display_name TEXT)")
+    conn.execute(
+        "CREATE TABLE requests (id INTEGER PRIMARY KEY AUTOINCREMENT, requester_username TEXT NOT NULL, "
+        "requester_display TEXT NOT NULL, assignee_username TEXT NOT NULL, assignee_display TEXT NOT NULL, "
+        "text TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL)"
+    )
+    conn.execute("INSERT INTO users (username, display_name) VALUES (?, ?)", ("kimsungil", "김승일"))
+    conn.commit()
+    conn.close()
+
+    response = client.post("/attendance/daily-workers", json={
+        "pin": "1234", "name": "일일알바A", "date": "2026-08-14",
+        "startTime": "09:00", "endTime": "18:00", "hourlyRate": 12000,
+        "bankName": "국민", "accountHolder": "홍길동", "accountNumber": "123-456",
+        "residentRegistrationNumber": "",
+    })
+
+    assert response.status_code == 200
+    conn = get_db()
+    alert = conn.execute(
+        "SELECT requester_display, assignee_username, assignee_display, text, status FROM requests"
+    ).fetchone()
+    conn.close()
+    assert dict(alert) == {
+        "requester_display": "입금 요청 자동알림",
+        "assignee_username": "kimsungil",
+        "assignee_display": "김승일",
+        "text": "일일알바A 일일알바 입금필요",
+        "status": "open",
+    }
 
 
 def test_studio_payment_registration_lookup_and_status(tmp_path):

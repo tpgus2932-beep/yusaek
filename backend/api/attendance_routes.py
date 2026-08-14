@@ -1327,6 +1327,18 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
 
         conn = get_db()
         try:
+            assignee = conn.execute(
+                "SELECT username, display_name FROM users WHERE display_name = ? LIMIT 1",
+                ("김승일",),
+            ).fetchone()
+            if not assignee:
+                assignee = conn.execute(
+                    "SELECT username, display_name FROM users "
+                    "WHERE display_name LIKE ? OR username LIKE ? LIMIT 1",
+                    ("%김승일%", "%kimsungil%"),
+                ).fetchone()
+            if not assignee:
+                raise HTTPException(status_code=400, detail="김승일 계정을 찾지 못했습니다.")
             in_cursor = conn.execute(
                 "INSERT INTO attendance_records (member_name, type, timestamp, date) VALUES (?, '출근', ?, ?)",
                 (name, start_kst.astimezone(timezone.utc).isoformat(), body.date),
@@ -1345,6 +1357,19 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
                     in_cursor.lastrowid, out_cursor.lastrowid,
                     bank_name, account_holder, account_number,
                     resident_registration_number, body.hourlyRate, _now_kst().isoformat(),
+                ),
+            )
+            conn.execute(
+                "INSERT INTO requests "
+                "(requester_username, requester_display, assignee_username, assignee_display, "
+                "text, status, created_at) VALUES (?, ?, ?, ?, ?, 'open', ?)",
+                (
+                    "attendance_system",
+                    "입금 요청 자동알림",
+                    assignee["username"],
+                    (assignee["display_name"] or "").strip() or "김승일",
+                    f"{name} 일일알바 입금필요",
+                    datetime.now(timezone.utc).isoformat(),
                 ),
             )
             conn.commit()
@@ -1451,8 +1476,24 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         }
 
     @router.get("/payment-requests")
-    def list_payment_requests(pin: str = "", date: str = ""):
+    def list_payment_requests(
+        pin: str = "",
+        date: str = "",
+        date_from: str = "",
+        date_to: str = "",
+    ):
         _check_pin(pin)
+        if date:
+            date_from = date
+            date_to = date
+        for value in (date_from, date_to):
+            if value:
+                try:
+                    datetime.strptime(value, "%Y-%m-%d")
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="조회 날짜 형식이 올바르지 않습니다.")
+        if date_from and date_to and date_from > date_to:
+            raise HTTPException(status_code=400, detail="조회 시작일은 종료일보다 늦을 수 없습니다.")
         conn = get_db()
         query = (
             "SELECT id, date, bank_name, account_holder, account_number, amount, content, "
@@ -1460,9 +1501,15 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             "FROM attendance_payment_requests"
         )
         params = []
-        if date:
-            query += " WHERE date = ?"
-            params.append(date)
+        conditions = []
+        if date_from:
+            conditions.append("date >= ?")
+            params.append(date_from)
+        if date_to:
+            conditions.append("date <= ?")
+            params.append(date_to)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY date DESC, id DESC"
         rows = conn.execute(query, params).fetchall()
         conn.close()

@@ -42,6 +42,7 @@ const App = () => {
   const isAttendanceRoute = pathname === '/attendance';
   const isAttendanceAdminRoute = pathname === '/attendance-admin';
   const isPaymentRequestRoute = pathname === '/payment-request';
+  const isPayrollRoute = pathname === '/payroll';
   const isGuidebookRoute = pathname === '/guidebook';
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'dashboard');
   const [topMode, setTopMode] = useState('home'); // 'home' | 'db-manager' | 'inventory-dashboard' | 'order-dashboard'
@@ -212,6 +213,7 @@ const App = () => {
   if (isAttendanceRoute) return <AttendancePage />;
   if (isAttendanceAdminRoute) return <AttendanceAdminPage />;
   if (isPaymentRequestRoute) return <AttendanceAdminPage initialTab="paymentRequest" paymentRequestOnly />;
+  if (isPayrollRoute) return <AttendanceAdminPage initialTab="payroll" payrollOnly />;
   if (isGuidebookRoute) return <GuidebookPage />;
 
   if (!authChecked) {
