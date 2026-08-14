@@ -99,7 +99,7 @@ async def collect_ably_sales_history(get_db, user: str = "_default") -> int:
         client = AblyClient()
         updated = 0
 
-        async def _run_one(sem: asyncio.Semaphore, goods_sno: str, date: str, option_to_code: dict[str, list[str]]) -> bool:
+        async def _run_one(sem: asyncio.Semaphore, goods_sno: str, date: str, option_to_code: dict[str, list[str]], *, count_done: bool) -> bool:
             nonlocal updated
             # 세마포어는 네트워크 호출(느린 부분)만 감싼다 — DB 쓰기는 로컬이라 빠르고,
             # 동시에 여러 개가 기다려도 상관없다. 이렇게 네트워크 대기 중에 이벤트루프가
@@ -113,6 +113,8 @@ async def collect_ably_sales_history(get_db, user: str = "_default") -> int:
                     # 낮춰 재시도하고, 그래도 안 되면 다음 실행 때 자동 재시도된다.
                     print(f"[sales-history] fetch failed goods_sno={goods_sno} date={date}", file=sys.stderr)
                     traceback.print_exc(file=sys.stderr)
+                    if count_done:
+                        progress["done"] += 1
                     return False
             try:
                 returned_snos: set[str] = set()
@@ -150,16 +152,19 @@ async def collect_ably_sales_history(get_db, user: str = "_default") -> int:
                 # DB 쓰기 실패도 마찬가지로 이 한 건만 건너뛰고 전체 수집은 계속한다.
                 print(f"[sales-history] write failed goods_sno={goods_sno} date={date}", file=sys.stderr)
                 traceback.print_exc(file=sys.stderr)
+            if count_done:
+                progress["done"] += 1
             progress["updated"] = updated
             return True
 
         async def _run_pass(sem: asyncio.Semaphore, batch: list[tuple[str, str, dict[str, list[str]]]], *, count_done: bool) -> list[tuple[str, str, dict[str, list[str]]]]:
-            oks = await asyncio.gather(*[_run_one(sem, goods_sno, date, option_to_code) for goods_sno, date, option_to_code in batch])
-            # done은 total(=1차 호출 목록 크기) 기준이므로 재시도 패스에서는 다시 세지 않는다 —
-            # 안 그러면 progress.done이 total을 넘어가 진행률 표시가 깨진다.
-            if count_done:
-                progress["done"] += len(batch)
-            progress["updated"] = updated
+            # done은 각 호출이 끝나는 즉시(_run_one 안에서) 올린다 — 배치 전체가 끝난 뒤에나
+            # 한 번에 올리면, 느린 호출 하나 때문에 나머지가 다 끝나도 대시보드 진행률이
+            # 0에서 안 움직이는 것처럼 보인다. count_done은 재시도 패스(2차)에서 total을
+            # 넘어가지 않도록 막는 용도로만 쓴다.
+            oks = await asyncio.gather(
+                *[_run_one(sem, goods_sno, date, option_to_code, count_done=count_done) for goods_sno, date, option_to_code in batch]
+            )
             return [call for call, ok in zip(batch, oks) if not ok]
 
         try:

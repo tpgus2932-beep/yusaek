@@ -441,3 +441,51 @@ def test_collect_ably_sales_history_updates_progress_to_completed_state():
 
     progress = get_sales_history_progress("tester")
     assert progress == {"running": False, "total": 28, "done": 28, "updated": updated}
+
+
+@respx.mock
+def test_collect_ably_sales_history_progress_done_increments_per_call_not_per_batch():
+    """대시보드의 "판매량 수집" 진행률(done/total)이 0에서 안 움직이다가 막판에 갑자기
+    끝나는 문제 재현: done이 배치(=1차 호출 전체) 단위로만 오르면, 그 중 한 건이라도
+    느리게 응답하면 나머지가 다 끝나도 done은 0에 머문다. 빠른 호출 1건이 실제로 끝났으면
+    느린 호출이 아직 안 끝났어도 done은 이미 올라가 있어야 한다."""
+    _mock_login()
+    release_slow = asyncio.Event()
+
+    async def _side_effect(request):
+        goods_sno = request.url.params.get("keyword")
+        if goods_sno == "1":
+            await release_slow.wait()
+        return httpx.Response(200, json=_stats_response([_goods_option("111", 1, 0)]))
+
+    respx.get(_STATS_URL).mock(side_effect=_side_effect)
+
+    get_db, _keep_alive = _make_db_factory()
+    init_order_recommendation_tables(get_db)
+    goods_sno_map = {"1": [("111", "S1")], "2": [("222", "S2")]}
+
+    async def scenario():
+        with patch(
+            "services.order_recommendation_ably_sales.load_wonbe_goods_sno_map",
+            return_value=goods_sno_map,
+        ), patch(
+            "services.order_recommendation_ably_sales.load_wonbe_registered_at_map",
+            return_value={},
+        ), patch(
+            "services.order_recommendation_ably_sales.BACKFILL_DAYS", 1,
+        ):
+            task = asyncio.create_task(collect_ably_sales_history(get_db, user="progress-test"))
+            for _ in range(200):
+                if get_sales_history_progress("progress-test")["done"] >= 1:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                release_slow.set()
+                await task
+                pytest.fail("빠른 호출(goods_sno=2)이 끝났는데도 done이 0에서 안 움직였다")
+
+            assert not task.done(), "느린 호출(goods_sno=1)이 아직 안 끝났으니 전체 수집도 안 끝나 있어야 한다"
+            release_slow.set()
+            await task
+
+    asyncio.run(scenario())
