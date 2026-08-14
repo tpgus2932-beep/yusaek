@@ -66,6 +66,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [kimsungilSearchRows, setKimsungilSearchRows] = useState([]);
   const [kimsungilSearchLoading, setKimsungilSearchLoading] = useState(false);
   const [kimsungilSearchMessage, setKimsungilSearchMessage] = useState("");
+  const [kimsungilSummonLoading, setKimsungilSummonLoading] = useState(false);
+  const [showKimsungilLog, setShowKimsungilLog] = useState(false);
+  const [kimsungilLogCode, setKimsungilLogCode] = useState("");
+  const [kimsungilLogRows, setKimsungilLogRows] = useState([]);
+  const [kimsungilLogLoading, setKimsungilLogLoading] = useState(false);
+  const [kimsungilLogMessage, setKimsungilLogMessage] = useState("");
   const [defectBaseHeaders, setDefectBaseHeaders] = useState(["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]);
   const [defectBaseRows, setDefectBaseRows] = useState([]);
   const [defectBasePath, setDefectBasePath] = useState("");
@@ -265,31 +271,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     } finally { setEzadminOrdersLoading(false); }
   };
 
-  const handleDefectExportToEzadmin = async () => {
-    try {
-      setDefectEzadminLoading(true); setDefectEzadminMsg("EZAdmin 출고처리 중...");
-      const res = await fetch(`${API}/barcode/defect/export-to-ezadmin`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({}),
-      });
-      if (handleUnauthorized(res)) return;
-      const data = await res.json().catch(() => ({}));
-      if (data?.need_session) {
-        setDefectEzadminMsg("");
-        openEzadminModal(handleDefectExportToEzadmin);
-        return;
-      }
-      if (!data?.ok) {
-        setDefectEzadminMsg(data?.error || "출고처리 실패");
-        return;
-      }
-      setDefectEzadminMsg(`출고처리 완료 (${data.count ?? 0}건)`);
-    } catch (err) {
-      setDefectEzadminMsg(`출고처리 실패: ${err.message || ""}`);
-    } finally { setDefectEzadminLoading(false); }
-  };
-
   const isProbablyInvoice = (s) => /^\d{10,}$/.test((s || "").trim());
 
   const handleDefectAdd = async () => {
@@ -364,6 +345,31 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (!res.ok) throw new Error(data?.detail || "김승일 목록 조회 실패");
       setKimsungilList(data.kimsungil ?? []);
     } catch { /* ignore */ }
+  };
+
+  const fetchKimsungilLog = async (code) => {
+    try {
+      setKimsungilLogLoading(true);
+      setKimsungilLogMessage("");
+      const qs = code ? `?code=${encodeURIComponent(code)}` : "";
+      const res = await fetch(`${API}/barcode/kimsungil/log${qs}`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "김승일 로그 조회 실패");
+      setKimsungilLogRows(data.items ?? []);
+      if (!(data.items ?? []).length) setKimsungilLogMessage("기록이 없습니다.");
+    } catch (err) {
+      setKimsungilLogRows([]);
+      setKimsungilLogMessage(err.message || "김승일 로그 조회 실패");
+    } finally {
+      setKimsungilLogLoading(false);
+    }
+  };
+
+  const openKimsungilLog = (code) => {
+    setKimsungilLogCode(code);
+    setShowKimsungilLog(true);
+    fetchKimsungilLog(code);
   };
 
   const searchKimsungilByName = async () => {
@@ -538,6 +544,29 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "김승일 삭제 실패");
       setKimsungilList(data.kimsungil ?? []); setItems(data.items ?? items);    } catch (err) { pushLog(`김승일 삭제 실패: ${err.message || ""}`.trim()); }
+  };
+
+  const handleKimsungilSummon = async () => {
+    const summonable = kimsungilList.filter((i) => (i.incoming_qty || 0) > 0);
+    if (summonable.length === 0) { alert("입고된(배지가 뜬) 김승일 상품이 없습니다."); return; }
+    if (!window.confirm(`김승일 ${summonable.length}종을 불량 목록으로 소환하겠습니까?`)) return;
+    try {
+      setKimsungilSummonLoading(true);
+      const res = await fetch(`${API}/barcode/kimsungil/summon-to-defect`, {
+        method: "POST", headers: getAuthHeaders(),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "김승일 소환술 실패");
+      setDefectList(data.defects ?? defectList);
+      setKimsungilList(data.kimsungil ?? kimsungilList);
+      pushLog(`김승일 소환술: ${data.moved_count}종 ${data.moved_total}개 불량 이동`);
+    } catch (err) {
+      alert(err.message || "김승일 소환술 실패");
+      pushLog(`김승일 소환술 실패: ${err.message || ""}`.trim());
+    } finally {
+      setKimsungilSummonLoading(false);
+    }
   };
 
   const handleDefectExport = async () => {
@@ -769,10 +798,37 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     }
   };
 
-  const handleOchuulMinus = async () => {
+  const handleDefectExportAndOchuul = async () => {
     if (defectList.length === 0) { alert("불량 목록이 없습니다."); return; }
     const total = getDefectTotalCount();
-    if (!window.confirm(`불량 목록 ${defectList.length}종 합계 ${total}개를 오출 차감하겠습니까?`)) return;
+    if (!window.confirm(`불량 목록 ${defectList.length}종 합계 ${total}개를 출고처리 후 오출 차감하겠습니까?`)) return;
+
+    try {
+      setDefectEzadminLoading(true); setDefectEzadminMsg("EZAdmin 출고처리 중...");
+      const res = await fetch(`${API}/barcode/defect/export-to-ezadmin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({}),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) {
+        setDefectEzadminMsg("");
+        openEzadminModal(handleDefectExportAndOchuul);
+        return;
+      }
+      if (!data?.ok) {
+        setDefectEzadminMsg(data?.error || "출고처리 실패");
+        return;
+      }
+      setDefectEzadminMsg(`출고처리 완료 (${data.count ?? 0}건)`);
+    } catch (err) {
+      setDefectEzadminMsg(`출고처리 실패: ${err.message || ""}`);
+      return;
+    } finally {
+      setDefectEzadminLoading(false);
+    }
+
     try {
       setOchuulLoading(true);
       setOchuulResult(null);
@@ -1089,7 +1145,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               >
                 {defectMode ? "🚨 불량 모드" : "불량 모드"}
               </button>
-              <button className={styles.secondaryBtn} onClick={() => { setShowDefectList(true); fetchDefectList(); }}>
+              <button className={styles.secondaryBtn} onClick={() => { setShowDefectList(true); fetchDefectList(); fetchKimsungilList(); }}>
                 불량 목록
                 {defectList.length > 0 && (
                   <span className={styles.inlineTagDanger} style={{ marginLeft: "0.35rem" }}>{defectList.length}</span>
@@ -1413,11 +1469,15 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 <button className={styles.secondaryBtn} onClick={handleDefectExport}>내보내기</button>
                 <button className={styles.secondaryBtn} onClick={handleDefectPrint}>불량출력</button>
                 <button className={styles.secondaryBtn} onClick={handleDefectPurchaseManager} disabled={defectList.length === 0}>매입관리</button>
-                <button className={styles.secondaryBtn} onClick={handleDefectExportToEzadmin} disabled={defectEzadminLoading || defectList.length === 0}>
-                  {defectEzadminLoading ? "처리 중..." : "출고처리"}
+                <button
+                  className={styles.secondaryBtn}
+                  onClick={handleKimsungilSummon}
+                  disabled={kimsungilSummonLoading || kimsungilList.filter((i) => (i.incoming_qty || 0) > 0).length === 0}
+                >
+                  {kimsungilSummonLoading ? "소환 중..." : "김승일 소환술"}
                 </button>
-                <button className={styles.secondaryBtn} onClick={handleOchuulMinus} disabled={ochuulLoading || defectList.length === 0}>
-                  {ochuulLoading ? "처리 중..." : "오출내리기"}
+                <button className={styles.secondaryBtn} onClick={handleDefectExportAndOchuul} disabled={defectEzadminLoading || ochuulLoading || defectList.length === 0}>
+                  {defectEzadminLoading ? "출고 중..." : ochuulLoading ? "오출 중..." : "출고+오출"}
                 </button>
                 <button className={styles.secondaryBtn} onClick={() => { setShowDefectList(false); setOchuulResult(null); }}>닫기</button>
               </div>
@@ -1559,6 +1619,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                     <span style={{ fontSize:"0.75rem", fontWeight:700, padding:"0.2rem 0.5rem", borderRadius:"999px", backgroundColor:"rgba(56,182,255,0.15)", color:"#0a6fa8", border:"1px solid rgba(56,182,255,0.3)" }}>추가 {item.count}</span>
                     {(item.incoming_qty || 0) > 0 && <span className={styles.inlineTagIncoming}>입고 {item.incoming_qty}</span>}
                     <div className={styles.defectActions}>
+                      <button className={styles.ghostBtn} onClick={() => openKimsungilLog(item.code)}>로그</button>
                       <button className={styles.ghostBtn} onClick={() => handleKimsungilDec(item.code)}>-1</button>
                       <button className={styles.ghostBtn} onClick={() => handleKimsungilRemove(item.code)}>삭제</button>
                     </div>
@@ -1566,6 +1627,54 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 ))}
               </div>
             )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 김승일 로그 모달 */}
+      {showKimsungilLog && (
+        <div className={styles.modalOverlay} onClick={() => setShowKimsungilLog(false)}>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <h4 className={styles.modalTitle}>김승일 로그 — {kimsungilLogCode}</h4>
+              <div className={styles.modalActions}>
+                <button className={styles.secondaryBtn} onClick={() => fetchKimsungilLog(kimsungilLogCode)} disabled={kimsungilLogLoading}>
+                  {kimsungilLogLoading ? "불러오는 중..." : "새로고침"}
+                </button>
+                <button className={styles.secondaryBtn} onClick={() => setShowKimsungilLog(false)}>닫기</button>
+              </div>
+            </div>
+            <div className={styles.modalBody}>
+              {kimsungilLogMessage && (
+                <div className={styles.statusMsg}>
+                  <strong>{kimsungilLogMessage}</strong>
+                </div>
+              )}
+              {kimsungilLogRows.length > 0 && (
+                <div className={styles.tableWrap}>
+                  <table className={styles.table}>
+                    <thead>
+                      <tr>
+                        <th>시간</th>
+                        <th>방식</th>
+                        <th>상품명</th>
+                        <th>처리자</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {kimsungilLogRows.map((row) => (
+                        <tr key={row.id}>
+                          <td>{row.created_at}</td>
+                          <td>{row.method}</td>
+                          <td>{row.name}</td>
+                          <td>{row.display_name || row.username}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         </div>

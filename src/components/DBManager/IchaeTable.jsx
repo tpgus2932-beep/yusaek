@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Clipboard, RefreshCw, Trash2 } from "lucide-react";
+import { Clipboard, Download, RefreshCw, Trash2 } from "lucide-react";
 import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
@@ -24,6 +24,7 @@ export default function IchaeTable() {
   const [message, setMessage]     = useState("");
   const [total, setTotal]         = useState(0);
   const [editing, setEditing]     = useState(null); // { id, col, value }
+  const [exportMonth, setExportMonth] = useState("");
   const inputRef = useRef(null);
 
   const fetchDates = useCallback(async () => {
@@ -116,6 +117,22 @@ export default function IchaeTable() {
 
   const totalAmount = rows.reduce((sum, r) => sum + (typeof r.C === "number" ? r.C : 0), 0);
 
+  const handleExportMonth = () => {
+    const params = exportMonth ? `?month=${encodeURIComponent(exportMonth)}` : "";
+    fetch(`${API}/wonbe/ichae/export${params}`, { headers: getAuthHeaders() })
+      .then((r) => r.blob())
+      .then((blob) => {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `이체파일_${exportMonth || "전체"}.xls`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(a.href);
+      })
+      .catch(() => setMessage("다운로드 실패"));
+  };
+
   const handleCopyExcel = async () => {
     if (!rows.length) return;
     const COPY_COLS = ["A", "B", "C", "D", "E", "F"];
@@ -189,6 +206,20 @@ export default function IchaeTable() {
           disabled={!dateFilter || loading}
         >
           <Trash2 size={13} />날짜별 삭제
+        </button>
+        <input
+          type="month"
+          className={styles.dateInput}
+          value={exportMonth}
+          onChange={(e) => setExportMonth(e.target.value)}
+          title="비워두면 전체 기간을 내려받습니다"
+        />
+        <button
+          className={`${styles.btn} ${styles.btnSecondary}`}
+          onClick={handleExportMonth}
+          title={exportMonth ? `${exportMonth} 데이터를 엑셀로 다운로드` : "전체 데이터를 엑셀로 다운로드"}
+        >
+          <Download size={13} />엑셀 다운로드
         </button>
         {rows.length > 0 && (
           <span style={{ marginLeft: "auto", fontSize: "0.78rem", color: "var(--text-muted)" }}>

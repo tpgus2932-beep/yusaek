@@ -1,5 +1,6 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import styles from "../Barcode/BarcodePage.module.css";
+import pageStyles from "./OrderPage.module.css";
 import * as XLSX from "xlsx";
 import XLSXStyle from "xlsx-js-style";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
@@ -19,11 +20,53 @@ const getJinmoneyDownloadFilename = (res) => {
   return getDownloadFilename(res, "진머니 발주서.xlsx");
 };
 
+const formatDateLocal = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
+const defaultPopularEndDate = () => formatDateLocal(new Date());
+const defaultPopularStartDate = () => {
+  const d = new Date();
+  d.setDate(d.getDate() - 4);
+  return formatDateLocal(d);
+};
+
+// DB(Turso/SQLite)의 CURRENT_TIMESTAMP는 "YYYY-MM-DD HH:MM:SS" UTC로 오고 타임존 표기가 없어
+// new Date()가 로컬시간으로 잘못 해석한다 - 타임존 표기가 없으면 UTC로 간주해 명시적으로 붙여준다.
+const formatUtcTimestamp = (raw) => {
+  if (!raw) return "";
+  const hasTimezone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(raw);
+  const isoLike = hasTimezone ? raw : `${raw.replace(" ", "T")}Z`;
+  return new Date(isoLike).toLocaleString("ko-KR");
+};
+
 const stickyThStyle = {
   position: "sticky",
   top: 0,
   background: "var(--bg-secondary)",
   zIndex: 1,
+};
+
+// 옵션명(예: "블랙-M", "블랙 M")을 색상/사이즈로 분리 - NoyeKim/purchase-manager.html의
+// splitColorSize와 동일한 규칙(대시 우선, 없으면 마지막 공백 토큰을 사이즈로 간주).
+const splitOptionColorSize = (optionName) => {
+  let color = String(optionName ?? "").trim().replace(/^\[|\]$/g, "").trim();
+  if (!color) return { color: "", size: "" };
+
+  const dashed = color.split("-").map((part) => part.trim()).filter(Boolean);
+  if (dashed.length >= 2) {
+    return { color: dashed[0], size: dashed.slice(1).join("-") };
+  }
+
+  const parts = color.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return { color: parts.slice(0, -1).join(" "), size: parts[parts.length - 1] };
+  }
+
+  return { color, size: "" };
 };
 
 export default function OrderPage() {
@@ -33,6 +76,122 @@ export default function OrderPage() {
   const lizardFileInputRef = useRef(null);
 
   const { openModal: openEzadminModal } = useEzadminSession();
+
+  const [popularStartDate, setPopularStartDate] = useState(defaultPopularStartDate);
+  const [popularEndDate, setPopularEndDate] = useState(defaultPopularEndDate);
+  const [popularItems, setPopularItems] = useState([]);
+  const [popularLoading, setPopularLoading] = useState(false);
+  const [popularMessage, setPopularMessage] = useState("");
+  const [popularNeedEzadminSession, setPopularNeedEzadminSession] = useState(false);
+  const [popularLiveFetchEnabled, setPopularLiveFetchEnabled] = useState(true);
+  const [popularUpdatedAt, setPopularUpdatedAt] = useState(null);
+  const [popularPinned, setPopularPinned] = useState([]);
+
+  useEffect(() => {
+    const loadSaved = async () => {
+      try {
+        const res = await fetch(`${API}/order/popular-goods/saved`, {
+          headers: { ...getAuthHeaders() },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data?.ok) return;
+        setPopularLiveFetchEnabled(data.live_fetch_enabled !== false);
+        if (data.saved) {
+          setPopularItems(data.items || []);
+          setPopularNeedEzadminSession(!!data.need_ezadmin_session);
+          setPopularUpdatedAt(data.updated_at || null);
+          setPopularMessage(`저장된 데이터 (${data.start_date} ~ ${data.end_date}, ${data.count ?? 0}건)`);
+        }
+      } catch {
+        // 저장된 데이터 로드 실패는 조용히 무시 - 조회 버튼으로 다시 시도 가능
+      }
+    };
+    loadSaved();
+  }, []);
+
+  const fetchPopularGoods = async () => {
+    try {
+      setPopularLoading(true);
+      setPopularMessage("");
+      setPopularNeedEzadminSession(false);
+      const params = new URLSearchParams({
+        start_date: popularStartDate,
+        end_date: popularEndDate,
+        limit: "200",
+      });
+      const res = await fetch(`${API}/order/popular-goods?${params.toString()}`, {
+        headers: { ...getAuthHeaders() },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        setPopularMessage(data?.detail || data?.error || "인기재고 조회 실패");
+        setPopularItems([]);
+        return;
+      }
+      setPopularItems(data.items || []);
+      setPopularNeedEzadminSession(!!data.need_ezadmin_session);
+      setPopularUpdatedAt(new Date().toISOString());
+      setPopularMessage(`조회 완료: ${data.count ?? 0}건`);
+    } catch (err) {
+      setPopularMessage(err.message || "인기재고 조회 실패");
+    } finally {
+      setPopularLoading(false);
+    }
+  };
+
+  const handleAddPopularPinned = (item) => {
+    const input = window.prompt(`${item.goods_name} / ${item.goods_option_name}\n수량을 입력하세요`, "");
+    if (input === null) return;
+    const qty = Number(input);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      setPopularMessage("올바른 숫자를 입력하세요.");
+      return;
+    }
+    const key = item.goods_option_sno ?? `${item.goods_name}-${item.goods_option_name}`;
+    const { color, size } = splitOptionColorSize(item.goods_option_name);
+    setPopularPinned((prev) => [
+      ...prev.filter((p) => p.key !== key),
+      {
+        key,
+        client: item.client || "",
+        client_product_name: item.client_product_name || "",
+        goods_name: item.goods_name || "",
+        color,
+        size,
+        qty,
+      },
+    ]);
+  };
+
+  const handleRemovePopularPinned = (key) => {
+    setPopularPinned((prev) => prev.filter((p) => p.key !== key));
+  };
+
+  const copyPopularPinnedTsv = async () => {
+    if (!popularPinned.length) {
+      setPopularMessage("담아둔 항목이 없습니다.");
+      return;
+    }
+    const tsv = popularPinned
+      .map((p) => [p.client, "주문", p.client_product_name, p.color, p.size, p.qty].join("\t"))
+      .join("\n");
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(tsv);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = tsv;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      setPopularMessage(`엑셀 복사 완료 (${popularPinned.length}행)`);
+    } catch (err) {
+      setPopularMessage(`복사 실패: ${err.message || ""}`);
+    }
+  };
+
   const [mainOrderItems, setMainOrderItems] = useState([]);
   const [mainOrderLoading, setMainOrderLoading] = useState(false);
   const [mainOrderMessage, setMainOrderMessage] = useState("");
@@ -561,6 +720,12 @@ export default function OrderPage() {
         >
           메인발주
         </button>
+        <button
+          className={`${styles.tabBtn} ${activeTab === "popular-goods" ? styles.tabActive : ""}`}
+          onClick={() => setActiveTab("popular-goods")}
+        >
+          인기재고
+        </button>
       </div>
 
       {activeTab === "standard" && (
@@ -752,6 +917,152 @@ export default function OrderPage() {
         </section>
       )}
 
+      {activeTab === "popular-goods" && (
+        <section className={styles.card}>
+          <div className={styles.cardHeader}>
+            <h3 className={styles.cardTitle}>인기재고 (판매수량 상위 200개)</h3>
+          </div>
+          {popularLiveFetchEnabled ? (
+            <div className={pageStyles.dateRow}>
+              <input
+                type="date"
+                className={pageStyles.dateInput}
+                value={popularStartDate}
+                onChange={(e) => setPopularStartDate(e.target.value)}
+              />
+              <span className={pageStyles.dateSep}>~</span>
+              <input
+                type="date"
+                className={pageStyles.dateInput}
+                value={popularEndDate}
+                onChange={(e) => setPopularEndDate(e.target.value)}
+              />
+              <button className={styles.primaryBtn} onClick={fetchPopularGoods} disabled={popularLoading}>
+                {popularLoading ? "조회 중..." : "조회"}
+              </button>
+            </div>
+          ) : (
+            <div className={styles.statusMsg}>
+              배포 환경에서는 실시간 조회를 지원하지 않습니다. 로컬에서 마지막으로 조회해 저장된 데이터만 볼 수 있습니다.
+            </div>
+          )}
+          {popularMessage && (
+            <div className={styles.statusMsg}>
+              <strong>{popularMessage}</strong>
+              {popularUpdatedAt && <span> (마지막 조회: {formatUtcTimestamp(popularUpdatedAt)})</span>}
+            </div>
+          )}
+          {popularNeedEzadminSession && (
+            <div className={styles.statusMsg}>
+              <strong>EZAdmin 세션이 만료되어 재고/접수 수량을 불러오지 못했습니다.</strong>{" "}
+              <button
+                className={styles.secondaryBtn}
+                onClick={() => openEzadminModal(fetchPopularGoods)}
+              >
+                EZAdmin 세션 입력 후 재조회
+              </button>
+            </div>
+          )}
+          <div className={pageStyles.dateRow}>
+            <strong>담은 목록: {popularPinned.length}건</strong>
+            <button
+              className={styles.primaryBtn}
+              onClick={copyPopularPinnedTsv}
+              disabled={!popularPinned.length}
+            >
+              복사
+            </button>
+          </div>
+          {popularPinned.length > 0 && (
+            <div className={styles.tableWrap} style={{ maxHeight: "240px", overflowY: "auto", marginBottom: 16 }}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={stickyThStyle}>거래처</th>
+                    <th style={stickyThStyle}>거래처상품명</th>
+                    <th style={stickyThStyle}>색상</th>
+                    <th style={stickyThStyle}>사이즈</th>
+                    <th style={stickyThStyle}>수량</th>
+                    <th style={stickyThStyle}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {popularPinned.map((p) => (
+                    <tr key={p.key}>
+                      <td>{p.client || "-"}</td>
+                      <td>{p.client_product_name || "-"}</td>
+                      <td>{p.color || "-"}</td>
+                      <td>{p.size || "-"}</td>
+                      <td>{p.qty}</td>
+                      <td>
+                        <button className={styles.ghostBtn} onClick={() => handleRemovePopularPinned(p.key)}>
+                          삭제
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {popularItems.length === 0 ? (
+            <div className={styles.statusMsg}>
+              {popularLiveFetchEnabled
+                ? "조회 버튼을 눌러 기간 내 판매수량 상위 상품을 불러오세요."
+                : "저장된 데이터가 없습니다. 로컬에서 먼저 조회해주세요."}
+            </div>
+          ) : (
+            <div className={styles.tableWrap} style={{ maxHeight: "85vh", overflowY: "auto" }}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={stickyThStyle}>순위</th>
+                    <th style={stickyThStyle}>거래처</th>
+                    <th style={stickyThStyle}>상품명</th>
+                    <th style={stickyThStyle}>옵션명</th>
+                    <th style={stickyThStyle}>옵션번호</th>
+                    <th style={stickyThStyle}>상품코드</th>
+                    <th style={stickyThStyle}>재고</th>
+                    <th style={stickyThStyle}>접수</th>
+                    <th style={stickyThStyle}>일평균 판매수량</th>
+                    <th style={stickyThStyle}>미송수량</th>
+                    <th style={stickyThStyle}>장바구니</th>
+                    <th style={stickyThStyle}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {popularItems.map((item, idx) => {
+                    const isGrouped = idx > 0 && popularItems[idx - 1].goods_sno === item.goods_sno;
+                    return (
+                      <tr key={item.goods_option_sno ?? idx}>
+                        <td>{item.rank ?? idx + 1}</td>
+                        <td>{item.client || "-"}</td>
+                        <td className={isGrouped ? pageStyles.groupedNameCell : undefined}>
+                          {isGrouped ? "└ " : ""}
+                          {item.goods_name}
+                        </td>
+                        <td>{item.goods_option_name}</td>
+                        <td>{item.goods_option_sno}</td>
+                        <td>{item.product_id || "-"}</td>
+                        <td>{item.stock ?? "-"}</td>
+                        <td>{item.pending ?? "-"}</td>
+                        <td>{(item.avg_order_count ?? 0).toLocaleString()}</td>
+                        <td>{(item.misong_qty ?? 0).toLocaleString()}</td>
+                        <td>{(item.cart_count ?? 0).toLocaleString()}</td>
+                        <td>
+                          <button className={styles.secondaryBtn} onClick={() => handleAddPopularPinned(item)}>
+                            추가
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
 }

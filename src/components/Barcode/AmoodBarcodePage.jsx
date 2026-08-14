@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import styles from "./BarcodePage.module.css";
 import { getDownloadFilename } from "../../lib/download";
-import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
+import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
 const HANGUL_BASE = 0xac00;
 const HANGUL_LAST = 0xd7a3;
@@ -193,6 +193,40 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
   const [loadingEzadmin, setLoadingEzadmin] = useState(false);
   const [mgmtNumbers, setMgmtNumbers] = useState([]);
   const [packLoading, setPackLoading] = useState(false);
+  const [ezadminHistory, setEzadminHistory] = useState([]);
+  const [restoringId, setRestoringId] = useState(null);
+
+  const refreshEzadminHistory = async () => {
+    try {
+      const res = await fetch(`${API}/amood/ezadmin-history`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      if (!res.ok) return;
+      const data = await res.json();
+      setEzadminHistory(data.history || []);
+    } catch {
+      // ignore
+    }
+  };
+
+  const restoreEzadminHistory = async (id) => {
+    if (!window.confirm("현재 이지어드민 엑셀을 이 이력으로 되돌리시겠습니까?")) return;
+    setRestoringId(id);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/amood/ezadmin-history/${id}/restore`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "이력 복원 실패");
+      setMessage("이지어드민 엑셀을 이력으로 복원했습니다.");
+      await refreshStatus();
+    } catch (err) {
+      setMessage(err.message || "이력 복원 실패");
+    } finally {
+      setRestoringId(null);
+    }
+  };
 
   const refreshStatus = async () => {
     try {
@@ -211,6 +245,7 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
 
   useEffect(() => {
     refreshStatus();
+    refreshEzadminHistory();
     setTimeout(() => scanRef.current?.focus(), 50);
   }, []);
 
@@ -373,6 +408,7 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
         setEasyadminBPreviewOpen(true);
       }
       await refreshStatus();
+      await refreshEzadminHistory();
     } catch (err) {
       setMessage(err.message || "이지어드민 불러오기 실패");
     } finally {
@@ -848,6 +884,42 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
                   <span style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
                     저장 일시: {formatSavedAt(status.ezadmin_saved_at)}
                   </span>
+                )}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem", marginTop: "0.4rem" }}>
+                <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>최근 불러온 이력</span>
+                {ezadminHistory.length === 0 ? (
+                  <span style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>불러온 이력이 없습니다.</span>
+                ) : (
+                  ezadminHistory.map((h) => (
+                    <div
+                      key={h.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "0.5rem",
+                        fontSize: "0.78rem",
+                        padding: "0.3rem 0.5rem",
+                        border: "1px solid var(--border-color)",
+                        borderRadius: "6px",
+                      }}
+                    >
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {h.file_name}
+                      </span>
+                      <span style={{ color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+                        {formatSavedAt(h.saved_at)}
+                      </span>
+                      <button
+                        type="button"
+                        className={styles.secondaryBtn}
+                        onClick={() => restoreEzadminHistory(h.id)}
+                        disabled={restoringId === h.id}
+                      >
+                        {restoringId === h.id ? "복원 중..." : "복원"}
+                      </button>
+                    </div>
+                  ))
                 )}
               </div>
               <div className={styles.uploadRow}>

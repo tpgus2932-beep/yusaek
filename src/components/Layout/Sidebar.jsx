@@ -10,7 +10,6 @@ import {
     Barcode,
     Shield,
     Upload,
-    FolderOpen,
     RotateCcw,
     Activity,
     MessageSquare,
@@ -73,15 +72,6 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     상품 업로드
                 </div>
                 )}
-                {!isHidden('shared-files') && (
-                <div
-                    className={`${styles.navItem} ${activeTab === 'shared-files' ? styles.active : ''}`}
-                    onClick={() => setActiveTab('shared-files')}
-                >
-                    <FolderOpen size={20} />
-                    유색 공용 파일
-                </div>
-                )}
                 {!isHidden('noye-kimsungil') && (
                 <div
                     className={`${styles.navItem} ${activeTab === 'noye-kimsungil' ? styles.active : ''}`}
@@ -97,7 +87,7 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     onClick={() => setActiveTab('client-schedule')}
                 >
                     <CalendarDays size={20} />
-                    거래처 일정
+                    거래처
                 </div>
                 )}
                 {!isHidden('sms') && (

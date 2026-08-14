@@ -5,7 +5,8 @@ import uuid
 import warnings
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 import json
 import re
@@ -27,6 +28,8 @@ _ABLY_PASSWORD = "!Glqgkqdldi1126"
 
 _EZADMIN_BASE        = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+_KST = ZoneInfo("Asia/Seoul")
+_SCHEDULE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 from api.wonbe_routes import _get_wonbe_db as _get_wonbe_db, record_defect_process_logs
 
@@ -51,6 +54,7 @@ def build_barcode_router(
     get_setting,
     set_setting,
     get_user_display,
+    get_shared_db,
 ):
     router = APIRouter()
     _DEFECT_BASE_HEADERS = ["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]
@@ -657,6 +661,27 @@ def build_barcode_router(
                 }
             )
         return rows
+
+    def _kimsungil_display_name(state, code: str) -> str:
+        det = _find_item_detail_by_code(state, code)
+        base_row = _build_defect_base_lookup().get(code, {})
+        return base_row.get("g") or det.get("name") or ""
+
+    def _log_kimsungil_event(*, code: str, name: str, action: str, method: str, count_after: int, user: str):
+        now = datetime.now(_KST).isoformat()
+        conn = get_shared_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO kimsungil_log
+                    (created_at, code, name, action, method, count_after, username, display_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (now, code, name, action, method, count_after, user, get_user_display(user)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def _build_defect_csv(state) -> str:
         defect_counts = get_shared_defect_counts()
@@ -2054,6 +2079,14 @@ def build_barcode_router(
         kimsungil_counts = dict(get_shared_kimsungil_counts())
         kimsungil_counts[code] = kimsungil_counts.get(code, 0) + 1
         set_shared_kimsungil_counts(kimsungil_counts)
+        _log_kimsungil_event(
+            code=code,
+            name=_kimsungil_display_name(state, code),
+            action="add",
+            method="검색 추가",
+            count_after=kimsungil_counts[code],
+            user=user,
+        )
 
         inv = state.get("current_invoice")
         return {
@@ -2079,6 +2112,14 @@ def build_barcode_router(
             if kimsungil_counts[code] <= 0:
                 del kimsungil_counts[code]
         set_shared_kimsungil_counts(kimsungil_counts)
+        _log_kimsungil_event(
+            code=code,
+            name=_kimsungil_display_name(state, code),
+            action="dec",
+            method="수량 차감",
+            count_after=kimsungil_counts.get(code, 0),
+            user=user,
+        )
 
         inv = state.get("current_invoice")
         return {
@@ -2099,6 +2140,14 @@ def build_barcode_router(
         kimsungil_counts = dict(get_shared_kimsungil_counts())
         kimsungil_counts.pop(code, None)
         set_shared_kimsungil_counts(kimsungil_counts)
+        _log_kimsungil_event(
+            code=code,
+            name=_kimsungil_display_name(state, code),
+            action="remove",
+            method="삭제",
+            count_after=0,
+            user=user,
+        )
 
         inv = state.get("current_invoice")
         return {
@@ -2107,6 +2156,59 @@ def build_barcode_router(
             "items": _get_all_items(state, inv) if inv else [],
             "current_next": _get_first_remaining_item(state, inv),
         }
+
+    @router.post("/barcode/kimsungil/summon-to-defect")
+    def summon_kimsungil_to_defect(user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
+        kimsungil_counts = dict(get_shared_kimsungil_counts())
+        incoming_counts = get_shared_incoming_counts() or {}
+
+        moved_codes = [code for code in kimsungil_counts if int(incoming_counts.get(code, 0) or 0) > 0]
+        defect_counts = dict(get_shared_defect_counts())
+        moved_total = 0
+        for code in moved_codes:
+            qty = kimsungil_counts.pop(code, 0)
+            defect_counts[code] = defect_counts.get(code, 0) + qty
+            moved_total += qty
+            _log_kimsungil_event(
+                code=code,
+                name=_kimsungil_display_name(state, code),
+                action="summon",
+                method="김승일 소환술(불량 이동)",
+                count_after=0,
+                user=user,
+            )
+
+        set_shared_kimsungil_counts(kimsungil_counts)
+        set_shared_defect_counts(defect_counts)
+
+        return {
+            "ok": True,
+            "moved_codes": moved_codes,
+            "moved_count": len(moved_codes),
+            "moved_total": moved_total,
+            "defects": _get_defect_list(state),
+            "kimsungil": _get_kimsungil_list(state),
+        }
+
+    @router.get("/barcode/kimsungil/log")
+    def list_kimsungil_log(code: str = "", limit: int = 200, user: str = Depends(get_current_user)):
+        conditions = []
+        params: list = []
+        if code:
+            normalized = normalize_to_yusas(code) or code
+            conditions.append("code = ?")
+            params.append(normalized)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        conn = get_shared_db()
+        try:
+            rows = conn.execute(
+                f"SELECT * FROM kimsungil_log {where} ORDER BY created_at DESC, id DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+        return {"ok": True, "items": [dict(row) for row in rows]}
 
     @router.get("/barcode/defect/export")
     def export_defects(user: str = Depends(get_current_user)):
@@ -3078,15 +3180,49 @@ def build_barcode_router(
             return {"ok": False, "need_session": True}
 
         import io as _io
-        rows = payload.get("rows") or []
+        today = datetime.now(_KST).date()
+
+        def _classify(note_text: str):
+            """Returns (output_note, is_tracked_date)."""
+            if _SCHEDULE_DATE_RE.match(note_text):
+                parsed = date.fromisoformat(note_text)
+                return ("" if parsed <= today else note_text), True
+            return note_text, False
+
+        scheduled_rows = []
+        for row in payload.get("rows") or []:
+            code = str(row.get("productCode", ""))
+            output_note, is_tracked = _classify(str(row.get("note", "")))
+            scheduled_rows.append({"productCode": code, "note": output_note, "is_tracked": is_tracked})
+
+        current_codes = {row["productCode"] for row in scheduled_rows}
+
+        conn = get_shared_db()
+        try:
+            stale = conn.execute(
+                "SELECT DISTINCT product_code FROM client_schedule_export_log WHERE note_date <= ?",
+                (today.isoformat(),),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        cleanup_rows = [
+            {"productCode": r["product_code"], "note": "", "is_tracked": True}
+            for r in stale
+            if r["product_code"] not in current_codes
+        ]
+
+        all_rows = scheduled_rows + cleanup_rows
+        if not all_rows:
+            return {"ok": True, "count": 0}
 
         wb = xlwt.Workbook()
         ws = wb.add_sheet("Sheet1")
         ws.write(0, 0, "상품코드")
         ws.write(0, 1, "상품메모")
-        for ri, row in enumerate(rows, 1):
-            ws.write(ri, 0, str(row.get("productCode", "")))
-            ws.write(ri, 1, str(row.get("note", "")))
+        for ri, row in enumerate(all_rows, 1):
+            ws.write(ri, 0, row["productCode"])
+            ws.write(ri, 1, row["note"])
 
         buf = _io.BytesIO()
         wb.save(buf)
@@ -3121,6 +3257,27 @@ def build_barcode_router(
         m = re.search(r'alert\("(\d+)\s*개 변경 완료 되었습니다\."\)', html)
         if not m:
             return {"ok": False, "error": "응답에서 변경 완료 문구를 찾지 못했습니다", "raw_snippet": html[:300]}
+
+        now_iso = datetime.now(_KST).isoformat()
+        conn = get_shared_db()
+        try:
+            for row in all_rows:
+                if not row["is_tracked"]:
+                    continue
+                conn.execute(
+                    "DELETE FROM client_schedule_export_log WHERE product_code = ?",
+                    (row["productCode"],),
+                )
+                if row["note"]:
+                    conn.execute(
+                        "INSERT INTO client_schedule_export_log (product_code, note_date, exported_at) "
+                        "VALUES (?, ?, ?)",
+                        (row["productCode"], row["note"], now_iso),
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+
         return {"ok": True, "count": int(m.group(1))}
 
     return router

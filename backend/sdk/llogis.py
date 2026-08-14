@@ -50,6 +50,15 @@ class LLogisClient:
         related_return = related_returns[0] if related_returns else {}
         return {"llogis_status": row.get("paclStatNm") or "-", "llogis_location": row.get("scanBrshNm") or "-", "llogis_scan_date": row.get("rgstYmd") or "-", "llogis_return_invoice_no": str(related_return.get("rltnInvNoView") or related_return.get("rltnInvNo") or _find_return_invoice(payload, inv_no) or "").strip()}
 
+    async def query_raw(self, inv_no: str) -> dict:
+        """가공하지 않은 llogis 조회 원본(mvmList/invInfoList 등) 반환."""
+        token = await self.login(); base = config.LLOGIS_PID_BASE
+        params = {"filter": json.dumps({"srchInvNo": inv_no, "blngBrshCd": None, "empno": config.LLOGIS_EMP_NO, "usrId": config.LLOGIS_EMP_NO, "currPageId": "PIDFTR001U", "crdFarePrntStat": "N", "srchOrgInvNo": ""}, ensure_ascii=False), "_": str(int(time.time() * 1000))}
+        headers = {"Accept": "application/json, text/javascript, */*; q=0.01", "Authorization": token, "Content-Type": "application/json", "Host": "pid.alps.llogis.com:18210", "Referer": f"{base}/pid/pages/ftr/PIDFTR051U", "X-Requested-With": "XMLHttpRequest", "User-Agent": "Mozilla/5.0"}
+        async with httpx.AsyncClient(timeout=20.0, verify=False) as client: response = await client.get(f"{base}/pid/ftr/pacltrc/inner/bcraiinvinfo", params=params, headers=headers)
+        if response.status_code != 200: return {}
+        return response.json()
+
     async def query_accident_cargo(self, date_fr: str, date_to: str) -> dict:
         token = await self.login(); base = config.LLOGIS_TRB_BASE
         filter_obj = {"srchReqYmd": "requird:true", "srchCustSctCd": "10", "srchReqCustCd": "329673", "srchAcdTypCd": "10,20,30,40,50,60,90", "srchInvNo": "", "srchYmdFr": date_fr, "_STATUS_": "U", "srchYmdTo": date_to, "srchYmd": "A2.RGST_YMD", "srchNo": "A2.INV_NO"}

@@ -1,15 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CalendarDays, Check, ChevronLeft, ChevronRight, Eye, EyeOff, Pencil, Plus, Trash2, X } from 'lucide-react';
 import styles from './EventCalendarModal.module.css';
+import { COLLAB_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
-const STORAGE_KEY = 'shopping-events-v1';
 const TABS = [
     { id: 'korea', label: '한국' },
     { id: 'japan', label: '일본' },
     { id: 'all', label: '통합' },
 ];
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
-const COLORS = ['blue', 'mint', 'pink', 'purple', 'amber'];
 
 const toDateKey = (date) => {
     const year = date.getFullYear();
@@ -31,20 +30,23 @@ const formatPeriod = (startDate, endDate) => {
     return `${format(startDate)} – ${format(endDate)}`;
 };
 
-const loadEvents = () => {
-    try {
-        const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-        return Array.isArray(stored) ? stored : [];
-    } catch {
-        return [];
-    }
-};
+const fromApiEvent = (item) => ({
+    id: item.id,
+    region: item.region,
+    title: item.title,
+    content: item.content,
+    md: item.md,
+    startDate: item.start_date,
+    endDate: item.end_date,
+    color: item.color,
+    createdAt: item.created_at,
+});
 
 const EventCalendarModal = ({ onClose }) => {
     const today = new Date();
     const [activeTab, setActiveTab] = useState('korea');
     const [viewDate, setViewDate] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
-    const [events, setEvents] = useState(loadEvents);
+    const [events, setEvents] = useState([]);
     const [selectedEventIds, setSelectedEventIds] = useState(() => new Set());
     const [focusedEventIds, setFocusedEventIds] = useState(() => new Set());
     const [showForm, setShowForm] = useState(false);
@@ -68,6 +70,21 @@ const EventCalendarModal = ({ onClose }) => {
         document.addEventListener('keydown', handleKeyDown);
         return () => document.removeEventListener('keydown', handleKeyDown);
     }, [onClose]);
+
+    useEffect(() => {
+        const fetchEvents = async () => {
+            try {
+                const res = await fetch(`${API}/shopping-events`, { headers: getAuthHeaders() });
+                if (handleUnauthorized(res)) return;
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data?.detail || 'Failed to load events');
+                setEvents((data.events || []).map(fromApiEvent));
+            } catch {
+                // 조용히 실패 — 목록이 비어있는 상태로 유지
+            }
+        };
+        fetchEvents();
+    }, []);
 
     const calendarDays = useMemo(() => {
         const year = viewDate.getFullYear();
@@ -167,7 +184,7 @@ const EventCalendarModal = ({ onClose }) => {
         setFormError('');
     };
 
-    const submitEvent = (event) => {
+    const submitEvent = async (event) => {
         event.preventDefault();
         const title = form.title.trim();
         const content = form.content.trim();
@@ -182,34 +199,49 @@ const EventCalendarModal = ({ onClose }) => {
             return;
         }
 
-        const updatedFields = { ...form, title, content, md };
-        const nextEvents = editingEventId
-            ? events.map((item) => (
-                item.id === editingEventId
-                    ? { ...item, ...updatedFields, updatedAt: new Date().toISOString() }
-                    : item
-            ))
-            : [...events, {
-                id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                ...updatedFields,
-                color: COLORS[events.length % COLORS.length],
-                createdAt: new Date().toISOString(),
-            }];
-        setEvents(nextEvents);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(nextEvents));
-        setViewDate(parseDate(form.startDate));
-        setActiveTab(form.region);
-        setForm({
-            region: form.region,
-            title: '',
-            content: '',
-            md: '',
-            startDate: '',
-            endDate: '',
-        });
-        setFormError('');
-        setShowForm(false);
-        setEditingEventId(null);
+        try {
+            const isEditing = Boolean(editingEventId);
+            const res = await fetch(
+                isEditing ? `${API}/shopping-events/${editingEventId}` : `${API}/shopping-events`,
+                {
+                    method: isEditing ? 'PATCH' : 'POST',
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                    body: JSON.stringify({
+                        region: form.region,
+                        title,
+                        content,
+                        md,
+                        start_date: form.startDate,
+                        end_date: form.endDate,
+                    }),
+                },
+            );
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || (isEditing ? 'Failed to update event' : 'Failed to create event'));
+
+            const savedEvent = fromApiEvent(data.event);
+            setEvents((current) => (
+                isEditing
+                    ? current.map((item) => (item.id === savedEvent.id ? savedEvent : item))
+                    : [...current, savedEvent]
+            ));
+            setViewDate(parseDate(form.startDate));
+            setActiveTab(form.region);
+            setForm({
+                region: form.region,
+                title: '',
+                content: '',
+                md: '',
+                startDate: '',
+                endDate: '',
+            });
+            setFormError('');
+            setShowForm(false);
+            setEditingEventId(null);
+        } catch (err) {
+            setFormError(err.message || (editingEventId ? '행사 수정에 실패했습니다.' : '행사 등록에 실패했습니다.'));
+        }
     };
 
     const toggleSelectedEvent = (eventId) => {
@@ -230,19 +262,30 @@ const EventCalendarModal = ({ onClose }) => {
         });
     };
 
-    const deleteSelectedEvents = () => {
+    const deleteSelectedEvents = async () => {
         if (selectedEventIds.size === 0) return;
         if (!window.confirm(`선택한 행사 ${selectedEventIds.size}개를 삭제하시겠습니까?`)) return;
 
-        const nextEvents = events.filter((event) => !selectedEventIds.has(event.id));
-        setEvents(nextEvents);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(nextEvents));
-        setFocusedEventIds((current) => {
-            const next = new Set(current);
-            selectedEventIds.forEach((eventId) => next.delete(eventId));
-            return next;
-        });
-        setSelectedEventIds(new Set());
+        try {
+            const res = await fetch(`${API}/shopping-events`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ ids: [...selectedEventIds] }),
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || 'Failed to delete events');
+
+            setEvents((current) => current.filter((event) => !selectedEventIds.has(event.id)));
+            setFocusedEventIds((current) => {
+                const next = new Set(current);
+                selectedEventIds.forEach((eventId) => next.delete(eventId));
+                return next;
+            });
+            setSelectedEventIds(new Set());
+        } catch {
+            window.alert('행사 삭제에 실패했습니다.');
+        }
     };
 
     return (

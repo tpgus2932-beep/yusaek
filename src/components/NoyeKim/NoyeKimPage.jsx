@@ -5,7 +5,7 @@ import { getDownloadFilename } from "../../lib/download";
 import { appendTsvToCostBase } from "../../lib/costBase";
 import PurchaseManager from "./PurchaseManager";
 import {
-  AlertTriangle, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, Calendar, Clock, Clipboard, FileSpreadsheet,
+  AlertTriangle, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, Clock, Clipboard, FileSpreadsheet,
   MessageSquare, Package, Pencil, Plus, Printer, RefreshCw, Search, Shuffle, Table2, Trash2, X, Zap,
 } from "lucide-react";
 
@@ -408,11 +408,6 @@ export default function NoyeKimPage() {
   const [baseQuery, setBaseQuery] = useState("");
   const [baseEdits, setBaseEdits] = useState({});
   const baseLimit = 50;
-
-  const [chunkFile, setChunkFile] = useState(null);
-
-  const [janggiFile, setJanggiFile] = useState(null);
-  const [janggiRows, setJanggiRows] = useState([]);
 
   const [todayFile, setTodayFile] = useState(null);
   const [todayRows, setTodayRows] = useState([]);
@@ -1022,43 +1017,6 @@ export default function NoyeKimPage() {
     }
   };
 
-  const copyDateChunk = async () => {
-    if (!chunkFile) {
-      setMessage("가공할 엑셀 파일을 먼저 선택하세요.");
-      return;
-    }
-    setLoading(true);
-    setMessage("");
-    try {
-      const formData = new FormData();
-      formData.append("file", chunkFile);
-      const res = await fetch(`${API}/noye-kimsungil/date-chunk/copy`, {
-        method: "POST",
-        headers: getAuthHeaders(),
-        body: formData,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "가공 후 복사 실패");
-      const tsv = data?.text || "";
-      if (!tsv) throw new Error("복사할 데이터가 없습니다.");
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(tsv);
-      } else {
-        const ta = document.createElement("textarea");
-        ta.value = tsv;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        ta.remove();
-      }
-      setMessage(`가공 결과 복사 완료: ${data?.rows || 0}행`);
-    } catch (err) {
-      setMessage(err.message || "가공 후 복사 실패");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const loadTodayFromEzadmin = async () => {
     try {
       setTodayEzadminLoading(true); setMessage("");
@@ -1225,120 +1183,6 @@ export default function NoyeKimPage() {
         ta.remove();
       }
       setMessage(`엑셀 복사 완료: ${todayRows.length}행`);
-    } catch (err) {
-      setMessage(err.message || "엑셀 복사 실패");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const processJanggi = async () => {
-    if (!janggiFile) {
-      setMessage("가공할 XLS 파일을 선택하세요.");
-      return;
-    }
-    setLoading(true);
-    setMessage("");
-    try {
-      const XLSX = await import("xlsx");
-      const arrayBuffer = await janggiFile.arrayBuffer();
-      const workbook = XLSX.read(arrayBuffer, { type: "array" });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-
-      const rows = rawData.slice(1);
-      const processed = rows
-        .map((row) => {
-          const colB = row[1] ?? "";
-          const colC = row[2] ?? "";
-          const colD = row[3] ?? "";
-          const colH = row[7] ?? "";
-          const colJ = row[9] ?? "";
-
-          // C열: [그레이-free] 또는 [7560블랙-롱-m] → 첫 번째 토큰=색상, 나머지=사이즈
-          let parsedC = "";
-          let parsedD = "";
-          const bracketMatch = String(colC).match(/\[([^\]]+)\]/);
-          if (bracketMatch) {
-            const parts = bracketMatch[1].split("-");
-            parsedC = parts[0] || "";
-            parsedD = parts.slice(1).join(" ");
-          } else {
-            parsedC = String(colC);
-          }
-
-          // D열: "에스빈 생지백비죠포인트와이드팬츠" → 첫 단어=브랜드, 나머지=상품명
-          const dStr = String(colD).trim();
-          const spaceIdx = dStr.indexOf(" ");
-          const parsedF = spaceIdx > -1 ? dStr.slice(0, spaceIdx) : dStr;
-          const parsedG = spaceIdx > -1 ? dStr.slice(spaceIdx + 1) : "";
-
-          return {
-            A: String(colJ),
-            B: String(colB),
-            C: parsedC,
-            D: parsedD,
-            E: String(colH),
-            F: parsedF,
-            G: parsedG,
-          };
-        })
-        .filter((r) => r.A || r.B || r.C || r.D || r.E || r.F || r.G);
-
-      setJanggiRows(processed);
-      setMessage(`가공 완료: ${processed.length}행`);
-    } catch (err) {
-      setMessage(err.message || "가공 실패");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const downloadJanggi = async () => {
-    if (!janggiRows.length) {
-      setMessage("먼저 가공 버튼을 눌러주세요.");
-      return;
-    }
-    setLoading(true);
-    setMessage("");
-    try {
-      const XLSX = await import("xlsx");
-      const wsData = [
-        ["A", "B", "C", "D", "E", "F", "G"],
-        ...janggiRows.map((r) => [r.A, r.B, r.C, r.D, r.E, r.F, r.G]),
-      ];
-      const ws = XLSX.utils.aoa_to_sheet(wsData);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
-      XLSX.writeFile(wb, "가공결과.xlsx");
-      setMessage("다운로드 완료");
-    } catch (err) {
-      setMessage(err.message || "다운로드 실패");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const copyJanggi = async () => {
-    if (!janggiRows.length) {
-      setMessage("먼저 가공 버튼을 눌러주세요.");
-      return;
-    }
-    setLoading(true);
-    setMessage("");
-    try {
-      const tsv = janggiRows.map((r) => [r.A, r.B, r.C, r.D, r.E, r.F, r.G].join("\t")).join("\n");
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(tsv);
-      } else {
-        const ta = document.createElement("textarea");
-        ta.value = tsv;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        ta.remove();
-      }
-      setMessage(`엑셀 복사 완료: ${janggiRows.length}행`);
     } catch (err) {
       setMessage(err.message || "엑셀 복사 실패");
     } finally {
@@ -2243,17 +2087,15 @@ export default function NoyeKimPage() {
       <div className={styles.pageHeader}>
         <div className={styles.headerText}>
           <h2 className={styles.title}>노예김승일</h2>
-          <p className={styles.subtitle}>날짜별장끼정리 · 케이디지가공2 · 신상 업로드 · 오늘출발 · 입고전표 엑셀전환 · 불량출력</p>
+          <p className={styles.subtitle}>케이디지가공2 · 오늘출발 · 입고전표 엑셀전환 · 불량출력</p>
         </div>
       </div>
 
       <div className={styles.tabRow}>
         {[
-          { key: "date-chunk",    label: "날짜별장끼정리",          icon: <Calendar size={13} />,      badge: null },
           { key: "misong",        label: "미송관리",                icon: <Package size={13} />,       badge: misongItems.length > 0 ? misongItems.length : null },
           { key: "purchase",      label: "매입관리",                icon: <Clipboard size={13} />,     badge: null },
           { key: "kdg",           label: "케이디지가공2",           icon: <Shuffle size={13} />,       badge: null },
-          { key: "janggi",        label: "신상 업로드 날짜별 시트2", icon: <Table2 size={13} />,        badge: null },
           { key: "today",         label: "오늘출발",                icon: <Zap size={13} />,           badge: null },
           { key: "receipt-excel", label: "입고전표 엑셀전환",        icon: <FileSpreadsheet size={13} />, badge: null },
           { key: "bulyang",       label: "불량출력",                icon: <Printer size={13} />,       badge: null },
@@ -3102,29 +2944,6 @@ export default function NoyeKimPage() {
         </>
       )}
 
-      {activeTab === "date-chunk" && (
-        <section className={styles.card}>
-          <div className={styles.cardHeader}>
-            <div className={styles.cardTitleRow}>
-              <div className={`${styles.cardIcon} ${styles.cardIconAmber}`}><Calendar size={15} /></div>
-              <h3 className={styles.cardTitle}>날짜별장끼정리</h3>
-            </div>
-          </div>
-          <div className={styles.uploadRow}>
-            <label className={styles.fileInput}>
-              <input type="file" accept=".xlsx,.xls,.xlsm" onChange={(e) => setChunkFile(e.target.files?.[0] ?? null)} />
-              <FileSpreadsheet size={14} />{chunkFile ? chunkFile.name : "가공할 엑셀 선택"}
-            </label>
-            <button className={styles.primaryBtn} onClick={copyDateChunk} disabled={loading}>
-              <Clipboard size={14} />가공 후 복사
-            </button>
-          </div>
-          <div className={styles.statusMsg}>
-            <strong>동작:</strong> 재고부족요청 엑셀 넣으면 날짜별장끼정리 시트1 양식으로 가공
-          </div>
-        </section>
-      )}
-
       {activeTab === "today" && (
         <>
           <section className={styles.card}>
@@ -3204,84 +3023,6 @@ export default function NoyeKimPage() {
             </section>
           )}
 
-        </>
-      )}
-
-      {activeTab === "janggi" && (
-        <>
-          <section className={styles.card}>
-            <div className={styles.cardHeader}>
-              <div className={styles.cardTitleRow}>
-                <div className={`${styles.cardIcon} ${styles.cardIconPurple}`}><Table2 size={15} /></div>
-                <h3 className={styles.cardTitle}>신상 업로드 날짜별 시트2</h3>
-              </div>
-            </div>
-            <div className={styles.uploadRow}>
-              <label className={styles.fileInput}>
-                <input
-                  type="file"
-                  accept=".xls,.xlsx,.xlsm"
-                  onChange={(e) => {
-                    setJanggiFile(e.target.files?.[0] ?? null);
-                    setJanggiRows([]);
-                  }}
-                />
-                <FileSpreadsheet size={14} />{janggiFile ? janggiFile.name : "XLS 파일 선택"}
-              </label>
-              <button className={styles.primaryBtn} onClick={processJanggi} disabled={loading}>
-                <Zap size={14} />가공
-              </button>
-              <button className={styles.secondaryBtn} onClick={downloadJanggi} disabled={loading || !janggiRows.length}>
-                <ArrowDownToLine size={13} />다운로드
-              </button>
-              <button className={styles.secondaryBtn} onClick={copyJanggi} disabled={loading || !janggiRows.length}>
-                <Clipboard size={13} />엑셀 복사
-              </button>
-            </div>
-            <div className={styles.statusMsg}>
-              <strong>설명:</strong> 현재고조회 다운로드항목4 신상 다운로드 후 버튼 누르면 날짜별 시트2 양식으로 가공
-            </div>
-          </section>
-
-          {janggiRows.length > 0 && (
-            <section className={styles.card}>
-              <div className={styles.cardHeader}>
-                <div className={styles.cardTitleRow}>
-                  <div className={`${styles.cardIcon} ${styles.cardIconSlate}`}><Table2 size={15} /></div>
-                  <h3 className={styles.cardTitle}>가공 결과</h3>
-                </div>
-                <span className={styles.pill}>{janggiRows.length}행</span>
-              </div>
-              <div className={`${styles.tableWrap} ${styles.registeredTableWrap}`}>
-                <table className={styles.table}>
-                  <thead>
-                    <tr>
-                      <th>A (J열)</th>
-                      <th>B (B열)</th>
-                      <th>C (색상)</th>
-                      <th>D (사이즈)</th>
-                      <th>E (H열)</th>
-                      <th>F (브랜드)</th>
-                      <th>G (상품명)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {janggiRows.map((r, i) => (
-                      <tr key={i}>
-                        <td>{r.A}</td>
-                        <td>{r.B}</td>
-                        <td>{r.C}</td>
-                        <td>{r.D}</td>
-                        <td>{r.E}</td>
-                        <td>{r.F}</td>
-                        <td>{r.G}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          )}
         </>
       )}
 

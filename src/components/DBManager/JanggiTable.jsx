@@ -836,6 +836,35 @@ function JanggiTopComparison() {
   const [accountForm, setAccountForm] = useState({ bank: "", accountNumber: "", owner: "", vatStatus: "" });
   const [accountSaving, setAccountSaving] = useState(false);
   const [colWidths, setColWidths] = useState({});
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedMatchIndex, setSelectedMatchIndex] = useState(0);
+  const searchInputRef = useRef(null);
+  const selectedRowRef = useRef(null);
+
+  useEffect(() => {
+    if (!dbLoaded) {
+      setSearchOpen(false);
+      setSearchTerm("");
+      return;
+    }
+    const onKeyDown = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [dbLoaded]);
+
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus();
+  }, [searchOpen]);
+
+  useEffect(() => {
+    setSelectedMatchIndex(0);
+  }, [searchTerm]);
 
   useEffect(() => {
     fetch(`${API}/wonbe/janggi/top-col-widths`, { headers: getAuthHeaders() })
@@ -991,6 +1020,32 @@ function JanggiTopComparison() {
     });
   };
 
+  const resetChecked = () => {
+    if (!window.confirm("모든 거래처의 확인완료 표시를 초기화하시겠습니까?")) return;
+    setCheckedRows(new Set());
+    localStorage.removeItem("janggi_top_checked");
+  };
+
+  const handleSearchKeyDown = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setSearchOpen(false);
+      setSearchTerm("");
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (!searchMatches.length) return;
+      const dir = e.shiftKey ? -1 : 1;
+      setSelectedMatchIndex((i) => (i + dir + searchMatches.length) % searchMatches.length);
+      return;
+    }
+    if (e.key === " ") {
+      e.preventDefault();
+      if (selectedMatch) toggleCheck(selectedMatch.거래처);
+    }
+  };
+
   const loadDb = async () => {
     setLoading(true);
     setMessage("DB 조회 중...");
@@ -1059,6 +1114,19 @@ function JanggiTopComparison() {
   });
 
   const sortedDbRows = [...dbRows].sort((a, b) => (a.거래처 || "").localeCompare(b.거래처 || "", "ko"));
+
+  const normalizeSearchName = (v) => String(v || "").replace(/\s+/g, "").toLowerCase();
+  const searchMatches = useMemo(() => {
+    const term = normalizeSearchName(searchTerm);
+    if (!term) return [];
+    return sortedDbRows.filter((r) => normalizeSearchName(r.거래처).includes(term));
+  }, [sortedDbRows, searchTerm]);
+  const selectedMatch = searchMatches[selectedMatchIndex] || null;
+
+  useEffect(() => {
+    if (selectedRowRef.current) selectedRowRef.current.scrollIntoView({ block: "nearest" });
+  }, [selectedMatch]);
+
   const visibleTopShops = topShops
     .filter((s) => !dismissed.has(`top:${s}`))
     .sort((a, b) => (a || "").localeCompare(b || "", "ko"));
@@ -1092,6 +1160,11 @@ function JanggiTopComparison() {
           <SlidersHorizontal size={13} />
           거래처 별칭{Object.keys(aliasMap).length > 0 ? ` (${Object.keys(aliasMap).length})` : ""}
         </button>
+        {dbLoaded && checkedCount > 0 && (
+          <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={resetChecked}>
+            확인완료 초기화
+          </button>
+        )}
         {dbLoaded && (
           <div className={topStyles.summary}>
             <span className={topStyles.badgeOrange}>확인 {checkedCount}/{sortedDbRows.length}</span>
@@ -1151,6 +1224,28 @@ function JanggiTopComparison() {
                 {dbTotal > 0 && <span style={{ marginLeft: "0.75rem", fontWeight: 700, color: "var(--text-primary)" }}>합계 {Math.round(dbTotal).toLocaleString()}원</span>}
               </span>
             </div>
+            {searchOpen && (
+              <div className={topStyles.searchBar}>
+                <input
+                  ref={searchInputRef}
+                  className={topStyles.searchInput}
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  onKeyDown={handleSearchKeyDown}
+                  placeholder="거래처 검색... (Esc로 닫기)"
+                />
+                <span className={topStyles.searchCount}>
+                  {searchMatches.length ? `${selectedMatchIndex + 1}/${searchMatches.length}` : "0/0"}
+                </span>
+                <button
+                  className={topStyles.searchClose}
+                  onClick={() => { setSearchOpen(false); setSearchTerm(""); }}
+                  title="검색 닫기"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
             <table className={topStyles.table}>
               <thead>
                 <tr>
@@ -1167,12 +1262,16 @@ function JanggiTopComparison() {
                   const matched = topLoaded && dbMatchesTop(r.거래처);
                   const accountOk = hasAccount(r.거래처);
                   const isAddingAccount = addingAccountFor === r.거래처;
+                  const isSearchSelected = !!selectedMatch && r.거래처 === selectedMatch.거래처;
                   let rowClass = "";
                   if (checked) rowClass = topStyles.rowChecked;
                   else if (topLoaded) rowClass = matched ? topStyles.rowMatch : topStyles.rowDbOnly;
                   return (
                     <React.Fragment key={r.거래처}>
-                      <tr className={rowClass}>
+                      <tr
+                        ref={isSearchSelected ? selectedRowRef : null}
+                        className={`${rowClass}${isSearchSelected ? ` ${topStyles.rowSearchSelected}` : ""}`}
+                      >
                         <td
                           style={resizedTdStyle("거래처", {
                             textDecoration: checked ? "line-through" : undefined,

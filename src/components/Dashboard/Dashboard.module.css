@@ -212,6 +212,19 @@
   gap: 0.3rem;
 }
 
+.anomalyTitleActions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.anomalyLastRefresh {
+  font-size: 0.66rem;
+  font-weight: 500;
+  color: var(--d-text-3);
+  white-space: nowrap;
+}
+
 .anomalyActionRow {
   display: flex;
   align-items: center;

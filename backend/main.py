@@ -1,5 +1,6 @@
 ﻿from dotenv import load_dotenv
 load_dotenv()
+import asyncio
 import json
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body, Header, Depends, Response, Request
 from fastapi.responses import FileResponse
@@ -31,7 +32,7 @@ import xlwt
 
 from passlib.context import CryptContext
 from jose import jwt, JWTError
-from api.amood_hapbae import router as amood_hapbae_router, SHARED_COST_BASE_PATH
+from api.amood_hapbae import router as amood_hapbae_router
 from api.wonbe_routes import (
     build_wonbe_router,
     JANGGI_DB_PATH as _JANGGI_DB_PATH,
@@ -45,6 +46,12 @@ from api.auth_admin_routes import build_auth_admin_router
 from api.collab_routes import build_collab_router
 from api.barcode_routes import build_barcode_router
 from api.inventory_dashboard_routes import build_inventory_dashboard_router
+from api.order_recommendation_routes import build_order_recommendation_router
+from services.order_recommendation_store import init_order_recommendation_tables
+from services.order_recommendation_collect import register_collector
+from services.order_recommendation_ezadmin_collectors import build_ezadmin_collectors
+from services.order_non_ably_backorder import init_non_ably_backorder_table
+from api.order_non_ably_backorder_routes import build_non_ably_order_router
 from api.amood_routes import build_amood_router
 from api.returns_routes import build_returns_router
 from api.order_routes import build_order_router
@@ -57,9 +64,18 @@ from api.exchange_return_routes import build_exchange_return_router
 from api.pastelco_routes import build_pastelco_router
 from api.ably_minus_routes import build_ably_minus_router
 from api.accident_cargo_routes import build_accident_cargo_router
+from api.return_regathering_routes import build_return_regathering_router
+from api.return_processing_log_routes import build_return_processing_log_router
+from api.return_special_notes_routes import build_return_special_notes_router
 from api.delivery_anomaly_routes import build_delivery_anomaly_router
+from api.client_cancel_soldout_routes import build_client_cancel_soldout_router
+from api.exchange_return_anomaly_routes import build_exchange_return_anomaly_router
+from api.return_anomaly_routes import build_return_anomaly_router
 from api.daily_checklist_routes import build_daily_checklist_router
 from services.delivery_anomaly_store import init_delivery_anomaly_tables
+from services.exchange_return_anomaly_store import init_exchange_return_anomaly_tables
+from services.return_anomaly_store import init_return_anomaly_tables
+from services.anomaly_scheduler import run_anomaly_scheduler_loop
 from api.collaboration_tools_routes import build_collaboration_tools_router
 from api.attendance_routes import build_attendance_router
 from api.guidebook_routes import build_guidebook_router
@@ -73,6 +89,7 @@ from services.returns_utils import (
     _clean_qty,
     _load_return_state_from_payload,
     _lowercase_size_words,
+    _migrate_return_saved_states_to_snapshots,
     _normalize_key,
     _normalize_spaces,
     _option_slash_to_space,
@@ -254,6 +271,62 @@ def _restore_amood_ezadmin_file_from_db():
         "file2_name": row["file_name"],
         "saved_at": row["saved_at"],
     })
+
+
+def _init_amood_ezadmin_history_table(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS amood_ezadmin_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_name TEXT NOT NULL,
+            file_blob BLOB NOT NULL,
+            saved_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+
+
+def _add_amood_ezadmin_history(file_name: str, file_bytes: bytes):
+    conn = _get_shared_db()
+    try:
+        _init_amood_ezadmin_history_table(conn)
+        saved_at = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "INSERT INTO amood_ezadmin_history (file_name, file_blob, saved_at) VALUES (?, ?, ?)",
+            (file_name, file_bytes, saved_at),
+        )
+        conn.execute(
+            "DELETE FROM amood_ezadmin_history WHERE id NOT IN (SELECT id FROM amood_ezadmin_history ORDER BY id DESC LIMIT 3)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _list_amood_ezadmin_history() -> list[dict]:
+    conn = _get_shared_db()
+    try:
+        _init_amood_ezadmin_history_table(conn)
+        rows = conn.execute(
+            "SELECT id, file_name, saved_at FROM amood_ezadmin_history ORDER BY id DESC LIMIT 3"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [{"id": r["id"], "file_name": r["file_name"], "saved_at": r["saved_at"]} for r in rows]
+
+
+def _get_amood_ezadmin_history_blob(history_id: int):
+    conn = _get_shared_db()
+    try:
+        _init_amood_ezadmin_history_table(conn)
+        row = conn.execute(
+            "SELECT file_name, file_blob FROM amood_ezadmin_history WHERE id = ?",
+            (history_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return row["file_name"], row["file_blob"]
 
 
 def _get_amood_state(user: str) -> AmoodState:
@@ -537,6 +610,37 @@ class _TursoHTTPConn:
         cur._load_result(result)
         return cur
 
+    def executemany(self, sql: str, seq_of_params):
+        seq_of_params = list(seq_of_params)
+        cur = _TursoHTTPCursor()
+        if not seq_of_params:
+            return cur
+        requests = [
+            {"type": "execute", "stmt": {"sql": sql, "args": [_py_to_turso_arg(v) for v in params]}}
+            for params in seq_of_params
+        ]
+        requests.append({"type": "close"})
+        resp = _get_turso_http_client().post(
+            _turso_http_url(),
+            headers={
+                "Authorization": f"Bearer {TURSO_AUTH_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={"requests": requests},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        for entry in results:
+            if entry.get("type") == "error":
+                msg = entry.get("error", {}).get("message", "Turso HTTP error")
+                raise RuntimeError(f"Turso: {msg}")
+        if len(results) >= 2:
+            response = results[-2].get("response", {})
+            result = response.get("result", {})
+            cur._load_result(result)
+        return cur
+
     def commit(self):
         pass
 
@@ -581,6 +685,15 @@ def _get_shared_db():
 
 def _get_automation_db():
     """Local SQLite DB reserved for return automation data."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _get_order_recommendation_db():
+    """추천발주 전용 로컬 SQLite DB. Turso 설정 여부와 무관하게 항상 로컬을 쓴다 —
+    판매량 이력 수집이 수천~수만 건의 동기 네트워크 왕복을 유발해 Turso를 쓰면 이벤트 루프가 멈춘다."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -775,6 +888,9 @@ def _init_request_attachments():
 
 _init_request_attachments()
 
+init_order_recommendation_tables(_get_order_recommendation_db)
+init_non_ably_backorder_table(_get_order_recommendation_db)
+
 
 def _init_shared_files():
     conn = _get_db()
@@ -926,6 +1042,34 @@ def _init_return_saved_states():
 _init_return_saved_states()
 
 
+def _init_return_saved_snapshots():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS return_saved_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_return_saved_snapshots()
+
+
+def _run_return_saved_states_migration():
+    conn = _get_shared_db()
+    _migrate_return_saved_states_to_snapshots(conn)
+    conn.close()
+
+
+_run_return_saved_states_migration()
+
+
 def _init_delivery_memos():
     conn = _get_db()
     conn.execute(
@@ -969,6 +1113,26 @@ def _init_client_schedule_db():
 _init_client_schedule_db()
 
 
+def _init_client_schedule_export_log():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS client_schedule_export_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_code TEXT NOT NULL,
+            note_date TEXT NOT NULL,
+            exported_at TEXT NOT NULL,
+            UNIQUE(product_code, note_date)
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_client_schedule_export_log()
+
+
 def _ensure_client_schedule_column(column: str, ddl: str):
     conn = _get_shared_db()
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(client_schedule_db)").fetchall()]
@@ -1004,6 +1168,32 @@ def _init_client_schedule_excluded():
 
 
 _init_client_schedule_excluded()
+
+
+def _init_shopping_events():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS shopping_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            region TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            md TEXT NOT NULL DEFAULT '',
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            color TEXT NOT NULL DEFAULT 'blue',
+            created_by_username TEXT NOT NULL,
+            created_by_display TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_shopping_events()
 
 
 def _get_user_display(username: str) -> str:
@@ -1251,6 +1441,31 @@ def _require_admin(user: str = Depends(_get_current_user)):
     return user
 
 
+def _init_kimsungil_log():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kimsungil_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            code TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL,
+            method TEXT NOT NULL DEFAULT '',
+            count_after INTEGER NOT NULL DEFAULT 0,
+            username TEXT NOT NULL DEFAULT '',
+            display_name TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_kimsungil_log_code ON kimsungil_log(code)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_kimsungil_log_created_at ON kimsungil_log(created_at DESC)")
+    conn.commit()
+    conn.close()
+
+
+_init_kimsungil_log()
+
 app.include_router(
     amood_hapbae_router,
     dependencies=[Depends(_get_current_user)],
@@ -1292,6 +1507,7 @@ app.include_router(
         get_setting=_get_setting,
         set_setting=_set_setting,
         get_user_display=_get_user_display,
+        get_shared_db=_get_shared_db,
     )
 )
 app.include_router(
@@ -1300,6 +1516,24 @@ app.include_router(
         get_setting=_get_setting,
         normalize_to_yusas=normalize_to_yusas,
         get_shared_incoming_counts=_get_shared_incoming_counts,
+    )
+)
+app.include_router(
+    build_order_recommendation_router(
+        get_current_user=_get_current_user,
+        get_db=_get_order_recommendation_db,
+        get_setting=_get_setting,
+        set_setting=_set_setting,
+        get_shared_db=_get_shared_db,
+    )
+)
+for _ez_column, _ez_fn in build_ezadmin_collectors(_get_setting).items():
+    register_collector(_ez_column, _ez_fn)
+app.include_router(
+    build_non_ably_order_router(
+        get_current_user=_get_current_user,
+        get_db=_get_order_recommendation_db,
+        get_setting=_get_setting,
     )
 )
 
@@ -1342,6 +1576,38 @@ app.include_router(
 app.include_router(
     build_ably_minus_router(
         get_current_user=_get_current_user,
+    )
+)
+
+def _init_client_cancel_soldout_logs():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS client_cancel_soldout_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            username TEXT NOT NULL,
+            action TEXT NOT NULL,
+            summary_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_client_cancel_soldout_logs_created_at "
+        "ON client_cancel_soldout_logs(created_at DESC)"
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_client_cancel_soldout_logs()
+
+app.include_router(
+    build_client_cancel_soldout_router(
+        get_current_user=_get_current_user,
+        get_setting=_get_setting,
+        get_db=_get_shared_db,
+        cost_base_path=WONBE_DB_PATH,
     )
 )
 
@@ -1402,6 +1668,9 @@ app.include_router(
         set_shared_incoming_counts=_set_shared_incoming_counts,
         get_shared_defect_counts=_get_shared_defect_counts,
         set_shared_amood_ezadmin_file=_set_shared_amood_ezadmin_file,
+        add_amood_ezadmin_history=_add_amood_ezadmin_history,
+        list_amood_ezadmin_history=_list_amood_ezadmin_history,
+        get_amood_ezadmin_history_blob=_get_amood_ezadmin_history_blob,
     )
 )
 app.include_router(
@@ -1436,8 +1705,11 @@ app.include_router(
     build_order_router(
         require_admin=_require_admin,
         get_db=_get_db,
-        order_cost_base_path=SHARED_COST_BASE_PATH,
+        order_cost_base_path=WONBE_DB_PATH,
         get_setting=_get_setting,
+        get_shared_db=_get_shared_db,
+        get_user_display=_get_user_display,
+        is_render=_IS_RENDER,
     )
 )
 app.include_router(
@@ -1537,21 +1809,153 @@ app.include_router(
     )
 )
 
-init_delivery_anomaly_tables(_get_shared_db)
+
+def _init_return_regathering():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS return_regathering (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice TEXT NOT NULL,
+            order_no TEXT NOT NULL DEFAULT '',
+            item_sno TEXT NOT NULL DEFAULT '',
+            request_no TEXT NOT NULL DEFAULT '',
+            buyer_tel TEXT NOT NULL DEFAULT '',
+            goods_name TEXT NOT NULL DEFAULT '',
+            option_raw TEXT NOT NULL DEFAULT '',
+            requested_by TEXT NOT NULL DEFAULT '',
+            requested_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_return_regathering()
 
 app.include_router(
-    build_delivery_anomaly_router(
+    build_return_regathering_router(
         get_current_user=_get_current_user,
-        get_db=_get_shared_db,
+        get_return_state=_get_return_state,
+        get_shared_db=_get_shared_db,
         get_setting=_get_setting,
-        set_setting=_set_setting,
+        return_queue_payload=_return_queue_payload,
     )
 )
+
+
+def _init_return_processing_log():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS return_processing_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            username TEXT NOT NULL DEFAULT '',
+            queue TEXT NOT NULL,
+            action TEXT NOT NULL,
+            action_label TEXT NOT NULL,
+            item_text TEXT NOT NULL DEFAULT '',
+            qty TEXT NOT NULL DEFAULT '',
+            type TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            detail_reason TEXT NOT NULL DEFAULT '',
+            images TEXT NOT NULL DEFAULT '[]',
+            ezadmin_seq TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_return_processing_log()
+
+app.include_router(
+    build_return_processing_log_router(
+        get_current_user=_get_current_user,
+        get_shared_db=_get_shared_db,
+    )
+)
+
+
+def _init_return_special_notes():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS return_special_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice_no TEXT NOT NULL UNIQUE,
+            note TEXT NOT NULL DEFAULT '',
+            created_by TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_return_special_notes()
+
+app.include_router(
+    build_return_special_notes_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        clean_invoice=_clean_invoice,
+    )
+)
+
+init_delivery_anomaly_tables(_get_shared_db)
+
+_delivery_anomaly_router = build_delivery_anomaly_router(
+    get_current_user=_get_current_user,
+    get_db=_get_shared_db,
+    get_setting=_get_setting,
+    set_setting=_set_setting,
+)
+app.include_router(_delivery_anomaly_router)
+
+init_exchange_return_anomaly_tables(_get_shared_db)
+
+_exchange_return_anomaly_router = build_exchange_return_anomaly_router(
+    get_current_user=_get_current_user,
+    get_db=_get_shared_db,
+    get_setting=_get_setting,
+    set_setting=_set_setting,
+)
+app.include_router(_exchange_return_anomaly_router)
+
+init_return_anomaly_tables(_get_shared_db)
+
+_return_anomaly_router = build_return_anomaly_router(
+    get_current_user=_get_current_user,
+    get_db=_get_shared_db,
+    get_setting=_get_setting,
+    set_setting=_set_setting,
+)
+app.include_router(_return_anomaly_router)
+
+_ANOMALY_SCHEDULER_JOBS = [
+    ("delivery_anomaly", _delivery_anomaly_router.run_scheduled),
+    ("return_anomaly", _return_anomaly_router.run_scheduled),
+    ("exchange_return_anomaly", _exchange_return_anomaly_router.run_scheduled),
+]
+
+
+@app.on_event("startup")
+async def _start_anomaly_scheduler():
+    asyncio.create_task(
+        run_anomaly_scheduler_loop(_ANOMALY_SCHEDULER_JOBS, _get_setting, _set_setting)
+    )
 
 app.include_router(
     build_daily_checklist_router(
         get_current_user=_get_current_user,
         get_setting=_get_setting,
+        set_setting=_set_setting,
     )
 )
 

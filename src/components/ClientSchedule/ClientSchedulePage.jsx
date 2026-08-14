@@ -724,10 +724,6 @@ export default function ClientSchedulePage() {
 
   const handleExportScheduleToEzadmin = async () => {
     const scheduled = sheet2Rows.filter((row) => toDisplayText(row.D));
-    if (scheduled.length === 0) {
-      setStatus('내보낼 일정이 없습니다.');
-      return;
-    }
 
     const missingCode = scheduled.filter((row) => !toDisplayText(row.productCode));
     if (missingCode.length > 0) {
@@ -986,7 +982,7 @@ export default function ClientSchedulePage() {
     <div className={styles.page}>
       {/* ── 헤더 ── */}
       <div className={styles.header}>
-        <h2 className={styles.headerTitle}>거래처 일정</h2>
+        <h2 className={styles.headerTitle}>일정</h2>
         <div className={styles.headerStats}>
           <span className={styles.statBadge}>
             <Database size={12} /> DB <strong>{dbRows.length}</strong>행

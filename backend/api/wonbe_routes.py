@@ -74,7 +74,7 @@ COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래
 
 # username → {"running": bool, "total": int, "done": int, "matched": int} — 제조국 채우기 진행상황 폴링용
 _country_sync_progress: dict[str, dict] = {}
-EDITABLE = {"상품명합", "거래처합", "원가", "거래처주소"}
+EDITABLE = {"상품명합", "거래처합", "거래처", "원가", "거래처주소", "등록일"}
 
 INGODAEGI_COLUMNS = ["상품코드", "입고수량"]
 ABLY_STOCK_COLUMNS = ["옵션번호", "수량"]
@@ -230,6 +230,116 @@ def load_wonbe_cost_base_map() -> dict[str, str]:
             continue
         cost_map[key] = r["상품코드"]
     return cost_map
+
+
+def load_wonbe_option_sno_map() -> dict[str, str]:
+    """옵션번호(에이블리 옵션 sno) → 상품코드 매핑.
+
+    옵션번호는 EZAdmin 상품마스타의 옵션추가1 필드에서 채워지지만, 실제로는
+    에이블리 옵션 sno로 관리된다 (barcode_routes.py의 defect_ochuul_minus가
+    같은 컬럼 값을 에이블리 today-delivery-goods-options 응답의 sno와
+    대조해서 쓰고 있음 - 검증된 매핑).
+    """
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute("SELECT 상품코드, 옵션번호 FROM wonbe WHERE 옵션번호 != ''").fetchall()
+    finally:
+        conn.close()
+    sno_map: dict[str, str] = {}
+    for r in rows:
+        sno = str(r["옵션번호"]).strip()
+        if sno and sno not in sno_map:
+            sno_map[sno] = r["상품코드"]
+    return sno_map
+
+
+def load_wonbe_client_info_by_code() -> dict[str, dict[str, str]]:
+    """상품코드 → {거래처, 거래처상품명, 색상, 사이즈} 매핑."""
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute(
+            "SELECT 상품코드, 거래처, 거래처상품명, 색상, 사이즈 FROM wonbe WHERE 상품코드 != ''"
+        ).fetchall()
+    finally:
+        conn.close()
+    info_map: dict[str, dict[str, str]] = {}
+    for r in rows:
+        code = str(r["상품코드"] or "").strip()
+        if code and code not in info_map:
+            info_map[code] = {
+                "거래처": r["거래처"] or "",
+                "거래처상품명": r["거래처상품명"] or "",
+                "색상": r["색상"] or "",
+                "사이즈": r["사이즈"] or "",
+            }
+    return info_map
+
+
+def load_wonbe_goods_sno_map() -> dict[str, list[tuple[str, str]]]:
+    """에이블리상품번호(goods_sno) → [(옵션번호, 상품코드), ...] 매핑.
+
+    같은 goods_sno 아래 여러 옵션(색상/사이즈 등)이 서로 다른 상품코드로
+    관리되는 경우를 그룹으로 묶어, 통계 API를 goods_sno 단위로 한 번만
+    호출하면 되도록 한다."""
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute(
+            "SELECT 상품코드, 옵션번호, 에이블리상품번호 FROM wonbe "
+            "WHERE 옵션번호 != '' AND 에이블리상품번호 != ''"
+        ).fetchall()
+    finally:
+        conn.close()
+    goods_map: dict[str, list[tuple[str, str]]] = {}
+    for r in rows:
+        goods_sno = str(r["에이블리상품번호"]).strip()
+        option_sno = str(r["옵션번호"]).strip()
+        code = r["상품코드"]
+        if not goods_sno or not option_sno:
+            continue
+        goods_map.setdefault(goods_sno, []).append((option_sno, code))
+    return goods_map
+
+
+def load_wonbe_registered_at_map() -> dict[str, str]:
+    """상품코드 → 등록일("YYYY-MM-DD") 매핑. "등록일 채우기"로 이미 채워진 값을 재사용한다.
+
+    발주추천 판매량 백필이 상품 등록 이전 날짜를 실제 판매 0건으로 착각해
+    채워버리지 않도록, 백필 대상 날짜를 이 등록일로 잘라내는 데 쓴다."""
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute(
+            "SELECT 상품코드, 등록일 FROM wonbe WHERE 등록일 IS NOT NULL AND 등록일 != ''"
+        ).fetchall()
+    finally:
+        conn.close()
+    result: dict[str, str] = {}
+    for r in rows:
+        code = r["상품코드"]
+        registered_at = str(r["등록일"]).strip()
+        if not code or not registered_at:
+            continue
+        result[code] = registered_at[:10]  # "YYYY-MM-DD HH:MM:SS" -> 날짜만
+    return result
+
+
+def load_wonbe_product_name_map() -> dict[str, str]:
+    """상품코드 → 상품명합(상품명+색상+사이즈) 매핑. 발주 대시보드 일별 데이터 테이블 표시용.
+
+    같은 상품이라도 색상/사이즈별로 상품코드가 다른데 순수 상품명은 전부 동일해서
+    구분이 안 된다 — 상품명합을 쓰면 옵션까지 포함된 이름이 나온다."""
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute(
+            "SELECT 상품코드, 상품명합 FROM wonbe WHERE 상품코드 != ''"
+        ).fetchall()
+    finally:
+        conn.close()
+    return {r["상품코드"]: r["상품명합"] or "" for r in rows if r["상품코드"]}
 
 
 def load_wonbe_product_cost_map() -> dict[str, int]:
@@ -2212,6 +2322,46 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             return {"ok": True, "deleted": cur.rowcount}
         finally:
             conn.close()
+
+    @router.get("/ichae/export")
+    def ichae_export(month: str = "", user: str = Depends(get_current_user)):
+        month = month.strip()
+        if month and not re.fullmatch(r"\d{4}-\d{2}", month):
+            raise HTTPException(status_code=400, detail="month는 YYYY-MM 형식이어야 합니다.")
+        conn = _get_janggi_db()
+        try:
+            _init_ichae_table(conn)
+            if month:
+                rows = conn.execute(
+                    "SELECT * FROM 이체파일 WHERE 날짜 LIKE ? ORDER BY 날짜 ASC, 상태 ASC, D ASC",
+                    (f"{month}%",),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM 이체파일 ORDER BY 날짜 ASC, 상태 ASC, D ASC"
+                ).fetchall()
+        finally:
+            conn.close()
+
+        export_cols = ["날짜", "A", "B", "C", "D", "E", "F", "상태"]
+        export_labels = ["날짜", "은행코드", "계좌번호", "입금금액", "거래처명", "거래처가 보는 메모", "우리가 보는 메모", "상태"]
+
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("Sheet1")
+        for ci, label in enumerate(export_labels):
+            sheet.write(0, ci, label)
+        for ri, row in enumerate(rows, start=1):
+            for ci, col in enumerate(export_cols):
+                sheet.write(ri, ci, row[col] if row[col] is not None else "")
+
+        buf = io.BytesIO()
+        book.save(buf)
+        filename = f"이체파일_{month}.xls" if month else "이체파일_전체.xls"
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/vnd.ms-excel",
+            headers={"Content-Disposition": _content_disposition(filename)},
+        )
 
     # ── 일괄이체목록 마킹 ────────────────────────────────────────
 

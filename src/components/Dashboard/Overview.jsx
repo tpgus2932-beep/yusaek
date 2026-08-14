@@ -3,6 +3,8 @@ import { Plus, Calendar, Bell, ChevronDown, ChevronUp, Pin, PinOff, GripVertical
 import styles from './Dashboard.module.css';
 import { COLLAB_API_BASE as API, LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import DeliveryAnomalyCard from './DeliveryAnomalyCard';
+import ExchangeReturnAnomalyCard from './ExchangeReturnAnomalyCard';
+import ReturnAnomalyCard from './ReturnAnomalyCard';
 import DailyChecklistCard from './DailyChecklistCard';
 
 function AuthImage({ src, token, className, alt, onClick }) {
@@ -1964,6 +1966,10 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
             </div>
 
             <DeliveryAnomalyCard />
+
+            <ExchangeReturnAnomalyCard />
+
+            <ReturnAnomalyCard />
 
             <DailyChecklistCard />
 

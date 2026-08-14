@@ -371,8 +371,10 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         order_item_sno: int = Body(...),
         user=Depends(get_current_user),
     ):
-        if set_setting:
-            set_setting("daily_check_process_all", datetime.now(_KST).isoformat())
+        # "daily_check_process_all"의 완료 표시는 여기서 하지 않는다 - 이 엔드포인트는
+        # 프론트(runProcessAll)가 대상 건마다 순차 호출하는 것이라, 첫 건에서만 찍으면
+        # 새로고침 등으로 나머지가 끊겨도 전체가 완료된 것처럼 보인다. 실제 완료 표시는
+        # 프론트가 전체 목록을 다 처리한 뒤 /process-all-complete 를 호출할 때 남긴다.
         try:
             ably_token = await _ably_login()
             llogis_token = await _llogis_login()
@@ -412,6 +414,15 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         except Exception as e:
             return {"ok": False, "skipped": False, "error": str(e)}
 
+    @router.post("/process-all-complete")
+    async def process_all_complete(user=Depends(get_current_user)):
+        # 프론트(runProcessAll)가 대상 전체에 대해 process-one을 순차 호출한 뒤
+        # 마지막에 호출한다 - 새로고침 등으로 루프가 중간에 끊기면 이 호출 자체가
+        # 나가지 않으므로 daily-checklist는 done_today=false로 정확히 남는다.
+        if set_setting:
+            set_setting("daily_check_process_all", datetime.now(_KST).isoformat())
+        return {"ok": True}
+
     @router.post("/ship-pending")
     async def ship_pending(
         start_date: str = Body(None),
@@ -422,9 +433,23 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         if not phpsessid:
             return {"ok": False, "need_session": True}
 
+        running_key = "daily_check_ship_pending_running_at"
         if set_setting:
-            set_setting("daily_check_ship_pending", datetime.now(_KST).isoformat())
+            set_setting(running_key, datetime.now(_KST).isoformat())
+        try:
+            data = await _run_ship_pending(phpsessid, start_date, end_date)
+            if set_setting and not data.get("need_session"):
+                if data.get("ok") is not False:
+                    message = f"성공 {data.get('success') or 0} / 스킵 {data.get('skipped') or 0} / 실패 {data.get('failed') or 0}"
+                else:
+                    message = data.get("error") or data.get("detail") or "실패"
+                set_setting("daily_check_ship_pending_last_result", message)
+            return data
+        finally:
+            if set_setting:
+                set_setting(running_key, None)
 
+    async def _run_ship_pending(phpsessid: str, start_date, end_date):
         if not end_date:
             end_date = datetime.now(_KST).strftime("%Y-%m-%d")
         if not start_date:
@@ -611,6 +636,11 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         success = sum(1 for r in results if r.get("ok"))
         skipped = sum(1 for r in results if r.get("skipped"))
         failed = sum(1 for r in results if not r.get("ok") and not r.get("skipped"))
+        # 체크리스트 "오늘 실행됨" 표시는 전체 배치가 끝난 뒤에만 기록한다 -
+        # 도중에 새로고침/예외가 나면 이 지점에 도달하지 못해 done_today가
+        # false로 남는다.
+        if set_setting:
+            set_setting("daily_check_ship_pending", datetime.now(_KST).isoformat())
         return {
             "ok": True,
             "results": results,
@@ -626,9 +656,23 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         if not phpsessid:
             return {"ok": False, "need_session": True}
 
+        running_key = "daily_check_exchange_pickup_running_at"
         if set_setting:
-            set_setting("daily_check_exchange_pickup", datetime.now(_KST).isoformat())
+            set_setting(running_key, datetime.now(_KST).isoformat())
+        try:
+            data = await _run_process_exchange_pickup(phpsessid)
+            if set_setting and not data.get("need_session"):
+                if data.get("ok"):
+                    message = f"교환 {data.get('exchange_count') or 0}건, 송장 {data.get('invoice_count') or 0}건"
+                else:
+                    message = data.get("error") or data.get("detail") or "실패"
+                set_setting("daily_check_exchange_pickup_last_result", message)
+            return data
+        finally:
+            if set_setting:
+                set_setting(running_key, None)
 
+    async def _run_process_exchange_pickup(phpsessid: str):
         try:
             token = await _ably_login()
         except Exception as e:
@@ -844,6 +888,11 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                             sms_queued += 1
                         except Exception:
                             pass
+
+        # 체크리스트 "오늘 실행됨" 표시는 회수신청/에이블리 승인까지 끝난
+        # 뒤에만 기록한다 - 도중에 새로고침/예외가 나면 done_today가 false로 남는다.
+        if set_setting:
+            set_setting("daily_check_exchange_pickup", datetime.now(_KST).isoformat())
 
         return {
             "ok": True,

@@ -109,6 +109,9 @@ def build_amood_router(
     set_shared_incoming_counts,
     get_shared_defect_counts,
     set_shared_amood_ezadmin_file,
+    add_amood_ezadmin_history,
+    list_amood_ezadmin_history,
+    get_amood_ezadmin_history_blob,
 ):
     router = APIRouter()
 
@@ -444,10 +447,12 @@ def build_amood_router(
         tmp_path = Path(tempfile.gettempdir()) / f"amood_excel2_ezadmin_{uuid.uuid4().hex}.xlsx"
         wb.save(tmp_path)
 
+        file2_name = f"이지어드민_{start_date}_{end_date}.xlsx"
         set_shared_amood_ezadmin_file({
             "file2_path": tmp_path,
-            "file2_name": f"이지어드민_{start_date}_{end_date}.xlsx",
+            "file2_name": file2_name,
         })
+        add_amood_ezadmin_history(file2_name, tmp_path.read_bytes())
         state = get_amood_state(user)
 
         return {
@@ -456,6 +461,25 @@ def build_amood_router(
             "management_numbers": seen_seq,
             "status": amood_status(state),
         }
+
+    @router.get("/amood/ezadmin-history")
+    def amood_ezadmin_history_list(user: str = Depends(get_current_user)):
+        return {"ok": True, "history": list_amood_ezadmin_history()}
+
+    @router.post("/amood/ezadmin-history/{history_id}/restore")
+    def amood_ezadmin_history_restore(history_id: int, user: str = Depends(get_current_user)):
+        found = get_amood_ezadmin_history_blob(history_id)
+        if not found:
+            raise HTTPException(status_code=404, detail="이력을 찾을 수 없습니다.")
+        file_name, file_blob = found
+        tmp_path = Path(tempfile.gettempdir()) / f"amood_excel2_history_restore_{uuid.uuid4().hex}.xlsx"
+        tmp_path.write_bytes(file_blob)
+        set_shared_amood_ezadmin_file({
+            "file2_path": tmp_path,
+            "file2_name": file_name,
+        })
+        state = get_amood_state(user)
+        return {"ok": True, "status": amood_status(state)}
 
     @router.post("/amood/hapbae-pack")
     async def amood_hapbae_pack(

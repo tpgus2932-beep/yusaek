@@ -39,6 +39,11 @@ _CANCEL_REASON = {
     1: "셀러 변경",
 }
 
+# 상품 하자/오배송, 셀러 변경 = 판매자 사유 - exchange_return_routes.py의 process_exchange_pickup이
+# reason_code==2(상품 하자, 판매자 부담)를 회수신청/문자에서 제외하는 것과 같은 취지로,
+# 신규반품 회수신청도 판매자 사유 건은 자동으로 넘기지 않는다.
+_SELLER_FAULT_CANCEL_REASONS = {32, 1}
+
 
 def build_return_shipping_router(*, get_current_user, get_db, get_setting, enqueue_sms=None, get_shared_db=None, set_setting=None):
     router = APIRouter(prefix="/return-shipping")
@@ -650,9 +655,27 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
         if not phpsessid:
             return {"ok": False, "need_session": True}
 
+        # 실행 상태를 설정에 남겨 프론트가 새로고침/탭이동 후에도 "진행 중"임을
+        # 알 수 있게 한다 - 정상/예외 종료 어느 경우든 finally에서 반드시 지운다.
+        running_key = "daily_check_new_return_pickup_running_at"
         if set_setting:
-            set_setting("daily_check_new_return_pickup", datetime.now(_KST).isoformat())
+            set_setting(running_key, datetime.now(_KST).isoformat())
+        try:
+            data = await _run_new_return_pickup(phpsessid)
+            if set_setting and not data.get("need_session"):
+                if data.get("ok"):
+                    excluded = data.get("seller_fault_excluded") or 0
+                    note = f" (판매자 부담 {excluded}건 제외)" if excluded > 0 else ""
+                    message = f"송장 {data.get('invoice_count') or 0}건 처리{note}"
+                else:
+                    message = data.get("error") or data.get("detail") or "실패"
+                set_setting("daily_check_new_return_pickup_last_result", message)
+            return data
+        finally:
+            if set_setting:
+                set_setting(running_key, None)
 
+    async def _run_new_return_pickup(phpsessid: str):
         end_date = datetime.now(_KST).strftime("%Y-%m-%d")
         start_date = (datetime.now(_KST) - timedelta(days=30)).strftime("%Y-%m-%d")
 
@@ -671,6 +694,7 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
 
         inv_to_sno: dict[str, int] = {}
         sms_recipients: list[dict] = []  # [{tel, name, goods_name}]
+        seller_fault_count = 0
         page = 1
         async with httpx.AsyncClient(timeout=30.0) as client:
             while True:
@@ -696,13 +720,19 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                     break
                 for cancel in cancels:
                     items = cancel.get("order_items", [])
-                    for item in items:
+                    # 판매자 사유(상품 하자/오배송, 셀러 변경) 건은 회수신청/문자 대상에서 제외
+                    eligible_items = [
+                        item for item in items
+                        if item.get("cancel_reason") not in _SELLER_FAULT_CANCEL_REASONS
+                    ]
+                    seller_fault_count += len(items) - len(eligible_items)
+                    for item in eligible_items:
                         inv = str(item.get("invoice") or "").strip()
                         sno = item.get("sno")
                         if inv and inv not in inv_to_sno:
                             inv_to_sno[inv] = sno
-                    if items:
-                        first = items[0]
+                    if eligible_items:
+                        first = eligible_items[0]
                         tel_raw = (
                             cancel.get("buyer_tel") or cancel.get("receiver_tel") or
                             first.get("buyer_tel") or first.get("receiver_tel") or ""
@@ -723,7 +753,8 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                 page += 1
 
         if not inv_to_sno:
-            return {"ok": False, "error": "처리할 송장번호가 없습니다 (sub_status=41 건 없음)"}
+            note = " (전체가 판매자 부담 사유로 제외됨)" if seller_fault_count else ""
+            return {"ok": False, "error": f"처리할 송장번호가 없습니다 (sub_status=41 건 없음){note}"}
 
         invoices = list(inv_to_sno.keys())
 
@@ -856,6 +887,12 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                         except Exception:
                             pass
 
+        # 체크리스트의 "오늘 실행됨" 표시는 실제로 회수신청/문자발송까지 끝난
+        # 뒤에만 남긴다 - 도중에 브라우저가 새로고침되거나 예외가 나면 이
+        # 지점까지 오지 못하므로 done_today가 그대로 false로 남는다.
+        if set_setting:
+            set_setting("daily_check_new_return_pickup", datetime.now(_KST).isoformat())
+
         return {
             "ok": True,
             "invoice_count": len(invoices),
@@ -863,6 +900,7 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
             "ably_status": ably_status,
             "sno_count": len(sno_list) if sno_list else 0,
             "sms_queued": sms_queued,
+            "seller_fault_excluded": seller_fault_count,
         }
 
     return router

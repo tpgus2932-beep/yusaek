@@ -1,5 +1,7 @@
 from pathlib import Path
 from datetime import datetime, timedelta
+import asyncio
+import json
 import tempfile
 import io
 import re
@@ -15,6 +17,15 @@ from openpyxl import load_workbook, Workbook
 import xlwt
 
 from services.top90_client import execute_main_orders, Top90Error
+from services.order_history_store import init_order_history_table, record_order_history
+from sdk.ably import AblyClient
+from sdk.ezadmin import EzAdminClient, EzAdminSessionExpired
+from api.wonbe_routes import (
+    load_wonbe_option_sno_map,
+    load_wonbe_client_info_by_code,
+    load_wonbe_product_name_map,
+)
+from services.misong_lookup import load_misong_qty_by_code
 
 _EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
@@ -28,6 +39,9 @@ def build_order_router(
     get_db,
     order_cost_base_path: Path,
     get_setting,
+    get_shared_db,
+    get_user_display,
+    is_render: bool = False,
 ):
     router = APIRouter()
     COST_BASE_CODE_COL = 0
@@ -149,15 +163,9 @@ def build_order_router(
         s = re.sub(r"\s+", " ", s).strip()
         return s.lower()
 
-    def _build_daily_sales_cost_map(path: Path) -> dict[str, object]:
-        if not path.exists():
-            raise FileNotFoundError(f"원가베이스 파일이 없습니다: {path}")
-        wb = load_workbook(path, data_only=True)
-        ws = wb.active
+    def _build_daily_sales_cost_map() -> dict[str, object]:
         out: dict[str, object] = {}
-        for row in ws.iter_rows(min_row=1, values_only=True):
-            code = row[COST_BASE_CODE_COL] if len(row) > COST_BASE_CODE_COL else None
-            match_name = row[COST_BASE_MATCH_COL] if len(row) > COST_BASE_MATCH_COL else None
+        for code, match_name in load_wonbe_product_name_map().items():
             if match_name is None:
                 continue
             key = _normalize_daily_sales(match_name)
@@ -228,17 +236,6 @@ def build_order_router(
                 )
         return out
 
-    def _read_cost_base_df(path: Path) -> pd.DataFrame:
-        ext = path.suffix.lower()
-        if ext in (".xlsx", ".xlsm"):
-            return pd.read_excel(path, dtype=str, engine="openpyxl")
-        if ext == ".xls":
-            try:
-                return pd.read_excel(path, dtype=str, engine="xlrd")
-            except Exception:
-                return pd.read_excel(path, dtype=str)
-        return pd.read_excel(path, dtype=str)
-
     def _read_order_excel_df(path: Path) -> pd.DataFrame:
         ext = path.suffix.lower()
         last_error = None
@@ -277,23 +274,14 @@ def build_order_router(
 
         raise ValueError(f"엑셀 형식을 읽을 수 없습니다. 파일 형식 또는 손상 여부를 확인하세요. ({last_error})")
 
-    def _load_cost_base_items(path: Path) -> list[dict]:
-        if not path.exists():
-            return []
-        df = _read_cost_base_df(path)
-        if df.shape[1] < COST_BASE_REQUIRED_COLS:
-            return []
-        codes = df.iloc[:, COST_BASE_CODE_COL].map(_safe_str).tolist()
-        names = df.iloc[:, COST_BASE_MATCH_COL].map(_safe_str).tolist()
-        out = []
-        for code, name in zip(codes, names):
-            if not code:
-                continue
-            out.append({"name": name, "code": code})
-        return out
+    def _load_cost_base_items() -> list[dict]:
+        return [
+            {"name": name, "code": code}
+            for code, name in load_wonbe_product_name_map().items()
+        ]
 
-    def _load_cost_base_name_map(path: Path) -> dict[str, str]:
-        items = _load_cost_base_items(path)
+    def _load_cost_base_name_map() -> dict[str, str]:
+        items = _load_cost_base_items()
         m: dict[str, str] = {}
         for it in items:
             code = _norm_code(it.get("code", ""))
@@ -323,7 +311,7 @@ def build_order_router(
         q_norm = (q or "").strip().lower()
         if limit <= 0 or limit > 100:
             limit = 20
-        items = _load_cost_base_items(order_cost_base_path)
+        items = _load_cost_base_items()
         if q_norm:
             items = [
                 it
@@ -345,7 +333,7 @@ def build_order_router(
 
     @router.get("/order/registered/list")
     def order_registered_list(admin: str = Depends(require_admin)):
-        name_map = _load_cost_base_name_map(order_cost_base_path)
+        name_map = _load_cost_base_name_map()
         conn = get_db()
         rows = conn.execute(
             "SELECT code, qty, created_at, updated_at FROM order_registered_codes ORDER BY code ASC"
@@ -545,7 +533,7 @@ def build_order_router(
         if ext not in {".xlsx", ".xlsm"}:
             raise HTTPException(status_code=400, detail="xlsx/xlsm만 업로드 가능합니다.")
         if not order_cost_base_path.exists():
-            raise HTTPException(status_code=400, detail=f"원가베이스 파일이 없습니다: {order_cost_base_path}")
+            raise HTTPException(status_code=400, detail=f"원가베이스 DB가 없습니다: {order_cost_base_path}")
 
         raw = await file.read()
         if not raw:
@@ -565,7 +553,7 @@ def build_order_router(
                 pass
 
         in_ws = in_wb.active
-        cost_map = _build_daily_sales_cost_map(order_cost_base_path)
+        cost_map = _build_daily_sales_cost_map()
         base_rows = _build_daily_sales_rows(in_ws, skip_header=skip_header)
 
         rows: list[dict] = []
@@ -610,7 +598,7 @@ def build_order_router(
         if ext not in {".xlsx", ".xlsm"}:
             raise HTTPException(status_code=400, detail="xlsx/xlsm만 업로드 가능합니다.")
         if not order_cost_base_path.exists():
-            raise HTTPException(status_code=400, detail=f"원가베이스 파일이 없습니다: {order_cost_base_path}")
+            raise HTTPException(status_code=400, detail=f"원가베이스 DB가 없습니다: {order_cost_base_path}")
 
         raw = await file.read()
         if not raw:
@@ -630,7 +618,7 @@ def build_order_router(
                 pass
 
         in_ws = in_wb.active
-        cost_map = _build_daily_sales_cost_map(order_cost_base_path)
+        cost_map = _build_daily_sales_cost_map()
         base_rows = _build_daily_sales_rows(in_ws, skip_header=skip_header)
         rows: list[dict] = []
         for row in base_rows:
@@ -686,6 +674,202 @@ def build_order_router(
             admin=admin,
         )
 
+    # ── 인기재고 (에이블리 상품별 판매 통계 랭킹) ────────────────────────────────
+    POPULAR_GOODS_SNAPSHOT_KEY = "order_popular_goods"
+
+    def _init_popular_goods_snapshot_table(conn):
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS order_popular_goods_snapshot (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                items_json TEXT NOT NULL,
+                need_ezadmin_session INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        conn.commit()
+
+    def _save_popular_goods_snapshot(*, start_date: str, end_date: str, items: list[dict], need_ezadmin_session: bool, updated_by: str):
+        conn = get_shared_db()
+        try:
+            _init_popular_goods_snapshot_table(conn)
+            conn.execute("""
+                INSERT INTO order_popular_goods_snapshot (id, start_date, end_date, items_json, need_ezadmin_session, updated_at, updated_by)
+                VALUES (1, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    start_date = excluded.start_date,
+                    end_date = excluded.end_date,
+                    items_json = excluded.items_json,
+                    need_ezadmin_session = excluded.need_ezadmin_session,
+                    updated_at = CURRENT_TIMESTAMP,
+                    updated_by = excluded.updated_by
+            """, (start_date, end_date, json.dumps(items, ensure_ascii=False), 1 if need_ezadmin_session else 0, updated_by))
+            conn.commit()
+        finally:
+            conn.close()
+
+    @router.get("/order/popular-goods/saved")
+    def order_popular_goods_saved(admin: str = Depends(require_admin)):
+        """마지막으로 로컬에서 조회해 저장해둔 인기재고 스냅샷을 읽기만 한다 (외부 API 호출 없음 - 배포 환경에서도 동작)."""
+        conn = get_shared_db()
+        try:
+            _init_popular_goods_snapshot_table(conn)
+            row = conn.execute(
+                "SELECT start_date, end_date, items_json, need_ezadmin_session, updated_at FROM order_popular_goods_snapshot WHERE id = 1"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        if not row:
+            return {"ok": True, "saved": False, "live_fetch_enabled": not is_render}
+
+        try:
+            items = json.loads(row["items_json"])
+        except (TypeError, json.JSONDecodeError):
+            items = []
+        return {
+            "ok": True,
+            "saved": True,
+            "start_date": row["start_date"],
+            "end_date": row["end_date"],
+            "count": len(items),
+            "items": items,
+            "need_ezadmin_session": bool(row["need_ezadmin_session"]),
+            "updated_at": row["updated_at"],
+            "live_fetch_enabled": not is_render,
+        }
+
+    @router.get("/order/popular-goods")
+    async def order_popular_goods(
+        start_date: str | None = None,
+        end_date: str | None = None,
+        limit: int = 50,
+        admin: str = Depends(require_admin),
+    ):
+        if is_render:
+            raise HTTPException(
+                status_code=403,
+                detail="배포 환경에서는 실시간 조회를 지원하지 않습니다. 저장된 데이터를 확인하세요.",
+            )
+
+        now = datetime.now()
+        if not end_date:
+            end_date = now.strftime("%Y-%m-%d")
+        if not start_date:
+            start_date = (now - timedelta(days=4)).strftime("%Y-%m-%d")
+        if limit <= 0 or limit > 200:
+            limit = 50
+
+        try:
+            days = (datetime.strptime(end_date, "%Y-%m-%d") - datetime.strptime(start_date, "%Y-%m-%d")).days + 1
+        except ValueError:
+            days = 1
+        days = max(days, 1)
+
+        try:
+            goods = await AblyClient().get_goods_statistics(start_date=start_date, end_date=end_date)
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 판매 통계 조회 실패 (HTTP {e.response.status_code})")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 판매 통계 조회 실패: {e}")
+
+        # 옵션(재고) 단위로 한 개의 상품처럼 취급 - 같은 상품이라도 옵션마다 별도 랭킹.
+        options: list[dict] = []
+        for g in goods:
+            for opt in g.get("goods_options") or []:
+                options.append(
+                    {
+                        "goods_sno": g.get("goods_sno"),
+                        "goods_name": g.get("goods_name"),
+                        "goods_option_sno": opt.get("goods_option_sno"),
+                        "goods_option_name": opt.get("goods_option_name"),
+                        "order_count": opt.get("order_count") or 0,
+                        "order_amount": opt.get("order_amount") or 0,
+                        "cart_count": opt.get("cart_count") or 0,
+                    }
+                )
+
+        # 랭킹은 기간 전체 판매수량 기준(기간이 모든 항목에 동일해 순서는 바뀌지 않음),
+        # 화면 표시는 일평균 판매수량(판매수량 / 기간 일수)으로 보여준다.
+        items = sorted(options, key=lambda o: o["order_count"], reverse=True)[:limit]
+        for rank, item in enumerate(items, start=1):
+            item["rank"] = rank
+            item["avg_order_count"] = round(item["order_count"] / days, 1)
+
+        # 같은 상품(goods_sno)의 옵션들을 묶어서, 그 상품의 최고 순위 옵션 바로 밑에 붙인다.
+        # items가 이미 판매수량 내림차순이라 그룹 내부 순서도 그대로 유지된다.
+        grouped: dict[int, list[dict]] = {}
+        group_order: list[int] = []
+        for item in items:
+            sno = item["goods_sno"]
+            if sno not in grouped:
+                grouped[sno] = []
+                group_order.append(sno)
+            grouped[sno].append(item)
+        items = [item for sno in group_order for item in grouped[sno]]
+
+        # 옵션번호 → 상품코드(DB관리 원가베이스유) → 재고/접수(EZAdmin I100) 매칭.
+        option_to_product_id = load_wonbe_option_sno_map()
+        client_info_by_code = load_wonbe_client_info_by_code()
+        for item in items:
+            item["product_id"] = option_to_product_id.get(str(item.get("goods_option_sno") or ""))
+            client_info = client_info_by_code.get(item["product_id"] or "", {})
+            item["client"] = client_info.get("거래처", "")
+            item["client_product_name"] = client_info.get("거래처상품명", "")
+
+        # 상품코드 → 미송수량(노예김승일 미송관리). 없으면 0.
+        misong_qty_by_code = load_misong_qty_by_code(get_shared_db)
+        for item in items:
+            item["misong_qty"] = misong_qty_by_code.get(item.get("product_id") or "", 0)
+
+        unique_product_ids = sorted({item["product_id"] for item in items if item.get("product_id")})
+        need_ezadmin_session = False
+        stock_cache: dict[str, dict] = {}
+        if unique_product_ids:
+            ez = EzAdminClient(get_setting)
+            sem = asyncio.Semaphore(6)
+
+            async def _lookup(product_id: str) -> tuple[str, dict]:
+                async with sem:
+                    try:
+                        result = await ez.get_stock_and_pending(product_id)
+                        return product_id, {**result, "_session_expired": False}
+                    except EzAdminSessionExpired:
+                        return product_id, {"stock": None, "pending": None, "_session_expired": True}
+                    except Exception:
+                        return product_id, {"stock": None, "pending": None, "_session_expired": False}
+
+            results = await asyncio.gather(*[_lookup(pid) for pid in unique_product_ids])
+            for product_id, result in results:
+                if result.pop("_session_expired", False):
+                    need_ezadmin_session = True
+                stock_cache[product_id] = result
+
+        for item in items:
+            product_id = item.get("product_id")
+            result = stock_cache.get(product_id) if product_id else None
+            item["stock"] = result["stock"] if result else None
+            item["pending"] = result["pending"] if result else None
+
+        try:
+            _save_popular_goods_snapshot(
+                start_date=start_date, end_date=end_date, items=items,
+                need_ezadmin_session=need_ezadmin_session, updated_by=admin,
+            )
+        except Exception:
+            pass  # 스냅샷 저장 실패는 이번 조회 결과 응답을 막지 않는다.
+
+        return {
+            "ok": True,
+            "start_date": start_date,
+            "end_date": end_date,
+            "days": days,
+            "count": len(items),
+            "items": items,
+            "need_ezadmin_session": need_ezadmin_session,
+        }
     # ── 진머니 발주서 (EZAdmin I100 접수수량 조회) ─────────────────────────────
     @router.post("/order/jinmoney/export")
     async def jinmoney_order_export(admin: str = Depends(require_admin)):
@@ -934,6 +1118,95 @@ def build_order_router(
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+        result_by_store = {}
+        for s in result.get("success") or []:
+            result_by_store[s["store_name"]] = {"result_status": "success"}
+        for f in result.get("failed") or []:
+            result_by_store[f["store_name"]] = {"result_status": "failed", "reason": f.get("reason", "")}
+        record_order_history(
+            get_db,
+            execution_id=str(uuid.uuid4()),
+            recorded_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            action_type="order_execute",
+            items=items,
+            username=admin,
+            display_name=get_user_display(admin),
+            result_by_store=result_by_store,
+        )
+
         return {"ok": True, **result}
+
+    # ── 발주내역 (TSV 복사 / 발주 실행 기록) ──────────────────────────────────
+    @router.post("/order/main-order/record-tsv-copy")
+    async def main_order_record_tsv_copy(payload: dict = Body(...), admin: str = Depends(require_admin)):
+        items = payload.get("items") or []
+        record_order_history(
+            get_db,
+            execution_id=str(uuid.uuid4()),
+            recorded_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            action_type="tsv_copy",
+            items=items,
+            username=admin,
+            display_name=get_user_display(admin),
+        )
+        return {"ok": True}
+
+    @router.get("/order/main-order/history")
+    def main_order_history(
+        offset: int = 0,
+        limit: int = 50,
+        date_from: str = "",
+        date_to: str = "",
+        action_type: str = "",
+        q: str = "",
+        admin: str = Depends(require_admin),
+    ):
+        offset = max(0, offset)
+        limit = min(max(1, limit), 200)
+        clauses = []
+        params = []
+        if date_from:
+            clauses.append("recorded_at >= ?")
+            params.append(f"{date_from} 00:00:00")
+        if date_to:
+            clauses.append("recorded_at <= ?")
+            params.append(f"{date_to} 23:59:59")
+        if action_type:
+            clauses.append("action_type = ?")
+            params.append(action_type)
+        if q.strip():
+            like = f"%{q.strip()}%"
+            clauses.append(
+                "(product_code LIKE ? OR product_name LIKE ? OR store_name LIKE ? "
+                "OR recorded_by_username LIKE ? OR recorded_by_display_name LIKE ?)"
+            )
+            params.extend([like, like, like, like, like])
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        init_order_history_table(get_db)
+        conn = get_db()
+        try:
+            total = conn.execute(f"SELECT COUNT(*) FROM order_history{where}", params).fetchone()[0]
+            rows = conn.execute(
+                f"SELECT * FROM order_history{where} ORDER BY recorded_at DESC, id DESC LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            ).fetchall()
+            return {"ok": True, "total": total, "rows": [dict(row) for row in rows]}
+        finally:
+            conn.close()
+
+    @router.delete("/order/main-order/history")
+    def main_order_history_delete(payload: dict = Body(...), admin: str = Depends(require_admin)):
+        ids = [int(i) for i in (payload.get("ids") or []) if str(i).strip().lstrip("-").isdigit()]
+        if not ids:
+            raise HTTPException(status_code=400, detail="삭제할 항목 필요")
+        init_order_history_table(get_db)
+        conn = get_db()
+        try:
+            placeholders = ", ".join("?" for _ in ids)
+            cur = conn.execute(f"DELETE FROM order_history WHERE id IN ({placeholders})", ids)
+            conn.commit()
+            return {"ok": True, "deleted": cur.rowcount}
+        finally:
+            conn.close()
 
     return router

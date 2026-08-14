@@ -33,6 +33,8 @@ from api.guidebook_routes import build_guidebook_router
 from api.amood_settlement_routes import build_amood_settlement_router
 from api.ably_settlement_routes import build_ably_settlement_router
 from api.misong_routes import build_misong_router
+from api.order_routes import build_order_router
+from api.wonbe_routes import WONBE_DB_PATH
 from main import (
     ALLOWED_REQUEST_EXTS,
     ALLOWED_SHARED_EXTS,
@@ -47,6 +49,8 @@ from main import (
     _get_setting,
     _get_shared_db,
     _get_user_display,
+    TURSO_DATABASE_URL,
+    _USE_TURSO,
     _hash_password,
     _hash_pin,
     _is_admin,
@@ -176,6 +180,18 @@ app.include_router(
         get_current_user=_get_current_user,
         get_db=_get_shared_db,
         get_setting=_get_setting,
+    )
+)
+
+app.include_router(
+    build_order_router(
+        require_admin=_require_admin,
+        get_db=_get_db,
+        order_cost_base_path=WONBE_DB_PATH,
+        get_setting=_get_setting,
+        get_shared_db=_get_shared_db,
+        get_user_display=_get_user_display,
+        is_render=bool(os.environ.get("RENDER", "")),
     )
 )
 
@@ -328,7 +344,13 @@ app.include_router(
 
 @app.get("/ping")
 def ping():
-    return {"status": "ok", "service": "collab"}
+    masked_url = TURSO_DATABASE_URL[:40] + "..." if TURSO_DATABASE_URL else ""
+    return {
+        "status": "ok",
+        "service": "collab",
+        "db_mode": "turso" if _USE_TURSO else "sqlite",
+        "turso_url": masked_url,
+    }
 
 
 @app.get("/healthz")
