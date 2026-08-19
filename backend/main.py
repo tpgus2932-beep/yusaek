@@ -73,10 +73,12 @@ from api.exchange_return_anomaly_routes import build_exchange_return_anomaly_rou
 from api.return_anomaly_routes import build_return_anomaly_router
 from api.daily_checklist_routes import build_daily_checklist_router
 from api.timebox_routes import build_timebox_router
+from api.worklog_routes import build_worklog_router
 from services.delivery_anomaly_store import init_delivery_anomaly_tables
 from services.exchange_return_anomaly_store import init_exchange_return_anomaly_tables
 from services.return_anomaly_store import init_return_anomaly_tables
 from services.timebox_store import init_timebox_tables
+from services.worklog_store import init_worklog_tables
 from services.anomaly_scheduler import run_anomaly_scheduler_loop
 from api.collaboration_tools_routes import build_collaboration_tools_router
 from api.attendance_routes import build_attendance_router
@@ -1944,6 +1946,16 @@ init_timebox_tables(_get_shared_db)
 
 app.include_router(
     build_timebox_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        get_user_display=_get_user_display,
+    )
+)
+
+init_worklog_tables(_get_shared_db)
+
+app.include_router(
+    build_worklog_router(
         get_current_user=_get_current_user,
         get_db=_get_shared_db,
         get_user_display=_get_user_display,

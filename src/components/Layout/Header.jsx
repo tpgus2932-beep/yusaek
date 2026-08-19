@@ -1,4 +1,4 @@
-import { Bell, CalendarDays, CircleDollarSign, ClipboardList, DatabaseZap, Key, Timer, Warehouse } from 'lucide-react';
+import { Bell, CalendarDays, CircleDollarSign, ClipboardList, DatabaseZap, Key, NotebookPen, Timer, Warehouse } from 'lucide-react';
 import { useState } from 'react';
 import styles from './Header.module.css';
 import { COLLAB_API_BASE, LOCAL_API_BASE, getAuthHeaders } from '../../lib/api';
@@ -145,6 +145,14 @@ const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode })
                     >
                         <Timer size={14} />
                         타임박스
+                    </button>
+                    <button
+                        type="button"
+                        className={`${styles.topNavItem} ${topMode === 'worklog' ? styles.topNavItemActive : ''}`}
+                        onClick={() => setTopMode?.('worklog')}
+                    >
+                        <NotebookPen size={14} />
+                        업무일지
                     </button>
                 </div>
             </div>
