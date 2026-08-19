@@ -136,7 +136,8 @@
   flex-wrap: wrap;
 }
 
-.backlogColumn {
+.backlogColumn,
+.doneColumn {
   flex: 0 0 320px;
   min-width: 280px;
 }
@@ -329,6 +330,23 @@
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.progressLabelRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.editDescBtn {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
 }
 
 .progressLabel {

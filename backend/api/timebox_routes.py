@@ -119,6 +119,27 @@ def build_timebox_router(*, get_current_user, get_db, get_user_display):
         conn.close()
         return {"ok": True, "issue": _row_to_issue(row)}
 
+    @router.patch("/issues/{issue_id}")
+    def update_issue_description(issue_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
+        if "description" not in payload:
+            raise HTTPException(status_code=400, detail="description이 필요합니다.")
+        description = (payload.get("description") or "").strip()
+
+        conn = get_db()
+        row = _get_issue_or_404(conn, issue_id)
+        if user not in (row["created_by"], row["assigned_to"]):
+            conn.close()
+            raise HTTPException(status_code=403, detail="작성자 또는 담당자만 진행상황을 수정할 수 있습니다.")
+        now = _now()
+        conn.execute(
+            "UPDATE timebox_issues SET description = ?, updated_at = ? WHERE id = ?",
+            (description, now, issue_id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM timebox_issues WHERE id = ?", (issue_id,)).fetchone()
+        conn.close()
+        return {"ok": True, "issue": _row_to_issue(row)}
+
     @router.patch("/issues/{issue_id}/assign")
     def assign_issue(issue_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
         assignee = (payload.get("assignee") or "").strip()

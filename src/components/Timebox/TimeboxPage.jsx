@@ -39,6 +39,10 @@ const TimeboxPage = ({ currentUser }) => {
     const [commentsCache, setCommentsCache] = useState({});
     const [commentInput, setCommentInput] = useState({});
 
+    const [descEditing, setDescEditing] = useState({});
+    const [descDraft, setDescDraft] = useState({});
+    const [savingDesc, setSavingDesc] = useState({});
+
     const authHeaders = getAuthHeaders();
 
     const loadComments = async (issueId) => {
@@ -201,6 +205,30 @@ const TimeboxPage = ({ currentUser }) => {
         }
     };
 
+    const handleSaveDescription = async (issueId) => {
+        const description = (descDraft[issueId] || '').trim();
+        setSavingDesc((prev) => ({ ...prev, [issueId]: true }));
+        try {
+            const res = await fetch(`${API}/timebox/issues/${issueId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', ...authHeaders },
+                body: JSON.stringify({ description }),
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json();
+            if (res.ok && data.issue) {
+                setIssues((prev) => prev.map((it) => (it.id === issueId ? data.issue : it)));
+                setDescEditing((prev) => ({ ...prev, [issueId]: false }));
+            } else {
+                setError(data.detail || '진행상황 저장에 실패했습니다.');
+            }
+        } catch {
+            setError('진행상황 저장에 실패했습니다.');
+        } finally {
+            setSavingDesc((prev) => ({ ...prev, [issueId]: false }));
+        }
+    };
+
     const handleAddComment = async (issueId) => {
         const content = (commentInput[issueId] || '').trim();
         if (!content) return;
@@ -216,7 +244,7 @@ const TimeboxPage = ({ currentUser }) => {
                 setCommentInput((prev) => ({ ...prev, [issueId]: '' }));
             }
         } catch {
-            setError('진행 과정 등록에 실패했습니다.');
+            setError('피드백 등록에 실패했습니다.');
         }
     };
 
@@ -233,12 +261,14 @@ const TimeboxPage = ({ currentUser }) => {
                 }));
             }
         } catch {
-            setError('진행 과정 삭제에 실패했습니다.');
+            setError('피드백 삭제에 실패했습니다.');
         }
     };
 
     const renderIssueCard = (issue, { compact } = {}) => {
         const comments = commentsCache[issue.id] || [];
+        const canEditDesc = currentUser === issue.createdBy || currentUser === issue.assignedTo;
+        const isEditingDesc = !!descEditing[issue.id];
         return (
             <div key={issue.id} className={`${styles.issueCard} ${compact ? styles.issueCardCompact : ''}`}>
                 <div className={styles.issueTop}>
@@ -247,9 +277,58 @@ const TimeboxPage = ({ currentUser }) => {
                     </span>
                     <span className={styles.issueTitle}>{issue.title}</span>
                 </div>
-                {issue.description && <div className={styles.issueDesc}>{issue.description}</div>}
                 <div className={styles.issueMeta}>
                     작성자 {issue.createdByDisplay || issue.createdBy} · {fmtTime(issue.createdAt)}
+                </div>
+
+                <div className={styles.progressSection}>
+                    <div className={styles.progressLabelRow}>
+                        <span className={styles.progressLabel}>진행상황</span>
+                        {canEditDesc && !isEditingDesc && (
+                            <button
+                                type="button"
+                                className={styles.editDescBtn}
+                                onClick={() => {
+                                    setDescDraft((prev) => ({ ...prev, [issue.id]: issue.description || '' }));
+                                    setDescEditing((prev) => ({ ...prev, [issue.id]: true }));
+                                }}
+                            >
+                                수정
+                            </button>
+                        )}
+                    </div>
+                    {isEditingDesc ? (
+                        <>
+                            <textarea
+                                className={styles.descInput}
+                                value={descDraft[issue.id] || ''}
+                                onChange={(e) => setDescDraft((prev) => ({ ...prev, [issue.id]: e.target.value }))}
+                                rows={3}
+                                autoFocus
+                            />
+                            <div className={styles.createCardActions}>
+                                <button
+                                    type="button"
+                                    className={styles.secondaryBtn}
+                                    onClick={() => setDescEditing((prev) => ({ ...prev, [issue.id]: false }))}
+                                >
+                                    취소
+                                </button>
+                                <button
+                                    type="button"
+                                    className={styles.primaryBtn}
+                                    onClick={() => handleSaveDescription(issue.id)}
+                                    disabled={savingDesc[issue.id]}
+                                >
+                                    {savingDesc[issue.id] ? '저장 중...' : '저장'}
+                                </button>
+                            </div>
+                        </>
+                    ) : (
+                        <div className={styles.issueDesc}>
+                            {issue.description || <span className={styles.commentEmpty}>아직 작성된 진행상황이 없습니다.</span>}
+                        </div>
+                    )}
                 </div>
 
                 <div className={styles.actionRow}>
@@ -300,9 +379,9 @@ const TimeboxPage = ({ currentUser }) => {
                 </div>
 
                 <div className={styles.progressSection}>
-                    <div className={styles.progressLabel}>진행 과정</div>
+                    <div className={styles.progressLabel}>피드백</div>
                     {comments.length === 0 && (
-                        <div className={styles.commentEmpty}>아직 작성된 진행 과정이 없습니다.</div>
+                        <div className={styles.commentEmpty}>아직 작성된 피드백이 없습니다.</div>
                     )}
                     {comments.map((c) => (
                         <div key={c.id} className={styles.commentItem}>
@@ -326,7 +405,7 @@ const TimeboxPage = ({ currentUser }) => {
                         <input
                             type="text"
                             className={styles.commentInput}
-                            placeholder="진행 상황 또는 피드백을 남겨주세요"
+                            placeholder="피드백을 남겨주세요"
                             value={commentInput[issue.id] || ''}
                             onChange={(e) => setCommentInput((prev) => ({ ...prev, [issue.id]: e.target.value }))}
                             onKeyDown={(e) => {
@@ -347,6 +426,7 @@ const TimeboxPage = ({ currentUser }) => {
     };
 
     const unassignedIssues = issues.filter((it) => it.status === 'unassigned');
+    const doneIssues = issues.filter((it) => it.status === 'done');
     const memberUsernames = new Set(members.map((m) => m.username));
     const availableToAdd = allUsers.filter((u) => !memberUsernames.has(u.username));
 
@@ -427,7 +507,7 @@ const TimeboxPage = ({ currentUser }) => {
 
                     <div className={styles.userGrid}>
                         {members.map((m) => {
-                            const userIssues = issues.filter((it) => it.assignedTo === m.username);
+                            const userIssues = issues.filter((it) => it.assignedTo === m.username && it.status !== 'done');
                             const displayName = m.displayName || m.username;
                             return (
                                 <div key={m.username} className={styles.userCard}>
@@ -502,6 +582,20 @@ const TimeboxPage = ({ currentUser }) => {
                                     <UserPlus size={16} />
                                     {availableToAdd.length === 0 ? '추가할 사용자 없음' : '사용자 추가'}
                                 </button>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className={styles.doneColumn}>
+                        <div className={styles.columnHeader}>
+                            <span>완료 리스트</span>
+                            <span className={styles.columnCount}>{doneIssues.length}</span>
+                        </div>
+                        <div className={styles.backlogList}>
+                            {doneIssues.length === 0 ? (
+                                <div className={styles.emptySmall}>완료된 문제가 없습니다.</div>
+                            ) : (
+                                doneIssues.map((issue) => renderIssueCard(issue))
                             )}
                         </div>
                     </div>
