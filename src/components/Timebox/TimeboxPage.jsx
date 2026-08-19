@@ -39,9 +39,9 @@ const TimeboxPage = ({ currentUser }) => {
     const [commentsCache, setCommentsCache] = useState({});
     const [commentInput, setCommentInput] = useState({});
 
-    const [descEditing, setDescEditing] = useState({});
-    const [descDraft, setDescDraft] = useState({});
-    const [savingDesc, setSavingDesc] = useState({});
+    const [progressEditing, setProgressEditing] = useState({});
+    const [progressDraft, setProgressDraft] = useState({});
+    const [savingProgress, setSavingProgress] = useState({});
 
     const authHeaders = getAuthHeaders();
 
@@ -73,7 +73,9 @@ const TimeboxPage = ({ currentUser }) => {
                 setIssues(loadedIssues);
                 setMembers(membersData.members || []);
                 setAllUsers(usersData.users || []);
-                await Promise.all(loadedIssues.map((issue) => loadComments(issue.id)));
+                await Promise.all(
+                    loadedIssues.filter((issue) => issue.status !== 'unassigned').map((issue) => loadComments(issue.id))
+                );
             } catch {
                 setError('데이터를 불러오지 못했습니다.');
             } finally {
@@ -163,6 +165,7 @@ const TimeboxPage = ({ currentUser }) => {
             if (res.ok && data.issue) {
                 setIssues((prev) => prev.map((it) => (it.id === issueId ? data.issue : it)));
                 setAssigneePick((prev) => ({ ...prev, [issueId]: '' }));
+                if (!commentsCache[issueId]) loadComments(issueId);
             }
         } catch {
             setError('배정에 실패했습니다.');
@@ -205,27 +208,27 @@ const TimeboxPage = ({ currentUser }) => {
         }
     };
 
-    const handleSaveDescription = async (issueId) => {
-        const description = (descDraft[issueId] || '').trim();
-        setSavingDesc((prev) => ({ ...prev, [issueId]: true }));
+    const handleSaveProgress = async (issueId) => {
+        const progress = (progressDraft[issueId] || '').trim();
+        setSavingProgress((prev) => ({ ...prev, [issueId]: true }));
         try {
-            const res = await fetch(`${API}/timebox/issues/${issueId}`, {
+            const res = await fetch(`${API}/timebox/issues/${issueId}/progress`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json', ...authHeaders },
-                body: JSON.stringify({ description }),
+                body: JSON.stringify({ progress }),
             });
             if (handleUnauthorized(res)) return;
             const data = await res.json();
             if (res.ok && data.issue) {
                 setIssues((prev) => prev.map((it) => (it.id === issueId ? data.issue : it)));
-                setDescEditing((prev) => ({ ...prev, [issueId]: false }));
+                setProgressEditing((prev) => ({ ...prev, [issueId]: false }));
             } else {
                 setError(data.detail || '진행상황 저장에 실패했습니다.');
             }
         } catch {
             setError('진행상황 저장에 실패했습니다.');
         } finally {
-            setSavingDesc((prev) => ({ ...prev, [issueId]: false }));
+            setSavingProgress((prev) => ({ ...prev, [issueId]: false }));
         }
     };
 
@@ -265,10 +268,51 @@ const TimeboxPage = ({ currentUser }) => {
         }
     };
 
-    const renderIssueCard = (issue, { compact } = {}) => {
+    const renderIssueCard = (issue, { compact, minimal } = {}) => {
+        if (minimal) {
+            return (
+                <div key={issue.id} className={styles.issueCard}>
+                    <div className={styles.issueTop}>
+                        <span className={`${styles.statusBadge} ${styles[`status_${issue.status}`]}`}>
+                            {STATUS_LABEL[issue.status] || issue.status}
+                        </span>
+                        <span className={styles.issueTitle}>{issue.title}</span>
+                    </div>
+                    {issue.description && (
+                        <div className={styles.descBlock}>
+                            <div className={styles.progressLabel}>문제내용</div>
+                            <div className={styles.issueDesc}>{issue.description}</div>
+                        </div>
+                    )}
+                    <div className={styles.actionRow}>
+                        <select
+                            className={styles.assigneeSelect}
+                            value={assigneePick[issue.id] || ''}
+                            onChange={(e) => setAssigneePick((prev) => ({ ...prev, [issue.id]: e.target.value }))}
+                        >
+                            <option value="">담당자 선택</option>
+                            {members.map((m) => (
+                                <option key={m.username} value={m.username}>
+                                    {m.displayName || m.username}
+                                </option>
+                            ))}
+                        </select>
+                        <button
+                            type="button"
+                            className={styles.secondaryBtn}
+                            onClick={() => handleAssign(issue.id)}
+                            disabled={!assigneePick[issue.id]}
+                        >
+                            배정
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
         const comments = commentsCache[issue.id] || [];
-        const canEditDesc = currentUser === issue.createdBy || currentUser === issue.assignedTo;
-        const isEditingDesc = !!descEditing[issue.id];
+        const canEditProgress = !!issue.assignedTo && currentUser === issue.assignedTo;
+        const isEditingProgress = !!progressEditing[issue.id];
         return (
             <div key={issue.id} className={`${styles.issueCard} ${compact ? styles.issueCardCompact : ''}`}>
                 <div className={styles.issueTop}>
@@ -277,6 +321,12 @@ const TimeboxPage = ({ currentUser }) => {
                     </span>
                     <span className={styles.issueTitle}>{issue.title}</span>
                 </div>
+                {issue.description && (
+                    <div className={styles.descBlock}>
+                        <div className={styles.progressLabel}>문제내용</div>
+                        <div className={styles.issueDesc}>{issue.description}</div>
+                    </div>
+                )}
                 <div className={styles.issueMeta}>
                     작성자 {issue.createdByDisplay || issue.createdBy} · {fmtTime(issue.createdAt)}
                 </div>
@@ -284,25 +334,25 @@ const TimeboxPage = ({ currentUser }) => {
                 <div className={styles.progressSection}>
                     <div className={styles.progressLabelRow}>
                         <span className={styles.progressLabel}>진행상황</span>
-                        {canEditDesc && !isEditingDesc && (
+                        {canEditProgress && !isEditingProgress && (
                             <button
                                 type="button"
                                 className={styles.editDescBtn}
                                 onClick={() => {
-                                    setDescDraft((prev) => ({ ...prev, [issue.id]: issue.description || '' }));
-                                    setDescEditing((prev) => ({ ...prev, [issue.id]: true }));
+                                    setProgressDraft((prev) => ({ ...prev, [issue.id]: issue.progress || '' }));
+                                    setProgressEditing((prev) => ({ ...prev, [issue.id]: true }));
                                 }}
                             >
                                 수정
                             </button>
                         )}
                     </div>
-                    {isEditingDesc ? (
+                    {isEditingProgress ? (
                         <>
                             <textarea
                                 className={styles.descInput}
-                                value={descDraft[issue.id] || ''}
-                                onChange={(e) => setDescDraft((prev) => ({ ...prev, [issue.id]: e.target.value }))}
+                                value={progressDraft[issue.id] || ''}
+                                onChange={(e) => setProgressDraft((prev) => ({ ...prev, [issue.id]: e.target.value }))}
                                 rows={3}
                                 autoFocus
                             />
@@ -310,53 +360,28 @@ const TimeboxPage = ({ currentUser }) => {
                                 <button
                                     type="button"
                                     className={styles.secondaryBtn}
-                                    onClick={() => setDescEditing((prev) => ({ ...prev, [issue.id]: false }))}
+                                    onClick={() => setProgressEditing((prev) => ({ ...prev, [issue.id]: false }))}
                                 >
                                     취소
                                 </button>
                                 <button
                                     type="button"
                                     className={styles.primaryBtn}
-                                    onClick={() => handleSaveDescription(issue.id)}
-                                    disabled={savingDesc[issue.id]}
+                                    onClick={() => handleSaveProgress(issue.id)}
+                                    disabled={savingProgress[issue.id]}
                                 >
-                                    {savingDesc[issue.id] ? '저장 중...' : '저장'}
+                                    {savingProgress[issue.id] ? '저장 중...' : '저장'}
                                 </button>
                             </div>
                         </>
                     ) : (
                         <div className={styles.issueDesc}>
-                            {issue.description || <span className={styles.commentEmpty}>아직 작성된 진행상황이 없습니다.</span>}
+                            {issue.progress || <span className={styles.commentEmpty}>아직 작성된 진행상황이 없습니다.</span>}
                         </div>
                     )}
                 </div>
 
                 <div className={styles.actionRow}>
-                    {issue.status === 'unassigned' && (
-                        <>
-                            <select
-                                className={styles.assigneeSelect}
-                                value={assigneePick[issue.id] || ''}
-                                onChange={(e) => setAssigneePick((prev) => ({ ...prev, [issue.id]: e.target.value }))}
-                            >
-                                <option value="">담당자 선택</option>
-                                {members.map((m) => (
-                                    <option key={m.username} value={m.username}>
-                                        {m.displayName || m.username}
-                                    </option>
-                                ))}
-                            </select>
-                            <button
-                                type="button"
-                                className={styles.secondaryBtn}
-                                onClick={() => handleAssign(issue.id)}
-                                disabled={!assigneePick[issue.id]}
-                            >
-                                배정
-                            </button>
-                        </>
-                    )}
-
                     {issue.status === 'assigned' && issue.assignedTo === currentUser && (
                         <button
                             type="button"
@@ -500,7 +525,7 @@ const TimeboxPage = ({ currentUser }) => {
                             {unassignedIssues.length === 0 && !showCreateForm ? (
                                 <div className={styles.emptySmall}>미배정 문제가 없습니다.</div>
                             ) : (
-                                unassignedIssues.map((issue) => renderIssueCard(issue))
+                                unassignedIssues.map((issue) => renderIssueCard(issue, { minimal: true }))
                             )}
                         </div>
                     </div>

@@ -303,6 +303,12 @@
   font-size: 0.85rem;
   color: var(--text-secondary);
   white-space: pre-wrap;
+}
+
+.descBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
   margin-bottom: 0.5rem;
 }
 

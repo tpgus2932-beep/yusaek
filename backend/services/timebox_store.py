@@ -9,6 +9,15 @@ def _now() -> str:
     return datetime.now(_KST).isoformat()
 
 
+def _ensure_column(get_db, table: str, column: str, ddl: str) -> None:
+    conn = get_db()
+    cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    if column not in cols:
+        conn.execute(ddl)
+        conn.commit()
+    conn.close()
+
+
 def init_timebox_tables(get_db) -> None:
     conn = get_db()
     conn.execute(
@@ -47,3 +56,7 @@ def init_timebox_tables(get_db) -> None:
     )
     conn.commit()
     conn.close()
+
+    # 담당자가 배정된 후 작성하는 진행상황 - 최초 등록된 문제내용(description)과는 별개 필드
+    _ensure_column(get_db, "timebox_issues", "progress",
+                   "ALTER TABLE timebox_issues ADD COLUMN progress TEXT NOT NULL DEFAULT ''")

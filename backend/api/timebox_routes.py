@@ -21,6 +21,7 @@ def build_timebox_router(*, get_current_user, get_db, get_user_display):
             "id": row["id"],
             "title": row["title"],
             "description": row["description"],
+            "progress": row["progress"],
             "status": row["status"],
             "createdBy": row["created_by"],
             "createdByDisplay": get_user_display(row["created_by"]) or row["created_by"],
@@ -119,21 +120,21 @@ def build_timebox_router(*, get_current_user, get_db, get_user_display):
         conn.close()
         return {"ok": True, "issue": _row_to_issue(row)}
 
-    @router.patch("/issues/{issue_id}")
-    def update_issue_description(issue_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
-        if "description" not in payload:
-            raise HTTPException(status_code=400, detail="description이 필요합니다.")
-        description = (payload.get("description") or "").strip()
+    @router.patch("/issues/{issue_id}/progress")
+    def update_issue_progress(issue_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
+        if "progress" not in payload:
+            raise HTTPException(status_code=400, detail="progress가 필요합니다.")
+        progress = (payload.get("progress") or "").strip()
 
         conn = get_db()
         row = _get_issue_or_404(conn, issue_id)
-        if user not in (row["created_by"], row["assigned_to"]):
+        if not row["assigned_to"] or user != row["assigned_to"]:
             conn.close()
-            raise HTTPException(status_code=403, detail="작성자 또는 담당자만 진행상황을 수정할 수 있습니다.")
+            raise HTTPException(status_code=403, detail="배정된 담당자만 진행상황을 작성할 수 있습니다.")
         now = _now()
         conn.execute(
-            "UPDATE timebox_issues SET description = ?, updated_at = ? WHERE id = ?",
-            (description, now, issue_id),
+            "UPDATE timebox_issues SET progress = ?, updated_at = ? WHERE id = ?",
+            (progress, now, issue_id),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM timebox_issues WHERE id = ?", (issue_id,)).fetchone()
