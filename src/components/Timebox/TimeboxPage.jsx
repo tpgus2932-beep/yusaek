@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { MessageSquare, Plus, Timer } from 'lucide-react';
+import { Plus, Timer, UserPlus, X } from 'lucide-react';
 import styles from './TimeboxPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
@@ -7,6 +7,7 @@ const STATUS_LABEL = {
     unassigned: '미배정',
     assigned: '배정됨',
     in_progress: '진행중',
+    done: '완료',
 };
 
 const fmtTime = (iso) => {
@@ -20,7 +21,8 @@ const fmtTime = (iso) => {
 
 const TimeboxPage = ({ currentUser }) => {
     const [issues, setIssues] = useState([]);
-    const [users, setUsers] = useState([]);
+    const [members, setMembers] = useState([]);
+    const [allUsers, setAllUsers] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
 
@@ -29,27 +31,45 @@ const TimeboxPage = ({ currentUser }) => {
     const [newDescription, setNewDescription] = useState('');
     const [creating, setCreating] = useState(false);
 
+    const [showAddMember, setShowAddMember] = useState(false);
+    const [memberPick, setMemberPick] = useState('');
+    const [addingMember, setAddingMember] = useState(false);
+
     const [assigneePick, setAssigneePick] = useState({});
-    const [expanded, setExpanded] = useState(new Set());
     const [commentsCache, setCommentsCache] = useState({});
     const [commentInput, setCommentInput] = useState({});
 
     const authHeaders = getAuthHeaders();
+
+    const loadComments = async (issueId) => {
+        try {
+            const res = await fetch(`${API}/timebox/issues/${issueId}/comments`, { headers: authHeaders });
+            const data = await res.json();
+            setCommentsCache((prev) => ({ ...prev, [issueId]: data.comments || [] }));
+        } catch {
+            setCommentsCache((prev) => ({ ...prev, [issueId]: [] }));
+        }
+    };
 
     useEffect(() => {
         (async () => {
             setLoading(true);
             setError('');
             try {
-                const [issuesRes, usersRes] = await Promise.all([
+                const [issuesRes, membersRes, usersRes] = await Promise.all([
                     fetch(`${API}/timebox/issues`, { headers: authHeaders }),
+                    fetch(`${API}/timebox/members`, { headers: authHeaders }),
                     fetch(`${API}/users`, { headers: authHeaders }),
                 ]);
-                if (handleUnauthorized(issuesRes) || handleUnauthorized(usersRes)) return;
+                if (handleUnauthorized(issuesRes) || handleUnauthorized(membersRes) || handleUnauthorized(usersRes)) return;
                 const issuesData = await issuesRes.json();
+                const membersData = await membersRes.json();
                 const usersData = await usersRes.json();
-                setIssues(issuesData.issues || []);
-                setUsers(usersData.users || []);
+                const loadedIssues = issuesData.issues || [];
+                setIssues(loadedIssues);
+                setMembers(membersData.members || []);
+                setAllUsers(usersData.users || []);
+                await Promise.all(loadedIssues.map((issue) => loadComments(issue.id)));
             } catch {
                 setError('데이터를 불러오지 못했습니다.');
             } finally {
@@ -72,6 +92,7 @@ const TimeboxPage = ({ currentUser }) => {
             const data = await res.json();
             if (res.ok && data.issue) {
                 setIssues((prev) => [data.issue, ...prev]);
+                setCommentsCache((prev) => ({ ...prev, [data.issue.id]: [] }));
                 setNewTitle('');
                 setNewDescription('');
                 setShowCreateForm(false);
@@ -82,6 +103,45 @@ const TimeboxPage = ({ currentUser }) => {
             setError('등록에 실패했습니다.');
         } finally {
             setCreating(false);
+        }
+    };
+
+    const handleAddMember = async () => {
+        if (!memberPick) return;
+        setAddingMember(true);
+        try {
+            const res = await fetch(`${API}/timebox/members`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...authHeaders },
+                body: JSON.stringify({ username: memberPick }),
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json();
+            if (res.ok && data.member) {
+                setMembers((prev) => [...prev, data.member]);
+                setMemberPick('');
+                setShowAddMember(false);
+            } else {
+                setError(data.detail || '멤버 추가에 실패했습니다.');
+            }
+        } catch {
+            setError('멤버 추가에 실패했습니다.');
+        } finally {
+            setAddingMember(false);
+        }
+    };
+
+    const handleRemoveMember = async (username) => {
+        try {
+            const res = await fetch(`${API}/timebox/members/${encodeURIComponent(username)}`, {
+                method: 'DELETE',
+                headers: authHeaders,
+            });
+            if (res.ok) {
+                setMembers((prev) => prev.filter((m) => m.username !== username));
+            }
+        } catch {
+            setError('멤버 제거에 실패했습니다.');
         }
     };
 
@@ -123,21 +183,21 @@ const TimeboxPage = ({ currentUser }) => {
         }
     };
 
-    const toggleComments = async (issueId) => {
-        const isOpen = expanded.has(issueId);
-        setExpanded((prev) => {
-            const next = new Set(prev);
-            if (isOpen) next.delete(issueId); else next.add(issueId);
-            return next;
-        });
-        if (!isOpen && !commentsCache[issueId]) {
-            try {
-                const res = await fetch(`${API}/timebox/issues/${issueId}/comments`, { headers: authHeaders });
-                const data = await res.json();
-                setCommentsCache((prev) => ({ ...prev, [issueId]: data.comments || [] }));
-            } catch {
-                setCommentsCache((prev) => ({ ...prev, [issueId]: [] }));
+    const handleComplete = async (issueId) => {
+        try {
+            const res = await fetch(`${API}/timebox/issues/${issueId}/complete`, {
+                method: 'PATCH',
+                headers: authHeaders,
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json();
+            if (res.ok && data.issue) {
+                setIssues((prev) => prev.map((it) => (it.id === issueId ? data.issue : it)));
+            } else {
+                setError(data.detail || '완료 처리에 실패했습니다.');
             }
+        } catch {
+            setError('완료 처리에 실패했습니다.');
         }
     };
 
@@ -156,7 +216,7 @@ const TimeboxPage = ({ currentUser }) => {
                 setCommentInput((prev) => ({ ...prev, [issueId]: '' }));
             }
         } catch {
-            setError('코멘트 등록에 실패했습니다.');
+            setError('진행 과정 등록에 실패했습니다.');
         }
     };
 
@@ -173,12 +233,11 @@ const TimeboxPage = ({ currentUser }) => {
                 }));
             }
         } catch {
-            setError('코멘트 삭제에 실패했습니다.');
+            setError('진행 과정 삭제에 실패했습니다.');
         }
     };
 
     const renderIssueCard = (issue, { compact } = {}) => {
-        const isOpen = expanded.has(issue.id);
         const comments = commentsCache[issue.id] || [];
         return (
             <div key={issue.id} className={`${styles.issueCard} ${compact ? styles.issueCardCompact : ''}`}>
@@ -202,9 +261,9 @@ const TimeboxPage = ({ currentUser }) => {
                                 onChange={(e) => setAssigneePick((prev) => ({ ...prev, [issue.id]: e.target.value }))}
                             >
                                 <option value="">담당자 선택</option>
-                                {users.map((u) => (
-                                    <option key={u.username} value={u.username}>
-                                        {u.display_name || u.username}
+                                {members.map((m) => (
+                                    <option key={m.username} value={m.username}>
+                                        {m.displayName || m.username}
                                     </option>
                                 ))}
                             </select>
@@ -229,65 +288,67 @@ const TimeboxPage = ({ currentUser }) => {
                         </button>
                     )}
 
-                    <button
-                        type="button"
-                        className={styles.commentToggleBtn}
-                        onClick={() => toggleComments(issue.id)}
-                    >
-                        <MessageSquare size={14} />
-                        코멘트{comments.length > 0 ? ` ${comments.length}` : ''}
-                    </button>
+                    {issue.status === 'in_progress' && issue.assignedTo === currentUser && (
+                        <button
+                            type="button"
+                            className={styles.completeBtn}
+                            onClick={() => handleComplete(issue.id)}
+                        >
+                            완료
+                        </button>
+                    )}
                 </div>
 
-                {isOpen && (
-                    <div className={styles.commentSection}>
-                        {comments.length === 0 && (
-                            <div className={styles.commentEmpty}>아직 코멘트가 없습니다.</div>
-                        )}
-                        {comments.map((c) => (
-                            <div key={c.id} className={styles.commentItem}>
-                                <div className={styles.commentMeta}>
-                                    <span className={styles.commentAuthor}>{c.authorDisplay || c.author}</span>
-                                    <span className={styles.commentTime}>{fmtTime(c.createdAt)}</span>
-                                    {c.author === currentUser && (
-                                        <button
-                                            type="button"
-                                            className={styles.commentDeleteBtn}
-                                            onClick={() => handleDeleteComment(issue.id, c.id)}
-                                        >
-                                            삭제
-                                        </button>
-                                    )}
-                                </div>
-                                <div className={styles.commentText}>{c.content}</div>
+                <div className={styles.progressSection}>
+                    <div className={styles.progressLabel}>진행 과정</div>
+                    {comments.length === 0 && (
+                        <div className={styles.commentEmpty}>아직 작성된 진행 과정이 없습니다.</div>
+                    )}
+                    {comments.map((c) => (
+                        <div key={c.id} className={styles.commentItem}>
+                            <div className={styles.commentMeta}>
+                                <span className={styles.commentAuthor}>{c.authorDisplay || c.author}</span>
+                                <span className={styles.commentTime}>{fmtTime(c.createdAt)}</span>
+                                {c.author === currentUser && (
+                                    <button
+                                        type="button"
+                                        className={styles.commentDeleteBtn}
+                                        onClick={() => handleDeleteComment(issue.id, c.id)}
+                                    >
+                                        삭제
+                                    </button>
+                                )}
                             </div>
-                        ))}
-                        <div className={styles.commentInputRow}>
-                            <input
-                                type="text"
-                                className={styles.commentInput}
-                                placeholder="진행 상황 또는 피드백을 남겨주세요"
-                                value={commentInput[issue.id] || ''}
-                                onChange={(e) => setCommentInput((prev) => ({ ...prev, [issue.id]: e.target.value }))}
-                                onKeyDown={(e) => {
-                                    if (e.key === 'Enter') handleAddComment(issue.id);
-                                }}
-                            />
-                            <button
-                                type="button"
-                                className={styles.commentSubmitBtn}
-                                onClick={() => handleAddComment(issue.id)}
-                            >
-                                등록
-                            </button>
+                            <div className={styles.commentText}>{c.content}</div>
                         </div>
+                    ))}
+                    <div className={styles.commentInputRow}>
+                        <input
+                            type="text"
+                            className={styles.commentInput}
+                            placeholder="진행 상황 또는 피드백을 남겨주세요"
+                            value={commentInput[issue.id] || ''}
+                            onChange={(e) => setCommentInput((prev) => ({ ...prev, [issue.id]: e.target.value }))}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleAddComment(issue.id);
+                            }}
+                        />
+                        <button
+                            type="button"
+                            className={styles.commentSubmitBtn}
+                            onClick={() => handleAddComment(issue.id)}
+                        >
+                            등록
+                        </button>
                     </div>
-                )}
+                </div>
             </div>
         );
     };
 
     const unassignedIssues = issues.filter((it) => it.status === 'unassigned');
+    const memberUsernames = new Set(members.map((m) => m.username));
+    const availableToAdd = allUsers.filter((u) => !memberUsernames.has(u.username));
 
     return (
         <div className={styles.page}>
@@ -365,15 +426,23 @@ const TimeboxPage = ({ currentUser }) => {
                     </div>
 
                     <div className={styles.userGrid}>
-                        {users.map((u) => {
-                            const userIssues = issues.filter((it) => it.assignedTo === u.username);
-                            const displayName = u.display_name || u.username;
+                        {members.map((m) => {
+                            const userIssues = issues.filter((it) => it.assignedTo === m.username);
+                            const displayName = m.displayName || m.username;
                             return (
-                                <div key={u.username} className={styles.userCard}>
+                                <div key={m.username} className={styles.userCard}>
                                     <div className={styles.userCardHeader}>
                                         <div className={styles.userAvatar}>{displayName.slice(0, 2)}</div>
                                         <div className={styles.userCardName}>{displayName}</div>
                                         <span className={styles.columnCount}>{userIssues.length}</span>
+                                        <button
+                                            type="button"
+                                            className={styles.removeMemberBtn}
+                                            onClick={() => handleRemoveMember(m.username)}
+                                            title="타임박스에서 제거"
+                                        >
+                                            <X size={13} />
+                                        </button>
                                     </div>
                                     <div className={styles.userIssueList}>
                                         {userIssues.length === 0 ? (
@@ -385,6 +454,56 @@ const TimeboxPage = ({ currentUser }) => {
                                 </div>
                             );
                         })}
+
+                        <div className={styles.addMemberCard}>
+                            {showAddMember ? (
+                                <div className={styles.addMemberForm}>
+                                    <select
+                                        className={styles.assigneeSelect}
+                                        value={memberPick}
+                                        onChange={(e) => setMemberPick(e.target.value)}
+                                        autoFocus
+                                    >
+                                        <option value="">사용자 선택</option>
+                                        {availableToAdd.map((u) => (
+                                            <option key={u.username} value={u.username}>
+                                                {u.display_name || u.username}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <div className={styles.createCardActions}>
+                                        <button
+                                            type="button"
+                                            className={styles.secondaryBtn}
+                                            onClick={() => {
+                                                setShowAddMember(false);
+                                                setMemberPick('');
+                                            }}
+                                        >
+                                            취소
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className={styles.primaryBtn}
+                                            onClick={handleAddMember}
+                                            disabled={addingMember || !memberPick}
+                                        >
+                                            추가
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <button
+                                    type="button"
+                                    className={styles.addMemberBtn}
+                                    onClick={() => setShowAddMember(true)}
+                                    disabled={availableToAdd.length === 0}
+                                >
+                                    <UserPlus size={16} />
+                                    {availableToAdd.length === 0 ? '추가할 사용자 없음' : '사용자 추가'}
+                                </button>
+                            )}
+                        </div>
                     </div>
                 </div>
             )}

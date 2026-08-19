@@ -37,5 +37,13 @@ def init_timebox_tables(get_db) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS timebox_members (
+            username TEXT PRIMARY KEY,
+            added_at TEXT NOT NULL
+        )
+        """
+    )
     conn.commit()
     conn.close()

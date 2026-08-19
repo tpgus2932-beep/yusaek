@@ -99,6 +99,22 @@
   cursor: not-allowed;
 }
 
+.completeBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.83rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  border: 1px solid #16a34a;
+  background: #16a34a;
+  color: #ffffff;
+}
+
 .empty {
   color: var(--text-secondary);
   font-size: 0.88rem;
@@ -277,6 +293,11 @@
   color: #d97706;
 }
 
+.status_done {
+  background: rgba(22, 163, 74, 0.14);
+  color: #16a34a;
+}
+
 .issueDesc {
   font-size: 0.85rem;
   color: var(--text-secondary);
@@ -301,27 +322,19 @@
   min-width: 140px;
 }
 
-.commentToggleBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  margin-left: auto;
-  padding: 0.4rem 0.6rem;
-  border: none;
-  background: none;
-  color: var(--text-secondary);
-  font-size: 0.8rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.commentSection {
+.progressSection {
   margin-top: 0.75rem;
   padding-top: 0.75rem;
   border-top: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.progressLabel {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--text-secondary);
 }
 
 .commentEmpty {
@@ -377,4 +390,68 @@
 
 .commentInput {
   flex: 1;
+}
+
+.issueCardCompact .commentItem {
+  background: var(--bg-secondary);
+}
+
+.removeMemberBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.removeMemberBtn:hover {
+  background: rgba(220, 38, 38, 0.12);
+  color: #dc2626;
+}
+
+.addMemberCard {
+  display: flex;
+  align-items: stretch;
+}
+
+.addMemberBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 100%;
+  min-height: 3.2rem;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.addMemberBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.addMemberForm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 0.85rem;
+}
+
+.addMemberForm .assigneeSelect {
+  width: 100%;
 }

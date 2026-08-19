@@ -6,7 +6,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 _KST = timezone(timedelta(hours=9))
 
-_STATUSES = ("unassigned", "assigned", "in_progress")
+_STATUSES = ("unassigned", "assigned", "in_progress", "done")
 
 
 def _now() -> str:
@@ -46,6 +46,48 @@ def build_timebox_router(*, get_current_user, get_db, get_user_display):
         if not row:
             raise HTTPException(status_code=404, detail="issue not found")
         return row
+
+    @router.get("/members")
+    def list_members(user: str = Depends(get_current_user)):
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT username FROM timebox_members ORDER BY added_at ASC"
+        ).fetchall()
+        conn.close()
+        return {
+            "ok": True,
+            "members": [
+                {"username": r["username"], "displayName": get_user_display(r["username"]) or r["username"]}
+                for r in rows
+            ],
+        }
+
+    @router.post("/members")
+    def add_member(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        username = (payload.get("username") or "").strip()
+        if not username:
+            raise HTTPException(status_code=400, detail="추가할 사용자를 선택해주세요.")
+
+        conn = get_db()
+        existing = conn.execute(
+            "SELECT username FROM timebox_members WHERE username = ?", (username,)
+        ).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO timebox_members (username, added_at) VALUES (?, ?)",
+                (username, _now()),
+            )
+            conn.commit()
+        conn.close()
+        return {"ok": True, "member": {"username": username, "displayName": get_user_display(username) or username}}
+
+    @router.delete("/members/{username}")
+    def remove_member(username: str, user: str = Depends(get_current_user)):
+        conn = get_db()
+        conn.execute("DELETE FROM timebox_members WHERE username = ?", (username,))
+        conn.commit()
+        conn.close()
+        return {"ok": True}
 
     @router.get("/issues")
     def list_issues(user: str = Depends(get_current_user)):
@@ -109,6 +151,23 @@ def build_timebox_router(*, get_current_user, get_db, get_user_display):
         now = _now()
         conn.execute(
             "UPDATE timebox_issues SET status = 'in_progress', updated_at = ? WHERE id = ?",
+            (now, issue_id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM timebox_issues WHERE id = ?", (issue_id,)).fetchone()
+        conn.close()
+        return {"ok": True, "issue": _row_to_issue(row)}
+
+    @router.patch("/issues/{issue_id}/complete")
+    def complete_issue(issue_id: int, user: str = Depends(get_current_user)):
+        conn = get_db()
+        row = _get_issue_or_404(conn, issue_id)
+        if row["assigned_to"] != user:
+            conn.close()
+            raise HTTPException(status_code=403, detail="배정된 담당자만 완료 처리할 수 있습니다.")
+        now = _now()
+        conn.execute(
+            "UPDATE timebox_issues SET status = 'done', updated_at = ? WHERE id = ?",
             (now, issue_id),
         )
         conn.commit()
