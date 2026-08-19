@@ -9,13 +9,6 @@ const STATUS_LABEL = {
     in_progress: '진행중',
 };
 
-const FILTERS = [
-    { key: 'all', label: '전체' },
-    { key: 'unassigned', label: '미배정' },
-    { key: 'assigned', label: '배정됨' },
-    { key: 'in_progress', label: '진행중' },
-];
-
 const fmtTime = (iso) => {
     if (!iso) return '';
     try {
@@ -30,7 +23,6 @@ const TimeboxPage = ({ currentUser }) => {
     const [users, setUsers] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
-    const [filter, setFilter] = useState('all');
 
     const [newTitle, setNewTitle] = useState('');
     const [newDescription, setNewDescription] = useState('');
@@ -104,6 +96,7 @@ const TimeboxPage = ({ currentUser }) => {
             const data = await res.json();
             if (res.ok && data.issue) {
                 setIssues((prev) => prev.map((it) => (it.id === issueId ? data.issue : it)));
+                setAssigneePick((prev) => ({ ...prev, [issueId]: '' }));
             }
         } catch {
             setError('배정에 실패했습니다.');
@@ -182,7 +175,117 @@ const TimeboxPage = ({ currentUser }) => {
         }
     };
 
-    const filteredIssues = issues.filter((it) => filter === 'all' || it.status === filter);
+    const renderIssueCard = (issue, { compact } = {}) => {
+        const isOpen = expanded.has(issue.id);
+        const comments = commentsCache[issue.id] || [];
+        return (
+            <div key={issue.id} className={`${styles.issueCard} ${compact ? styles.issueCardCompact : ''}`}>
+                <div className={styles.issueTop}>
+                    <span className={`${styles.statusBadge} ${styles[`status_${issue.status}`]}`}>
+                        {STATUS_LABEL[issue.status] || issue.status}
+                    </span>
+                    <span className={styles.issueTitle}>{issue.title}</span>
+                </div>
+                {issue.description && <div className={styles.issueDesc}>{issue.description}</div>}
+                <div className={styles.issueMeta}>
+                    작성자 {issue.createdByDisplay || issue.createdBy} · {fmtTime(issue.createdAt)}
+                </div>
+
+                <div className={styles.actionRow}>
+                    {issue.status === 'unassigned' && (
+                        <>
+                            <select
+                                className={styles.assigneeSelect}
+                                value={assigneePick[issue.id] || ''}
+                                onChange={(e) => setAssigneePick((prev) => ({ ...prev, [issue.id]: e.target.value }))}
+                            >
+                                <option value="">담당자 선택</option>
+                                {users.map((u) => (
+                                    <option key={u.username} value={u.username}>
+                                        {u.display_name || u.username}
+                                    </option>
+                                ))}
+                            </select>
+                            <button
+                                type="button"
+                                className={styles.secondaryBtn}
+                                onClick={() => handleAssign(issue.id)}
+                                disabled={!assigneePick[issue.id]}
+                            >
+                                배정
+                            </button>
+                        </>
+                    )}
+
+                    {issue.status === 'assigned' && issue.assignedTo === currentUser && (
+                        <button
+                            type="button"
+                            className={styles.primaryBtn}
+                            onClick={() => handleStart(issue.id)}
+                        >
+                            진행중으로 전환
+                        </button>
+                    )}
+
+                    <button
+                        type="button"
+                        className={styles.commentToggleBtn}
+                        onClick={() => toggleComments(issue.id)}
+                    >
+                        <MessageSquare size={14} />
+                        코멘트{comments.length > 0 ? ` ${comments.length}` : ''}
+                    </button>
+                </div>
+
+                {isOpen && (
+                    <div className={styles.commentSection}>
+                        {comments.length === 0 && (
+                            <div className={styles.commentEmpty}>아직 코멘트가 없습니다.</div>
+                        )}
+                        {comments.map((c) => (
+                            <div key={c.id} className={styles.commentItem}>
+                                <div className={styles.commentMeta}>
+                                    <span className={styles.commentAuthor}>{c.authorDisplay || c.author}</span>
+                                    <span className={styles.commentTime}>{fmtTime(c.createdAt)}</span>
+                                    {c.author === currentUser && (
+                                        <button
+                                            type="button"
+                                            className={styles.commentDeleteBtn}
+                                            onClick={() => handleDeleteComment(issue.id, c.id)}
+                                        >
+                                            삭제
+                                        </button>
+                                    )}
+                                </div>
+                                <div className={styles.commentText}>{c.content}</div>
+                            </div>
+                        ))}
+                        <div className={styles.commentInputRow}>
+                            <input
+                                type="text"
+                                className={styles.commentInput}
+                                placeholder="진행 상황 또는 피드백을 남겨주세요"
+                                value={commentInput[issue.id] || ''}
+                                onChange={(e) => setCommentInput((prev) => ({ ...prev, [issue.id]: e.target.value }))}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleAddComment(issue.id);
+                                }}
+                            />
+                            <button
+                                type="button"
+                                className={styles.commentSubmitBtn}
+                                onClick={() => handleAddComment(issue.id)}
+                            >
+                                등록
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    const unassignedIssues = issues.filter((it) => it.status === 'unassigned');
 
     return (
         <div className={styles.page}>
@@ -218,133 +321,46 @@ const TimeboxPage = ({ currentUser }) => {
                 </button>
             </div>
 
-            <div className={styles.filterRow}>
-                {FILTERS.map((f) => (
-                    <button
-                        key={f.key}
-                        type="button"
-                        className={`${styles.filterBtn} ${filter === f.key ? styles.filterBtnActive : ''}`}
-                        onClick={() => setFilter(f.key)}
-                    >
-                        {f.label}
-                    </button>
-                ))}
-            </div>
-
             {loading ? (
                 <div className={styles.empty}>불러오는 중...</div>
-            ) : filteredIssues.length === 0 ? (
-                <div className={styles.empty}>표시할 이슈가 없습니다.</div>
             ) : (
-                <div className={styles.issueList}>
-                    {filteredIssues.map((issue) => {
-                        const isOpen = expanded.has(issue.id);
-                        const comments = commentsCache[issue.id] || [];
-                        return (
-                            <div key={issue.id} className={styles.issueCard}>
-                                <div className={styles.issueTop}>
-                                    <span className={`${styles.statusBadge} ${styles[`status_${issue.status}`]}`}>
-                                        {STATUS_LABEL[issue.status] || issue.status}
-                                    </span>
-                                    <span className={styles.issueTitle}>{issue.title}</span>
-                                </div>
-                                {issue.description && <div className={styles.issueDesc}>{issue.description}</div>}
-                                <div className={styles.issueMeta}>
-                                    작성자 {issue.createdByDisplay || issue.createdBy} · {fmtTime(issue.createdAt)}
-                                    {issue.assignedTo && (
-                                        <> · 담당자 {issue.assignedToDisplay || issue.assignedTo}</>
-                                    )}
-                                </div>
+                <div className={styles.board}>
+                    <div className={styles.backlogColumn}>
+                        <div className={styles.columnHeader}>
+                            <span>문제 리스트</span>
+                            <span className={styles.columnCount}>{unassignedIssues.length}</span>
+                        </div>
+                        <div className={styles.backlogList}>
+                            {unassignedIssues.length === 0 ? (
+                                <div className={styles.emptySmall}>미배정 문제가 없습니다.</div>
+                            ) : (
+                                unassignedIssues.map((issue) => renderIssueCard(issue))
+                            )}
+                        </div>
+                    </div>
 
-                                <div className={styles.actionRow}>
-                                    <select
-                                        className={styles.assigneeSelect}
-                                        value={assigneePick[issue.id] || ''}
-                                        onChange={(e) => setAssigneePick((prev) => ({ ...prev, [issue.id]: e.target.value }))}
-                                    >
-                                        <option value="">담당자 선택</option>
-                                        {users.map((u) => (
-                                            <option key={u.username} value={u.username}>
-                                                {u.display_name || u.username}
-                                            </option>
-                                        ))}
-                                    </select>
-                                    <button
-                                        type="button"
-                                        className={styles.secondaryBtn}
-                                        onClick={() => handleAssign(issue.id)}
-                                        disabled={!assigneePick[issue.id]}
-                                    >
-                                        {issue.assignedTo ? '재배정' : '배정'}
-                                    </button>
-
-                                    {issue.status === 'assigned' && issue.assignedTo === currentUser && (
-                                        <button
-                                            type="button"
-                                            className={styles.primaryBtn}
-                                            onClick={() => handleStart(issue.id)}
-                                        >
-                                            진행중으로 전환
-                                        </button>
-                                    )}
-
-                                    <button
-                                        type="button"
-                                        className={styles.commentToggleBtn}
-                                        onClick={() => toggleComments(issue.id)}
-                                    >
-                                        <MessageSquare size={14} />
-                                        코멘트{comments.length > 0 ? ` ${comments.length}` : ''}
-                                    </button>
-                                </div>
-
-                                {isOpen && (
-                                    <div className={styles.commentSection}>
-                                        {comments.length === 0 && (
-                                            <div className={styles.commentEmpty}>아직 코멘트가 없습니다.</div>
-                                        )}
-                                        {comments.map((c) => (
-                                            <div key={c.id} className={styles.commentItem}>
-                                                <div className={styles.commentMeta}>
-                                                    <span className={styles.commentAuthor}>{c.authorDisplay || c.author}</span>
-                                                    <span className={styles.commentTime}>{fmtTime(c.createdAt)}</span>
-                                                    {c.author === currentUser && (
-                                                        <button
-                                                            type="button"
-                                                            className={styles.commentDeleteBtn}
-                                                            onClick={() => handleDeleteComment(issue.id, c.id)}
-                                                        >
-                                                            삭제
-                                                        </button>
-                                                    )}
-                                                </div>
-                                                <div className={styles.commentText}>{c.content}</div>
-                                            </div>
-                                        ))}
-                                        <div className={styles.commentInputRow}>
-                                            <input
-                                                type="text"
-                                                className={styles.commentInput}
-                                                placeholder="진행 상황 또는 피드백을 남겨주세요"
-                                                value={commentInput[issue.id] || ''}
-                                                onChange={(e) => setCommentInput((prev) => ({ ...prev, [issue.id]: e.target.value }))}
-                                                onKeyDown={(e) => {
-                                                    if (e.key === 'Enter') handleAddComment(issue.id);
-                                                }}
-                                            />
-                                            <button
-                                                type="button"
-                                                className={styles.commentSubmitBtn}
-                                                onClick={() => handleAddComment(issue.id)}
-                                            >
-                                                등록
-                                            </button>
-                                        </div>
+                    <div className={styles.userGrid}>
+                        {users.map((u) => {
+                            const userIssues = issues.filter((it) => it.assignedTo === u.username);
+                            const displayName = u.display_name || u.username;
+                            return (
+                                <div key={u.username} className={styles.userCard}>
+                                    <div className={styles.userCardHeader}>
+                                        <div className={styles.userAvatar}>{displayName.slice(0, 2)}</div>
+                                        <div className={styles.userCardName}>{displayName}</div>
+                                        <span className={styles.columnCount}>{userIssues.length}</span>
                                     </div>
-                                )}
-                            </div>
-                        );
-                    })}
+                                    <div className={styles.userIssueList}>
+                                        {userIssues.length === 0 ? (
+                                            <div className={styles.emptySmall}>배정된 문제가 없습니다.</div>
+                                        ) : (
+                                            userIssues.map((issue) => renderIssueCard(issue, { compact: true }))
+                                        )}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
                 </div>
             )}
         </div>

@@ -94,29 +94,6 @@
   cursor: not-allowed;
 }
 
-.filterRow {
-  display: flex;
-  gap: 0.4rem;
-  margin-bottom: 1rem;
-}
-
-.filterBtn {
-  padding: 0.4rem 0.8rem;
-  border: 1px solid var(--border-color);
-  border-radius: 999px;
-  background: var(--bg-primary);
-  color: var(--text-secondary);
-  font-size: 0.8rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.filterBtnActive {
-  background: var(--accent-black);
-  border-color: var(--accent-black);
-  color: var(--accent-white);
-}
-
 .empty {
   color: var(--text-secondary);
   font-size: 0.88rem;
@@ -124,10 +101,108 @@
   text-align: center;
 }
 
-.issueList {
+.emptySmall {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  padding: 0.75rem 0;
+  text-align: center;
+}
+
+.board {
+  display: flex;
+  align-items: flex-start;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.backlogColumn {
+  flex: 0 0 320px;
+  min-width: 280px;
+}
+
+.columnHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 0.6rem;
+}
+
+.columnCount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: var(--border-color);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.backlogList {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.65rem;
+}
+
+.userGrid {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.85rem;
+  align-content: start;
+}
+
+.userCard {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 0.85rem;
+}
+
+.userCardHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 0.65rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.userAvatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 50%;
+  background: var(--accent-black);
+  color: var(--accent-white);
+  font-size: 0.72rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.userCardName {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.userIssueList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
 }
 
 .issueCard {
@@ -135,6 +210,15 @@
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   padding: 0.9rem 1rem;
+}
+
+.issueCardCompact {
+  background: var(--bg-primary);
+  padding: 0.7rem 0.8rem;
+}
+
+.issueCardCompact .issueTitle {
+  font-size: 0.86rem;
 }
 
 .issueTop {
