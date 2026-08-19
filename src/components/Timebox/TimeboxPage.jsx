@@ -43,7 +43,6 @@ const TimeboxPage = ({ currentUser }) => {
 
     const [progressEditing, setProgressEditing] = useState({});
     const [progressDraft, setProgressDraft] = useState({});
-    const [savingProgress, setSavingProgress] = useState({});
 
     const authHeaders = getAuthHeaders();
 
@@ -241,7 +240,6 @@ const TimeboxPage = ({ currentUser }) => {
 
     const handleSaveProgress = async (issueId) => {
         const progress = (progressDraft[issueId] || '').trim();
-        setSavingProgress((prev) => ({ ...prev, [issueId]: true }));
         try {
             const res = await fetch(`${API}/timebox/issues/${issueId}/progress`, {
                 method: 'PATCH',
@@ -258,8 +256,6 @@ const TimeboxPage = ({ currentUser }) => {
             }
         } catch {
             setError('진행상황 저장에 실패했습니다.');
-        } finally {
-            setSavingProgress((prev) => ({ ...prev, [issueId]: false }));
         }
     };
 
@@ -339,6 +335,24 @@ const TimeboxPage = ({ currentUser }) => {
                         {STATUS_LABEL[issue.status] || issue.status}
                     </span>
                     <span className={styles.issueTitle}>{issue.title}</span>
+                    {issue.status === 'assigned' && issue.assignedTo === currentUser && (
+                        <button
+                            type="button"
+                            className={`${styles.primaryBtn} ${styles.titleActionBtn}`}
+                            onClick={() => handleStart(issue.id)}
+                        >
+                            진행중으로 전환
+                        </button>
+                    )}
+                    {issue.status === 'in_progress' && issue.assignedTo === currentUser && (
+                        <button
+                            type="button"
+                            className={`${styles.completeBtn} ${styles.titleActionBtn}`}
+                            onClick={() => handleComplete(issue.id)}
+                        >
+                            완료
+                        </button>
+                    )}
                 </div>
                 {issue.description && (
                     <div className={styles.descBlock}>
@@ -351,74 +365,31 @@ const TimeboxPage = ({ currentUser }) => {
                 </div>
 
                 <div className={styles.progressSection}>
-                    <div className={styles.progressLabelRow}>
-                        <span className={styles.progressLabel}>진행상황</span>
-                        {canEditProgress && !isEditingProgress && (
-                            <button
-                                type="button"
-                                className={styles.editDescBtn}
-                                onClick={() => {
-                                    setProgressDraft((prev) => ({ ...prev, [issue.id]: issue.progress || '' }));
-                                    setProgressEditing((prev) => ({ ...prev, [issue.id]: true }));
-                                }}
-                            >
-                                수정
-                            </button>
-                        )}
-                    </div>
+                    <div className={styles.progressLabel}>진행상황</div>
                     {isEditingProgress ? (
-                        <>
-                            <textarea
-                                className={styles.descInput}
-                                value={progressDraft[issue.id] || ''}
-                                onChange={(e) => setProgressDraft((prev) => ({ ...prev, [issue.id]: e.target.value }))}
-                                rows={3}
-                                autoFocus
-                            />
-                            <div className={styles.createCardActions}>
-                                <button
-                                    type="button"
-                                    className={styles.secondaryBtn}
-                                    onClick={() => setProgressEditing((prev) => ({ ...prev, [issue.id]: false }))}
-                                >
-                                    취소
-                                </button>
-                                <button
-                                    type="button"
-                                    className={styles.primaryBtn}
-                                    onClick={() => handleSaveProgress(issue.id)}
-                                    disabled={savingProgress[issue.id]}
-                                >
-                                    {savingProgress[issue.id] ? '저장 중...' : '저장'}
-                                </button>
-                            </div>
-                        </>
+                        <textarea
+                            className={styles.descInput}
+                            value={progressDraft[issue.id] || ''}
+                            onChange={(e) => setProgressDraft((prev) => ({ ...prev, [issue.id]: e.target.value }))}
+                            onBlur={() => handleSaveProgress(issue.id)}
+                            rows={3}
+                            autoFocus
+                        />
                     ) : (
-                        <div className={styles.issueDesc}>
-                            {issue.progress || <span className={styles.commentEmpty}>아직 작성된 진행상황이 없습니다.</span>}
+                        <div
+                            className={`${styles.issueDesc} ${canEditProgress ? styles.editableText : ''}`}
+                            onClick={() => {
+                                if (!canEditProgress) return;
+                                setProgressDraft((prev) => ({ ...prev, [issue.id]: issue.progress || '' }));
+                                setProgressEditing((prev) => ({ ...prev, [issue.id]: true }));
+                            }}
+                        >
+                            {issue.progress || (
+                                <span className={styles.commentEmpty}>
+                                    {canEditProgress ? '눌러서 진행상황을 작성하세요.' : '아직 작성된 진행상황이 없습니다.'}
+                                </span>
+                            )}
                         </div>
-                    )}
-                </div>
-
-                <div className={styles.actionRow}>
-                    {issue.status === 'assigned' && issue.assignedTo === currentUser && (
-                        <button
-                            type="button"
-                            className={styles.primaryBtn}
-                            onClick={() => handleStart(issue.id)}
-                        >
-                            진행중으로 전환
-                        </button>
-                    )}
-
-                    {issue.status === 'in_progress' && issue.assignedTo === currentUser && (
-                        <button
-                            type="button"
-                            className={styles.completeBtn}
-                            onClick={() => handleComplete(issue.id)}
-                        >
-                            완료
-                        </button>
                     )}
                 </div>
 
