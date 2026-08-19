@@ -26,6 +26,7 @@ import AmoodSettlement from './components/AmoodSettlement/AmoodSettlement';
 import DBManagerLayout from './components/DBManager/DBManagerLayout';
 import InventoryDashboardPage from './components/InventoryDashboard/InventoryDashboardPage';
 import OrderRecommendationDashboardPage from './components/OrderRecommendation/OrderRecommendationDashboardPage';
+import TimeboxPage from './components/Timebox/TimeboxPage';
 import { COLLAB_API_BASE } from './lib/api';
 
 
@@ -45,7 +46,7 @@ const App = () => {
   const isPayrollRoute = pathname === '/payroll';
   const isGuidebookRoute = pathname === '/guidebook';
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'dashboard');
-  const [topMode, setTopMode] = useState('home'); // 'home' | 'db-manager' | 'inventory-dashboard' | 'order-dashboard'
+  const [topMode, setTopMode] = useState('home'); // 'home' | 'db-manager' | 'inventory-dashboard' | 'order-dashboard' | 'timebox'
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [token, setToken] = useState(localStorage.getItem('token'));
   const [authChecked, setAuthChecked] = useState(() => !localStorage.getItem('token'));
@@ -282,6 +283,7 @@ const App = () => {
 
         {topMode === 'inventory-dashboard' && <InventoryDashboardPage />}
         {topMode === 'order-dashboard' && <OrderRecommendationDashboardPage />}
+        {topMode === 'timebox' && <TimeboxPage currentUser={username} />}
 
         {topMode === 'home' && (
           <>

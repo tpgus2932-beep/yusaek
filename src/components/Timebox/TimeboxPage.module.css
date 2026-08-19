@@ -1,0 +1,276 @@
+.page {
+  padding: 1.25rem 1.5rem 2rem;
+}
+
+.pageHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+  color: var(--text-primary);
+}
+
+.pageHeader h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.error {
+  background: rgba(220, 38, 38, 0.08);
+  color: #dc2626;
+  border: 1px solid rgba(220, 38, 38, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+}
+
+.createCard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.titleInput,
+.descInput,
+.commentInput,
+.assigneeSelect {
+  font-family: inherit;
+  font-size: 0.88rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.65rem;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.descInput {
+  resize: vertical;
+  min-height: 2.4rem;
+}
+
+.primaryBtn,
+.secondaryBtn,
+.commentSubmitBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.83rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.primaryBtn {
+  align-self: flex-start;
+  border: 1px solid var(--accent-black);
+  background: var(--accent-black);
+  color: var(--accent-white);
+}
+
+.primaryBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.secondaryBtn,
+.commentSubmitBtn {
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.secondaryBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.filterRow {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+}
+
+.filterBtn {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.filterBtnActive {
+  background: var(--accent-black);
+  border-color: var(--accent-black);
+  color: var(--accent-white);
+}
+
+.empty {
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  padding: 2rem 0;
+  text-align: center;
+}
+
+.issueList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.issueCard {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 0.9rem 1rem;
+}
+
+.issueTop {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 0.35rem;
+}
+
+.issueTitle {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.statusBadge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.status_unassigned {
+  background: rgba(148, 163, 184, 0.18);
+  color: #64748b;
+}
+
+.status_assigned {
+  background: rgba(37, 99, 235, 0.12);
+  color: #2563eb;
+}
+
+.status_in_progress {
+  background: rgba(217, 119, 6, 0.14);
+  color: #d97706;
+}
+
+.issueDesc {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  margin-bottom: 0.5rem;
+}
+
+.issueMeta {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.65rem;
+}
+
+.actionRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.assigneeSelect {
+  min-width: 140px;
+}
+
+.commentToggleBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: auto;
+  padding: 0.4rem 0.6rem;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.commentSection {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.commentEmpty {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.commentItem {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.65rem;
+}
+
+.commentMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.2rem;
+}
+
+.commentAuthor {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.commentTime {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.commentDeleteBtn {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: #dc2626;
+  font-size: 0.72rem;
+  cursor: pointer;
+  padding: 0;
+}
+
+.commentText {
+  font-size: 0.84rem;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+}
+
+.commentInputRow {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.commentInput {
+  flex: 1;
+}

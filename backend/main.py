@@ -72,9 +72,11 @@ from api.client_cancel_soldout_routes import build_client_cancel_soldout_router
 from api.exchange_return_anomaly_routes import build_exchange_return_anomaly_router
 from api.return_anomaly_routes import build_return_anomaly_router
 from api.daily_checklist_routes import build_daily_checklist_router
+from api.timebox_routes import build_timebox_router
 from services.delivery_anomaly_store import init_delivery_anomaly_tables
 from services.exchange_return_anomaly_store import init_exchange_return_anomaly_tables
 from services.return_anomaly_store import init_return_anomaly_tables
+from services.timebox_store import init_timebox_tables
 from services.anomaly_scheduler import run_anomaly_scheduler_loop
 from api.collaboration_tools_routes import build_collaboration_tools_router
 from api.attendance_routes import build_attendance_router
@@ -1937,6 +1939,16 @@ _return_anomaly_router = build_return_anomaly_router(
     set_setting=_set_setting,
 )
 app.include_router(_return_anomaly_router)
+
+init_timebox_tables(_get_shared_db)
+
+app.include_router(
+    build_timebox_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        get_user_display=_get_user_display,
+    )
+)
 
 _ANOMALY_SCHEDULER_JOBS = [
     ("delivery_anomaly", _delivery_anomaly_router.run_scheduled),
