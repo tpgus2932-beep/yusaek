@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
-import os
+import math
 import re
 import sqlite3
 import urllib.parse
@@ -36,6 +36,26 @@ _ABLY_EMAIL = "eostm1997@naver.com"
 _ABLY_PASSWORD = "!Glqgkqdldi1126"
 
 
+async def _ably_login() -> str:
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        res = await client.post(
+            f"{_ABLY_BASE}/seller/login/",
+            json={"email": _ABLY_EMAIL, "password": _ABLY_PASSWORD},
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "https://seller-admin.a-bly.com",
+                "Referer": "https://seller-admin.a-bly.com/",
+                "User-Agent": "Mozilla/5.0",
+            },
+        )
+    if not res.is_success:
+        raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
+    token = res.json().get("access_token") or res.json().get("token")
+    if not token:
+        raise HTTPException(status_code=502, detail="에이블리 로그인 실패: 토큰 없음")
+    return token
+
+
 def _parse_ably_datetime(value) -> datetime | None:
     s = str(value or "").strip()
     if not s:
@@ -52,29 +72,25 @@ def _parse_ably_datetime(value) -> datetime | None:
     except Exception:
         return None
 
-_BACKEND_DIR = Path(__file__).resolve().parent.parent
-_wonbe_db_setting = os.environ.get("WONBE_DB_PATH", "").strip()
-if _wonbe_db_setting:
-    WONBE_DB_PATH = Path(_wonbe_db_setting).expanduser()
-    if not WONBE_DB_PATH.is_absolute():
-        WONBE_DB_PATH = _BACKEND_DIR.parent / WONBE_DB_PATH
-else:
-    WONBE_DB_PATH = _BACKEND_DIR / "data" / "원가베이스유.db"
+WONBE_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스유.db")
 WONBE_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스유.xlsx")
-_janggi_db_setting = os.environ.get("JANGGI_DB_PATH", "").strip()
-if _janggi_db_setting:
-    JANGGI_DB_PATH = Path(_janggi_db_setting).expanduser()
-    if not JANGGI_DB_PATH.is_absolute():
-        JANGGI_DB_PATH = _BACKEND_DIR.parent / JANGGI_DB_PATH
-else:
-    JANGGI_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\날짜별장끼정리.db")
+JANGGI_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\날짜별장끼정리.db")
 INGODAEGI_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\입고대기.xlsx")
 
-COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국"]
+COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가"]
+
+
+def _qcol(col: str) -> str:
+    """SQL 식별자로 안전하게 쓰기 위해 큰따옴표로 감싼다 (컬럼명에 공백이 있는 경우 대비)."""
+    return f'"{col}"'
+
+
+def _qcols(cols: list[str]) -> str:
+    return ", ".join(_qcol(c) for c in cols)
 
 # username → {"running": bool, "total": int, "done": int, "matched": int} — 제조국 채우기 진행상황 폴링용
 _country_sync_progress: dict[str, dict] = {}
-EDITABLE = {"상품명합", "거래처합", "거래처", "원가", "거래처주소", "등록일"}
+EDITABLE = {"상품명합", "거래처합", "거래처", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"}
 
 INGODAEGI_COLUMNS = ["상품코드", "입고수량"]
 ABLY_STOCK_COLUMNS = ["옵션번호", "수량"]
@@ -162,6 +178,12 @@ def _init_wonbe_table(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE wonbe ADD COLUMN 품절상태 TEXT")
     if "제조국" not in wonbe_cols:
         conn.execute("ALTER TABLE wonbe ADD COLUMN 제조국 TEXT")
+    if "이벤트전 할인가" not in wonbe_cols:
+        conn.execute('ALTER TABLE wonbe ADD COLUMN "이벤트전 할인가" TEXT')
+    if "이벤트 할인가" not in wonbe_cols:
+        conn.execute('ALTER TABLE wonbe ADD COLUMN "이벤트 할인가" TEXT')
+    if "판매가" not in wonbe_cols:
+        conn.execute('ALTER TABLE wonbe ADD COLUMN 판매가 TEXT')
     conn.execute("""
         CREATE TABLE IF NOT EXISTS wonbe_meta (
             key   TEXT PRIMARY KEY,
@@ -181,12 +203,72 @@ def _normalize_cost_base_key(value) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
 
 
+def _parse_price(value) -> float | None:
+    """가격 문자열을 float로 파싱. 콤마/원/공백 제거 후 파싱 실패 시 None (빈칸과 0을 구분하기 위함)."""
+    s = str(value or "").strip()
+    if not s:
+        return None
+    s = re.sub(r"[,원\s]", "", s)
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+DISCOUNT_EXCLUDE_ABLY_IDS_META_KEY = "discount_exclude_ably_ids"
+
+
+def _get_discount_exclude_ably_ids(conn: sqlite3.Connection) -> set[str]:
+    """할인가 채우기(이벤트할인가/이벤트전할인가) 제외 에이블리상품번호 목록을 wonbe_meta에서 읽는다."""
+    row = conn.execute(
+        "SELECT value FROM wonbe_meta WHERE key = ?", (DISCOUNT_EXCLUDE_ABLY_IDS_META_KEY,)
+    ).fetchone()
+    if not row or not row["value"]:
+        return set()
+    return {line.strip() for line in row["value"].splitlines() if line.strip()}
+
+
+def _set_discount_exclude_ably_ids(conn: sqlite3.Connection, ids: list[str]) -> list[str]:
+    cleaned = sorted({str(c).strip() for c in ids if str(c).strip()})
+    conn.execute(
+        "INSERT OR REPLACE INTO wonbe_meta (key, value) VALUES (?, ?)",
+        (DISCOUNT_EXCLUDE_ABLY_IDS_META_KEY, "\n".join(cleaned)),
+    )
+    conn.commit()
+    return cleaned
+
+
+def _sale_price_multiplier(cost: float) -> int:
+    """원가 구간별 판매가 배수. 3000~5500: 5배, 5600~7500: 4배, 7600~: 3배 (5500 이하는 전부 5배로 취급)."""
+    if cost <= 5500:
+        return 5
+    if cost <= 7500:
+        return 4
+    return 3
+
+
+_EVENT_PRE_DISCOUNT_FEE_RATE = 0.08756  # 에이블리 판매 수수료율 (고정)
+_EVENT_PRE_DISCOUNT_DEFAULT_MARGIN_PERCENT = 30.0  # 목표순마진율 기본값
+_EVENT_PRE_DISCOUNT_DEFAULT_SHIPPING_FEE = 2060.0  # 택배비 기본값
+
+
+def _event_pre_discount_price(cost: float, *, margin_percent: float, shipping_fee: float) -> int:
+    """원가로 이벤트전 할인가(P)를 역산한다.
+    P - P×수수료율 - P×목표순마진율 = 원가×1.10 + 택배비
+    → P = (원가×1.10 + 택배비) ÷ (1 − 수수료율 − 목표순마진율), 10원 단위 올림."""
+    denominator = 1 - _EVENT_PRE_DISCOUNT_FEE_RATE - margin_percent / 100
+    if denominator <= 0:
+        raise ValueError("수수료율 + 목표순마진율이 100% 이상이라 계산할 수 없습니다.")
+    price = (cost * 1.10 + shipping_fee) / denominator
+    return math.ceil(price / 10) * 10
+
+
 def load_wonbe_cost_base_df() -> pd.DataFrame:
     conn = _get_wonbe_db()
     try:
         _init_wonbe_table(conn)
         rows = conn.execute(
-            f"SELECT {', '.join(COLUMNS)} FROM wonbe ORDER BY rowid ASC"
+            f"SELECT {_qcols(COLUMNS)} FROM wonbe ORDER BY rowid ASC"
         ).fetchall()
     finally:
         conn.close()
@@ -207,7 +289,7 @@ def save_wonbe_cost_base_df(df: pd.DataFrame) -> int:
         _init_wonbe_table(conn)
         if rows:
             conn.executemany(
-                f"INSERT OR REPLACE INTO wonbe ({', '.join(COLUMNS)}) VALUES ({', '.join(['?'] * len(COLUMNS))})",
+                f"INSERT OR REPLACE INTO wonbe ({_qcols(COLUMNS)}) VALUES ({', '.join(['?'] * len(COLUMNS))})",
                 rows,
             )
             conn.commit()
@@ -275,6 +357,18 @@ def load_wonbe_client_info_by_code() -> dict[str, dict[str, str]]:
                 "사이즈": r["사이즈"] or "",
             }
     return info_map
+
+
+def build_dash_options(client_info: dict) -> str:
+    """색상-기장-사이즈를 대시로 이어붙인 옵션 문자열을 만든다.
+
+    wonbe의 '사이즈' 컬럼은 기장까지 공백으로 같이 들어있는 경우가 많다
+    (예: '롱 L', 'long M', '기본 S'). 그 공백도 대시로 갈라줘야 케이디지/
+    계란속노른자/도매킴 엑셀양식의 기장-사이즈 파서(parseKDGFColumn 등)가
+    기장과 사이즈를 따로 인식한다 — 안 그러면 둘 다 기장 자리에 뭉쳐 들어간다."""
+    color = str(client_info.get("색상") or "").strip()
+    size_tokens = str(client_info.get("사이즈") or "").split()
+    return "-".join(p for p in [color, *size_tokens] if p)
 
 
 def load_wonbe_goods_sno_map() -> dict[str, list[tuple[str, str]]]:
@@ -396,6 +490,9 @@ def _init_ingodaegi_table(conn: sqlite3.Connection):
             입고수량  TEXT NOT NULL DEFAULT 'ZERO'
         )
     """)
+    ingodaegi_cols = {row["name"] for row in conn.execute("PRAGMA table_info(입고대기)").fetchall()}
+    if "추가일" not in ingodaegi_cols:
+        conn.execute("ALTER TABLE 입고대기 ADD COLUMN 추가일 TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
 
@@ -407,10 +504,11 @@ def _sync_ingodaegi_from_wonbe(conn: sqlite3.Connection) -> int:
            WHERE TRIM(상품코드) != ''
              AND 상품코드 NOT IN (SELECT 상품코드 FROM 입고대기)"""
     ).fetchall()
-    new_codes = [(r["상품코드"],) for r in rows]
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    new_codes = [(r["상품코드"], today_str) for r in rows]
     if new_codes:
         conn.executemany(
-            "INSERT OR IGNORE INTO 입고대기 (상품코드, 입고수량) VALUES (?, 'ZERO')",
+            "INSERT OR IGNORE INTO 입고대기 (상품코드, 입고수량, 추가일) VALUES (?, 'ZERO', ?)",
             new_codes,
         )
         conn.commit()
@@ -424,6 +522,9 @@ def _init_ably_stock_table(conn: sqlite3.Connection):
             수량      TEXT NOT NULL DEFAULT '0'
         )
     """)
+    ably_stock_cols = {row["name"] for row in conn.execute("PRAGMA table_info(에이블리재고변경)").fetchall()}
+    if "추가일" not in ably_stock_cols:
+        conn.execute("ALTER TABLE 에이블리재고변경 ADD COLUMN 추가일 TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
 
@@ -519,10 +620,11 @@ def _sync_ably_stock_from_wonbe(conn: sqlite3.Connection) -> int:
            WHERE TRIM(옵션번호) != ''
              AND 옵션번호 NOT IN (SELECT 옵션번호 FROM 에이블리재고변경)"""
     ).fetchall()
-    new_options = [(r["옵션번호"],) for r in rows]
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    new_options = [(r["옵션번호"], today_str) for r in rows]
     if new_options:
         conn.executemany(
-            "INSERT OR IGNORE INTO 에이블리재고변경 (옵션번호, 수량) VALUES (?, '0')",
+            "INSERT OR IGNORE INTO 에이블리재고변경 (옵션번호, 수량, 추가일) VALUES (?, '0', ?)",
             new_options,
         )
         conn.commit()
@@ -656,6 +758,28 @@ def _strip_html(html_str: str) -> str:
     return re.sub(r"<[^>]+>", "", str(html_str or "")).strip()
 
 
+_ABLY_PRICE_BATCH_SIZE = 1000
+
+
+def _build_price_upload_xlsx(rows: list[tuple[str, str, str]]) -> bytes:
+    """에이블리 셀러어드민 '상품가 일괄변경' 업로드 양식과 동일한 구조로 xlsx를 만든다.
+    A열 상품번호(에이블리상품번호) / B열 판매가 / C열 할인 판매가 — 열 순서를 바꾸면 안 됨."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet"
+    ws.cell(1, 1, "상품번호")
+    ws.cell(1, 2, "판매가")
+    ws.cell(1, 3, "할인 판매가")
+    for ri, (sno, price, discount) in enumerate(rows, start=2):
+        ws.cell(ri, 1, sno)
+        ws.cell(ri, 2, price)
+        ws.cell(ri, 3, discount)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def build_wonbe_router(*, get_current_user, get_setting=None):
     router = APIRouter(prefix="/wonbe")
 
@@ -735,7 +859,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             _init_wonbe_table(conn)
             conn.execute("DELETE FROM wonbe")
             conn.executemany(
-                f"INSERT OR REPLACE INTO wonbe ({', '.join(COLUMNS)}) VALUES ({', '.join(['?']*len(COLUMNS))})",
+                f"INSERT OR REPLACE INTO wonbe ({_qcols(COLUMNS)}) VALUES ({', '.join(['?']*len(COLUMNS))})",
                 data_rows,
             )
             conn.commit()
@@ -772,13 +896,392 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             _init_wonbe_table(conn)
             conn.execute("DELETE FROM wonbe")
             conn.executemany(
-                f"INSERT OR REPLACE INTO wonbe ({', '.join(COLUMNS)}) VALUES ({', '.join(['?']*len(COLUMNS))})",
+                f"INSERT OR REPLACE INTO wonbe ({_qcols(COLUMNS)}) VALUES ({', '.join(['?']*len(COLUMNS))})",
                 data_rows,
             )
             conn.commit()
             return {"ok": True, "count": len(data_rows)}
         finally:
             conn.close()
+
+    @router.post("/fill-from-excel")
+    async def wonbe_fill_from_excel(
+        file: UploadFile = File(...),
+        user: str = Depends(get_current_user),
+    ):
+        """A열 헤더를 매칭 기준 컬럼으로, B열 헤더를 채울 대상 컬럼으로 삼아
+        엑셀 2개 열의 값으로 wonbe 테이블을 일괄 수정한다.
+        (예: A열 헤더 '상품코드' / B열 헤더 '이벤트전 할인가' → 상품코드가 일치하는 행의
+        이벤트전 할인가를 B열 값으로 채움. 기존 값은 덮어쓰고, 매칭되지 않는 행은 건너뛴다.)"""
+        content = await file.read()
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+            ws = wb.active
+            rows_iter = ws.iter_rows(values_only=True)
+            header_row = next(rows_iter, None)
+            if header_row is None or len(header_row) < 2:
+                raise HTTPException(status_code=400, detail="A열/B열 헤더가 있는 엑셀이 필요합니다.")
+
+            match_col = str(header_row[0] or "").strip()
+            target_col = str(header_row[1] or "").strip()
+            if match_col not in COLUMNS:
+                raise HTTPException(status_code=400, detail=f"A열 헤더 '{match_col}'는 원가베이스유 컬럼이 아닙니다.")
+            if target_col not in COLUMNS:
+                raise HTTPException(status_code=400, detail=f"B열 헤더 '{target_col}'는 원가베이스유 컬럼이 아닙니다.")
+            if target_col == "상품코드":
+                raise HTTPException(status_code=400, detail="B열(채울 대상)로 상품코드는 지정할 수 없습니다.")
+
+            pairs: list[tuple[str, str]] = []
+            for row in rows_iter:
+                match_val = str(row[0]).strip() if row and row[0] is not None else ""
+                target_val = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
+                if not match_val:
+                    continue
+                pairs.append((match_val, target_val))
+            wb.close()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"엑셀 파싱 오류: {e}")
+
+        if not pairs:
+            raise HTTPException(status_code=400, detail="채울 데이터가 없습니다.")
+
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            matched = 0
+            for match_val, target_val in pairs:
+                cur = conn.execute(
+                    f"UPDATE wonbe SET {_qcol(target_col)} = ? WHERE {_qcol(match_col)} = ?",
+                    (target_val, match_val),
+                )
+                matched += cur.rowcount
+            conn.commit()
+            return {
+                "ok": True,
+                "match_col": match_col,
+                "target_col": target_col,
+                "total": len(pairs),
+                "matched": matched,
+                "unmatched": len(pairs) - matched,
+            }
+        finally:
+            conn.close()
+
+    @router.get("/discount-exclude-ably-ids")
+    def wonbe_get_discount_exclude_ably_ids(user: str = Depends(get_current_user)):
+        """할인가 채우기(이벤트할인가/이벤트전할인가) 제외 에이블리상품번호 목록 조회."""
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            ids = sorted(_get_discount_exclude_ably_ids(conn))
+        finally:
+            conn.close()
+        return {"ok": True, "ids": ids}
+
+    @router.post("/discount-exclude-ably-ids")
+    def wonbe_set_discount_exclude_ably_ids(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        """할인가 채우기(이벤트할인가/이벤트전할인가) 제외 에이블리상품번호 목록 저장 (전체 교체)."""
+        ids = payload.get("ids")
+        if not isinstance(ids, list):
+            raise HTTPException(status_code=400, detail="ids는 배열이어야 합니다.")
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            saved = _set_discount_exclude_ably_ids(conn, ids)
+        finally:
+            conn.close()
+        return {"ok": True, "ids": saved}
+
+    @router.post("/fill-event-discount")
+    def wonbe_fill_event_discount(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        """이벤트전 할인가를 지정한 퍼센트만큼 올린 값으로 이벤트 할인가를 채운다.
+        예: 퍼센트 10 → 이벤트 할인가 = 이벤트전 할인가 * 1.10 (반올림)."""
+        q = str(payload.get("q") or "").strip()
+        try:
+            percent = float(payload.get("percent"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="퍼센트 값이 올바르지 않습니다.")
+
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            select_cols = f"상품코드, 에이블리상품번호, {_qcol('이벤트전 할인가')}"
+            if q:
+                like = f"%{q}%"
+                rows = conn.execute(
+                    f"SELECT {select_cols} FROM wonbe WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?",
+                    (like, like, like, like),
+                ).fetchall()
+            else:
+                rows = conn.execute(f"SELECT {select_cols} FROM wonbe").fetchall()
+
+            exclude_ids = _get_discount_exclude_ably_ids(conn)
+            updates = []
+            skipped = 0
+            excluded = 0
+            for r in rows:
+                if str(r["에이블리상품번호"] or "").strip() in exclude_ids:
+                    excluded += 1
+                    continue
+                base = _parse_price(r["이벤트전 할인가"])
+                if base is None:
+                    skipped += 1
+                    continue
+                new_price = round(base * (1 + percent / 100) / 10) * 10
+                updates.append((str(new_price), r["상품코드"]))
+
+            if updates:
+                conn.executemany(
+                    f"UPDATE wonbe SET {_qcol('이벤트 할인가')} = ? WHERE 상품코드 = ?",
+                    updates,
+                )
+                conn.commit()
+
+            return {
+                "ok": True,
+                "percent": percent,
+                "total": len(rows),
+                "updated": len(updates),
+                "skipped": skipped,
+                "excluded": excluded,
+            }
+        finally:
+            conn.close()
+
+    @router.post("/fill-sale-price")
+    def wonbe_fill_sale_price(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        """원가 구간별 배수로 판매가를 채운다.
+        원가 3000~5500원: 5배 / 5600~7500원: 4배 / 7600원~: 3배 (10원 단위 반올림)."""
+        q = str(payload.get("q") or "").strip()
+
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            if q:
+                like = f"%{q}%"
+                rows = conn.execute(
+                    "SELECT 상품코드, 원가 FROM wonbe WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?",
+                    (like, like, like, like),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT 상품코드, 원가 FROM wonbe").fetchall()
+
+            updates = []
+            skipped = 0
+            for r in rows:
+                cost = _parse_price(r["원가"])
+                if cost is None:
+                    skipped += 1
+                    continue
+                multiplier = _sale_price_multiplier(cost)
+                sale_price = round(cost * multiplier / 10) * 10
+                updates.append((str(sale_price), r["상품코드"]))
+
+            if updates:
+                conn.executemany(
+                    f"UPDATE wonbe SET {_qcol('판매가')} = ? WHERE 상품코드 = ?",
+                    updates,
+                )
+                conn.commit()
+
+            return {
+                "ok": True,
+                "total": len(rows),
+                "updated": len(updates),
+                "skipped": skipped,
+            }
+        finally:
+            conn.close()
+
+    @router.post("/fill-event-pre-discount-price")
+    def wonbe_fill_event_pre_discount_price(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        """원가 기준으로 이벤트전 할인가를 역산해서 채운다.
+        P = (원가×1.10 + 택배비) ÷ (1 − 수수료율 − 목표순마진율), 10원 단위 올림.
+        수수료율은 8.756% 고정, 목표순마진율/택배비는 payload로 기본값(30%, 2060원)을 덮어쓸 수 있다."""
+        q = str(payload.get("q") or "").strip()
+        try:
+            margin_percent = float(payload.get("margin_percent", _EVENT_PRE_DISCOUNT_DEFAULT_MARGIN_PERCENT))
+            shipping_fee = float(payload.get("shipping_fee", _EVENT_PRE_DISCOUNT_DEFAULT_SHIPPING_FEE))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="목표순마진율/택배비 값이 올바르지 않습니다.")
+
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            if q:
+                like = f"%{q}%"
+                rows = conn.execute(
+                    "SELECT 상품코드, 에이블리상품번호, 원가 FROM wonbe WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?",
+                    (like, like, like, like),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT 상품코드, 에이블리상품번호, 원가 FROM wonbe").fetchall()
+
+            exclude_ids = _get_discount_exclude_ably_ids(conn)
+            updates = []
+            skipped = 0
+            excluded = 0
+            for r in rows:
+                if str(r["에이블리상품번호"] or "").strip() in exclude_ids:
+                    excluded += 1
+                    continue
+                cost = _parse_price(r["원가"])
+                if cost is None:
+                    skipped += 1
+                    continue
+                try:
+                    price = _event_pre_discount_price(
+                        cost, margin_percent=margin_percent, shipping_fee=shipping_fee
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc))
+                updates.append((str(price), r["상품코드"]))
+
+            if updates:
+                conn.executemany(
+                    f"UPDATE wonbe SET {_qcol('이벤트전 할인가')} = ? WHERE 상품코드 = ?",
+                    updates,
+                )
+                conn.commit()
+
+            return {
+                "ok": True,
+                "margin_percent": margin_percent,
+                "shipping_fee": shipping_fee,
+                "fee_rate": _EVENT_PRE_DISCOUNT_FEE_RATE,
+                "total": len(rows),
+                "updated": len(updates),
+                "skipped": skipped,
+                "excluded": excluded,
+            }
+        finally:
+            conn.close()
+
+    @router.post("/push-price-to-ably")
+    async def wonbe_push_price_to_ably(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        """판매가 + (이벤트전 할인가 또는 이벤트 할인가)를 에이블리 셀러어드민 상품가 일괄변경 API로 업로드한다.
+        상품번호(에이블리상품번호) 단위로 1건씩만 보낼 수 있어 옵션별로 여러 행이 있어도 goods_sno 기준 중복 제거한다.
+        할인 판매가가 판매가보다 크거나, 판매가/에이블리상품번호/선택한 할인가 중 하나라도 비어있으면 건너뛴다."""
+        source = str(payload.get("source") or "").strip()
+        if source not in ("이벤트전 할인가", "이벤트 할인가"):
+            raise HTTPException(status_code=400, detail="source는 '이벤트전 할인가' 또는 '이벤트 할인가'여야 합니다.")
+        q = str(payload.get("q") or "").strip()
+        codes = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
+
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            select_cols = f"에이블리상품번호, 판매가, {_qcol(source)}"
+            if codes:
+                placeholders = ", ".join("?" for _ in codes)
+                rows = conn.execute(
+                    f"SELECT {select_cols} FROM wonbe WHERE 에이블리상품번호 != '' AND 상품코드 IN ({placeholders})",
+                    codes,
+                ).fetchall()
+            elif q:
+                like = f"%{q}%"
+                rows = conn.execute(
+                    f"""SELECT {select_cols} FROM wonbe
+                        WHERE 에이블리상품번호 != ''
+                          AND (상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?)""",
+                    (like, like, like, like),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT {select_cols} FROM wonbe WHERE 에이블리상품번호 != ''"
+                ).fetchall()
+        finally:
+            conn.close()
+
+        seen: dict[str, tuple[str, str]] = {}
+        skipped_invalid = 0
+        skipped_duplicate = 0
+        for r in rows:
+            sno = str(r["에이블리상품번호"]).strip()
+            if not sno:
+                continue
+            price = _parse_price(r["판매가"])
+            discount = _parse_price(r[source])
+            if price is None or discount is None or discount > price:
+                skipped_invalid += 1
+                continue
+            if sno in seen:
+                skipped_duplicate += 1
+                continue
+            seen[sno] = (str(int(price)), str(int(discount)))
+
+        if not seen:
+            raise HTTPException(status_code=400, detail="업로드할 데이터가 없습니다. (판매가 / 에이블리상품번호 / 선택한 할인가 확인)")
+
+        entries = list(seen.items())
+
+        try:
+            token = await _ably_login()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        total_success = 0
+        total_error = 0
+        batches = 0
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                for i in range(0, len(entries), _ABLY_PRICE_BATCH_SIZE):
+                    chunk = entries[i:i + _ABLY_PRICE_BATCH_SIZE]
+                    file_bytes = _build_price_upload_xlsx(
+                        [(sno, price, discount) for sno, (price, discount) in chunk]
+                    )
+                    res = await client.post(
+                        f"{_ABLY_BASE}/seller/goods/goods-price-bulk-update/",
+                        headers={
+                            "Authorization": f"JWT {token}",
+                            "Origin": "https://seller-admin.a-bly.com",
+                            "Referer": "https://seller-admin.a-bly.com/",
+                            "User-Agent": "Mozilla/5.0",
+                        },
+                        files={"file": (
+                            "상품가일괄변경.xlsx", file_bytes,
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        )},
+                    )
+                    res.raise_for_status()
+                    data = res.json()
+                    total_success += int(data.get("success_row_count") or 0)
+                    total_error += int(data.get("error_row_count") or 0)
+                    batches += 1
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 상품가 변경 실패 (HTTP {e.response.status_code}): {e.response.text[:300]}")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 상품가 변경 실패: {e}")
+
+        return {
+            "ok": True,
+            "source": source,
+            "requested": len(entries),
+            "skipped_invalid": skipped_invalid,
+            "skipped_duplicate": skipped_duplicate,
+            "success_row_count": total_success,
+            "error_row_count": total_error,
+            "batches": batches,
+        }
 
     # ── 입고대기 CRUD ─────────────────────────────────────────────
 
@@ -837,14 +1340,14 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             q = q.strip()
             if not q:
                 rows = conn.execute(
-                    "SELECT * FROM 입고대기 ORDER BY 상품코드 LIMIT ? OFFSET ?",
+                    "SELECT * FROM 입고대기 ORDER BY rowid DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
                 total = conn.execute("SELECT COUNT(*) FROM 입고대기").fetchone()[0]
             else:
                 like = f"%{q}%"
                 rows = conn.execute(
-                    "SELECT * FROM 입고대기 WHERE 상품코드 LIKE ? ORDER BY 상품코드 LIMIT ? OFFSET ?",
+                    "SELECT * FROM 입고대기 WHERE 상품코드 LIKE ? ORDER BY rowid DESC LIMIT ? OFFSET ?",
                     (like, limit, offset),
                 ).fetchall()
                 total = conn.execute(
@@ -871,17 +1374,32 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
         if not codes:
             raise HTTPException(status_code=400, detail="추가할 상품코드가 없습니다.")
 
+        today_str = datetime.now().strftime("%Y-%m-%d")
         conn = _get_wonbe_db()
         try:
             _init_ingodaegi_table(conn)
             before = conn.execute("SELECT COUNT(*) FROM 입고대기").fetchone()[0]
             conn.executemany(
-                "INSERT OR IGNORE INTO 입고대기 (상품코드, 입고수량) VALUES (?, 'ZERO')",
-                [(c,) for c in codes],
+                "INSERT OR IGNORE INTO 입고대기 (상품코드, 입고수량, 추가일) VALUES (?, 'ZERO', ?)",
+                [(c, today_str) for c in codes],
             )
             conn.commit()
             after = conn.execute("SELECT COUNT(*) FROM 입고대기").fetchone()[0]
             return {"ok": True, "requested": len(codes), "inserted": after - before}
+        finally:
+            conn.close()
+
+    @router.delete("/ingodaegi/by-date")
+    def ingodaegi_delete_by_date(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        date_str = str(payload.get("날짜") or "").strip()
+        if not date_str:
+            raise HTTPException(status_code=400, detail="날짜 필요")
+        conn = _get_wonbe_db()
+        try:
+            _init_ingodaegi_table(conn)
+            cur = conn.execute("DELETE FROM 입고대기 WHERE 추가일 = ?", (date_str,))
+            conn.commit()
+            return {"ok": True, "deleted": cur.rowcount}
         finally:
             conn.close()
 
@@ -950,14 +1468,14 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             q = q.strip()
             if not q:
                 rows = conn.execute(
-                    "SELECT * FROM 에이블리재고변경 ORDER BY 옵션번호 LIMIT ? OFFSET ?",
+                    "SELECT * FROM 에이블리재고변경 ORDER BY rowid DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
                 total = conn.execute("SELECT COUNT(*) FROM 에이블리재고변경").fetchone()[0]
             else:
                 like = f"%{q}%"
                 rows = conn.execute(
-                    "SELECT * FROM 에이블리재고변경 WHERE 옵션번호 LIKE ? ORDER BY 옵션번호 LIMIT ? OFFSET ?",
+                    "SELECT * FROM 에이블리재고변경 WHERE 옵션번호 LIKE ? ORDER BY rowid DESC LIMIT ? OFFSET ?",
                     (like, limit, offset),
                 ).fetchall()
                 total = conn.execute(
@@ -970,6 +1488,20 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
                 "offset": offset,
                 "limit": limit,
             }
+        finally:
+            conn.close()
+
+    @router.delete("/ably-stock/by-date")
+    def ably_stock_delete_by_date(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        date_str = str(payload.get("날짜") or "").strip()
+        if not date_str:
+            raise HTTPException(status_code=400, detail="날짜 필요")
+        conn = _get_wonbe_db()
+        try:
+            _init_ably_stock_table(conn)
+            cur = conn.execute("DELETE FROM 에이블리재고변경 WHERE 추가일 = ?", (date_str,))
+            conn.commit()
+            return {"ok": True, "deleted": cur.rowcount}
         finally:
             conn.close()
 
@@ -1019,31 +1551,41 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
         q: str = "",
         offset: int = 0,
         limit: int = 50,
+        empty_col: str = "",
         user: str = Depends(get_current_user),
     ):
+        empty_col = empty_col.strip()
+        if empty_col and empty_col not in COLUMNS:
+            raise HTTPException(status_code=400, detail=f"잘못된 컬럼: {empty_col}")
+        empty_clause = f"TRIM({_qcol(empty_col)}) = ''" if empty_col else ""
+
         conn = _get_wonbe_db()
         try:
             _init_wonbe_table(conn)
             q = q.strip()
             if not q:
+                where = f" WHERE {empty_clause}" if empty_clause else ""
                 rows = conn.execute(
-                    "SELECT * FROM wonbe ORDER BY rowid DESC LIMIT ? OFFSET ?",
+                    f"SELECT * FROM wonbe{where} ORDER BY rowid DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
-                total = conn.execute("SELECT COUNT(*) FROM wonbe").fetchone()[0]
+                total = conn.execute(f"SELECT COUNT(*) FROM wonbe{where}").fetchone()[0]
             else:
                 like = f"%{q}%"
+                search_clause = "(상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?)"
+                where_clause = f"{search_clause} AND {empty_clause}" if empty_clause else search_clause
+                base_params = [like, like, like, like]
                 rows = conn.execute(
-                    """SELECT * FROM wonbe
-                       WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?
+                    f"""SELECT * FROM wonbe
+                       WHERE {where_clause}
                        ORDER BY CASE WHEN 상품코드 = ? THEN 0
                                      WHEN 상품코드 LIKE ? THEN 1 ELSE 2 END, 상품코드
                        LIMIT ? OFFSET ?""",
-                    (like, like, like, like, q, f"{q}%", limit, offset),
+                    (*base_params, q, f"{q}%", limit, offset),
                 ).fetchall()
                 total = conn.execute(
-                    "SELECT COUNT(*) FROM wonbe WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?",
-                    (like, like, like, like),
+                    f"SELECT COUNT(*) FROM wonbe WHERE {where_clause}",
+                    base_params,
                 ).fetchone()[0]
             return {
                 "ok": True,
@@ -1068,7 +1610,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
         if not updates:
             raise HTTPException(status_code=400, detail="수정할 필드 없음")
 
-        set_clause = ", ".join(f"{col} = ?" for col in updates)
+        set_clause = ", ".join(f"{_qcol(col)} = ?" for col in updates)
         values = list(updates.values()) + [code]
 
         conn = _get_wonbe_db()
@@ -1100,13 +1642,54 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             if q:
                 like = f"%{q}%"
                 cur = conn.execute(
-                    f"UPDATE wonbe SET {col} = ? WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?",
+                    f"UPDATE wonbe SET {_qcol(col)} = ? WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?",
                     (value, like, like, like, like),
                 )
             else:
-                cur = conn.execute(f"UPDATE wonbe SET {col} = ?", (value,))
+                cur = conn.execute(f"UPDATE wonbe SET {_qcol(col)} = ?", (value,))
             conn.commit()
             return {"ok": True, "count": cur.rowcount}
+        finally:
+            conn.close()
+
+    @router.delete("/by-registered-date")
+    def wonbe_delete_by_registered_date(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        start = str(payload.get("start") or "").strip()
+        end = str(payload.get("end") or "").strip()
+        if not start or not end:
+            raise HTTPException(status_code=400, detail="start/end 날짜 필요")
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            cur = conn.execute(
+                "DELETE FROM wonbe WHERE 등록일 != '' AND substr(등록일, 1, 10) BETWEEN ? AND ?",
+                (start, end),
+            )
+            conn.commit()
+            return {"ok": True, "deleted": cur.rowcount}
+        finally:
+            conn.close()
+
+    @router.delete("/rows")
+    def wonbe_delete_rows(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        codes = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
+        if not codes:
+            raise HTTPException(status_code=400, detail="삭제할 상품코드 필요")
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            placeholders = ", ".join("?" for _ in codes)
+            cur = conn.execute(
+                f"DELETE FROM wonbe WHERE 상품코드 IN ({placeholders})", codes
+            )
+            conn.commit()
+            return {"ok": True, "deleted": cur.rowcount}
         finally:
             conn.close()
 
@@ -1311,22 +1894,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
 
     @router.post("/freshness-check")
     async def wonbe_freshness_check(user: str = Depends(get_current_user)):
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            res = await client.post(
-                f"{_ABLY_BASE}/seller/login/",
-                json={"email": _ABLY_EMAIL, "password": _ABLY_PASSWORD},
-                headers={
-                    "Content-Type": "application/json",
-                    "Origin": "https://seller-admin.a-bly.com",
-                    "Referer": "https://seller-admin.a-bly.com/",
-                    "User-Agent": "Mozilla/5.0",
-                },
-            )
-            if not res.is_success:
-                raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
-        token = res.json().get("token")
-        if not token:
-            raise HTTPException(status_code=502, detail="에이블리 로그인 실패: 토큰 없음")
+        token = await _ably_login()
 
         ably_headers = {
             "Authorization": f"JWT {token}",
@@ -1482,7 +2050,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             )
             if not res.is_success:
                 raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
-        token = res.json().get("token")
+        token = res.json().get("access_token") or res.json().get("token")
         if not token:
             raise HTTPException(status_code=502, detail="에이블리 로그인 실패: 토큰 없음")
 
@@ -1581,7 +2149,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             )
             if not res.is_success:
                 raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
-        token = res.json().get("token")
+        token = res.json().get("access_token") or res.json().get("token")
         if not token:
             raise HTTPException(status_code=502, detail="에이블리 로그인 실패: 토큰 없음")
 
@@ -1783,6 +2351,8 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
     def janggi_search(
         q: str = "",
         date: str = "",
+        date_from: str = "",
+        date_to: str = "",
         misong_filter: str = "",
         ilgwal_only: str = "",
         offset: int = 0,
@@ -1794,12 +2364,23 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             _init_janggi_table(conn)
             q = q.strip()
             date = date.strip()
+            date_from = date_from.strip()
+            date_to = date_to.strip()
             misong_filter = misong_filter.strip()
             order = "ORDER BY 날짜 DESC, 거래처 DESC"
 
             conditions = []
             params: list = []
-            if date:
+            if date_from and date_to:
+                conditions.append("날짜 BETWEEN ? AND ?")
+                params.extend([date_from, date_to])
+            elif date_from:
+                conditions.append("날짜 >= ?")
+                params.append(date_from)
+            elif date_to:
+                conditions.append("날짜 <= ?")
+                params.append(date_to)
+            elif date:
                 conditions.append("날짜 = ?")
                 params.append(date)
             if q:
@@ -2244,6 +2825,32 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             return {"ok": True, "imported_count": len(data)}
         finally:
             conn.close()
+
+    @router.get("/account/export")
+    def account_export(user: str = Depends(get_current_user)):
+        conn = _get_janggi_db()
+        try:
+            _init_account_table(conn)
+            rows = conn.execute("SELECT * FROM 거래처계좌데이터 ORDER BY id").fetchall()
+        finally:
+            conn.close()
+
+        headers = ["거래처명(매핑키)", "은행코드", "계좌번호", "은행명", "예금주", "부가세 유무"]
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("Sheet1")
+        for ci, h in enumerate(headers):
+            sheet.write(0, ci, h)
+        for ri, row in enumerate(rows, start=1):
+            for ci, col in enumerate(ACCOUNT_COLS):
+                sheet.write(ri, ci, row[col] or "")
+
+        buf = io.BytesIO()
+        book.save(buf)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/vnd.ms-excel",
+            headers={"Content-Disposition": _content_disposition("거래처계좌데이터.xls")},
+        )
 
     # ── 이체파일 조회/삭제 ────────────────────────────────────────
 
