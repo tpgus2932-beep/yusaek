@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { GripVertical, Plus, Timer, UserPlus, X } from 'lucide-react';
+import { ChevronRight, GripVertical, Plus, Timer, UserPlus, X } from 'lucide-react';
 import styles from './TimeboxPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
@@ -43,6 +43,9 @@ const TimeboxPage = ({ currentUser }) => {
 
     const [progressEditing, setProgressEditing] = useState({});
     const [progressDraft, setProgressDraft] = useState({});
+
+    const [expandedIssues, setExpandedIssues] = useState(new Set());
+    const [selectedByMember, setSelectedByMember] = useState({});
 
     const authHeaders = getAuthHeaders();
 
@@ -295,65 +298,20 @@ const TimeboxPage = ({ currentUser }) => {
         }
     };
 
-    const renderIssueCard = (issue, { compact, minimal } = {}) => {
-        if (minimal) {
-            return (
-                <div
-                    key={issue.id}
-                    className={`${styles.issueCard} ${styles.issueCardDraggable} ${draggedIssueId === issue.id ? styles.issueCardDragging : ''}`}
-                    draggable={members.length > 0}
-                    onDragStart={(e) => handleIssueDragStart(e, issue.id)}
-                    onDragEnd={handleIssueDragEnd}
-                >
-                    <div className={styles.issueTop}>
-                        <GripVertical size={14} className={styles.dragHandle} />
-                        <span className={`${styles.statusBadge} ${styles[`status_${issue.status}`]}`}>
-                            {STATUS_LABEL[issue.status] || issue.status}
-                        </span>
-                        <span className={styles.issueTitle}>{issue.title}</span>
-                    </div>
-                    {issue.description && (
-                        <div className={styles.descBlock}>
-                            <div className={styles.progressLabel}>문제내용</div>
-                            <div className={styles.issueDesc}>{issue.description}</div>
-                        </div>
-                    )}
-                    <div className={styles.dragHint}>
-                        {members.length === 0 ? '배정하려면 먼저 사용자를 추가하세요' : '담당자 카드로 드래그해서 배정'}
-                    </div>
-                </div>
-            );
-        }
+    const toggleExpanded = (issueId) => {
+        setExpandedIssues((prev) => {
+            const next = new Set(prev);
+            if (next.has(issueId)) next.delete(issueId); else next.add(issueId);
+            return next;
+        });
+    };
 
+    const renderIssueDetailBody = (issue) => {
         const comments = commentsCache[issue.id] || [];
         const canEditProgress = !!issue.assignedTo && currentUser === issue.assignedTo;
         const isEditingProgress = !!progressEditing[issue.id];
         return (
-            <div key={issue.id} className={`${styles.issueCard} ${compact ? styles.issueCardCompact : ''}`}>
-                <div className={styles.issueTop}>
-                    <span className={`${styles.statusBadge} ${styles[`status_${issue.status}`]}`}>
-                        {STATUS_LABEL[issue.status] || issue.status}
-                    </span>
-                    <span className={styles.issueTitle}>{issue.title}</span>
-                    {issue.status === 'assigned' && issue.assignedTo === currentUser && (
-                        <button
-                            type="button"
-                            className={`${styles.primaryBtn} ${styles.titleActionBtn}`}
-                            onClick={() => handleStart(issue.id)}
-                        >
-                            진행중으로 전환
-                        </button>
-                    )}
-                    {issue.status === 'in_progress' && issue.assignedTo === currentUser && (
-                        <button
-                            type="button"
-                            className={`${styles.completeBtn} ${styles.titleActionBtn}`}
-                            onClick={() => handleComplete(issue.id)}
-                        >
-                            완료
-                        </button>
-                    )}
-                </div>
+            <>
                 {issue.description && (
                     <div className={styles.descBlock}>
                         <div className={styles.progressLabel}>문제내용</div>
@@ -436,6 +394,134 @@ const TimeboxPage = ({ currentUser }) => {
                         </button>
                     </div>
                 </div>
+            </>
+        );
+    };
+
+    const renderIssueListRow = (issue, isSelected, onSelect) => (
+        <button
+            key={issue.id}
+            type="button"
+            className={`${styles.issueListRow} ${styles.issueListRowSelectable} ${isSelected ? styles.issueListRowActive : ''}`}
+            onClick={onSelect}
+        >
+            <span className={`${styles.statusBadge} ${styles[`status_${issue.status}`]}`}>
+                {STATUS_LABEL[issue.status] || issue.status}
+            </span>
+            <span className={styles.issueListTitle}>{issue.title}</span>
+        </button>
+    );
+
+    const renderIssueDetail = (issue) => (
+        <div className={styles.issueDetailPanel}>
+            <div className={styles.issueTop}>
+                <span className={`${styles.statusBadge} ${styles[`status_${issue.status}`]}`}>
+                    {STATUS_LABEL[issue.status] || issue.status}
+                </span>
+                <span className={styles.issueTitle}>{issue.title}</span>
+                {issue.status === 'assigned' && issue.assignedTo === currentUser && (
+                    <button
+                        type="button"
+                        className={`${styles.primaryBtn} ${styles.titleActionBtn}`}
+                        onClick={() => handleStart(issue.id)}
+                    >
+                        진행중으로 전환
+                    </button>
+                )}
+                {issue.status === 'in_progress' && issue.assignedTo === currentUser && (
+                    <button
+                        type="button"
+                        className={`${styles.completeBtn} ${styles.titleActionBtn}`}
+                        onClick={() => handleComplete(issue.id)}
+                    >
+                        완료
+                    </button>
+                )}
+            </div>
+            {renderIssueDetailBody(issue)}
+        </div>
+    );
+
+    const renderIssueCard = (issue, { minimal } = {}) => {
+        if (minimal) {
+            return (
+                <div
+                    key={issue.id}
+                    className={`${styles.issueCard} ${styles.issueCardDraggable} ${draggedIssueId === issue.id ? styles.issueCardDragging : ''}`}
+                    draggable={members.length > 0}
+                    onDragStart={(e) => handleIssueDragStart(e, issue.id)}
+                    onDragEnd={handleIssueDragEnd}
+                >
+                    <div className={styles.issueTop}>
+                        <GripVertical size={14} className={styles.dragHandle} />
+                        <span className={`${styles.statusBadge} ${styles[`status_${issue.status}`]}`}>
+                            {STATUS_LABEL[issue.status] || issue.status}
+                        </span>
+                        <span className={styles.issueTitle}>{issue.title}</span>
+                    </div>
+                    {issue.description && (
+                        <div className={styles.descBlock}>
+                            <div className={styles.progressLabel}>문제내용</div>
+                            <div className={styles.issueDesc}>{issue.description}</div>
+                        </div>
+                    )}
+                    <div className={styles.dragHint}>
+                        {members.length === 0 ? '배정하려면 먼저 사용자를 추가하세요' : '담당자 카드로 드래그해서 배정'}
+                    </div>
+                </div>
+            );
+        }
+
+        const isOpen = expandedIssues.has(issue.id);
+        return (
+            <div key={issue.id} className={styles.issueListItem}>
+                <div
+                    className={styles.issueListRow}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => toggleExpanded(issue.id)}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggleExpanded(issue.id);
+                        }
+                    }}
+                >
+                    <ChevronRight
+                        size={14}
+                        className={`${styles.issueListChevron} ${isOpen ? styles.issueListChevronOpen : ''}`}
+                    />
+                    <span className={`${styles.statusBadge} ${styles[`status_${issue.status}`]}`}>
+                        {STATUS_LABEL[issue.status] || issue.status}
+                    </span>
+                    <span className={styles.issueListTitle}>{issue.title}</span>
+                    {issue.status === 'assigned' && issue.assignedTo === currentUser && (
+                        <button
+                            type="button"
+                            className={`${styles.primaryBtn} ${styles.titleActionBtn}`}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                handleStart(issue.id);
+                            }}
+                        >
+                            진행중으로 전환
+                        </button>
+                    )}
+                    {issue.status === 'in_progress' && issue.assignedTo === currentUser && (
+                        <button
+                            type="button"
+                            className={`${styles.completeBtn} ${styles.titleActionBtn}`}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                handleComplete(issue.id);
+                            }}
+                        >
+                            완료
+                        </button>
+                    )}
+                </div>
+
+                {isOpen && <div className={styles.issueListDetail}>{renderIssueDetailBody(issue)}</div>}
             </div>
         );
     };
@@ -524,10 +610,12 @@ const TimeboxPage = ({ currentUser }) => {
                         {members.map((m) => {
                             const userIssues = issues.filter((it) => it.assignedTo === m.username && it.status !== 'done');
                             const displayName = m.displayName || m.username;
+                            const selectedId = selectedByMember[m.username] ?? userIssues[0]?.id ?? null;
+                            const selectedIssue = userIssues.find((it) => it.id === selectedId) || null;
                             return (
                                 <div
                                     key={m.username}
-                                    className={`${styles.userCard} ${dragOverMember === m.username ? styles.userCardDropActive : ''}`}
+                                    className={`${styles.userRow} ${dragOverMember === m.username ? styles.userCardDropActive : ''}`}
                                     onDragOver={(e) => handleMemberDragOver(e, m.username)}
                                     onDragLeave={() => handleMemberDragLeave(m.username)}
                                     onDrop={(e) => handleMemberDrop(e, m.username)}
@@ -545,13 +633,22 @@ const TimeboxPage = ({ currentUser }) => {
                                             <X size={13} />
                                         </button>
                                     </div>
-                                    <div className={styles.userIssueList}>
-                                        {userIssues.length === 0 ? (
-                                            <div className={styles.emptySmall}>배정된 문제가 없습니다.</div>
-                                        ) : (
-                                            userIssues.map((issue) => renderIssueCard(issue, { compact: true }))
-                                        )}
-                                    </div>
+                                    {userIssues.length === 0 ? (
+                                        <div className={styles.emptySmall}>배정된 문제가 없습니다.</div>
+                                    ) : (
+                                        <div className={styles.listDetailBody}>
+                                            <div className={styles.issueListCol}>
+                                                {userIssues.map((issue) =>
+                                                    renderIssueListRow(issue, issue.id === selectedId, () =>
+                                                        setSelectedByMember((prev) => ({ ...prev, [m.username]: issue.id }))
+                                                    )
+                                                )}
+                                            </div>
+                                            <div className={styles.issueDetailCol}>
+                                                {selectedIssue && renderIssueDetail(selectedIssue)}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             );
                         })}

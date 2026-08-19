@@ -190,13 +190,12 @@
 .userGrid {
   flex: 1;
   min-width: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 0.85rem;
-  align-content: start;
 }
 
-.userCard {
+.userRow {
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
@@ -243,10 +242,50 @@
   white-space: nowrap;
 }
 
-.userIssueList {
+.listDetailBody {
+  display: flex;
+  align-items: stretch;
+  gap: 0.75rem;
+}
+
+.issueListCol {
+  flex: 0 0 200px;
+  min-width: 160px;
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: 0.3rem;
+  max-height: 22rem;
+  overflow-y: auto;
+}
+
+.issueListRowSelectable {
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  background: none;
+}
+
+.issueListRowSelectable:hover {
+  background: var(--bg-primary);
+}
+
+.issueListRowActive {
+  background: var(--bg-primary);
+  border-color: var(--accent-black);
+}
+
+.issueDetailCol {
+  flex: 1;
+  min-width: 0;
+  border-left: 1px solid var(--border-color);
+  padding-left: 0.85rem;
+}
+
+.issueDetailPanel {
+  display: flex;
+  flex-direction: column;
 }
 
 .issueCard {
@@ -256,13 +295,61 @@
   padding: 0.9rem 1rem;
 }
 
-.issueCardCompact {
+.issueListItem {
   background: var(--bg-primary);
-  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  overflow: hidden;
 }
 
-.issueCardCompact .issueTitle {
-  font-size: 0.86rem;
+.issueListRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.7rem;
+  cursor: pointer;
+}
+
+.issueListRow:hover {
+  background: var(--bg-secondary);
+}
+
+.issueListRow:focus-visible {
+  outline: 2px solid var(--accent-black);
+  outline-offset: -2px;
+}
+
+.issueListChevron {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+
+.issueListChevronOpen {
+  transform: rotate(90deg);
+}
+
+.issueListTitle {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.issueListDetail {
+  padding: 0.65rem 0.7rem 0.75rem;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.issueListDetail .commentItem {
+  background: var(--bg-secondary);
 }
 
 .issueCardDraggable {
@@ -440,10 +527,6 @@
 
 .commentInput {
   flex: 1;
-}
-
-.issueCardCompact .commentItem {
-  background: var(--bg-secondary);
 }
 
 .removeMemberBtn {
