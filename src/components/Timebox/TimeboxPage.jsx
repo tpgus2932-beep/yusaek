@@ -405,9 +405,10 @@ const TimeboxPage = ({ currentUser }) => {
             className={`${styles.issueListRow} ${styles.issueListRowSelectable} ${isSelected ? styles.issueListRowActive : ''}`}
             onClick={onSelect}
         >
-            <span className={`${styles.statusBadge} ${styles[`status_${issue.status}`]}`}>
-                {STATUS_LABEL[issue.status] || issue.status}
-            </span>
+            <span
+                className={`${styles.statusDot} ${styles[`status_${issue.status}`]}`}
+                title={STATUS_LABEL[issue.status] || issue.status}
+            />
             <span className={styles.issueListTitle}>{issue.title}</span>
         </button>
     );
