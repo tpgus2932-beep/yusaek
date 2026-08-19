@@ -1,12 +1,20 @@
 import { useEffect, useState } from 'react';
-import { NotebookPen, Play } from 'lucide-react';
+import { ChevronLeft, ChevronRight, NotebookPen, Play } from 'lucide-react';
 import styles from './WorklogPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
+
+const kstDateStr = (date = new Date()) => date.toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
+
+const shiftDateStr = (dateStr, days) => {
+    const d = new Date(`${dateStr}T00:00:00+09:00`);
+    d.setDate(d.getDate() + days);
+    return kstDateStr(d);
+};
 
 const fmtTime = (iso) => {
     if (!iso) return '';
     try {
-        return new Date(iso).toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        return new Date(iso).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
     } catch {
         return iso;
     }
@@ -26,6 +34,8 @@ const REFRESH_INTERVAL_MS = 20000;
 const TICK_INTERVAL_MS = 30000;
 
 const WorklogPage = ({ currentUser }) => {
+    const todayStr = kstDateStr();
+    const [selectedDate, setSelectedDate] = useState(todayStr);
     const [entries, setEntries] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -39,10 +49,11 @@ const WorklogPage = ({ currentUser }) => {
     const [completing, setCompleting] = useState(false);
 
     const authHeaders = getAuthHeaders();
+    const isToday = selectedDate === todayStr;
 
-    const loadEntries = async () => {
+    const loadEntries = async (date) => {
         try {
-            const res = await fetch(`${API}/worklog/entries`, { headers: authHeaders });
+            const res = await fetch(`${API}/worklog/entries?date=${date}`, { headers: authHeaders });
             if (handleUnauthorized(res)) return;
             const data = await res.json();
             setEntries(data.entries || []);
@@ -55,16 +66,17 @@ const WorklogPage = ({ currentUser }) => {
         (async () => {
             setLoading(true);
             setError('');
-            await loadEntries();
+            await loadEntries(selectedDate);
             setLoading(false);
         })();
-        const refreshTimer = setInterval(loadEntries, REFRESH_INTERVAL_MS);
+        const refreshTimer = setInterval(() => loadEntries(selectedDate), REFRESH_INTERVAL_MS);
+        return () => clearInterval(refreshTimer);
+    }, [selectedDate]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
         const tickTimer = setInterval(() => setNow(Date.now()), TICK_INTERVAL_MS);
-        return () => {
-            clearInterval(refreshTimer);
-            clearInterval(tickTimer);
-        };
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+        return () => clearInterval(tickTimer);
+    }, []);
 
     const handleStart = async () => {
         const task = newTask.trim();
@@ -117,7 +129,34 @@ const WorklogPage = ({ currentUser }) => {
         }
     };
 
-    const myActive = entries.find((e) => e.status === 'in_progress' && e.username === currentUser);
+    const renderEntryRow = (e) => (
+        <div key={e.id} className={styles.entryRow}>
+            <div className={styles.entryTop}>
+                <span className={styles.entryTask}>{e.task}</span>
+                <span className={`${styles.entryStatus} ${e.status === 'in_progress' ? styles.entryStatusActive : ''}`}>
+                    {e.status === 'in_progress' ? '진행중' : fmtDuration(new Date(e.endedAt).getTime() - new Date(e.startedAt).getTime())}
+                </span>
+            </div>
+            <div className={styles.entryMeta}>
+                {fmtTime(e.startedAt)} ~ {e.status === 'done' ? fmtTime(e.endedAt) : '진행중'}
+            </div>
+            {e.notes && <div className={styles.entryNotes}>특이사항: {e.notes}</div>}
+        </div>
+    );
+
+    const grouped = {};
+    entries.forEach((e) => {
+        (grouped[e.username] = grouped[e.username] || []).push(e);
+    });
+    const usernames = Object.keys(grouped);
+    if (isToday && !usernames.includes(currentUser)) usernames.push(currentUser);
+    usernames.sort((a, b) => {
+        if (a === currentUser) return -1;
+        if (b === currentUser) return 1;
+        const da = grouped[a]?.[0]?.displayName || a;
+        const db = grouped[b]?.[0]?.displayName || b;
+        return da.localeCompare(db, 'ko');
+    });
 
     return (
         <div className={styles.page}>
@@ -128,102 +167,150 @@ const WorklogPage = ({ currentUser }) => {
 
             {error && <div className={styles.error}>{error}</div>}
 
-            <div className={styles.activeCard}>
-                {myActive ? (
-                    <>
-                        <div className={styles.activeTask}>{myActive.task}</div>
-                        <div className={styles.activeMeta}>
-                            {fmtTime(myActive.startedAt)} 시작 · {fmtDuration(now - new Date(myActive.startedAt).getTime())} 경과
-                        </div>
-                        {showCompleteForm ? (
-                            <div className={styles.completeForm}>
-                                <textarea
-                                    className={styles.notesInput}
-                                    placeholder="특이사항 (선택)"
-                                    value={notesInput}
-                                    onChange={(e) => setNotesInput(e.target.value)}
-                                    rows={2}
-                                    autoFocus
-                                />
-                                <div className={styles.completeFormActions}>
-                                    <button
-                                        type="button"
-                                        className={styles.secondaryBtn}
-                                        onClick={() => {
-                                            setShowCompleteForm(false);
-                                            setNotesInput('');
-                                        }}
-                                    >
-                                        취소
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className={styles.primaryBtn}
-                                        onClick={() => handleComplete(myActive.id)}
-                                        disabled={completing}
-                                    >
-                                        {completing ? '처리 중...' : '완료 확정'}
-                                    </button>
-                                </div>
-                            </div>
-                        ) : (
-                            <button
-                                type="button"
-                                className={styles.completeBtn}
-                                onClick={() => setShowCompleteForm(true)}
-                            >
-                                완료
-                            </button>
-                        )}
-                    </>
-                ) : (
-                    <div className={styles.startRow}>
-                        <input
-                            type="text"
-                            className={styles.taskInput}
-                            placeholder="지금 하는 일을 적어주세요"
-                            value={newTask}
-                            onChange={(e) => setNewTask(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter') handleStart();
-                            }}
-                        />
-                        <button
-                            type="button"
-                            className={styles.primaryBtn}
-                            onClick={handleStart}
-                            disabled={starting || !newTask.trim()}
-                        >
-                            <Play size={14} />
-                            시작
-                        </button>
-                    </div>
+            <div className={styles.dateBar}>
+                <button
+                    type="button"
+                    className={styles.dateNavBtn}
+                    onClick={() => setSelectedDate((d) => shiftDateStr(d, -1))}
+                >
+                    <ChevronLeft size={16} />
+                </button>
+                <input
+                    type="date"
+                    className={styles.dateInput}
+                    value={selectedDate}
+                    max={todayStr}
+                    onChange={(e) => e.target.value && setSelectedDate(e.target.value)}
+                />
+                <button
+                    type="button"
+                    className={styles.dateNavBtn}
+                    onClick={() => setSelectedDate((d) => shiftDateStr(d, 1))}
+                    disabled={isToday}
+                >
+                    <ChevronRight size={16} />
+                </button>
+                {!isToday && (
+                    <button
+                        type="button"
+                        className={styles.todayBtn}
+                        onClick={() => setSelectedDate(todayStr)}
+                    >
+                        오늘로
+                    </button>
                 )}
             </div>
 
-            <div className={styles.historyHeader}>기록</div>
-
             {loading ? (
                 <div className={styles.empty}>불러오는 중...</div>
-            ) : entries.length === 0 ? (
-                <div className={styles.empty}>아직 기록이 없습니다.</div>
+            ) : usernames.length === 0 ? (
+                <div className={styles.empty}>이 날짜에는 기록이 없습니다.</div>
             ) : (
-                <div className={styles.entryList}>
-                    {entries.map((e) => (
-                        <div key={e.id} className={styles.entryRow}>
-                            <div className={styles.entryTop}>
-                                <span className={styles.entryAuthor}>{e.displayName || e.username}</span>
-                                <span className={styles.entryTask}>{e.task}</span>
-                                <span className={`${styles.entryStatus} ${e.status === 'in_progress' ? styles.entryStatusActive : ''}`}>
-                                    {e.status === 'in_progress' ? '진행중' : fmtDuration(new Date(e.endedAt).getTime() - new Date(e.startedAt).getTime())}
-                                </span>
+                <div className={styles.userGrid}>
+                    {usernames.map((username) => {
+                        const userEntries = grouped[username] || [];
+                        const isMine = username === currentUser;
+                        const displayName = userEntries[0]?.displayName || username;
+                        const activeEntry = isMine && isToday
+                            ? userEntries.find((e) => e.status === 'in_progress')
+                            : null;
+                        const historyEntries = activeEntry
+                            ? userEntries.filter((e) => e.id !== activeEntry.id)
+                            : userEntries;
+
+                        return (
+                            <div key={username} className={styles.userCard}>
+                                <div className={styles.userCardHeader}>
+                                    <div className={styles.userAvatar}>{displayName.slice(0, 2)}</div>
+                                    <div className={styles.userCardName}>{displayName}</div>
+                                    <span className={styles.columnCount}>{userEntries.length}</span>
+                                </div>
+
+                                {isMine && isToday && (
+                                    <div className={styles.activeSection}>
+                                        {activeEntry ? (
+                                            <>
+                                                <div className={styles.activeTask}>{activeEntry.task}</div>
+                                                <div className={styles.activeMeta}>
+                                                    {fmtTime(activeEntry.startedAt)} 시작 · {fmtDuration(now - new Date(activeEntry.startedAt).getTime())} 경과
+                                                </div>
+                                                {showCompleteForm ? (
+                                                    <div className={styles.completeForm}>
+                                                        <textarea
+                                                            className={styles.notesInput}
+                                                            placeholder="특이사항 (선택)"
+                                                            value={notesInput}
+                                                            onChange={(e) => setNotesInput(e.target.value)}
+                                                            rows={2}
+                                                            autoFocus
+                                                        />
+                                                        <div className={styles.completeFormActions}>
+                                                            <button
+                                                                type="button"
+                                                                className={styles.secondaryBtn}
+                                                                onClick={() => {
+                                                                    setShowCompleteForm(false);
+                                                                    setNotesInput('');
+                                                                }}
+                                                            >
+                                                                취소
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                className={styles.primaryBtn}
+                                                                onClick={() => handleComplete(activeEntry.id)}
+                                                                disabled={completing}
+                                                            >
+                                                                {completing ? '처리 중...' : '완료 확정'}
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <button
+                                                        type="button"
+                                                        className={styles.completeBtn}
+                                                        onClick={() => setShowCompleteForm(true)}
+                                                    >
+                                                        완료
+                                                    </button>
+                                                )}
+                                            </>
+                                        ) : (
+                                            <div className={styles.startRow}>
+                                                <input
+                                                    type="text"
+                                                    className={styles.taskInput}
+                                                    placeholder="지금 하는 일을 적어주세요"
+                                                    value={newTask}
+                                                    onChange={(e) => setNewTask(e.target.value)}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === 'Enter') handleStart();
+                                                    }}
+                                                />
+                                                <button
+                                                    type="button"
+                                                    className={styles.primaryBtn}
+                                                    onClick={handleStart}
+                                                    disabled={starting || !newTask.trim()}
+                                                >
+                                                    <Play size={14} />
+                                                    시작
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                <div className={styles.entryList}>
+                                    {historyEntries.length === 0 ? (
+                                        <div className={styles.emptySmall}>기록이 없습니다.</div>
+                                    ) : (
+                                        historyEntries.map(renderEntryRow)
+                                    )}
+                                </div>
                             </div>
-                            <div className={styles.entryMeta}>
-                                {fmtTime(e.startedAt)} ~ {e.status === 'done' ? fmtTime(e.endedAt) : '진행중'}
-                            </div>
-                            {e.notes && <div className={styles.entryNotes}>특이사항: {e.notes}</div>}
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
             )}
         </div>

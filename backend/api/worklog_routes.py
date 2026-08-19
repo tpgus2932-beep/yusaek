@@ -28,11 +28,17 @@ def build_worklog_router(*, get_current_user, get_db, get_user_display):
         }
 
     @router.get("/entries")
-    def list_entries(user: str = Depends(get_current_user)):
+    def list_entries(date: str | None = None, user: str = Depends(get_current_user)):
         conn = get_db()
-        rows = conn.execute(
-            "SELECT * FROM worklog_entries ORDER BY started_at DESC LIMIT 300"
-        ).fetchall()
+        if date:
+            rows = conn.execute(
+                "SELECT * FROM worklog_entries WHERE started_at LIKE ? ORDER BY started_at DESC",
+                (f"{date}%",),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM worklog_entries ORDER BY started_at DESC LIMIT 300"
+            ).fetchall()
         conn.close()
         return {"ok": True, "entries": [_row_to_entry(r) for r in rows]}
 
