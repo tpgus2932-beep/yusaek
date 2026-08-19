@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { MessageSquare, Timer } from 'lucide-react';
+import { MessageSquare, Plus, Timer } from 'lucide-react';
 import styles from './TimeboxPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
@@ -24,6 +24,7 @@ const TimeboxPage = ({ currentUser }) => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
 
+    const [showCreateForm, setShowCreateForm] = useState(false);
     const [newTitle, setNewTitle] = useState('');
     const [newDescription, setNewDescription] = useState('');
     const [creating, setCreating] = useState(false);
@@ -73,6 +74,7 @@ const TimeboxPage = ({ currentUser }) => {
                 setIssues((prev) => [data.issue, ...prev]);
                 setNewTitle('');
                 setNewDescription('');
+                setShowCreateForm(false);
             } else {
                 setError(data.detail || '등록에 실패했습니다.');
             }
@@ -296,31 +298,6 @@ const TimeboxPage = ({ currentUser }) => {
 
             {error && <div className={styles.error}>{error}</div>}
 
-            <div className={styles.createCard}>
-                <input
-                    type="text"
-                    className={styles.titleInput}
-                    placeholder="새 이슈 제목"
-                    value={newTitle}
-                    onChange={(e) => setNewTitle(e.target.value)}
-                />
-                <textarea
-                    className={styles.descInput}
-                    placeholder="상세 내용 (선택)"
-                    value={newDescription}
-                    onChange={(e) => setNewDescription(e.target.value)}
-                    rows={2}
-                />
-                <button
-                    type="button"
-                    className={styles.primaryBtn}
-                    onClick={handleCreate}
-                    disabled={creating || !newTitle.trim()}
-                >
-                    {creating ? '등록 중...' : '이슈 등록'}
-                </button>
-            </div>
-
             {loading ? (
                 <div className={styles.empty}>불러오는 중...</div>
             ) : (
@@ -329,9 +306,57 @@ const TimeboxPage = ({ currentUser }) => {
                         <div className={styles.columnHeader}>
                             <span>문제 리스트</span>
                             <span className={styles.columnCount}>{unassignedIssues.length}</span>
+                            <button
+                                type="button"
+                                className={styles.addBtn}
+                                onClick={() => setShowCreateForm((prev) => !prev)}
+                            >
+                                <Plus size={13} />
+                                추가
+                            </button>
                         </div>
                         <div className={styles.backlogList}>
-                            {unassignedIssues.length === 0 ? (
+                            {showCreateForm && (
+                                <div className={styles.createCard}>
+                                    <input
+                                        type="text"
+                                        className={styles.titleInput}
+                                        placeholder="새 이슈 제목"
+                                        autoFocus
+                                        value={newTitle}
+                                        onChange={(e) => setNewTitle(e.target.value)}
+                                    />
+                                    <textarea
+                                        className={styles.descInput}
+                                        placeholder="상세 내용 (선택)"
+                                        value={newDescription}
+                                        onChange={(e) => setNewDescription(e.target.value)}
+                                        rows={2}
+                                    />
+                                    <div className={styles.createCardActions}>
+                                        <button
+                                            type="button"
+                                            className={styles.secondaryBtn}
+                                            onClick={() => {
+                                                setShowCreateForm(false);
+                                                setNewTitle('');
+                                                setNewDescription('');
+                                            }}
+                                        >
+                                            취소
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className={styles.primaryBtn}
+                                            onClick={handleCreate}
+                                            disabled={creating || !newTitle.trim()}
+                                        >
+                                            {creating ? '등록 중...' : '등록'}
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                            {unassignedIssues.length === 0 && !showCreateForm ? (
                                 <div className={styles.emptySmall}>미배정 문제가 없습니다.</div>
                             ) : (
                                 unassignedIssues.map((issue) => renderIssueCard(issue))
