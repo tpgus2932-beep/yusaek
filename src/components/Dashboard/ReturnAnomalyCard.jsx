@@ -40,6 +40,7 @@ export default function ReturnAnomalyCard() {
     const [memos, setMemos] = useState({});
     const [draftMemos, setDraftMemos] = useState({});
     const [expandedInvoices, setExpandedInvoices] = useState(new Set());
+    const [regatheringInvoices, setRegatheringInvoices] = useState(new Set());
     const authHeaders = getAuthHeaders();
 
     const fetchList = useCallback(async () => {
@@ -77,6 +78,20 @@ export default function ReturnAnomalyCard() {
         return () => {
             cancelled = true;
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    useEffect(() => {
+        fetch(`${API}/return-regathering/list`, { headers: authHeaders })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => {
+                if (!data) return;
+                const invoices = (data.items || [])
+                    .map((it) => it.return_invoice)
+                    .filter(Boolean);
+                setRegatheringInvoices(new Set(invoices));
+            })
+            .catch(() => {});
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -190,6 +205,9 @@ export default function ReturnAnomalyCard() {
                             <div className={styles.anomalyField}>
                                 <span className={styles.anomalyFieldLabel}>반품송장번호</span>
                                 {item.returnInvoiceNo}
+                                {regatheringInvoices.has(item.returnInvoiceNo) && (
+                                    <span className={styles.pendingBadge} style={{ marginLeft: '0.4rem' }}>오회수 접수됨</span>
+                                )}
                             </div>
                             <div className={styles.anomalyField}>
                                 <span className={styles.anomalyFieldLabel}>배송상태</span>
