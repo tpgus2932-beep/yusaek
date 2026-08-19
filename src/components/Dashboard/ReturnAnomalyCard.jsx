@@ -13,6 +13,13 @@ function formatPhone(raw) {
     return String(raw).replace(/-/g, '');
 }
 
+// 오회수 큐에 쌓이는 값(스캔 원본, 숫자만)과 반품 이상현상의 반품송장번호
+// (LLogis rltnInvNoView, 대시 포함 표시용 값)는 같은 송장이라도 문자열
+// 표기가 달라서 그냥 비교하면 매칭이 안 된다 - 숫자만 남겨서 비교한다.
+function normalizeInvoice(raw) {
+    return String(raw || '').replace(/[^0-9]/g, '');
+}
+
 function formatScanDate(raw) {
     if (!raw) return '-';
     const s = String(raw).replace(/\D/g, '');
@@ -87,7 +94,7 @@ export default function ReturnAnomalyCard() {
             .then((data) => {
                 if (!data) return;
                 const invoices = (data.items || [])
-                    .map((it) => it.return_invoice)
+                    .map((it) => normalizeInvoice(it.return_invoice))
                     .filter(Boolean);
                 setRegatheringInvoices(new Set(invoices));
             })
@@ -205,7 +212,7 @@ export default function ReturnAnomalyCard() {
                             <div className={styles.anomalyField}>
                                 <span className={styles.anomalyFieldLabel}>반품송장번호</span>
                                 {item.returnInvoiceNo}
-                                {regatheringInvoices.has(item.returnInvoiceNo) && (
+                                {regatheringInvoices.has(normalizeInvoice(item.returnInvoiceNo)) && (
                                     <span className={styles.pendingBadge} style={{ marginLeft: '0.4rem' }}>오회수 접수됨</span>
                                 )}
                             </div>
