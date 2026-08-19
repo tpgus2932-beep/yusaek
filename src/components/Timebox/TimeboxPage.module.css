@@ -201,6 +201,13 @@
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   padding: 0.85rem;
+  transition: border-color 0.1s, background 0.1s;
+}
+
+.userCardDropActive {
+  border-color: var(--accent-black);
+  border-style: dashed;
+  background: rgba(37, 99, 235, 0.06);
 }
 
 .userCardHeader {
@@ -256,6 +263,29 @@
 
 .issueCardCompact .issueTitle {
   font-size: 0.86rem;
+}
+
+.issueCardDraggable {
+  cursor: grab;
+}
+
+.issueCardDraggable:active {
+  cursor: grabbing;
+}
+
+.issueCardDragging {
+  opacity: 0.4;
+}
+
+.dragHandle {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.dragHint {
+  margin-top: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
 }
 
 .issueTop {

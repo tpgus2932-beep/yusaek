@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus, Timer, UserPlus, X } from 'lucide-react';
+import { GripVertical, Plus, Timer, UserPlus, X } from 'lucide-react';
 import styles from './TimeboxPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
@@ -35,9 +35,11 @@ const TimeboxPage = ({ currentUser }) => {
     const [memberPick, setMemberPick] = useState('');
     const [addingMember, setAddingMember] = useState(false);
 
-    const [assigneePick, setAssigneePick] = useState({});
     const [commentsCache, setCommentsCache] = useState({});
     const [commentInput, setCommentInput] = useState({});
+
+    const [draggedIssueId, setDraggedIssueId] = useState(null);
+    const [dragOverMember, setDragOverMember] = useState(null);
 
     const [progressEditing, setProgressEditing] = useState({});
     const [progressDraft, setProgressDraft] = useState({});
@@ -151,8 +153,7 @@ const TimeboxPage = ({ currentUser }) => {
         }
     };
 
-    const handleAssign = async (issueId) => {
-        const assignee = assigneePick[issueId];
+    const assignIssueTo = async (issueId, assignee) => {
         if (!assignee) return;
         try {
             const res = await fetch(`${API}/timebox/issues/${issueId}/assign`, {
@@ -164,12 +165,42 @@ const TimeboxPage = ({ currentUser }) => {
             const data = await res.json();
             if (res.ok && data.issue) {
                 setIssues((prev) => prev.map((it) => (it.id === issueId ? data.issue : it)));
-                setAssigneePick((prev) => ({ ...prev, [issueId]: '' }));
                 if (!commentsCache[issueId]) loadComments(issueId);
+            } else {
+                setError(data.detail || '배정에 실패했습니다.');
             }
         } catch {
             setError('배정에 실패했습니다.');
         }
+    };
+
+    const handleIssueDragStart = (e, issueId) => {
+        e.dataTransfer.setData('text/plain', String(issueId));
+        e.dataTransfer.effectAllowed = 'move';
+        setDraggedIssueId(issueId);
+    };
+
+    const handleIssueDragEnd = () => {
+        setDraggedIssueId(null);
+        setDragOverMember(null);
+    };
+
+    const handleMemberDragOver = (e, username) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        if (dragOverMember !== username) setDragOverMember(username);
+    };
+
+    const handleMemberDragLeave = (username) => {
+        setDragOverMember((prev) => (prev === username ? null : prev));
+    };
+
+    const handleMemberDrop = (e, username) => {
+        e.preventDefault();
+        const issueId = Number(e.dataTransfer.getData('text/plain'));
+        setDragOverMember(null);
+        setDraggedIssueId(null);
+        if (issueId) assignIssueTo(issueId, username);
     };
 
     const handleStart = async (issueId) => {
@@ -271,8 +302,15 @@ const TimeboxPage = ({ currentUser }) => {
     const renderIssueCard = (issue, { compact, minimal } = {}) => {
         if (minimal) {
             return (
-                <div key={issue.id} className={styles.issueCard}>
+                <div
+                    key={issue.id}
+                    className={`${styles.issueCard} ${styles.issueCardDraggable} ${draggedIssueId === issue.id ? styles.issueCardDragging : ''}`}
+                    draggable={members.length > 0}
+                    onDragStart={(e) => handleIssueDragStart(e, issue.id)}
+                    onDragEnd={handleIssueDragEnd}
+                >
                     <div className={styles.issueTop}>
+                        <GripVertical size={14} className={styles.dragHandle} />
                         <span className={`${styles.statusBadge} ${styles[`status_${issue.status}`]}`}>
                             {STATUS_LABEL[issue.status] || issue.status}
                         </span>
@@ -284,27 +322,8 @@ const TimeboxPage = ({ currentUser }) => {
                             <div className={styles.issueDesc}>{issue.description}</div>
                         </div>
                     )}
-                    <div className={styles.actionRow}>
-                        <select
-                            className={styles.assigneeSelect}
-                            value={assigneePick[issue.id] || ''}
-                            onChange={(e) => setAssigneePick((prev) => ({ ...prev, [issue.id]: e.target.value }))}
-                        >
-                            <option value="">담당자 선택</option>
-                            {members.map((m) => (
-                                <option key={m.username} value={m.username}>
-                                    {m.displayName || m.username}
-                                </option>
-                            ))}
-                        </select>
-                        <button
-                            type="button"
-                            className={styles.secondaryBtn}
-                            onClick={() => handleAssign(issue.id)}
-                            disabled={!assigneePick[issue.id]}
-                        >
-                            배정
-                        </button>
+                    <div className={styles.dragHint}>
+                        {members.length === 0 ? '배정하려면 먼저 사용자를 추가하세요' : '담당자 카드로 드래그해서 배정'}
                     </div>
                 </div>
             );
@@ -535,7 +554,13 @@ const TimeboxPage = ({ currentUser }) => {
                             const userIssues = issues.filter((it) => it.assignedTo === m.username && it.status !== 'done');
                             const displayName = m.displayName || m.username;
                             return (
-                                <div key={m.username} className={styles.userCard}>
+                                <div
+                                    key={m.username}
+                                    className={`${styles.userCard} ${dragOverMember === m.username ? styles.userCardDropActive : ''}`}
+                                    onDragOver={(e) => handleMemberDragOver(e, m.username)}
+                                    onDragLeave={() => handleMemberDragLeave(m.username)}
+                                    onDrop={(e) => handleMemberDrop(e, m.username)}
+                                >
                                     <div className={styles.userCardHeader}>
                                         <div className={styles.userAvatar}>{displayName.slice(0, 2)}</div>
                                         <div className={styles.userCardName}>{displayName}</div>
