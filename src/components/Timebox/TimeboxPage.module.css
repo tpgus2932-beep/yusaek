@@ -565,6 +565,26 @@
   color: #dc2626;
 }
 
+.deleteIssueBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  margin-left: auto;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.deleteIssueBtn:hover {
+  background: rgba(220, 38, 38, 0.12);
+  color: #dc2626;
+}
+
 .addMemberCard {
   display: flex;
   align-items: stretch;

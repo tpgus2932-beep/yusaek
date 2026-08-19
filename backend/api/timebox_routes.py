@@ -197,6 +197,19 @@ def build_timebox_router(*, get_current_user, get_db, get_user_display):
         conn.close()
         return {"ok": True, "issue": _row_to_issue(row)}
 
+    @router.delete("/issues/{issue_id}")
+    def delete_issue(issue_id: int, user: str = Depends(get_current_user)):
+        conn = get_db()
+        row = _get_issue_or_404(conn, issue_id)
+        if user not in (row["created_by"], row["assigned_to"]):
+            conn.close()
+            raise HTTPException(status_code=403, detail="작성자 또는 담당자만 삭제할 수 있습니다.")
+        conn.execute("DELETE FROM timebox_comments WHERE issue_id = ?", (issue_id,))
+        conn.execute("DELETE FROM timebox_issues WHERE id = ?", (issue_id,))
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+
     @router.get("/issues/{issue_id}/comments")
     def list_comments(issue_id: int, user: str = Depends(get_current_user)):
         conn = get_db()

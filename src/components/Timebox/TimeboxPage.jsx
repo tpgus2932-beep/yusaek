@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ChevronRight, GripVertical, Plus, Timer, UserPlus, X } from 'lucide-react';
+import { ChevronRight, GripVertical, Plus, Timer, Trash2, UserPlus, X } from 'lucide-react';
 import styles from './TimeboxPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
@@ -238,6 +238,25 @@ const TimeboxPage = ({ currentUser }) => {
             }
         } catch {
             setError('완료 처리에 실패했습니다.');
+        }
+    };
+
+    const handleDeleteIssue = async (issueId) => {
+        if (!window.confirm('이 문제를 삭제할까요? 되돌릴 수 없습니다.')) return;
+        try {
+            const res = await fetch(`${API}/timebox/issues/${issueId}`, {
+                method: 'DELETE',
+                headers: authHeaders,
+            });
+            if (handleUnauthorized(res)) return;
+            if (res.ok) {
+                setIssues((prev) => prev.filter((it) => it.id !== issueId));
+            } else {
+                const data = await res.json().catch(() => ({}));
+                setError(data.detail || '삭제에 실패했습니다.');
+            }
+        } catch {
+            setError('삭제에 실패했습니다.');
         }
     };
 
@@ -518,6 +537,19 @@ const TimeboxPage = ({ currentUser }) => {
                             }}
                         >
                             완료
+                        </button>
+                    )}
+                    {(currentUser === issue.createdBy || currentUser === issue.assignedTo) && (
+                        <button
+                            type="button"
+                            className={styles.deleteIssueBtn}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteIssue(issue.id);
+                            }}
+                            title="삭제"
+                        >
+                            <Trash2 size={13} />
                         </button>
                     )}
                 </div>
