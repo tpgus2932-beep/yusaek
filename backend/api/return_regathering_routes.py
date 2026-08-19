@@ -82,6 +82,7 @@ def build_return_regathering_router(
                 break
             item_id = item.get("id")
             invoice = str(item.get("match") or "").strip()
+            return_invoice = str(item.get("scan") or "").strip()
             result = {"id": item_id, "invoice": invoice, "ok": False, "error": None}
             phone = _clean_phone(item.get("buyer_tel"))
             try:
@@ -97,10 +98,11 @@ def build_return_regathering_router(
                 try:
                     conn.execute(
                         """INSERT INTO return_regathering
-                           (invoice, order_no, item_sno, request_no, buyer_tel, goods_name, option_raw, requested_by, requested_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           (invoice, return_invoice, order_no, item_sno, request_no, buyer_tel, goods_name, option_raw, requested_by, requested_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             invoice,
+                            return_invoice,
                             str(item.get("order_no") or ""),
                             str(item.get("item_sno") or ""),
                             str(item.get("request_no") or ""),

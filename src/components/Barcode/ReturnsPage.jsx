@@ -2251,7 +2251,8 @@ body { background: #fff; font-family: sans-serif; }
                                         <table className={pageStyles.table}>
                                             <thead>
                                                 <tr>
-                                                    <th>송장번호</th>
+                                                    <th>원송장번호</th>
+                                                    <th>반품송장번호</th>
                                                     <th>상품명</th>
                                                     <th>전화번호</th>
                                                     <th>신청일시</th>
@@ -2262,6 +2263,7 @@ body { background: #fff; font-family: sans-serif; }
                                                 {regatherItems.map((r) => (
                                                     <tr key={r.id}>
                                                         <td>{r.invoice}</td>
+                                                        <td>{r.return_invoice}</td>
                                                         <td>{r.goods_name}</td>
                                                         <td>{r.buyer_tel}</td>
                                                         <td>{r.requested_at}</td>

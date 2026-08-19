@@ -1832,6 +1832,9 @@ def _init_return_regathering():
         )
         """
     )
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(return_regathering)").fetchall()}
+    if "return_invoice" not in cols:
+        conn.execute("ALTER TABLE return_regathering ADD COLUMN return_invoice TEXT NOT NULL DEFAULT ''")
     conn.commit()
     conn.close()
 
