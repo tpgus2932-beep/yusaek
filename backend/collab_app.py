@@ -34,6 +34,8 @@ from api.amood_settlement_routes import build_amood_settlement_router
 from api.ably_settlement_routes import build_ably_settlement_router
 from api.misong_routes import build_misong_router
 from api.order_routes import build_order_router
+from api.timebox_routes import build_timebox_router
+from api.worklog_routes import build_worklog_router
 from api.wonbe_routes import WONBE_DB_PATH
 from main import (
     ALLOWED_REQUEST_EXTS,
@@ -68,6 +70,8 @@ from services.easyadmin_product import (
     _process_easyadmin_product_upload,
     process_easyadmin_product_from_api,
 )
+from services.timebox_store import init_timebox_tables
+from services.worklog_store import init_worklog_tables
 
 
 def _env_int(name: str, default: int) -> int:
@@ -192,6 +196,26 @@ app.include_router(
         get_shared_db=_get_shared_db,
         get_user_display=_get_user_display,
         is_render=bool(os.environ.get("RENDER", "")),
+    )
+)
+
+init_timebox_tables(_get_shared_db)
+
+app.include_router(
+    build_timebox_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        get_user_display=_get_user_display,
+    )
+)
+
+init_worklog_tables(_get_shared_db)
+
+app.include_router(
+    build_worklog_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        get_user_display=_get_user_display,
     )
 )
 
