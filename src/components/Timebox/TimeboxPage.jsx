@@ -40,6 +40,7 @@ const TimeboxPage = ({ currentUser }) => {
 
     const [draggedIssueId, setDraggedIssueId] = useState(null);
     const [dragOverMember, setDragOverMember] = useState(null);
+    const [dragOverIssueId, setDragOverIssueId] = useState(null);
 
     const [progressEditing, setProgressEditing] = useState({});
     const [progressDraft, setProgressDraft] = useState({});
@@ -185,6 +186,53 @@ const TimeboxPage = ({ currentUser }) => {
     const handleIssueDragEnd = () => {
         setDraggedIssueId(null);
         setDragOverMember(null);
+        setDragOverIssueId(null);
+    };
+
+    const handleReorderUnassigned = async (draggedId, targetId) => {
+        if (draggedId === targetId) return;
+        const current = issues.filter((it) => it.status === 'unassigned');
+        const fromIdx = current.findIndex((it) => it.id === draggedId);
+        const toIdx = current.findIndex((it) => it.id === targetId);
+        if (fromIdx === -1 || toIdx === -1) return;
+        const reordered = [...current];
+        const [moved] = reordered.splice(fromIdx, 1);
+        reordered.splice(toIdx, 0, moved);
+        const orderedIds = reordered.map((it) => it.id);
+
+        setIssues((prev) => {
+            const rest = prev.filter((it) => it.status !== 'unassigned');
+            return [...reordered, ...rest];
+        });
+
+        try {
+            const res = await fetch(`${API}/timebox/issues/reorder`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', ...authHeaders },
+                body: JSON.stringify({ ids: orderedIds }),
+            });
+            if (handleUnauthorized(res)) return;
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                setError(data.detail || '순서 변경에 실패했습니다.');
+            }
+        } catch {
+            setError('순서 변경에 실패했습니다.');
+        }
+    };
+
+    const handleIssueCardDragOver = (e, issueId) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        if (dragOverIssueId !== issueId) setDragOverIssueId(issueId);
+    };
+
+    const handleIssueCardDrop = (e, issueId) => {
+        e.preventDefault();
+        const draggedId = Number(e.dataTransfer.getData('text/plain'));
+        setDragOverIssueId(null);
+        setDraggedIssueId(null);
+        if (draggedId) handleReorderUnassigned(draggedId, issueId);
     };
 
     const handleMemberDragOver = (e, username) => {
@@ -467,10 +515,12 @@ const TimeboxPage = ({ currentUser }) => {
             return (
                 <div
                     key={issue.id}
-                    className={`${styles.issueCard} ${styles.issueCardDraggable} ${draggedIssueId === issue.id ? styles.issueCardDragging : ''}`}
-                    draggable={members.length > 0}
+                    className={`${styles.issueCard} ${styles.issueCardDraggable} ${draggedIssueId === issue.id ? styles.issueCardDragging : ''} ${dragOverIssueId === issue.id ? styles.issueCardDropActive : ''}`}
+                    draggable
                     onDragStart={(e) => handleIssueDragStart(e, issue.id)}
                     onDragEnd={handleIssueDragEnd}
+                    onDragOver={(e) => handleIssueCardDragOver(e, issue.id)}
+                    onDrop={(e) => handleIssueCardDrop(e, issue.id)}
                 >
                     <div className={styles.issueTop}>
                         <GripVertical size={14} className={styles.dragHandle} />
@@ -486,7 +536,7 @@ const TimeboxPage = ({ currentUser }) => {
                         </div>
                     )}
                     <div className={styles.dragHint}>
-                        {members.length === 0 ? '배정하려면 먼저 사용자를 추가하세요' : '담당자 카드로 드래그해서 배정'}
+                        드래그해서 순서 변경{members.length > 0 ? ' · 담당자 카드로 드래그해서 배정' : ''}
                     </div>
                 </div>
             );

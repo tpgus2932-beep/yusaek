@@ -60,3 +60,6 @@ def init_timebox_tables(get_db) -> None:
     # 담당자가 배정된 후 작성하는 진행상황 - 최초 등록된 문제내용(description)과는 별개 필드
     _ensure_column(get_db, "timebox_issues", "progress",
                    "ALTER TABLE timebox_issues ADD COLUMN progress TEXT NOT NULL DEFAULT ''")
+    # 문제 리스트 수동 정렬 순서 - 값이 작을수록 위(먼저 해결)에 표시
+    _ensure_column(get_db, "timebox_issues", "sort_order",
+                   "ALTER TABLE timebox_issues ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")

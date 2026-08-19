@@ -30,6 +30,7 @@ def build_timebox_router(*, get_current_user, get_db, get_user_display):
             "assignedAt": row["assigned_at"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
+            "sortOrder": row["sort_order"],
         }
 
     def _row_to_comment(row) -> dict:
@@ -94,7 +95,7 @@ def build_timebox_router(*, get_current_user, get_db, get_user_display):
     def list_issues(user: str = Depends(get_current_user)):
         conn = get_db()
         rows = conn.execute(
-            "SELECT * FROM timebox_issues ORDER BY created_at DESC"
+            "SELECT * FROM timebox_issues ORDER BY sort_order ASC, created_at DESC"
         ).fetchall()
         conn.close()
         return {"ok": True, "issues": [_row_to_issue(r) for r in rows]}
@@ -108,17 +109,39 @@ def build_timebox_router(*, get_current_user, get_db, get_user_display):
 
         now = _now()
         conn = get_db()
+        min_order = conn.execute("SELECT MIN(sort_order) FROM timebox_issues").fetchone()[0]
+        new_order = (min_order - 1) if min_order is not None else 0
         cur = conn.execute(
             """
-            INSERT INTO timebox_issues (title, description, status, created_by, created_at, updated_at)
-            VALUES (?, ?, 'unassigned', ?, ?, ?)
+            INSERT INTO timebox_issues (title, description, status, created_by, created_at, updated_at, sort_order)
+            VALUES (?, ?, 'unassigned', ?, ?, ?, ?)
             """,
-            (title, description, user, now, now),
+            (title, description, user, now, now, new_order),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM timebox_issues WHERE id = ?", (cur.lastrowid,)).fetchone()
         conn.close()
         return {"ok": True, "issue": _row_to_issue(row)}
+
+    @router.patch("/issues/reorder")
+    def reorder_issues(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        ids = payload.get("ids")
+        if not isinstance(ids, list) or not ids:
+            raise HTTPException(status_code=400, detail="ids가 필요합니다.")
+        try:
+            ids = [int(i) for i in ids]
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="ids는 정수 배열이어야 합니다.")
+
+        now = _now()
+        conn = get_db()
+        conn.executemany(
+            "UPDATE timebox_issues SET sort_order = ?, updated_at = ? WHERE id = ?",
+            [(order, now, issue_id) for order, issue_id in enumerate(ids)],
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True}
 
     @router.patch("/issues/{issue_id}/progress")
     def update_issue_progress(issue_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
