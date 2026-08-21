@@ -780,7 +780,7 @@ def _build_price_upload_xlsx(rows: list[tuple[str, str, str]]) -> bytes:
     return buf.getvalue()
 
 
-def build_wonbe_router(*, get_current_user, get_setting=None):
+def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None):
     router = APIRouter(prefix="/wonbe")
 
     @router.get("/defect-process-logs")
@@ -1891,6 +1891,37 @@ def build_wonbe_router(*, get_current_user, get_setting=None):
             }
         finally:
             conn.close()
+
+    @router.post("/push-to-deploy")
+    def wonbe_push_to_deploy(user: str = Depends(get_current_user)):
+        """로컬 원가베이스유(wonbe) 데이터를 Turso 공유 DB로 전송해 배포앱(collab_app,
+        발주추천 등)에서 읽을 수 있게 한다. 로컬 wonbe 테이블은 그대로 두고, Turso 쪽
+        wonbe 테이블에 상품코드 기준으로 upsert한다 (전체 삭제 없음)."""
+        if get_shared_db is None:
+            raise HTTPException(status_code=500, detail="공유 DB가 설정되지 않았습니다.")
+
+        df = load_wonbe_cost_base_df()
+        rows = [tuple(r) for r in df[COLUMNS].itertuples(index=False, name=None)]
+
+        conn = get_shared_db()
+        try:
+            col_defs = ", ".join(
+                f"{_qcol(c)} TEXT PRIMARY KEY" if i == 0 else f"{_qcol(c)} TEXT"
+                for i, c in enumerate(COLUMNS)
+            )
+            conn.execute(f"CREATE TABLE IF NOT EXISTS wonbe ({col_defs})")
+            insert_sql = f"INSERT OR REPLACE INTO wonbe ({_qcols(COLUMNS)}) VALUES ({', '.join(['?'] * len(COLUMNS))})"
+            batch_size = 300
+            pushed = 0
+            for i in range(0, len(rows), batch_size):
+                chunk = rows[i:i + batch_size]
+                conn.executemany(insert_sql, chunk)
+                pushed += len(chunk)
+            conn.commit()
+        finally:
+            conn.close()
+
+        return {"ok": True, "pushed": pushed, "total_local": len(df)}
 
     @router.post("/freshness-check")
     async def wonbe_freshness_check(user: str = Depends(get_current_user)):

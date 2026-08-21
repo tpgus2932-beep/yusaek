@@ -163,9 +163,61 @@ def build_order_router(
         s = re.sub(r"\s+", " ", s).strip()
         return s.lower()
 
+    def _shared_wonbe_rows(select_cols: str, where: str = "", params=()):
+        """배포앱(Render)에서 원가베이스유 조회 시 로컬 파일 대신 Turso 공유 DB의
+        wonbe 테이블(원가베이스유 페이지의 "배포앱전송" 버튼으로 채워짐)을 읽는다.
+        아직 전송 전이라 테이블이 없을 수 있으므로 조회 실패 시 빈 목록으로 처리한다."""
+        conn = get_shared_db()
+        try:
+            try:
+                return conn.execute(f"SELECT {select_cols} FROM wonbe{where}", params).fetchall()
+            except Exception:
+                return []
+        finally:
+            conn.close()
+
+    def _option_sno_map() -> dict[str, str]:
+        if not is_render:
+            return load_wonbe_option_sno_map()
+        rows = _shared_wonbe_rows("상품코드, 옵션번호", " WHERE 옵션번호 != ''")
+        sno_map: dict[str, str] = {}
+        for r in rows:
+            sno = str(r["옵션번호"] or "").strip()
+            if sno and sno not in sno_map:
+                sno_map[sno] = r["상품코드"]
+        return sno_map
+
+    def _client_info_by_code() -> dict[str, dict]:
+        if not is_render:
+            return load_wonbe_client_info_by_code()
+        rows = _shared_wonbe_rows("상품코드, 거래처, 거래처상품명, 색상, 사이즈", " WHERE 상품코드 != ''")
+        info_map: dict[str, dict] = {}
+        for r in rows:
+            code = str(r["상품코드"] or "").strip()
+            if code and code not in info_map:
+                info_map[code] = {
+                    "거래처": r["거래처"] or "",
+                    "거래처상품명": r["거래처상품명"] or "",
+                    "색상": r["색상"] or "",
+                    "사이즈": r["사이즈"] or "",
+                }
+        return info_map
+
+    def _product_name_map() -> dict[str, str]:
+        if not is_render:
+            return load_wonbe_product_name_map()
+        rows = _shared_wonbe_rows("상품코드, 상품명합", " WHERE 상품코드 != ''")
+        return {r["상품코드"]: r["상품명합"] or "" for r in rows if r["상품코드"]}
+
+    def _wonbe_cost_base_exists() -> bool:
+        if not is_render:
+            return order_cost_base_path.exists()
+        rows = _shared_wonbe_rows("COUNT(*) AS c")
+        return bool(rows) and int(rows[0]["c"]) > 0
+
     def _build_daily_sales_cost_map() -> dict[str, object]:
         out: dict[str, object] = {}
-        for code, match_name in load_wonbe_product_name_map().items():
+        for code, match_name in _product_name_map().items():
             if match_name is None:
                 continue
             key = _normalize_daily_sales(match_name)
@@ -277,7 +329,7 @@ def build_order_router(
     def _load_cost_base_items() -> list[dict]:
         return [
             {"name": name, "code": code}
-            for code, name in load_wonbe_product_name_map().items()
+            for code, name in _product_name_map().items()
         ]
 
     def _load_cost_base_name_map() -> dict[str, str]:
@@ -299,7 +351,7 @@ def build_order_router(
             "ok": True,
             "registered_count": int(count_row["cnt"]) if count_row else 0,
             "cost_base_path": str(order_cost_base_path),
-            "cost_base_exists": order_cost_base_path.exists(),
+            "cost_base_exists": _wonbe_cost_base_exists(),
         }
 
     @router.get("/order/cost-base/search")
@@ -532,7 +584,7 @@ def build_order_router(
         ext = Path(file.filename or "").suffix.lower()
         if ext not in {".xlsx", ".xlsm"}:
             raise HTTPException(status_code=400, detail="xlsx/xlsm만 업로드 가능합니다.")
-        if not order_cost_base_path.exists():
+        if not _wonbe_cost_base_exists():
             raise HTTPException(status_code=400, detail=f"원가베이스 DB가 없습니다: {order_cost_base_path}")
 
         raw = await file.read()
@@ -597,7 +649,7 @@ def build_order_router(
         ext = Path(file.filename or "").suffix.lower()
         if ext not in {".xlsx", ".xlsm"}:
             raise HTTPException(status_code=400, detail="xlsx/xlsm만 업로드 가능합니다.")
-        if not order_cost_base_path.exists():
+        if not _wonbe_cost_base_exists():
             raise HTTPException(status_code=400, detail=f"원가베이스 DB가 없습니다: {order_cost_base_path}")
 
         raw = await file.read()
@@ -811,8 +863,8 @@ def build_order_router(
         items = [item for sno in group_order for item in grouped[sno]]
 
         # 옵션번호 → 상품코드(DB관리 원가베이스유) → 재고/접수(EZAdmin I100) 매칭.
-        option_to_product_id = load_wonbe_option_sno_map()
-        client_info_by_code = load_wonbe_client_info_by_code()
+        option_to_product_id = _option_sno_map()
+        client_info_by_code = _client_info_by_code()
         for item in items:
             item["product_id"] = option_to_product_id.get(str(item.get("goods_option_sno") or ""))
             client_info = client_info_by_code.get(item["product_id"] or "", {})

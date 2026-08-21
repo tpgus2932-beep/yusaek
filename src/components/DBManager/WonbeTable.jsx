@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, RefreshCw, Upload, RefreshCcw, PencilLine, Check, X, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Download, RefreshCw, Upload, RefreshCcw, PencilLine, Check, X, SlidersHorizontal, Trash2, CloudUpload } from "lucide-react";
 import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
@@ -627,6 +627,27 @@ export default function WonbeTable() {
     }
   };
 
+  const [deploySyncing, setDeploySyncing] = useState(false);
+
+  const handlePushToDeploy = async () => {
+    if (!window.confirm(`로컬 원가베이스유(${total.toLocaleString()}행)를 Turso로 전송해 배포앱에서 읽을 수 있게 합니다.\n진행하시겠습니까?`)) return;
+    setDeploySyncing(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/push-to-deploy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "배포앱전송 실패");
+      setMessage(`배포앱전송 완료: ${data.pushed}/${data.total_local}건`);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setDeploySyncing(false);
+    }
+  };
+
   const handleExport = () => {
     const url = `${API}/wonbe/export`;
     fetch(url, { headers: getAuthHeaders() })
@@ -720,6 +741,14 @@ export default function WonbeTable() {
         </label>
         <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={handleExport} disabled={loading}>
           <Download size={13} />xls 내보내기
+        </button>
+        <button
+          className={`${styles.btn} ${styles.btnPrimary}`}
+          onClick={handlePushToDeploy}
+          disabled={loading || deploySyncing}
+          title="로컬 원가베이스유를 Turso로 전송해 배포앱(발주추천 등)에서 읽을 수 있게 합니다"
+        >
+          <CloudUpload size={13} />{deploySyncing ? "전송 중..." : "배포앱전송"}
         </button>
         <button
           className={`${styles.btn} ${styles.btnPrimary}`}

@@ -2088,6 +2088,7 @@ app.include_router(
     build_wonbe_router(
         get_current_user=_get_current_user,
         get_setting=_get_setting,
+        get_shared_db=_get_shared_db,
     )
 )
 
