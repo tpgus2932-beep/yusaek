@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 _KST = timezone(timedelta(hours=9))
+_STALE_HOURS = 6
 
 
 def _now() -> str:
@@ -27,9 +28,27 @@ def build_worklog_router(*, get_current_user, get_db, get_user_display):
             "createdAt": row["created_at"],
         }
 
+    def _auto_complete_stale(conn) -> None:
+        # started_at is always an ISO string with a fixed +09:00 offset, so
+        # lexical comparison against another such string is safe.
+        cutoff = (datetime.now(_KST) - timedelta(hours=_STALE_HOURS)).isoformat()
+        stale_rows = conn.execute(
+            "SELECT id, started_at FROM worklog_entries WHERE status = 'in_progress' AND started_at <= ?",
+            (cutoff,),
+        ).fetchall()
+        for r in stale_rows:
+            ended_at = (datetime.fromisoformat(r["started_at"]) + timedelta(hours=_STALE_HOURS)).isoformat()
+            conn.execute(
+                "UPDATE worklog_entries SET ended_at = ?, status = 'done' WHERE id = ?",
+                (ended_at, r["id"]),
+            )
+        if stale_rows:
+            conn.commit()
+
     @router.get("/entries")
     def list_entries(date: str | None = None, user: str = Depends(get_current_user)):
         conn = get_db()
+        _auto_complete_stale(conn)
         if date:
             rows = conn.execute(
                 "SELECT * FROM worklog_entries WHERE started_at LIKE ? ORDER BY started_at DESC",
@@ -42,6 +61,17 @@ def build_worklog_router(*, get_current_user, get_db, get_user_display):
         conn.close()
         return {"ok": True, "entries": [_row_to_entry(r) for r in rows]}
 
+    @router.get("/active")
+    def get_active_entries(user: str = Depends(get_current_user)):
+        conn = get_db()
+        _auto_complete_stale(conn)
+        rows = conn.execute(
+            "SELECT * FROM worklog_entries WHERE username = ? AND status = 'in_progress' ORDER BY started_at DESC",
+            (user,),
+        ).fetchall()
+        conn.close()
+        return {"ok": True, "entries": [_row_to_entry(r) for r in rows]}
+
     @router.post("/entries")
     def start_entry(payload: dict = Body(...), user: str = Depends(get_current_user)):
         task = (payload.get("task") or "").strip()
@@ -49,13 +79,7 @@ def build_worklog_router(*, get_current_user, get_db, get_user_display):
             raise HTTPException(status_code=400, detail="할 일을 입력해주세요.")
 
         conn = get_db()
-        existing = conn.execute(
-            "SELECT id FROM worklog_entries WHERE username = ? AND status = 'in_progress'",
-            (user,),
-        ).fetchone()
-        if existing:
-            conn.close()
-            raise HTTPException(status_code=400, detail="이미 진행중인 작업이 있습니다. 먼저 완료해주세요.")
+        _auto_complete_stale(conn)
 
         now = _now()
         cur = conn.execute(
@@ -79,9 +103,6 @@ def build_worklog_router(*, get_current_user, get_db, get_user_display):
         if not row:
             conn.close()
             raise HTTPException(status_code=404, detail="entry not found")
-        if row["username"] != user:
-            conn.close()
-            raise HTTPException(status_code=403, detail="본인 작업만 완료할 수 있습니다.")
         if row["status"] != "in_progress":
             conn.close()
             raise HTTPException(status_code=400, detail="이미 완료된 작업입니다.")

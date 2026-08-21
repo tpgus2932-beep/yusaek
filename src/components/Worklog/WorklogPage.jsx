@@ -44,7 +44,7 @@ const WorklogPage = ({ currentUser }) => {
     const [newTask, setNewTask] = useState('');
     const [starting, setStarting] = useState(false);
 
-    const [showCompleteForm, setShowCompleteForm] = useState(false);
+    const [completingId, setCompletingId] = useState(null);
     const [notesInput, setNotesInput] = useState('');
     const [completing, setCompleting] = useState(false);
 
@@ -117,7 +117,7 @@ const WorklogPage = ({ currentUser }) => {
             const data = await res.json();
             if (res.ok && data.entry) {
                 setEntries((prev) => prev.map((e) => (e.id === entryId ? data.entry : e)));
-                setShowCompleteForm(false);
+                setCompletingId(null);
                 setNotesInput('');
             } else {
                 setError(data.detail || '완료 처리에 실패했습니다.');
@@ -211,11 +211,12 @@ const WorklogPage = ({ currentUser }) => {
                         const userEntries = grouped[username] || [];
                         const isMine = username === currentUser;
                         const displayName = userEntries[0]?.displayName || username;
-                        const activeEntry = isMine && isToday
-                            ? userEntries.find((e) => e.status === 'in_progress')
-                            : null;
-                        const historyEntries = activeEntry
-                            ? userEntries.filter((e) => e.id !== activeEntry.id)
+                        const activeEntries = isToday
+                            ? userEntries.filter((e) => e.status === 'in_progress')
+                            : [];
+                        const activeIds = new Set(activeEntries.map((e) => e.id));
+                        const historyEntries = activeIds.size
+                            ? userEntries.filter((e) => !activeIds.has(e.id))
                             : userEntries;
 
                         return (
@@ -228,76 +229,85 @@ const WorklogPage = ({ currentUser }) => {
 
                                 {isMine && isToday && (
                                     <div className={styles.activeSection}>
-                                        {activeEntry ? (
-                                            <>
-                                                <div className={styles.activeTask}>{activeEntry.task}</div>
-                                                <div className={styles.activeMeta}>
-                                                    {fmtTime(activeEntry.startedAt)} 시작 · {fmtDuration(now - new Date(activeEntry.startedAt).getTime())} 경과
-                                                </div>
-                                                {showCompleteForm ? (
-                                                    <div className={styles.completeForm}>
-                                                        <textarea
-                                                            className={styles.notesInput}
-                                                            placeholder="특이사항 (선택)"
-                                                            value={notesInput}
-                                                            onChange={(e) => setNotesInput(e.target.value)}
-                                                            rows={2}
-                                                            autoFocus
-                                                        />
-                                                        <div className={styles.completeFormActions}>
-                                                            <button
-                                                                type="button"
-                                                                className={styles.secondaryBtn}
-                                                                onClick={() => {
-                                                                    setShowCompleteForm(false);
-                                                                    setNotesInput('');
-                                                                }}
-                                                            >
-                                                                취소
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                className={styles.primaryBtn}
-                                                                onClick={() => handleComplete(activeEntry.id)}
-                                                                disabled={completing}
-                                                            >
-                                                                {completing ? '처리 중...' : '완료 확정'}
-                                                            </button>
-                                                        </div>
+                                        <div className={styles.startRow}>
+                                            <input
+                                                type="text"
+                                                className={styles.taskInput}
+                                                placeholder="지금 하는 일을 적어주세요"
+                                                value={newTask}
+                                                onChange={(e) => setNewTask(e.target.value)}
+                                                onKeyDown={(e) => {
+                                                    if (e.key === 'Enter') handleStart();
+                                                }}
+                                            />
+                                            <button
+                                                type="button"
+                                                className={styles.primaryBtn}
+                                                onClick={handleStart}
+                                                disabled={starting || !newTask.trim()}
+                                            >
+                                                <Play size={14} />
+                                                시작
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {activeEntries.length > 0 && (
+                                    <div className={styles.activeSection}>
+                                        <div className={styles.activeList}>
+                                            {activeEntries.map((entry) => (
+                                                <div key={entry.id} className={styles.activeItem}>
+                                                    <div className={styles.activeTask}>{entry.task}</div>
+                                                    <div className={styles.activeMeta}>
+                                                        {fmtTime(entry.startedAt)} 시작 · {fmtDuration(now - new Date(entry.startedAt).getTime())} 경과
                                                     </div>
-                                                ) : (
-                                                    <button
-                                                        type="button"
-                                                        className={styles.completeBtn}
-                                                        onClick={() => setShowCompleteForm(true)}
-                                                    >
-                                                        완료
-                                                    </button>
-                                                )}
-                                            </>
-                                        ) : (
-                                            <div className={styles.startRow}>
-                                                <input
-                                                    type="text"
-                                                    className={styles.taskInput}
-                                                    placeholder="지금 하는 일을 적어주세요"
-                                                    value={newTask}
-                                                    onChange={(e) => setNewTask(e.target.value)}
-                                                    onKeyDown={(e) => {
-                                                        if (e.key === 'Enter') handleStart();
-                                                    }}
-                                                />
-                                                <button
-                                                    type="button"
-                                                    className={styles.primaryBtn}
-                                                    onClick={handleStart}
-                                                    disabled={starting || !newTask.trim()}
-                                                >
-                                                    <Play size={14} />
-                                                    시작
-                                                </button>
-                                            </div>
-                                        )}
+                                                    {completingId === entry.id ? (
+                                                        <div className={styles.completeForm}>
+                                                            <textarea
+                                                                className={styles.notesInput}
+                                                                placeholder="특이사항 (선택)"
+                                                                value={notesInput}
+                                                                onChange={(e) => setNotesInput(e.target.value)}
+                                                                rows={2}
+                                                                autoFocus
+                                                            />
+                                                            <div className={styles.completeFormActions}>
+                                                                <button
+                                                                    type="button"
+                                                                    className={styles.secondaryBtn}
+                                                                    onClick={() => {
+                                                                        setCompletingId(null);
+                                                                        setNotesInput('');
+                                                                    }}
+                                                                >
+                                                                    취소
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    className={styles.primaryBtn}
+                                                                    onClick={() => handleComplete(entry.id)}
+                                                                    disabled={completing}
+                                                                >
+                                                                    {completing ? '처리 중...' : '완료 확정'}
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <button
+                                                            type="button"
+                                                            className={styles.completeBtn}
+                                                            onClick={() => {
+                                                                setCompletingId(entry.id);
+                                                                setNotesInput('');
+                                                            }}
+                                                        >
+                                                            완료
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
                                     </div>
                                 )}
 
