@@ -3232,4 +3232,31 @@ def build_wonbe_read_router(*, get_current_user, get_shared_db):
         finally:
             conn.close()
 
+    @router.get("/export")
+    def wonbe_read_export(user: str = Depends(get_current_user)):
+        conn = _conn()
+        try:
+            try:
+                rows = conn.execute("SELECT * FROM wonbe ORDER BY 상품코드").fetchall()
+            except Exception:
+                rows = []
+        finally:
+            conn.close()
+
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("Sheet1")
+        for ci, h in enumerate(COLUMNS):
+            sheet.write(0, ci, h)
+        for ri, row in enumerate(rows, start=1):
+            for ci, col in enumerate(COLUMNS):
+                sheet.write(ri, ci, row[col] or "")
+
+        buf = io.BytesIO()
+        book.save(buf)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/vnd.ms-excel",
+            headers={"Content-Disposition": _content_disposition("원가베이스유.xls")},
+        )
+
     return router
