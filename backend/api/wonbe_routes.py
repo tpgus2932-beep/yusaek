@@ -3153,3 +3153,83 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             conn.close()
 
     return router
+
+
+def build_wonbe_read_router(*, get_current_user, get_shared_db):
+    """배포앱(collab_app, Render)용 원가베이스유 읽기 전용 라우터.
+
+    로컬 파일(WONBE_DB_PATH) 대신 Turso 공유 DB의 wonbe 테이블(원가베이스유 페이지의
+    "배포앱전송" 버튼으로 채워짐)을 읽는다. 값 수정/일괄수정, 이지어드민·에이블리·
+    지그재그 동기화, 할인가·판매가 계산/반영 등은 로컬 파일과 EZAdmin 세션 등 로컬
+    전용 자원이 필요해 여기서는 제공하지 않는다 — 검색/조회만 지원한다."""
+    router = APIRouter(prefix="/wonbe")
+
+    def _conn():
+        return get_shared_db()
+
+    @router.get("/search")
+    def wonbe_read_search(
+        q: str = "",
+        offset: int = 0,
+        limit: int = 50,
+        empty_col: str = "",
+        user: str = Depends(get_current_user),
+    ):
+        empty_col = empty_col.strip()
+        if empty_col and empty_col not in COLUMNS:
+            raise HTTPException(status_code=400, detail=f"잘못된 컬럼: {empty_col}")
+        empty_clause = f"TRIM({_qcol(empty_col)}) = ''" if empty_col else ""
+
+        conn = _conn()
+        try:
+            try:
+                q = q.strip()
+                if not q:
+                    where = f" WHERE {empty_clause}" if empty_clause else ""
+                    rows = conn.execute(
+                        f"SELECT * FROM wonbe{where} ORDER BY rowid DESC LIMIT ? OFFSET ?",
+                        (limit, offset),
+                    ).fetchall()
+                    total = conn.execute(f"SELECT COUNT(*) FROM wonbe{where}").fetchone()[0]
+                else:
+                    like = f"%{q}%"
+                    search_clause = "(상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?)"
+                    where_clause = f"{search_clause} AND {empty_clause}" if empty_clause else search_clause
+                    base_params = [like, like, like, like]
+                    rows = conn.execute(
+                        f"""SELECT * FROM wonbe
+                           WHERE {where_clause}
+                           ORDER BY CASE WHEN 상품코드 = ? THEN 0
+                                         WHEN 상품코드 LIKE ? THEN 1 ELSE 2 END, 상품코드
+                           LIMIT ? OFFSET ?""",
+                        (*base_params, q, f"{q}%", limit, offset),
+                    ).fetchall()
+                    total = conn.execute(
+                        f"SELECT COUNT(*) FROM wonbe WHERE {where_clause}",
+                        base_params,
+                    ).fetchone()[0]
+            except Exception:
+                rows, total = [], 0
+            return {
+                "ok": True,
+                "rows": [dict(r) for r in rows],
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+            }
+        finally:
+            conn.close()
+
+    @router.get("/stats")
+    def wonbe_read_stats(user: str = Depends(get_current_user)):
+        conn = _conn()
+        try:
+            try:
+                total = conn.execute("SELECT COUNT(*) FROM wonbe").fetchone()[0]
+            except Exception:
+                total = 0
+            return {"ok": True, "total": total, "db_exists": total > 0}
+        finally:
+            conn.close()
+
+    return router

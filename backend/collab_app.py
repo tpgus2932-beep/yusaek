@@ -36,7 +36,7 @@ from api.misong_routes import build_misong_router
 from api.order_routes import build_order_router
 from api.timebox_routes import build_timebox_router
 from api.worklog_routes import build_worklog_router
-from api.wonbe_routes import WONBE_DB_PATH
+from api.wonbe_routes import WONBE_DB_PATH, build_wonbe_read_router
 from main import (
     ALLOWED_REQUEST_EXTS,
     ALLOWED_SHARED_EXTS,
@@ -196,6 +196,13 @@ app.include_router(
         get_shared_db=_get_shared_db,
         get_user_display=_get_user_display,
         is_render=bool(os.environ.get("RENDER", "")),
+    )
+)
+
+app.include_router(
+    build_wonbe_read_router(
+        get_current_user=_get_current_user,
+        get_shared_db=_get_shared_db,
     )
 )
 
