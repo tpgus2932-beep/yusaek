@@ -17,8 +17,8 @@ def _pastelco_headers(token: str) -> dict:
     }
 
 
-async def pastelco_login() -> str:
-    return await _ably_client.login()
+async def pastelco_login(*, force: bool = False) -> str:
+    return await _ably_client.login(force=force)
 
 
 def pastelco_today_kst() -> str:

@@ -13,6 +13,27 @@ class PastelcoClient:
     @staticmethod
     def today_kst() -> str: return datetime.now(_KST).strftime("%Y-%m-%d")
 
+    async def bulk_update_prices(self, products: list[dict]) -> httpx.Response:
+        """아무드(셀러어드민) 상품가 일괄변경. products: [{ably_sno, original_price, sale_price}, ...]."""
+        token = await self._ably.login()
+        headers = {
+            "Authorization": f"JWT {token}",
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Origin": "https://seller.amood.jp",
+            "Referer": "https://seller.amood.jp/",
+            "X-Token-Type": "ably",
+            "X-Web-Version": "1.1703.0",
+            "User-Agent": "Mozilla/5.0",
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{config.PASTELCO_BASE}/seller/products/bulk-price-update/",
+                headers=headers,
+                json={"products": products},
+            )
+        return response
+
     async def fetch_orders(self, status: str, *, today: str | None = None) -> list[dict]:
         token = await self._ably.login()
         headers = {"Authorization": f"JWT {token}", "Accept": "application/json", "Content-Type": "application/json", "Origin": "https://my.a-bly.com", "Referer": "https://my.a-bly.com/", "User-Agent": "Mozilla/5.0"}
