@@ -279,7 +279,7 @@ async def product_upload_from_api(
         )
         if not res.is_success:
             raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
-    token = res.json().get("token")
+    token = res.json().get("access_token") or res.json().get("token")
     if not token:
         raise HTTPException(status_code=502, detail="에이블리 로그인 실패: 토큰 없음")
 

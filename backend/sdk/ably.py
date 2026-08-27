@@ -39,7 +39,7 @@ class AblyClient:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(f"{config.ABLY_BASE}/seller/login/", json={"email": config.ABLY_EMAIL, "password": config.ABLY_PASSWORD}, headers={"Content-Type": "application/json", "Origin": "https://seller-admin.a-bly.com", "Referer": "https://seller-admin.a-bly.com/", "User-Agent": "Mozilla/5.0"})
         if not response.is_success: raise RuntimeError("Ably login failed")
-        token = response.json().get("token")
+        token = response.json().get("access_token") or response.json().get("token")
         if not token: raise RuntimeError("Ably login failed: token missing")
         self._token = token
         return token

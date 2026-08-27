@@ -1154,7 +1154,7 @@ def build_barcode_router(
             )
             if not res.is_success:
                 raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
-        token = res.json().get("token")
+        token = res.json().get("access_token") or res.json().get("token")
         if not token:
             raise HTTPException(status_code=502, detail="에이블리 로그인 실패: 토큰 없음")
 
@@ -1572,7 +1572,7 @@ def build_barcode_router(
             )
             if not login_res.is_success:
                 raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
-        token = login_res.json().get("token")
+        token = login_res.json().get("access_token") or login_res.json().get("token")
         if not token:
             raise HTTPException(status_code=502, detail="에이블리 로그인 실패: 토큰 없음")
 

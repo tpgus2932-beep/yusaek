@@ -43,7 +43,7 @@ async def _ably_login_noye() -> str:
             },
         )
         res.raise_for_status()
-    token = res.json().get("token")
+    token = res.json().get("access_token") or res.json().get("token")
     if not token:
         raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
     return token
