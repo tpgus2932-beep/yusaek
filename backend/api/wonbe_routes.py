@@ -366,6 +366,21 @@ def load_wonbe_option_sno_map() -> dict[str, str]:
     return sno_map
 
 
+def load_wonbe_product_codes() -> set[str]:
+    """원가베이스유(wonbe)에 등록된 상품코드 전체 집합.
+
+    에이블리 option_stock_sync_code가 옵션 sno가 아니라 상품코드를 그대로
+    내려주도록 바뀐 뒤로, 반품 쪽에서 그 값을 옵션번호맵이 아니라 이 목록으로
+    바로 검증한다."""
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute("SELECT 상품코드 FROM wonbe WHERE 상품코드 != ''").fetchall()
+    finally:
+        conn.close()
+    return {str(r["상품코드"]).strip() for r in rows}
+
+
 def load_wonbe_client_info_by_code() -> dict[str, dict[str, str]]:
     """상품코드 → {거래처, 거래처상품명, 색상, 사이즈} 매핑."""
     conn = _get_wonbe_db()

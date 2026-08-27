@@ -25,7 +25,7 @@ except ModuleNotFoundError:  # package import in unit tests
     from backend.sdk.ably import AblyClient
     from backend.sdk.zigzag import ZigzagClient, classify_return_charge_method
 
-from api.wonbe_routes import load_wonbe_option_sno_map, _get_wonbe_db
+from api.wonbe_routes import load_wonbe_option_sno_map, load_wonbe_product_codes, _get_wonbe_db
 
 LLOGIS_LOGIN_URL  = "https://partner.alps.llogis.com/auth/login"
 LLOGIS_PID_BASE   = "https://pid.alps.llogis.com:18210"
@@ -3063,9 +3063,10 @@ def build_returns_router(
     ):
         """선택된 반품/교환 항목을 이지어드민 입고처리(I100)한다.
 
-        반품 항목은 item.option_code(에이블리 option_stock_sync_code), 교환 항목은
-        item.original_option_sno(고객이 실제로 반품 발송하는 원래 옵션)를 원가베이스유의
-        옵션번호와 매칭해 상품코드를 찾고, 그 상품코드로 입고처리한다. 교환목표 옵션인
+        반품 항목은 item.option_code(에이블리 option_stock_sync_code, 이제는 상품코드
+        그 자체)를 원가베이스유 상품코드로 직접 검증하고, 교환 항목은
+        item.original_option_sno(고객이 실제로 반품 발송하는 원래 옵션 - 실제 옵션 sno)를
+        원가베이스유의 옵션번호와 매칭해 상품코드를 찾는다. 교환목표 옵션인
         exchange_option_sno로 매칭하면 물리적으로 들어오는 상품과 다른(교환 후) 상품코드로
         입고되므로 절대 쓰지 않는다.
         """
@@ -3083,6 +3084,7 @@ def build_returns_router(
         by_id.update({it.get("id"): it for it in state.queue_exchange_seller})
         by_id.update({it.get("id"): it for it in state.queue_exchange_customer})
 
+        product_codes = load_wonbe_product_codes()
         option_sno_map = load_wonbe_option_sno_map()
         ez = EzAdminClient(get_setting)
 
@@ -3091,12 +3093,18 @@ def build_returns_router(
             result = {"id": item.get("id"), "scan": item.get("scan"), "ok": False, "error": None}
             state_item = by_id.get(item.get("id"))
             try:
-                option_code = str(item.get("option_code") or item.get("original_option_sno") or "").strip()
-                if not option_code:
+                option_code = str(item.get("option_code") or "").strip()
+                original_option_sno = str(item.get("original_option_sno") or "").strip()
+                if option_code:
+                    product_id = option_code if option_code in product_codes else None
+                    if not product_id:
+                        raise ValueError(f"상품코드({option_code})를 원가베이스유에서 찾을 수 없음")
+                elif original_option_sno:
+                    product_id = option_sno_map.get(original_option_sno)
+                    if not product_id:
+                        raise ValueError(f"옵션번호({original_option_sno})를 원가베이스유에서 찾을 수 없음")
+                else:
                     raise ValueError("옵션번호 없음")
-                product_id = option_sno_map.get(option_code)
-                if not product_id:
-                    raise ValueError(f"옵션번호({option_code})를 원가베이스유에서 찾을 수 없음")
                 try:
                     qty = int(float(item.get("qty") or 1))
                 except (TypeError, ValueError):
@@ -3122,24 +3130,31 @@ def build_returns_router(
 
     @router.post("/returns/resolve-product-codes")
     async def returns_resolve_product_codes(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        """item.option_code(반품, 에이블리 option_stock_sync_code) 또는
-        item.original_option_sno(교환, 고객이 실제로 반품 발송하는 원래 옵션)를 원가베이스유
-        옵션번호와 매칭해 상품코드만 돌려준다 (재고 변경 없음) - 김승일보내기처럼 입고처리
-        없이 상품코드만 필요한 곳에서 재사용. exchange_option_sno(교환목표 옵션)는 물리적으로
-        돌아오는 상품과 다르므로 여기서 쓰지 않는다."""
+        """item.option_code(반품, 에이블리 option_stock_sync_code - 이제는 상품코드 그 자체)는
+        원가베이스유 상품코드로 직접 검증하고, item.original_option_sno(교환, 고객이 실제로
+        반품 발송하는 원래 옵션 - 실제 옵션 sno)는 원가베이스유 옵션번호와 매칭해 상품코드를
+        찾는다. 재고 변경 없이 상품코드만 돌려준다 - 김승일보내기처럼 입고처리 없이 상품코드만
+        필요한 곳에서 재사용. exchange_option_sno(교환목표 옵션)는 물리적으로 돌아오는 상품과
+        다르므로 여기서 쓰지 않는다."""
         items = payload.get("items", [])
+        product_codes = load_wonbe_product_codes()
         option_sno_map = load_wonbe_option_sno_map()
         results = []
         for item in items:
-            option_code = str(item.get("option_code") or item.get("original_option_sno") or "").strip()
+            option_code = str(item.get("option_code") or "").strip()
+            original_option_sno = str(item.get("original_option_sno") or "").strip()
             error = None
-            if not option_code:
+            if option_code:
+                product_id = option_code if option_code in product_codes else None
+                if not product_id:
+                    error = f"상품코드({option_code})를 원가베이스유에서 찾을 수 없음"
+            elif original_option_sno:
+                product_id = option_sno_map.get(original_option_sno)
+                if not product_id:
+                    error = f"옵션번호({original_option_sno})를 원가베이스유에서 찾을 수 없음"
+            else:
                 product_id = None
                 error = "옵션번호 없음"
-            else:
-                product_id = option_sno_map.get(option_code)
-                if not product_id:
-                    error = f"옵션번호({option_code})를 원가베이스유에서 찾을 수 없음"
             results.append({"id": item.get("id"), "product_id": product_id, "error": error})
         return {"ok": True, "results": results}
 
