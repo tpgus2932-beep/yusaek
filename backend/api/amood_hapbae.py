@@ -48,12 +48,6 @@ AMOOD_HAPBAE_ALLOWED_COST_BASE = {".xlsx", ".xls", ".xlsm"}
 COST_BASE_CODE_COL = 0
 COST_BASE_MATCH_COL = 8
 COST_BASE_REQUIRED_COLS = COST_BASE_MATCH_COL + 1
-SHARED_COST_BASE_PATH = Path(
-    os.environ.get("SHARED_COST_BASE_PATH")
-    or os.environ.get("AMOOD_HAPBAE_COST_BASE_PATH")
-    or os.environ.get("RETURN_COST_BASE_PATH")
-    or r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스유.xlsx"
-)
 _LAST_FILE_DIR = Path(os.environ.get("AMOOD_HAPBAE_LAST_FILE_DIR") or Path(__file__).resolve().parent.parent / "uploads" / "amood_hapbae")
 _LAST_FILE_PATH = _LAST_FILE_DIR / "last_upload.xlsx"
 _LAST_META_PATH = _LAST_FILE_DIR / "last_upload_meta.json"

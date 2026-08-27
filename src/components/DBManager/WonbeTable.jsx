@@ -5,7 +5,7 @@ import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
 const PAGE_SIZE = 50;
 const EDITABLE_COLS = ["상품명합", "거래처합", "거래처", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"];
-const ALL_COLS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가"];
+const ALL_COLS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가", "지그재그상품번호"];
 const VISIBLE_COLS_STORAGE_KEY = "wonbe_visible_cols";
 
 export default function WonbeTable() {
@@ -19,6 +19,7 @@ export default function WonbeTable() {
   const [syncing, setSyncing] = useState(false);
   const [deletingByDate, setDeletingByDate] = useState(false);
   const [snoSyncing, setSnoSyncing] = useState(false);
+  const [zigzagSyncing, setZigzagSyncing] = useState(false);
   const [regDateSyncing, setRegDateSyncing] = useState(false);
   const [countrySyncing, setCountrySyncing] = useState(false);
   const [countryProgress, setCountryProgress] = useState(null); // { total, done, matched }
@@ -62,6 +63,9 @@ export default function WonbeTable() {
   const [excludeSaving, setExcludeSaving] = useState(false);
   const excludePanelRef = useRef(null);
 
+  // 이벤트전할인가 채우기(원가기준)에서 쓰는 택배비 설정값
+  const [savedShippingFee, setSavedShippingFee] = useState(2060);
+
   useEffect(() => {
     localStorage.setItem(VISIBLE_COLS_STORAGE_KEY, JSON.stringify(Array.from(visibleCols)));
   }, [visibleCols]);
@@ -92,6 +96,18 @@ export default function WonbeTable() {
         if (res.ok && data.ok) {
           setExcludeIds(data.ids || []);
           setExcludeText((data.ids || []).join("\n"));
+        }
+      } catch { /* noop */ }
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${API}/wonbe/event-pre-discount-shipping-fee`, { headers: getAuthHeaders() });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok && Number.isFinite(data.shipping_fee)) {
+          setSavedShippingFee(data.shipping_fee);
         }
       } catch { /* noop */ }
     })();
@@ -416,7 +432,8 @@ export default function WonbeTable() {
   const [preDiscountPriceLoading, setPreDiscountPriceLoading] = useState(false);
 
   const handleFillEventPreDiscountPrice = async () => {
-    const label = query ? `"${query}" 검색 결과` : "전체";
+    const codes = Array.from(selectedCodes);
+    const label = codes.length ? `체크한 ${codes.length}건` : (query ? `"${query}" 검색 결과` : "전체");
     const marginInput = window.prompt(
       `${label}에 대해 원가 기준으로 [이벤트전 할인가]를 계산해 채웁니다.\n` +
       `P = (원가×1.10 + 택배비) ÷ (1 − 수수료율 8.756% − 목표순마진율), 10원 단위 올림.\n\n` +
@@ -429,9 +446,9 @@ export default function WonbeTable() {
       setMessage("목표순마진율 값이 올바르지 않습니다.");
       return;
     }
-    const shippingInput = window.prompt("택배비(원)를 입력하세요:", "2060");
+    const shippingInput = window.prompt("택배비(원)를 입력하세요:", String(savedShippingFee));
     if (shippingInput === null) return;
-    const shippingFee = shippingInput.trim() === "" ? 2060 : Number(shippingInput);
+    const shippingFee = shippingInput.trim() === "" ? savedShippingFee : Number(shippingInput);
     if (!Number.isFinite(shippingFee)) {
       setMessage("택배비 값이 올바르지 않습니다.");
       return;
@@ -439,10 +456,23 @@ export default function WonbeTable() {
     setPreDiscountPriceLoading(true);
     setMessage("");
     try {
+      if (shippingFee !== savedShippingFee) {
+        const saveRes = await fetch(`${API}/wonbe/event-pre-discount-shipping-fee`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+          body: JSON.stringify({ shipping_fee: shippingFee }),
+        });
+        const saveData = await saveRes.json().catch(() => ({}));
+        if (saveRes.ok && saveData.ok) setSavedShippingFee(saveData.shipping_fee);
+      }
       const res = await fetch(`${API}/wonbe/fill-event-pre-discount-price`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ q: query, margin_percent: marginPercent, shipping_fee: shippingFee }),
+        body: JSON.stringify(
+          codes.length
+            ? { codes, margin_percent: marginPercent, shipping_fee: shippingFee }
+            : { q: query, margin_percent: marginPercent, shipping_fee: shippingFee }
+        ),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "이벤트전 할인가 채우기 실패");
@@ -486,6 +516,79 @@ export default function WonbeTable() {
       setMessage(err.message);
     } finally {
       setPricePushLoading(false);
+    }
+  };
+
+  const [zigzagPriceSource, setZigzagPriceSource] = useState("이벤트전 할인가");
+  const [zigzagPricePushLoading, setZigzagPricePushLoading] = useState(false);
+
+  const handlePushPriceToZigzag = async () => {
+    const codes = Array.from(selectedCodes);
+    const label = codes.length ? `체크한 ${codes.length}건` : (query ? `"${query}" 검색 결과` : "전체");
+    if (!window.confirm(
+      `${label} 상품의 [${zigzagPriceSource}]를 지그재그 판매가로 변경합니다.\n` +
+      `(지그재그상품번호 기준, 엑셀 일괄수정 업로드 — 실제 판매중인 상품가가 바뀝니다)\n진행하시겠습니까?`
+    )) return;
+    setZigzagPricePushLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/push-price-to-zigzag`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify(codes.length ? { source: zigzagPriceSource, codes } : { source: zigzagPriceSource, q: query }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "지그재그 상품가 변경 실패");
+      const statusLabel = data.status ? ` (지그재그 처리결과: ${data.status})` : " (처리결과 확인 전 - 지그재그 파트너센터 엑셀 업로드 내역에서 확인해주세요)";
+      setMessage(
+        `[${data.source}] 기준 지그재그 상품가 변경 요청 완료: ${data.requested}건${statusLabel} ` +
+        `(제외 - 값이상 ${data.skipped_invalid}건 · 중복상품 ${data.skipped_duplicate}건)`
+      );
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setZigzagPricePushLoading(false);
+    }
+  };
+
+  const [amoodPriceLoading, setAmoodPriceLoading] = useState(false);
+
+  const handlePushPriceToAmood = async (mode) => {
+    const codes = Array.from(selectedCodes);
+    const label = codes.length ? `체크한 ${codes.length}건` : (query ? `"${query}" 검색 결과` : "전체");
+    const actionLabel = mode === "revert" ? "되돌립니다" : "변경합니다";
+    const rateInput = window.prompt("1엔당 원화 환율을 입력하세요 (예: 8.6):", "8.6");
+    if (rateInput === null) return;
+    const rate = Number(rateInput);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      setMessage("환율 값이 올바르지 않습니다.");
+      return;
+    }
+    const formulaText = mode === "revert"
+      ? `할인판매가 = 이벤트전 할인가÷${rate}엔, 판매가 = 할인판매가×1.2`
+      : `할인판매가 = 이벤트전 할인가×1.2÷${rate}엔, 판매가 = 할인판매가×1.2`;
+    if (!window.confirm(
+      `${label} 상품의 [이벤트전 할인가] 기준으로 아무드 상품가를 ${actionLabel}\n` +
+      `(${formulaText}, 에이블리상품번호 기준 — 실제 판매중인 상품가가 바뀝니다)\n진행하시겠습니까?`
+    )) return;
+    setAmoodPriceLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/push-price-to-amood`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify(codes.length ? { rate, mode, codes } : { rate, mode, q: query }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "아무드 상품가 변경 실패");
+      setMessage(
+        `아무드 상품가 ${mode === "revert" ? "되돌리기" : "변경"} 완료 (환율 1엔=${data.rate}원): 요청 ${data.requested}건 ` +
+        `(제외 - 값이상 ${data.skipped_invalid}건 · 중복상품 ${data.skipped_duplicate}건)`
+      );
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setAmoodPriceLoading(false);
     }
   };
 
@@ -561,6 +664,26 @@ export default function WonbeTable() {
       setMessage(err.message);
     } finally {
       setSnoSyncing(false);
+    }
+  };
+
+  const handleSyncZigzagId = async () => {
+    setZigzagSyncing(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/sync-zigzag-id`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "지그재그상품번호 동기화 실패");
+      setMessage(`지그재그상품번호 동기화 완료: 지그재그 ${data.fetched_products}건 조회 · ${data.considered}건 중 ${data.matched}건 매칭 (미매칭 ${data.unmatched}건)`);
+      await fetchRows(query, offset, emptyCol);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setZigzagSyncing(false);
     }
   };
 
@@ -831,8 +954,48 @@ export default function WonbeTable() {
             <RefreshCcw size={13} />{pricePushLoading ? "변경 중..." : "에이블리 상품가 변경"}
           </button>
         </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+          <select
+            className={styles.searchInput}
+            value={zigzagPriceSource}
+            onChange={(e) => setZigzagPriceSource(e.target.value)}
+            style={{ minWidth: "130px" }}
+            disabled={zigzagPricePushLoading}
+          >
+            <option value="판매가">판매가로 변경</option>
+            <option value="이벤트전 할인가">이벤트전 할인가로 변경</option>
+            <option value="이벤트 할인가">이벤트 할인가로 변경</option>
+          </select>
+          <button
+            className={`${styles.btn} ${styles.btnDanger}`}
+            onClick={handlePushPriceToZigzag}
+            disabled={loading || zigzagPricePushLoading}
+            title="선택한 가격을 지그재그 실제 상품가로 일괄 변경합니다 (엑셀 업로드)"
+          >
+            <RefreshCcw size={13} />{zigzagPricePushLoading ? "변경 중..." : "지그재그 상품가 변경"}
+          </button>
+        </div>
+        <button
+          className={`${styles.btn} ${styles.btnDanger}`}
+          onClick={() => handlePushPriceToAmood("increase")}
+          disabled={loading || amoodPriceLoading}
+          title="이벤트전 할인가×1.2를 엔화로 환산해 할인판매가로, 그 값의 1.2배를 판매가로 삼아 아무드 실제 상품가를 일괄 변경합니다"
+        >
+          <RefreshCcw size={13} />{amoodPriceLoading ? "변경 중..." : "아무드 상품가 변경"}
+        </button>
+        <button
+          className={`${styles.btn} ${styles.btnDanger}`}
+          onClick={() => handlePushPriceToAmood("revert")}
+          disabled={loading || amoodPriceLoading}
+          title="이벤트전 할인가를 그대로 엔화로 환산해 할인판매가로, 그 값의 1.2배를 판매가로 삼아 아무드 실제 상품가를 되돌립니다"
+        >
+          <RefreshCcw size={13} />{amoodPriceLoading ? "되돌리는 중..." : "아무드 상품가 되돌리기"}
+        </button>
         <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncAblySno} disabled={loading || snoSyncing}>
           <RefreshCcw size={13} />{snoSyncing ? "동기화 중..." : "에이블리상품번호 채우기"}
+        </button>
+        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncZigzagId} disabled={loading || zigzagSyncing} title="상품명으로 지그재그 상품과 매칭해 지그재그상품번호를 채웁니다">
+          <RefreshCcw size={13} />{zigzagSyncing ? "동기화 중..." : "지그재그상품번호 채우기"}
         </button>
         <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncRegistrationDate} disabled={loading || regDateSyncing}>
           <RefreshCcw size={13} />{regDateSyncing ? "채우는 중..." : "등록일 채우기"}

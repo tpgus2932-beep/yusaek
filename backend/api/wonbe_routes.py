@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import math
 import re
 import sqlite3
@@ -17,6 +18,8 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response
 
 from sdk.ably import AblyClient
+from sdk.pastelco import PastelcoClient
+from sdk.zigzag import ZigzagClient
 
 try:
     from bs4 import BeautifulSoup as _BS4
@@ -76,8 +79,9 @@ WONBE_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스유
 WONBE_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\원가베이스유.xlsx")
 JANGGI_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\날짜별장끼정리.db")
 INGODAEGI_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\입고대기.xlsx")
+ZIGZAG_PRICE_TEMPLATE_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\지그재그_판매가수정_템플릿.xlsx")
 
-COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가"]
+COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가", "지그재그상품번호"]
 
 
 def _qcol(col: str) -> str:
@@ -184,6 +188,8 @@ def _init_wonbe_table(conn: sqlite3.Connection):
         conn.execute('ALTER TABLE wonbe ADD COLUMN "이벤트 할인가" TEXT')
     if "판매가" not in wonbe_cols:
         conn.execute('ALTER TABLE wonbe ADD COLUMN 판매가 TEXT')
+    if "지그재그상품번호" not in wonbe_cols:
+        conn.execute("ALTER TABLE wonbe ADD COLUMN 지그재그상품번호 TEXT")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS wonbe_meta (
             key   TEXT PRIMARY KEY,
@@ -249,7 +255,31 @@ def _sale_price_multiplier(cost: float) -> int:
 
 _EVENT_PRE_DISCOUNT_FEE_RATE = 0.08756  # 에이블리 판매 수수료율 (고정)
 _EVENT_PRE_DISCOUNT_DEFAULT_MARGIN_PERCENT = 30.0  # 목표순마진율 기본값
-_EVENT_PRE_DISCOUNT_DEFAULT_SHIPPING_FEE = 2060.0  # 택배비 기본값
+_EVENT_PRE_DISCOUNT_DEFAULT_SHIPPING_FEE = 2060.0  # 택배비 기본값 (저장된 설정값이 없을 때)
+
+EVENT_PRE_DISCOUNT_SHIPPING_FEE_META_KEY = "event_pre_discount_shipping_fee"
+
+
+def _get_event_pre_discount_shipping_fee(conn: sqlite3.Connection) -> float:
+    """이벤트전 할인가 계산에 쓸 택배비 설정값을 wonbe_meta에서 읽는다. 저장된 값이 없으면 기본값."""
+    row = conn.execute(
+        "SELECT value FROM wonbe_meta WHERE key = ?", (EVENT_PRE_DISCOUNT_SHIPPING_FEE_META_KEY,)
+    ).fetchone()
+    if not row or not row["value"]:
+        return _EVENT_PRE_DISCOUNT_DEFAULT_SHIPPING_FEE
+    try:
+        return float(row["value"])
+    except (TypeError, ValueError):
+        return _EVENT_PRE_DISCOUNT_DEFAULT_SHIPPING_FEE
+
+
+def _set_event_pre_discount_shipping_fee(conn: sqlite3.Connection, value: float) -> float:
+    conn.execute(
+        "INSERT OR REPLACE INTO wonbe_meta (key, value) VALUES (?, ?)",
+        (EVENT_PRE_DISCOUNT_SHIPPING_FEE_META_KEY, str(value)),
+    )
+    conn.commit()
+    return value
 
 
 def _event_pre_discount_price(cost: float, *, margin_percent: float, shipping_fee: float) -> int:
@@ -681,6 +711,43 @@ def _init_ichae_table(conn: sqlite3.Connection):
     conn.commit()
 
 
+# 노예김승일 입고전표 엑셀전환 페이지에서 관리하는 부가세 거래처 목록과 동일한 설정 키.
+# (backend/api/noye_kimsungil_routes.py의 VAT_VENDORS_KEY와 반드시 일치해야 함)
+INVOICE_MANAGE_VAT_VENDORS_SETTING_KEY = "noye_kimsungil_vat_vendors"
+
+INVOICE_MANAGE_EDITABLE_COLS = {"입금완료", "계산서발행완료", "이월발행"}
+
+
+def _load_vat_vendor_set(get_setting) -> set[str]:
+    if get_setting is None:
+        return set()
+    raw = get_setting(INVOICE_MANAGE_VAT_VENDORS_SETTING_KEY)
+    try:
+        vendors = json.loads(raw) if raw else []
+    except Exception:
+        vendors = []
+    return {str(v).strip() for v in vendors if str(v).strip()}
+
+
+def _init_invoice_manage_table(conn: sqlite3.Connection):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS 계산서관리 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            월 TEXT NOT NULL,
+            거래처명 TEXT NOT NULL,
+            입금액 REAL NOT NULL DEFAULT 0,
+            부가세거래처 INTEGER NOT NULL DEFAULT 0,
+            입금완료 INTEGER NOT NULL DEFAULT 0,
+            계산서발행완료 INTEGER NOT NULL DEFAULT 0,
+            이월발행 INTEGER NOT NULL DEFAULT 0,
+            수정일시 TEXT NOT NULL DEFAULT '',
+            UNIQUE(월, 거래처명)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_invoice_manage_월 ON 계산서관리(월)")
+    conn.commit()
+
+
 def _parse_amount_janggi(value) -> float:
     if value is None:
         return 0.0
@@ -774,6 +841,27 @@ def _build_price_upload_xlsx(rows: list[tuple[str, str, str]]) -> bytes:
         ws.cell(ri, 1, sno)
         ws.cell(ri, 2, price)
         ws.cell(ri, 3, discount)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _build_zigzag_price_upload_xlsx(rows: list[tuple[str, str]]) -> bytes:
+    """지그재그 파트너센터 '판매가 수정(상품단위)' 엑셀 양식과 동일한 구조로 xlsx를 만든다.
+    양식을 새로 만들면 템플릿버전 시트/병합 셀 등 구조가 어긋나 지그재그 쪽 검증에 걸릴 위험이
+    있어서, 실제 다운로드받은 양식 파일(ZIGZAG_PRICE_TEMPLATE_XLSX_PATH)을 그대로 열어 헤더는
+    유지하고 데이터 행(4행부터)만 통째로 비운 뒤 새로 채운다.
+    A열 상품번호(지그재그상품번호) / H열 지그재그 판매가 — 나머지 정보조회 열은 비워둠."""
+    if not ZIGZAG_PRICE_TEMPLATE_XLSX_PATH.exists():
+        raise HTTPException(status_code=500, detail=f"지그재그 판매가 양식 파일이 없습니다: {ZIGZAG_PRICE_TEMPLATE_XLSX_PATH}")
+    wb = openpyxl.load_workbook(str(ZIGZAG_PRICE_TEMPLATE_XLSX_PATH))
+    ws = wb["판매가 수정(상품단위)"]
+    if ws.max_row >= 4:
+        ws.delete_rows(4, ws.max_row - 3)
+    for ri, (product_id, price) in enumerate(rows, start=4):
+        ws.cell(ri, 1, product_id)
+        ws.cell(ri, 8, price)
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -997,6 +1085,35 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             conn.close()
         return {"ok": True, "ids": saved}
 
+    @router.get("/event-pre-discount-shipping-fee")
+    def wonbe_get_event_pre_discount_shipping_fee(user: str = Depends(get_current_user)):
+        """이벤트전 할인가 채우기(원가기준)에서 쓰는 택배비 설정값 조회."""
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            shipping_fee = _get_event_pre_discount_shipping_fee(conn)
+        finally:
+            conn.close()
+        return {"ok": True, "shipping_fee": shipping_fee}
+
+    @router.post("/event-pre-discount-shipping-fee")
+    def wonbe_set_event_pre_discount_shipping_fee(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        """이벤트전 할인가 채우기(원가기준)에서 쓸 택배비 설정값 저장."""
+        try:
+            shipping_fee = float(payload.get("shipping_fee"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="택배비 값이 올바르지 않습니다.")
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            saved = _set_event_pre_discount_shipping_fee(conn, shipping_fee)
+        finally:
+            conn.close()
+        return {"ok": True, "shipping_fee": saved}
+
     @router.post("/fill-event-discount")
     def wonbe_fill_event_discount(
         payload: dict = Body(...),
@@ -1113,16 +1230,23 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         P = (원가×1.10 + 택배비) ÷ (1 − 수수료율 − 목표순마진율), 10원 단위 올림.
         수수료율은 8.756% 고정, 목표순마진율/택배비는 payload로 기본값(30%, 2060원)을 덮어쓸 수 있다."""
         q = str(payload.get("q") or "").strip()
-        try:
-            margin_percent = float(payload.get("margin_percent", _EVENT_PRE_DISCOUNT_DEFAULT_MARGIN_PERCENT))
-            shipping_fee = float(payload.get("shipping_fee", _EVENT_PRE_DISCOUNT_DEFAULT_SHIPPING_FEE))
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="목표순마진율/택배비 값이 올바르지 않습니다.")
-
+        codes_filter = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
         conn = _get_wonbe_db()
         try:
             _init_wonbe_table(conn)
-            if q:
+            try:
+                margin_percent = float(payload.get("margin_percent", _EVENT_PRE_DISCOUNT_DEFAULT_MARGIN_PERCENT))
+                shipping_fee = float(payload.get("shipping_fee", _get_event_pre_discount_shipping_fee(conn)))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="목표순마진율/택배비 값이 올바르지 않습니다.")
+
+            if codes_filter:
+                placeholders = ", ".join("?" for _ in codes_filter)
+                rows = conn.execute(
+                    f"SELECT 상품코드, 에이블리상품번호, 원가 FROM wonbe WHERE 상품코드 IN ({placeholders})",
+                    codes_filter,
+                ).fetchall()
+            elif q:
                 like = f"%{q}%"
                 rows = conn.execute(
                     "SELECT 상품코드, 에이블리상품번호, 원가 FROM wonbe WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?",
@@ -1281,6 +1405,195 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             "success_row_count": total_success,
             "error_row_count": total_error,
             "batches": batches,
+        }
+
+    @router.post("/push-price-to-zigzag")
+    async def wonbe_push_price_to_zigzag(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        """판매가/이벤트전 할인가/이벤트 할인가 중 하나를 지그재그 '판매가 수정(상품단위)' 엑셀
+        업로드로 일괄 반영한다. 지그재그상품번호 단위로 1건만 보낼 수 있어 옵션별로 여러 행이
+        있어도 중복 제거한다."""
+        source = str(payload.get("source") or "").strip()
+        if source not in ("판매가", "이벤트전 할인가", "이벤트 할인가"):
+            raise HTTPException(status_code=400, detail="source는 '판매가', '이벤트전 할인가', '이벤트 할인가' 중 하나여야 합니다.")
+        q = str(payload.get("q") or "").strip()
+        codes = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
+
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            select_cols = f"지그재그상품번호, {_qcol(source)}"
+            if codes:
+                placeholders = ", ".join("?" for _ in codes)
+                rows = conn.execute(
+                    f"SELECT {select_cols} FROM wonbe WHERE 지그재그상품번호 != '' AND 상품코드 IN ({placeholders})",
+                    codes,
+                ).fetchall()
+            elif q:
+                like = f"%{q}%"
+                rows = conn.execute(
+                    f"""SELECT {select_cols} FROM wonbe
+                        WHERE 지그재그상품번호 != ''
+                          AND (상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?)""",
+                    (like, like, like, like),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT {select_cols} FROM wonbe WHERE 지그재그상품번호 != ''"
+                ).fetchall()
+        finally:
+            conn.close()
+
+        seen: dict[str, str] = {}
+        skipped_invalid = 0
+        skipped_duplicate = 0
+        for r in rows:
+            zid = str(r["지그재그상품번호"]).strip()
+            if not zid:
+                continue
+            price = _parse_price(r[source])
+            if price is None:
+                skipped_invalid += 1
+                continue
+            if zid in seen:
+                skipped_duplicate += 1
+                continue
+            seen[zid] = str(int(price))
+
+        if not seen:
+            raise HTTPException(status_code=400, detail="업로드할 데이터가 없습니다. (지그재그상품번호 / 선택한 가격 확인)")
+
+        entries = list(seen.items())
+        file_bytes = _build_zigzag_price_upload_xlsx(entries)
+
+        zigzag = ZigzagClient()
+        try:
+            upload_result = await zigzag.update_product_price_by_excel(
+                file_bytes,
+                file_name=f"product_price_list_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"지그재그 상품가 변경 실패: {e}")
+        finally:
+            await zigzag.close()
+
+        import_result = upload_result.get("result")
+        return {
+            "ok": True,
+            "source": source,
+            "requested": len(entries),
+            "skipped_invalid": skipped_invalid,
+            "skipped_duplicate": skipped_duplicate,
+            "import_id": upload_result.get("import_id"),
+            "status": (import_result or {}).get("status"),
+        }
+
+    @router.post("/push-price-to-amood")
+    async def wonbe_push_price_to_amood(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        """이벤트전 할인가를 엔화로 환산해 할인판매가로 삼고, 거기서 20% 올린 값을 판매가로
+        삼아 아무드(pastelco) 상품가 일괄변경 API로 업로드한다. 할인판매가를 먼저 반올림해
+        확정한 뒤 판매가를 계산한다(순서 중요 — 반올림 오차 방지). 에이블리상품번호(ably_sno)
+        단위로 1건만 보낼 수 있어 옵션별로 여러 행이 있어도 중복 제거한다.
+
+        mode="increase"(아무드 상품가 변경): 할인판매가 = 이벤트전 할인가×1.2÷환율 (한 번 더 인상분 포함)
+        mode="revert"(아무드 상품가 되돌리기): 할인판매가 = 이벤트전 할인가÷환율 (인상분 없이 원래대로)
+        두 모드 모두 판매가 = 할인판매가×1.2."""
+        q = str(payload.get("q") or "").strip()
+        codes = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
+        mode = str(payload.get("mode") or "increase").strip()
+        if mode not in ("increase", "revert"):
+            raise HTTPException(status_code=400, detail="mode는 'increase' 또는 'revert'여야 합니다.")
+        try:
+            rate = float(payload.get("rate"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="환율(rate) 값이 올바르지 않습니다.")
+        if rate <= 0:
+            raise HTTPException(status_code=400, detail="환율(rate)은 0보다 커야 합니다.")
+
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            select_cols = f"에이블리상품번호, {_qcol('이벤트전 할인가')}"
+            if codes:
+                placeholders = ", ".join("?" for _ in codes)
+                rows = conn.execute(
+                    f"SELECT {select_cols} FROM wonbe WHERE 에이블리상품번호 != '' AND 상품코드 IN ({placeholders})",
+                    codes,
+                ).fetchall()
+            elif q:
+                like = f"%{q}%"
+                rows = conn.execute(
+                    f"""SELECT {select_cols} FROM wonbe
+                        WHERE 에이블리상품번호 != ''
+                          AND (상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?)""",
+                    (like, like, like, like),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT {select_cols} FROM wonbe WHERE 에이블리상품번호 != ''"
+                ).fetchall()
+        finally:
+            conn.close()
+
+        seen: dict[str, tuple[int, int]] = {}
+        skipped_invalid = 0
+        skipped_duplicate = 0
+        for r in rows:
+            sno = str(r["에이블리상품번호"]).strip()
+            if not sno or not sno.isdigit():
+                skipped_invalid += 1
+                continue
+            base = _parse_price(r["이벤트전 할인가"])
+            if base is None:
+                skipped_invalid += 1
+                continue
+            if sno in seen:
+                skipped_duplicate += 1
+                continue
+            sale_price = round(base * 1.2 / rate) if mode == "increase" else round(base / rate)
+            original_price = round(sale_price * 1.2)
+            seen[sno] = (original_price, sale_price)
+
+        if not seen:
+            raise HTTPException(status_code=400, detail="업로드할 데이터가 없습니다. (에이블리상품번호 / 이벤트전 할인가 확인)")
+
+        entries = list(seen.items())
+        products_payload = [
+            {"ably_sno": int(sno), "original_price": original_price, "sale_price": sale_price}
+            for sno, (original_price, sale_price) in entries
+        ]
+
+        pastelco = PastelcoClient()
+        responses = []
+        try:
+            for i in range(0, len(products_payload), _ABLY_PRICE_BATCH_SIZE):
+                chunk = products_payload[i:i + _ABLY_PRICE_BATCH_SIZE]
+                res = await pastelco.bulk_update_prices(chunk)
+                res.raise_for_status()
+                try:
+                    responses.append(res.json())
+                except ValueError:
+                    responses.append({"raw": res.text[:300]})
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=502, detail=f"아무드 상품가 변경 실패 (HTTP {e.response.status_code}): {e.response.text[:300]}")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"아무드 상품가 변경 실패: {e}")
+
+        return {
+            "ok": True,
+            "mode": mode,
+            "rate": rate,
+            "requested": len(entries),
+            "skipped_invalid": skipped_invalid,
+            "skipped_duplicate": skipped_duplicate,
+            "batches": len(responses),
         }
 
     # ── 입고대기 CRUD ─────────────────────────────────────────────
@@ -2162,6 +2475,69 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             "unmatched": unmatched,
         }
 
+    @router.post("/sync-zigzag-id")
+    async def wonbe_sync_zigzag_id(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        force = bool(payload.get("force"))
+
+        zigzag = ZigzagClient()
+        try:
+            products = await zigzag.get_all_products()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"지그재그 상품목록 조회 실패: {exc}")
+        finally:
+            await zigzag.close()
+
+        # 지그재그 상품명(대괄호 태그 제거) → 상품id 매핑. 지그재그 상품명은 등록 시
+        # 에이블리 원본 상품명을 그대로 복사해서 만들어지므로(zigzag_upload_routes.py의
+        # create_catalog_product 참고), sync-ably-sno와 동일한 방식으로 매칭한다.
+        name_to_id: dict[str, str] = {}
+        for p in products:
+            raw_name = str(p.get("name") or "")
+            stripped = re.sub(r"^(\[[^\]]*\]\s*)+", "", raw_name).strip()
+            key = _normalize_cost_base_key(stripped)
+            if key and p.get("id"):
+                name_to_id[key] = str(p["id"])
+
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            if force:
+                rows = conn.execute("SELECT 상품코드, 상품명 FROM wonbe").fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT 상품코드, 상품명 FROM wonbe WHERE 지그재그상품번호 IS NULL OR 지그재그상품번호 = ''"
+                ).fetchall()
+
+            updates = []
+            unmatched = 0
+            for r in rows:
+                key = _normalize_cost_base_key(r["상품명"])
+                zid = name_to_id.get(key)
+                if zid:
+                    updates.append((zid, r["상품코드"]))
+                else:
+                    unmatched += 1
+
+            if updates:
+                conn.executemany(
+                    "UPDATE wonbe SET 지그재그상품번호 = ? WHERE 상품코드 = ?",
+                    updates,
+                )
+                conn.commit()
+        finally:
+            conn.close()
+
+        return {
+            "ok": True,
+            "fetched_products": len(products),
+            "considered": len(rows),
+            "matched": len(updates),
+            "unmatched": unmatched,
+        }
+
     @router.post("/sync-registration-date")
     async def wonbe_sync_registration_date(
         payload: dict = Body(default={}),
@@ -3000,6 +3376,105 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             media_type="application/vnd.ms-excel",
             headers={"Content-Disposition": _content_disposition(filename)},
         )
+
+    # ── 계산서 관리 ───────────────────────────────────────────────
+
+    @router.get("/invoice-manage/months")
+    def invoice_manage_months(user: str = Depends(get_current_user)):
+        conn = _get_janggi_db()
+        try:
+            _init_ichae_table(conn)
+            rows = conn.execute(
+                """SELECT DISTINCT substr(날짜, 1, 7) AS 월 FROM 이체파일
+                   WHERE 날짜 != '' ORDER BY 월 DESC LIMIT 36"""
+            ).fetchall()
+            return {"ok": True, "months": [r["월"] for r in rows if r["월"]]}
+        finally:
+            conn.close()
+
+    @router.get("/invoice-manage/rows")
+    def invoice_manage_rows(month: str = "", user: str = Depends(get_current_user)):
+        month = month.strip()
+        if not re.fullmatch(r"\d{4}-\d{2}", month):
+            raise HTTPException(status_code=400, detail="month는 YYYY-MM 형식이어야 합니다.")
+        conn = _get_janggi_db()
+        try:
+            _init_invoice_manage_table(conn)
+            rows = conn.execute(
+                "SELECT * FROM 계산서관리 WHERE 월 = ? ORDER BY 거래처명 ASC", (month,)
+            ).fetchall()
+            return {"ok": True, "rows": [dict(r) for r in rows]}
+        finally:
+            conn.close()
+
+    @router.post("/invoice-manage/load")
+    def invoice_manage_load(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """선택한 월의 이체파일 데이터에서 거래처명을 유니크하게 뽑아 입금금액을 합산하고,
+        노예김승일 입고전표 엑셀전환의 부가세 거래처 목록과 대조해 부가세거래처 여부를 채운다.
+        이미 저장된 행이 있으면 입금완료/계산서발행완료/이월발행 체크 상태는 그대로 유지한다."""
+        month = str(payload.get("month") or "").strip()
+        if not re.fullmatch(r"\d{4}-\d{2}", month):
+            raise HTTPException(status_code=400, detail="month는 YYYY-MM 형식이어야 합니다.")
+        conn = _get_janggi_db()
+        try:
+            _init_ichae_table(conn)
+            _init_invoice_manage_table(conn)
+            summed = conn.execute(
+                """SELECT D AS 거래처명, SUM(C) AS 입금액 FROM 이체파일
+                   WHERE 날짜 LIKE ? AND TRIM(D) != '' GROUP BY D""",
+                (f"{month}%",),
+            ).fetchall()
+
+            vat_vendors = _load_vat_vendor_set(get_setting)
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for r in summed:
+                vendor = str(r["거래처명"] or "").strip()
+                if not vendor:
+                    continue
+                amount = float(r["입금액"] or 0)
+                is_vat = 1 if vendor in vat_vendors else 0
+                conn.execute(
+                    """INSERT INTO 계산서관리 (월, 거래처명, 입금액, 부가세거래처, 수정일시)
+                       VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT(월, 거래처명) DO UPDATE SET
+                         입금액 = excluded.입금액,
+                         부가세거래처 = excluded.부가세거래처""",
+                    (month, vendor, amount, is_vat, now_str),
+                )
+            conn.commit()
+
+            rows = conn.execute(
+                "SELECT * FROM 계산서관리 WHERE 월 = ? ORDER BY 거래처명 ASC", (month,)
+            ).fetchall()
+            return {"ok": True, "rows": [dict(r) for r in rows], "loaded": len(summed)}
+        finally:
+            conn.close()
+
+    @router.patch("/invoice-manage/row")
+    def invoice_manage_update_row(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        row_id = payload.get("id")
+        col = str(payload.get("col") or "").strip()
+        if row_id is None or col not in INVOICE_MANAGE_EDITABLE_COLS:
+            raise HTTPException(
+                status_code=400,
+                detail="id와 입금완료/계산서발행완료/이월발행 컬럼만 수정 가능합니다.",
+            )
+        flag = 1 if payload.get("value") else 0
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn = _get_janggi_db()
+        try:
+            _init_invoice_manage_table(conn)
+            cur = conn.execute(
+                f"UPDATE 계산서관리 SET {col} = ?, 수정일시 = ? WHERE id = ?",
+                (flag, now_str, row_id),
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="해당 id 없음")
+            row = conn.execute("SELECT * FROM 계산서관리 WHERE id = ?", (row_id,)).fetchone()
+            return {"ok": True, "row": dict(row)}
+        finally:
+            conn.close()
 
     # ── 일괄이체목록 마킹 ────────────────────────────────────────
 
