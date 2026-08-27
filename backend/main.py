@@ -56,6 +56,7 @@ from api.amood_routes import build_amood_router
 from api.returns_routes import build_returns_router
 from api.order_routes import build_order_router
 from api.noye_kimsungil_routes import build_noye_kimsungil_router
+from api.zigzag_upload_routes import build_zigzag_upload_router
 from api.misong_routes import build_misong_router
 from api.sms_routes import build_sms_router
 from api.return_shipping_routes import build_return_shipping_router
@@ -1758,6 +1759,12 @@ app.include_router(
         get_setting=_get_setting,
         set_setting=_set_setting,
         get_db=_get_db,
+    )
+)
+app.include_router(
+    build_zigzag_upload_router(
+        get_current_user=_get_current_user,
+        get_shared_db=_get_shared_db,
     )
 )
 

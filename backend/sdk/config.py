@@ -21,3 +21,7 @@ LLOGIS_EMP_NO = os.environ.get("LLOGIS_EMP_NO", "348867")
 TOP90_BASE = "https://top90.sosolution.net"
 TOP90_EMAIL = os.environ.get("TOP90_EMAIL", "")
 TOP90_PASSWORD = os.environ.get("TOP90_PASSWORD", "")
+ZIGZAG_BASE = "https://partners.kakaostyle.com"
+ZIGZAG_EMAIL = os.environ.get("ZIGZAG_EMAIL", "eostm1997@naver.com")
+ZIGZAG_PASSWORD = os.environ.get("ZIGZAG_PASSWORD", "!Tlqkfshadk1126")
+ZIGZAG_SHOP_PATH = os.environ.get("ZIGZAG_SHOP_PATH", "cq-csuz03pn")
