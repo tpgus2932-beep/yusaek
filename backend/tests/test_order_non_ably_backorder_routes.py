@@ -83,6 +83,37 @@ def test_collect_endpoint_invokes_ezadmin_and_upserts_snapshot():
     assert items[0]["lack_qty"] == 3
 
 
+@respx.mock
+def test_collect_endpoint_removes_stale_codes_not_in_latest_snapshot():
+    route = respx.post(_IO30_URL)
+    route.side_effect = [
+        httpx.Response(
+            200,
+            json={
+                "rows": [
+                    {"id": 0, "cell": _cell("S24083", 0, 5, 3)},
+                    {"id": 1, "cell": _cell("S13634", 0, 1, 1)},
+                ],
+                "total": 1,
+            },
+        ),
+        httpx.Response(
+            200,
+            json={"rows": [{"id": 0, "cell": _cell("S24083", 0, 5, 3)}], "total": 1},
+        ),
+    ]
+    client, _get_db, _keep_alive = _make_client(settings={"ezadmin_phpsessid": "sess"})
+
+    res1 = client.post("/non-ably-order/collect")
+    assert res1.json() == {"ok": True, "updated_codes": 2}
+
+    res2 = client.post("/non-ably-order/collect")
+    assert res2.json() == {"ok": True, "updated_codes": 1}
+
+    items = client.get("/non-ably-order/snapshot").json()["items"]
+    assert {i["yusas_code"] for i in items} == {"S24083"}
+
+
 def test_collect_endpoint_returns_need_session_when_ezadmin_session_expired():
     client, _get_db, _keep_alive = _make_client()  # no ezadmin_phpsessid configured
 

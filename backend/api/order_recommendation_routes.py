@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends
 
-from api.wonbe_routes import load_wonbe_product_name_map
+from api.wonbe_routes import build_dash_options, load_wonbe_client_info_by_code, load_wonbe_product_name_map
 from services.order_recommendation_ably_sales import collect_ably_sales_history, get_sales_history_progress
 from services.order_recommendation_discover import (
     DEFAULT_DISCOVER_DAYS,
@@ -38,6 +39,16 @@ BACKTEST_TOP_N = 50
 
 def _row_to_dict(row) -> dict:
     return {key: row[key] for key in row.keys()}
+
+
+def _load_top90_excluded_clients(get_setting) -> list[str]:
+    raw = get_setting("order_recommendation_top90_excluded_clients")
+    if not raw:
+        return []
+    try:
+        return [str(c) for c in json.loads(raw)]
+    except (TypeError, ValueError):
+        return []
 
 
 def _actual_coverage_sales(conn, yusas_code: str, start_date: str, coverage_days: int):
@@ -120,6 +131,7 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
     def daily(date: str | None = None, user: str = Depends(get_current_user)):
         target_date = date or today_kst()
         name_map = load_wonbe_product_name_map()
+        client_info_by_code = load_wonbe_client_info_by_code()
         conn = get_db()
         try:
             rows = list_rows(conn, target_date)
@@ -127,10 +139,204 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
             for r in rows:
                 item = _row_to_dict(r)
                 item["product_name"] = name_map.get(item["yusas_code"], "")
+                client_info = client_info_by_code.get(item["yusas_code"]) or {}
+                item["client"] = client_info.get("거래처", "")
+                item["client_product_name"] = client_info.get("거래처상품명", "")
+                item["options"] = build_dash_options(client_info)
                 items.append(item)
             return {"ok": True, "date": target_date, "items": items}
         finally:
             conn.close()
+
+    @router.get("/non-ably-items")
+    def non_ably_items(user: str = Depends(get_current_user)):
+        """비에이블리 재고수집(order_non_ably_backorder)에서 부족수량이 있는 상품을
+        top90-items와 같은 방식으로 거래처 정보와 조인해서 돌려준다 - 엑셀주문 탭에서
+        일별 데이터/추가된 상품에 안 잡히는(에이블리 IO30 쪽엔 확정수량이 없는) 상품도
+        거래처별로 같이 모을 수 있게 하기 위함. 날짜 구분 없는 최신 스냅샷 하나뿐이다."""
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT yusas_code, stock_qty, incoming_qty, lack_qty FROM order_non_ably_backorder "
+                "WHERE lack_qty > 0"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        name_map = load_wonbe_product_name_map()
+        client_info_by_code = load_wonbe_client_info_by_code()
+
+        items = []
+        for r in rows:
+            code = r["yusas_code"]
+            info = client_info_by_code.get(code) or {}
+            client = info.get("거래처", "")
+            client_product_name = info.get("거래처상품명", "")
+            if not client or not client_product_name:
+                continue
+            options = build_dash_options(info)
+            items.append({
+                "yusas_code": code,
+                "product_name": name_map.get(code, ""),
+                "client": client,
+                "client_product_name": client_product_name,
+                "options": options,
+                "stock_qty": r["stock_qty"],
+                "incoming_qty": r["incoming_qty"],
+                "recommended_qty": None,
+                "confirmed_qty": None,
+                "non_ably_lack_qty": r["lack_qty"],
+            })
+        return {"ok": True, "items": items}
+
+    @router.get("/wonbe-search")
+    def wonbe_search_for_order(
+        client: str, q: str = "", limit: int = 20, user: str = Depends(get_current_user)
+    ):
+        """엑셀주문 탭에서 거래처 상품을 검색해 수동으로 추가할 때 쓴다 - 원가베이스유(wonbe)에서
+        해당 거래처 상품만 걸러서 상품코드/상품명/옵션으로 검색한다."""
+        limit = max(1, min(limit, 100))
+        name_map = load_wonbe_product_name_map()
+        client_info_by_code = load_wonbe_client_info_by_code()
+
+        needle = q.strip().lower()
+        items = []
+        for code, info in client_info_by_code.items():
+            if info.get("거래처") != client:
+                continue
+            client_product_name = info.get("거래처상품명", "")
+            if not client_product_name:
+                continue
+            product_name = name_map.get(code, "")
+            if needle and needle not in code.lower() and needle not in product_name.lower() \
+                    and needle not in client_product_name.lower():
+                continue
+            items.append({
+                "yusas_code": code,
+                "product_name": product_name,
+                "client": client,
+                "client_product_name": client_product_name,
+                "options": build_dash_options(info),
+                "recommended_qty": None,
+                "confirmed_qty": None,
+            })
+            if len(items) >= limit:
+                break
+        return {"ok": True, "items": items}
+
+    @router.get("/{date}/top90-items")
+    def top90_items(date: str, user: str = Depends(get_current_user)):
+        """확정수량(confirmed_qty)이 있는 상품을 top90 발주 형식(/order/main-order/execute가
+        받는 items[] 그대로)으로 변환한다. wonbe에 거래처/거래처상품명이 없는 상품은
+        supplyProductName을 만들 수 없어서 제외하고 skipped_no_client_info로 따로 보여준다.
+        일별 데이터(order_recommendation_daily)뿐 아니라 "추가된 상품"(discover) 스냅샷의
+        확정수량도 같이 합친다 — discover 후보는 오늘자 일별 데이터 행 자체가 없는
+        상품(재고가 있어 IO30에 안 잡힘)이라 daily 쪽에서는 절대 안 잡히기 때문이다.
+        requestQty는 /non-ably-order/final-order와 동일하게 에이블리 확정수량 +
+        비에이블리 부족수량(order_non_ably_backorder.lack_qty)을 합산한다 — 이 테이블은
+        날짜 구분이 없는 최신 스냅샷 하나뿐이라 date 파라미터와 무관하게 그대로 쓴다.
+        에이블리 쪽엔 값이 없고 비에이블리 부족수량만 있는 상품도 그만큼만 별도로 추가한다.
+        lackQty는 화면 혼동을 막기 위해 확정수량 계산에 쓰는 ezadmin_lack_qty(실제로는
+        요청수량)가 아니라 진짜 IO30 부족수량(ezadmin_real_lack_qty)을 보여준다 — 확정수량
+        자체의 계산 공식은 그대로 요청수량 기준이라 여기서 바뀌는 건 없다.
+        여기서 top90에 발주를 넣지는 않는다 — 반환된 items를 그대로 /order/main-order/execute에
+        넘겨야 실제 발주가 등록된다."""
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT yusas_code, confirmed_qty, stock_qty, incoming_qty, ezadmin_real_lack_qty, recommended_qty "
+                "FROM order_recommendation_daily WHERE date = ? AND confirmed_qty > 0",
+                (date,),
+            ).fetchall()
+            non_ably_by_code = {
+                r["yusas_code"]: dict(r)
+                for r in conn.execute(
+                    "SELECT yusas_code, stock_qty, incoming_qty, lack_qty FROM order_non_ably_backorder"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        name_map = load_wonbe_product_name_map()
+        client_info_by_code = load_wonbe_client_info_by_code()
+
+        def _build_item(code, ably_order_qty, stock_qty, incoming_qty, lack_qty, recommended_qty=None, source=None):
+            info = client_info_by_code.get(code) or {}
+            client = info.get("거래처", "")
+            client_product_name = info.get("거래처상품명", "")
+            if not client or not client_product_name:
+                return None
+            options = build_dash_options(info)
+            non_ably_lack_qty = (non_ably_by_code.get(code) or {}).get("lack_qty") or 0
+            return {
+                "code": code,
+                "name": name_map.get(code, ""),
+                "options": options,
+                "supplyProductName": f"{client} {client_product_name}".strip(),
+                "clientProductName": client_product_name,
+                "stock": stock_qty,
+                "notYetDeliv": incoming_qty,
+                "lackQty": lack_qty,
+                "recommendedQty": recommended_qty,
+                "recommendedQtySource": source,
+                "requestQty": ably_order_qty + non_ably_lack_qty,
+            }
+
+        items = []
+        skipped_no_client_info = []
+        seen_codes = set()
+        for r in rows:
+            code = r["yusas_code"]
+            seen_codes.add(code)
+            item = _build_item(
+                code, r["confirmed_qty"], r["stock_qty"], r["incoming_qty"], r["ezadmin_real_lack_qty"],
+                r["recommended_qty"], source="daily",
+            )
+            if item is None:
+                skipped_no_client_info.append(code)
+                continue
+            items.append(item)
+
+        discover_snapshot = get_discover_snapshot(get_shared_db, date)
+        for d in (discover_snapshot["items"] if discover_snapshot else []):
+            code = d.get("yusas_code")
+            confirmed_qty = d.get("confirmed_qty")
+            if not code or code in seen_codes or not confirmed_qty:
+                continue
+            seen_codes.add(code)
+            item = _build_item(
+                code, confirmed_qty, d.get("stock_qty"), d.get("misong_qty"), d.get("pending_qty"),
+                d.get("recommended_qty"), source="discover",
+            )
+            if item is None:
+                skipped_no_client_info.append(code)
+                continue
+            items.append(item)
+
+        # 에이블리 쪽엔 확정수량이 없지만 비에이블리 부족수량만 있는 상품도 추가한다
+        # (/non-ably-order/final-order와 동일하게 두 목록의 합집합을 다룬다).
+        for code, non_ably_row in non_ably_by_code.items():
+            if code in seen_codes or not (non_ably_row.get("lack_qty") or 0):
+                continue
+            seen_codes.add(code)
+            item = _build_item(
+                code, 0, non_ably_row.get("stock_qty"), non_ably_row.get("incoming_qty"), non_ably_row.get("lack_qty"),
+                source="non_ably_only",
+            )
+            if item is None:
+                skipped_no_client_info.append(code)
+                continue
+            items.append(item)
+
+        excluded_clients = set(_load_top90_excluded_clients(get_setting))
+        if excluded_clients:
+            items = [i for i in items if (i["supplyProductName"] or "").split(" ", 1)[0] not in excluded_clients]
+
+        return {
+            "ok": True, "date": date,
+            "count": len(items), "items": items,
+            "skipped_no_client_info": skipped_no_client_info,
+        }
 
     @router.post("/evaluate")
     def evaluate(date: str | None = None, user: str = Depends(get_current_user)):
@@ -358,6 +564,16 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
                 set_setting(f"order_recommendation_{key}", str(payload[key]))
         return {"ok": True}
 
+    @router.get("/top90-excluded-clients")
+    def get_top90_excluded_clients(user: str = Depends(get_current_user)):
+        return {"ok": True, "clients": _load_top90_excluded_clients(get_setting)}
+
+    @router.post("/top90-excluded-clients")
+    def save_top90_excluded_clients(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        clients = sorted({str(c).strip() for c in (payload.get("clients") or []) if str(c).strip()})
+        set_setting("order_recommendation_top90_excluded_clients", json.dumps(clients, ensure_ascii=False))
+        return {"ok": True, "clients": clients}
+
     @router.post("/{date}/{yusas_code}/confirm")
     def confirm(
         date: str,
@@ -382,5 +598,31 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
         finally:
             conn.close()
         return {"ok": True}
+
+    @router.post("/{date}/confirm-batch")
+    def confirm_batch(date: str, payload: dict = Body(...), user: str = Depends(get_current_user)):
+        items = payload.get("items") or []
+        conn = get_db()
+        try:
+            saved = 0
+            updated_at = now_kst_iso()
+            for it in items:
+                yusas_code = str(it.get("yusas_code") or "").strip()
+                if not yusas_code:
+                    continue
+                ensure_row(conn, date, yusas_code)
+                conn.execute(
+                    """
+                    UPDATE order_recommendation_daily
+                    SET confirmed_qty = ?, override_reason = ?, updated_by = ?, updated_at = ?
+                    WHERE date = ? AND yusas_code = ?
+                    """,
+                    (it.get("confirmed_qty"), it.get("override_reason"), user, updated_at, date, yusas_code),
+                )
+                saved += 1
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "saved": saved}
 
     return router

@@ -28,6 +28,8 @@ def _init_order_history_table(conn) -> None:
             conn.execute(f"ALTER TABLE order_history ADD COLUMN {column} INTEGER")
     if "client_product_name" not in cols:
         conn.execute("ALTER TABLE order_history ADD COLUMN client_product_name TEXT NOT NULL DEFAULT ''")
+    if "recommended_qty_source" not in cols:
+        conn.execute("ALTER TABLE order_history ADD COLUMN recommended_qty_source TEXT")
     conn.commit()
 
 
@@ -89,6 +91,7 @@ def record_order_history(
             _to_int_or_none(item.get("lackQty")),
             _to_int_or_none(item.get("recommendedQty")),
             str(item.get("clientProductName") or ""),
+            (str(item.get("recommendedQtySource")) if item.get("recommendedQtySource") else None),
         ))
     if not records:
         return
@@ -101,8 +104,8 @@ def record_order_history(
                 execution_id, recorded_at, action_type, store_name, product_code, product_name,
                 supply_product_name, options, request_qty, result_status, result_reason,
                 recorded_by_username, recorded_by_display_name,
-                stock_qty, incoming_qty, lack_qty, recommended_qty, client_product_name
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                stock_qty, incoming_qty, lack_qty, recommended_qty, client_product_name, recommended_qty_source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             records,
         )
         conn.commit()

@@ -201,6 +201,13 @@
   font-weight: 600;
 }
 
+.sumRow td {
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border-top: 2px solid var(--border-color);
+}
+
 .confirmInput {
   width: 70px;
   padding: 0.3rem 0.4rem;
@@ -277,6 +284,32 @@
 
 .backtestWeightInput {
   width: 70px;
+}
+
+.excludedTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.78rem;
+}
+
+.excludedTag button {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0;
+}
+
+.excludedTag button:hover {
+  color: var(--text-primary);
 }
 
 .backtestSaveBtn {

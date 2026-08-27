@@ -34,7 +34,11 @@ async def _fetch_ably_io30_snapshot(get_setting, date: str) -> dict[str, dict]:
         snapshot[product_id] = {
             "stock_qty": to_int(ez_val(cell.get("stock"))),
             "incoming_qty": to_int(ez_val(cell.get("reserve_qty"))),  # 미송(입고대기) — not_yet_deliv 아님
-            "ezadmin_lack_qty": to_int(ez_val(cell.get("lack_qty"))),
+            # 컬럼명은 ezadmin_lack_qty(부족수량)로 남아있지만, 실제로는 IO30의
+            # request_qty(요청수량)를 가져온다 — 확정수량 계산 공식은 이 값을 그대로 쓴다.
+            "ezadmin_lack_qty": to_int(ez_val(cell.get("request_qty"))),
+            # 이건 IO30의 진짜 lack_qty(부족수량) — 확정수량 계산엔 안 쓰고 화면 표시용.
+            "ezadmin_real_lack_qty": to_int(ez_val(cell.get("lack_qty"))),
         }
 
     _cache[date] = (now, snapshot)
@@ -55,8 +59,12 @@ def build_ezadmin_collectors(get_setting) -> dict:
     async def collect_ezadmin_lack_qty(date: str) -> dict:
         return await _collect_column("ezadmin_lack_qty", date)
 
+    async def collect_ezadmin_real_lack_qty(date: str) -> dict:
+        return await _collect_column("ezadmin_real_lack_qty", date)
+
     return {
         "stock_qty": collect_stock_qty,
         "incoming_qty": collect_incoming_qty,
         "ezadmin_lack_qty": collect_ezadmin_lack_qty,
+        "ezadmin_real_lack_qty": collect_ezadmin_real_lack_qty,
     }

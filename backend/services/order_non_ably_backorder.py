@@ -56,6 +56,18 @@ def upsert_non_ably_snapshot(conn, snapshot: dict[str, dict]) -> None:
             """,
             (yusas_code, values["stock_qty"], values["incoming_qty"], values["lack_qty"], now),
         )
+
+    # 이번 스냅샷에 없는 코드는 EZAdmin IO30에서 더 이상 안 잡히는(해소된) 상품이다 —
+    # 안 지우면 예전 lack_qty가 영구히 남아 재수집 후에도 계속 부족수량으로 잡힌다.
+    # 에이블리 쪽(order_recommendation_collect.py)의 "재수집 시 컬럼 클리어" 패턴과 같은 목적.
+    if snapshot:
+        placeholders = ",".join("?" * len(snapshot))
+        conn.execute(
+            f"DELETE FROM order_non_ably_backorder WHERE yusas_code NOT IN ({placeholders})",
+            tuple(snapshot.keys()),
+        )
+    else:
+        conn.execute("DELETE FROM order_non_ably_backorder")
     conn.commit()
 
 

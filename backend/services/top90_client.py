@@ -161,7 +161,7 @@ async def place_orders_for_store(
 ) -> None:
     """같은 거래처(cs_idx+shop_idx)로 나가는 상품들을 한 번에 발주."""
     msg_formatted = message.replace("? ", "?\n", 1) if message else ""
-    pname_combined = ", ".join(product_names)
+    pname_combined = "\n".join(product_names)
     textarea = f"{store_name}\t주문\t{pname_combined}\t{category}\t{msg_formatted}"
 
     r = await client.post(

@@ -134,12 +134,16 @@ def test_discover_uses_pending_as_lack_qty_and_misong_as_incoming_qty():
     assert item["pending_qty"] == 21
     assert item["misong_qty"] == 7
     # 확정수량 = max(0, (부족수량자리=접수 21 + 추천발주량) - 재고(0) - 미송자리=misong(7))
+    # 접수(pending)는 EZAdmin 요청수량과 달리 재고/미송을 감안 안 한 값이라 여기서 뺀다.
     assert item["confirmed_qty"] == max(0, (21 + item["recommended_qty"]) - 0 - 7)
     assert item["confirmed_qty"] > 0
 
 
-def test_discover_skips_candidates_with_non_positive_confirmed_qty():
-    get_db, _keep_alive = _make_db_factory("zero")
+def test_discover_subtracts_stock_and_misong_from_confirmed_qty():
+    """추가된 상품(discover)의 부족수량 자리(접수/pending)는 일별 데이터의 EZAdmin
+    요청수량과 달리 재고/미송을 감안 안 한 값이라, 재고가 넉넉하면 확정수량이
+    0까지 깎여서 후보에서 빠져야 한다."""
+    get_db, _keep_alive = _make_db_factory("subtract")
     init_order_recommendation_tables(get_db)
     conn = get_db()
     today = today_kst()
@@ -150,8 +154,57 @@ def test_discover_skips_candidates_with_non_positive_confirmed_qty():
 
     get_shared_db, _shared_keep_alive = _make_misong_db()
 
-    # 재고/미송이 넉넉해서 확정수량이 0 이하가 되는 상황
-    with _patched_ezadmin({code: {"stock": 1000, "pending": 0}}):
+    # 접수는 적은데(5) 재고가 넉넉해서(1000) 확정수량이 0으로 깎이는 상황
+    with _patched_ezadmin({code: {"stock": 1000, "pending": 5}}):
+        result = asyncio.run(
+            discover_missed_reorder_candidates(get_db, lambda key: None, get_shared_db, days=3, limit=150)
+        )
+
+    assert result["items"] == []
+
+
+def test_discover_includes_client_and_client_product_name():
+    get_db, _keep_alive = _make_db_factory("client_info")
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    today = today_kst()
+    code = "S24083"
+    _seed_sales(conn, code, today, {1: 10, 2: 10, 3: 10})
+    conn.commit()
+    conn.close()
+
+    get_shared_db, _shared_keep_alive = _make_misong_db()
+
+    with _patched_ezadmin({code: {"stock": 0, "pending": 21}}), patch(
+        "services.order_recommendation_discover.load_wonbe_client_info_by_code",
+        return_value={code: {"거래처": "동대문상회", "거래처상품명": "목걸이A"}},
+    ):
+        result = asyncio.run(
+            discover_missed_reorder_candidates(
+                get_db, lambda key: None, get_shared_db, days=3, limit=150
+            )
+        )
+
+    item = result["items"][0]
+    assert item["client"] == "동대문상회"
+    assert item["client_product_name"] == "목걸이A"
+
+
+def test_discover_skips_candidates_with_non_positive_confirmed_qty():
+    get_db, _keep_alive = _make_db_factory("zero")
+    init_order_recommendation_tables(get_db)
+    conn = get_db()
+    today = today_kst()
+    code = "S1"
+    # 판매량이 아주 적어서(전일 1개) expected_sales_today < 3 -> 추천발주량 0,
+    # 접수(pending)도 0이라 확정수량 자체가 0이 되는 상황.
+    _seed_sales(conn, code, today, {1: 1, 2: 1, 3: 1})
+    conn.commit()
+    conn.close()
+
+    get_shared_db, _shared_keep_alive = _make_misong_db()
+
+    with _patched_ezadmin({code: {"stock": 0, "pending": 0}}):
         result = asyncio.run(
             discover_missed_reorder_candidates(get_db, lambda key: None, get_shared_db, days=3, limit=150)
         )

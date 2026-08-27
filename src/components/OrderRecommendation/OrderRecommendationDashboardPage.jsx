@@ -4,17 +4,25 @@ import styles from './OrderRecommendationDashboardPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders } from '../../lib/api';
 import { useEzadminSession } from '../../lib/EzadminSessionContext';
 import OrderRecommendationBacktestSection from './OrderRecommendationBacktestSection';
+import OrderRecommendationCoverageCheckSection from './OrderRecommendationCoverageCheckSection';
 import OrderRecommendationDiscoverSection from './OrderRecommendationDiscoverSection';
+import OrderRecommendationTop90Section from './OrderRecommendationTop90Section';
+import OrderRecommendationExcelOrderSection from './OrderRecommendationExcelOrderSection';
 import DailyTableRow from './DailyTableRow';
-import { DAILY_TABLE_COLUMNS } from './dailyTableColumns';
+import { DAILY_TABLE_COLUMNS, DAILY_TABLE_LABEL_COLUMN_COUNT } from './dailyTableColumns';
+import { useDailyRowEdits } from './useDailyRowEdits';
+import { useDiscoverMissedReorders } from './useDiscoverMissedReorders';
+import { sumValues, formatSum } from './tableSums';
 
 const PAGE_TABS = [
   { key: 'dashboard', label: '대시보드' },
   { key: 'backtest', label: '백테스팅' },
+  { key: 'excel-order', label: '엑셀주문' },
 ];
 
+// 에이블리 재고수집/비에이블리 재고수집/예상발주 계산은 순서가 어긋나면 문제가 생겨서
+// (CombinedRunButton 주석 참고) 개별 버튼을 없애고 전체 실행 버튼으로만 돌리게 한다.
 const ACTIONS = [
-  { key: 'ably-stock', label: '에이블리 재고수집', path: '/order-recommendation/collect', needsSession: true },
   {
     key: 'sales-history',
     label: '판매량 수집',
@@ -22,10 +30,8 @@ const ACTIONS = [
     needsSession: false,
     progressPath: '/order-recommendation/collect-sales-history/progress',
   },
-  { key: 'compute', label: '예상발주 계산', path: '/order-recommendation/compute', needsSession: false },
   { key: 'evaluate', label: '수요예측 정확도 평가', path: '/order-recommendation/evaluate', needsSession: false },
   { key: 'evaluate-performance', label: '발주성과 평가', path: '/order-recommendation/evaluate-order-performance', needsSession: false },
-  { key: 'non-ably-stock', label: '비에이블리 재고수집', path: '/non-ably-order/collect', needsSession: true },
 ];
 
 function extractCount(data) {
@@ -101,6 +107,78 @@ function ActionButton({ action, onSuccess }) {
   );
 }
 
+// 에이블리 재고수집 → 비에이블리 재고수집 → 예상발주 계산 → 추가된 상품 조회를 순서대로
+// 이어서 실행한다. 순서가 중요하다: 계산(compute)은 재고수집으로 채워진 stock_qty가
+// 있어야 그 행을 계산하고, 추가된 상품 조회는 계산이 끝난 뒤라야 방금 계산된 코드들이
+// 후보에서 제대로 빠진다(안 그러면 일별 데이터와 겹쳐 보일 수 있음).
+function CombinedRunButton({ onSuccess, discover }) {
+  const [loading, setLoading] = useState(false);
+  const [stepLabel, setStepLabel] = useState('');
+  const [message, setMessage] = useState('');
+  const { openModal } = useEzadminSession();
+
+  // EZAdmin 세션이 없으면 모달을 띄우고, 모달에서 세션을 저장하면 같은 단계를 자동으로
+  // 재시도한다 - 세션은 한 번 저장되면 서버에 공유 저장되므로, 뒤 단계에서 또 필요해도
+  // 이미 유효해서 보통은 모달이 한 번만 뜬다.
+  const postWithSession = (path) =>
+    new Promise((resolve, reject) => {
+      const attempt = async () => {
+        try {
+          const res = await fetch(`${API}${path}`, { method: 'POST', headers: getAuthHeaders() });
+          const data = await res.json().catch(() => ({}));
+          if (data.need_session) {
+            openModal(attempt);
+            return;
+          }
+          if (!res.ok || data.ok === false) {
+            reject(new Error(data?.detail || '실행 실패'));
+            return;
+          }
+          resolve(data);
+        } catch (err) {
+          reject(err);
+        }
+      };
+      attempt();
+    });
+
+  const run = async () => {
+    setLoading(true);
+    setMessage('');
+    try {
+      setStepLabel('에이블리 재고수집 중...');
+      await postWithSession('/order-recommendation/collect');
+
+      setStepLabel('비에이블리 재고수집 중...');
+      await postWithSession('/non-ably-order/collect');
+
+      setStepLabel('예상발주 계산 중...');
+      await postWithSession('/order-recommendation/compute');
+
+      setStepLabel('추가된 상품 조회 중...');
+      await discover.run();
+
+      setMessage('전체 완료');
+      onSuccess?.();
+    } catch (err) {
+      setMessage(err.message || '실행 실패');
+    } finally {
+      setLoading(false);
+      setStepLabel('');
+    }
+  };
+
+  return (
+    <div className={styles.actionCard}>
+      <button className={styles.actionBtn} onClick={run} disabled={loading}>
+        <RefreshCw size={13} className={loading ? styles.spinning : undefined} />
+        {loading ? stepLabel || '실행 중...' : '전체 실행 (재고수집→계산→추가상품)'}
+      </button>
+      {message && <div className={styles.actionMessage}>{message}</div>}
+    </div>
+  );
+}
+
 function useJsonGet(path, refreshKey) {
   const [data, setData] = useState(null);
   useEffect(() => {
@@ -131,6 +209,7 @@ function DailyDataTable({ date, items }) {
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState('recommended_qty');
   const [sortDir, setSortDir] = useState('desc');
+  const edits = useDailyRowEdits(date);
 
   const withRecommendation = (items || []).filter((i) => i.recommended_qty != null);
   const term = search.trim();
@@ -156,6 +235,8 @@ function DailyDataTable({ date, items }) {
     }
   };
 
+  const dirtyCount = edits.dirtyCount(withRecommendation);
+
   return (
     <div>
       <div className={styles.dailyTableToolbar}>
@@ -167,6 +248,15 @@ function DailyDataTable({ date, items }) {
           onChange={(e) => setSearch(e.target.value)}
         />
         <span className={styles.dailyTableCount}>{sorted.length}건</span>
+        <button
+          type="button"
+          className={styles.rowSaveBtn}
+          disabled={dirtyCount === 0 || edits.savingAll}
+          onClick={() => edits.saveAll(withRecommendation)}
+        >
+          {edits.savingAll ? '일괄저장 중...' : `일괄저장 (${dirtyCount}건)`}
+        </button>
+        {edits.bulkMessage && <span className={styles.rowMessage}>{edits.bulkMessage}</span>}
       </div>
       <div className={styles.dailyTableScroll}>
         <table className={styles.dailyTable}>
@@ -185,9 +275,22 @@ function DailyDataTable({ date, items }) {
           </thead>
           <tbody>
             {sorted.map((item) => (
-              <DailyTableRow key={item.yusas_code} date={date} item={item} />
+              <DailyTableRow key={item.yusas_code} item={item} edits={edits} />
             ))}
           </tbody>
+          <tfoot>
+            <tr className={styles.sumRow}>
+              <td colSpan={DAILY_TABLE_LABEL_COLUMN_COUNT}>합계 ({sorted.length}건)</td>
+              {DAILY_TABLE_COLUMNS.slice(DAILY_TABLE_LABEL_COLUMN_COUNT).map((col) => (
+                <td key={col.key}>
+                  {col.numeric ? formatSum(sumValues(sorted, (i) => i[col.key]), col.decimals || 0) : ''}
+                </td>
+              ))}
+              <td>{formatSum(sumValues(sorted, (i) => edits.getFields(i).confirmedQty))}</td>
+              <td></td>
+              <td></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
     </div>
@@ -202,6 +305,7 @@ export default function OrderRecommendationDashboardPage() {
   const daily = useJsonGet('/order-recommendation/daily', refreshKey);
   const accuracy = useJsonGet('/order-recommendation/forecast-accuracy?days=7', refreshKey);
   const performance = useJsonGet('/order-recommendation/order-performance?days=7', refreshKey);
+  const discover = useDiscoverMissedReorders();
 
   const summary = daily
     ? {
@@ -232,14 +336,22 @@ export default function OrderRecommendationDashboardPage() {
 
       {pageTab === 'backtest' ? (
         <section className={styles.section}>
-          <h3 className={styles.sectionTitle}>일별 예측 정확도</h3>
+          <h4 className={styles.sectionTitle}>일별 예측 정확도</h4>
           <OrderRecommendationBacktestSection daily={daily} />
+          <h4 className={styles.sectionTitle}>커버리지 검증</h4>
+          <OrderRecommendationCoverageCheckSection />
+        </section>
+      ) : pageTab === 'excel-order' ? (
+        <section className={styles.section}>
+          <h3 className={styles.sectionTitle}>엑셀주문</h3>
+          <OrderRecommendationExcelOrderSection daily={daily} discover={discover} />
         </section>
       ) : (
         <>
       <section className={styles.section}>
         <h3 className={styles.sectionTitle}>실행</h3>
         <div className={styles.actionGrid}>
+          <CombinedRunButton onSuccess={refresh} discover={discover} />
           {ACTIONS.map((action) => (
             <ActionButton key={action.key} action={action} onSuccess={refresh} />
           ))}
@@ -306,7 +418,7 @@ export default function OrderRecommendationDashboardPage() {
 
       <section className={styles.section}>
         <h3 className={styles.sectionTitle}>추가된 상품</h3>
-        <OrderRecommendationDiscoverSection />
+        <OrderRecommendationDiscoverSection discover={discover} />
       </section>
 
       <section className={styles.section}>
@@ -318,6 +430,17 @@ export default function OrderRecommendationDashboardPage() {
         </div>
         {daily ? (
           <DailyDataTable date={daily.date} items={daily.items} />
+        ) : (
+          <div className={styles.actionMessage}>
+            불러오는 중이거나 실패했습니다. 위 새로고침을 눌러보세요.
+          </div>
+        )}
+      </section>
+
+      <section className={styles.section}>
+        <h3 className={styles.sectionTitle}>TOP90 발주</h3>
+        {daily ? (
+          <OrderRecommendationTop90Section date={daily.date} />
         ) : (
           <div className={styles.actionMessage}>
             불러오는 중이거나 실패했습니다. 위 새로고침을 눌러보세요.

@@ -273,24 +273,45 @@ def coverage_days_for_expected_sales(expected_sales) -> float:
     return 7.0
 
 
-def default_confirmed_qty_for_row(expected_sales_today, recommended_qty, ezadmin_lack_qty, stock_qty, incoming_qty):
+def default_confirmed_qty_for_row(
+    expected_sales_today, recommended_qty, ezadmin_lack_qty, stock_qty=None, incoming_qty=None,
+):
     """확정수량 기본값(자동 채움) = 지금 실제로 추가 발주해야 할 수량.
+    ezadmin_lack_qty 자리에 넣는 값이 이미 재고/미송을 감안한 값이면(예: 일별
+    데이터의 EZAdmin IO30 요청수량) stock_qty/incoming_qty를 안 넘기면 된다(기본값) —
+    여기서 또 빼면 이중으로 빠지게 된다.
+    반대로 재고/미송을 감안 안 하는 값을 쓰는 호출부(예: 추가된 상품 discover 기능의
+    접수수량)는 stock_qty/incoming_qty를 넘겨서 여기서 빼야 한다.
     예상판매량이 3개 미만이면 예측 기반 추천발주는 신뢰하지 않고(추천발주량도 0으로
-    강제) 부족수량 그대로를 기본값으로 쓴다(재고/미송은 무시).
-    3개 이상이면 (부족수량 + 추천발주량) 총필요량에서 (재고 + 미송) 총가용량을 뺀
-    값을 쓴다 — 미송이 커버리지 수요보다 많이 남으면 그 잉여분이 부족수량도
-    상쇄하도록, 부족수량과 추천발주량을 먼저 더한 뒤에 한 번만 뺀다.
-    필요한 값이 하나라도 없으면(None) 계산하지 않고 None을 반환한다."""
-    if expected_sales_today is not None and expected_sales_today < 3:
-        return ezadmin_lack_qty
-    if ezadmin_lack_qty is None or recommended_qty is None or stock_qty is None or incoming_qty is None:
+    강제) ezadmin_lack_qty만 기준으로 삼지만, 재고/미송은 그래도 넘겨받은 만큼 뺀다 —
+    안 그러면 재고/미송이 이미 접수수량보다 많아도(=더 안 사도 되는 상황) 그대로
+    발주가 나가버린다.
+    3개 이상이면 ezadmin_lack_qty + 추천발주량에서, 넘겨받은 재고/미송이 있으면 뺀다.
+    ezadmin_lack_qty가 없으면(None) 계산하지 않고 None을 반환한다. recommended_qty는
+    3개 미만 구간에서는 안 쓰이므로 그 구간에서는 None이어도 계산된다."""
+    if ezadmin_lack_qty is None:
         return None
-    return max(0, (ezadmin_lack_qty + recommended_qty) - stock_qty - incoming_qty)
+    if expected_sales_today is not None and expected_sales_today < 3:
+        total = ezadmin_lack_qty
+    else:
+        if recommended_qty is None:
+            return None
+        total = ezadmin_lack_qty + recommended_qty
+    if stock_qty is not None:
+        total -= stock_qty
+    if incoming_qty is not None:
+        total -= incoming_qty
+    return max(0, total)
 
 
 def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
     row = get_row(conn, date, yusas_code)
     if row is None:
+        return
+    if row["stock_qty"] is None:
+        # 오늘 EZAdmin 재고수집 결과에 없는 상품(=더 이상 부족/재고문제 아님) —
+        # 판매 추세만으로 발주추천을 계속 채우면 이미 해소된 상품이 여전히
+        # 추천값을 들고 있는 것처럼 보이므로, EZAdmin이 오늘 값을 준 상품만 계산한다.
         return
 
     signals = calc_expected_sales_today_for_date(conn, yusas_code, date, get_setting)
@@ -315,7 +336,6 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
 
     confirmed_qty_default = default_confirmed_qty_for_row(
         signals["expected_sales_today"], recommended_qty, row["ezadmin_lack_qty"],
-        row["stock_qty"], row["incoming_qty"],
     )
 
     prev_ad_budget = prev_row["ad_budget"] if prev_row is not None else None

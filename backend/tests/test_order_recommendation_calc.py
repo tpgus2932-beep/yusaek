@@ -365,39 +365,56 @@ from services.order_recommendation_calc import default_confirmed_qty_for_row
 
 
 def test_default_confirmed_qty_under_3_uses_lack_qty_only():
-    # 재고/미송이 있어도(=0, 100) 무시하고 부족수량 그대로.
-    assert default_confirmed_qty_for_row(2.9, 5, 4, 0, 100) == 4
+    assert default_confirmed_qty_for_row(2.9, 5, 4) == 4
 
 
 def test_default_confirmed_qty_under_3_with_no_lack_qty_is_none():
-    assert default_confirmed_qty_for_row(2.9, 5, None, 0, 0) is None
+    assert default_confirmed_qty_for_row(2.9, 5, None) is None
 
 
-def test_default_confirmed_qty_at_least_3_uses_lack_plus_recommended_minus_stock_and_incoming():
-    # 재고/미송이 0이면 부족수량 + 추천발주량 그대로: 10 + 13 = 23
-    assert default_confirmed_qty_for_row(3.0, 13, 10, 0, 0) == 23
+def test_default_confirmed_qty_at_least_3_adds_lack_and_recommended():
+    # ezadmin_lack_qty는 EZAdmin이 이미 재고/미송을 감안해 계산해주는 요청수량이라
+    # 여기서 재고/미송을 또 빼지 않고 추천발주량과 그대로 더한다: 10 + 13 = 23
+    assert default_confirmed_qty_for_row(3.0, 13, 10) == 23
 
 
 def test_default_confirmed_qty_at_least_3_none_when_any_input_missing():
-    assert default_confirmed_qty_for_row(5, None, 10, 0, 0) is None
-    assert default_confirmed_qty_for_row(5, 13, None, 0, 0) is None
-    assert default_confirmed_qty_for_row(5, 13, 10, None, 0) is None
-    assert default_confirmed_qty_for_row(5, 13, 10, 0, None) is None
+    assert default_confirmed_qty_for_row(5, None, 10) is None
+    assert default_confirmed_qty_for_row(5, 13, None) is None
 
 
 def test_default_confirmed_qty_none_expected_sales_uses_at_least_3_formula():
-    assert default_confirmed_qty_for_row(None, 13, 10, 0, 0) == 23
+    assert default_confirmed_qty_for_row(None, 13, 10) == 23
 
 
-def test_default_confirmed_qty_incoming_surplus_offsets_lack_qty():
-    # 회귀 테스트: 예상판매량 5.5, 커버리지 3일 -> 추천발주량(순수 수요) 15,
-    # 부족수량 21, 미송 30. 총필요 36 - 총가용(재고0+미송30) = 6.
-    assert default_confirmed_qty_for_row(5.5, 15, 21, 0, 30) == 6
+def test_default_confirmed_qty_clamped_to_zero_when_negative():
+    assert default_confirmed_qty_for_row(5.5, 5, -20) == 0
 
 
-def test_default_confirmed_qty_incoming_fully_covers_lack_and_recommended():
-    # 미송이 총필요량보다 많으면 0으로 클램프(음수 아님).
-    assert default_confirmed_qty_for_row(5.5, 15, 21, 0, 100) == 0
+def test_default_confirmed_qty_subtracts_stock_and_incoming_when_passed():
+    # ezadmin_lack_qty 자리에 재고/미송을 감안 안 한 값(예: 접수수량)을 쓰는
+    # 호출부(추가된 상품 discover)는 stock_qty/incoming_qty를 넘겨서 여기서 빼야 한다.
+    assert default_confirmed_qty_for_row(5.5, 15, 21, stock_qty=0, incoming_qty=30) == 6
+
+
+def test_default_confirmed_qty_subtraction_clamped_to_zero():
+    assert default_confirmed_qty_for_row(5.5, 15, 21, stock_qty=0, incoming_qty=100) == 0
+
+
+def test_default_confirmed_qty_omits_subtraction_when_stock_and_incoming_not_passed():
+    # 기본값(일별 데이터/compute_row) — 재고/미송을 안 넘기면 안 뺀다.
+    assert default_confirmed_qty_for_row(5.5, 15, 21) == 36
+
+
+def test_default_confirmed_qty_under_3_still_subtracts_stock_and_incoming():
+    # 예상판매량이 3개 미만이라 추천발주량(0)은 안 쓰지만, 재고/미송이 넘겨졌으면
+    # 그래도 접수수량에서 빼야 한다 - 안 그러면 이미 재고/미송으로 충분한데도 발주가 나간다.
+    # 접수 5 - 재고 2 - 미송 2 = 1.
+    assert default_confirmed_qty_for_row(2.9, 0, 5, stock_qty=2, incoming_qty=2) == 1
+
+
+def test_default_confirmed_qty_under_3_with_stock_covers_lack_qty_is_zero():
+    assert default_confirmed_qty_for_row(2.9, 0, 5, stock_qty=3, incoming_qty=3) == 0
 
 
 from services.order_recommendation_calc import compute_all, compute_row
@@ -592,7 +609,10 @@ def test_compute_row_sums_multi_day_coverage_using_each_days_own_weekday_average
     conn.close()
 
 
-def test_compute_row_confirmed_qty_null_when_stock_missing():
+def test_compute_row_skips_entirely_when_stock_qty_missing():
+    """stock_qty가 없다는 건 오늘 EZAdmin 재고수집 결과에 이 상품이 없다는 뜻
+    (재고문제가 해소됐거나 아직 수집 전) — 판매 추세만으로 발주추천을 계속 채우면
+    이미 해소된 상품이 예전 추천값을 들고 있는 것처럼 보이므로 아예 계산하지 않는다."""
     get_db, _keep_alive = _make_db_factory()
     init_order_recommendation_tables(get_db)
     conn = get_db()
@@ -606,12 +626,8 @@ def test_compute_row_confirmed_qty_null_when_stock_missing():
     compute_row(conn, code, "2026-07-29", get_setting=lambda key: None)
 
     row = get_row(conn, "2026-07-29", code)
-    # weekday=10.0, avg_sales_7d=10.0(07-22만 윈도 안), avg_sales_14d=10.0(07-15,07-22),
-    # previous_day_sales_qty=None -> 남은 가중치(.35+.25+.15=.75)로 재정규화해도 전부 10 -> 10.0
-    assert row["expected_sales_today"] == pytest.approx(10.0)
-    # recommended_qty는 재고/미송과 무관해서 stock_qty가 없어도 계산된다.
-    assert row["recommended_qty"] is not None
-    # confirmed_qty는 재고/미송이 있어야 계산되므로 stock_qty가 NULL이면 None.
+    assert row["expected_sales_today"] is None
+    assert row["recommended_qty"] is None
     assert row["confirmed_qty"] is None
     conn.close()
 
@@ -698,7 +714,7 @@ def test_compute_row_computes_incoming_qty_change():
     )
     ensure_row(conn, "2026-07-29", code)
     conn.execute(
-        "UPDATE order_recommendation_daily SET incoming_qty = 15 WHERE date = ? AND yusas_code = ?",
+        "UPDATE order_recommendation_daily SET incoming_qty = 15, stock_qty = 0 WHERE date = ? AND yusas_code = ?",
         ("2026-07-29", code),
     )
     conn.commit()
@@ -779,6 +795,6 @@ def test_compute_row_default_confirmed_qty_at_least_3_uses_lack_plus_recommended
     assert row["expected_sales_today"] == pytest.approx(5.0)
     assert row["recommended_qty"] is not None
     # recommended_qty는 재고/미송과 무관한 순수 커버리지 수요치.
-    # 확정수량 = (부족수량 + 추천발주량) - 재고(0) - 미송(2)
-    assert row["confirmed_qty"] == max(0, (10 + row["recommended_qty"]) - 0 - 2)
+    # 확정수량 = 요청수량(ezadmin_lack_qty) + 추천발주량 (재고/미송은 EZAdmin이 이미 감안했다고 보고 안 뺌)
+    assert row["confirmed_qty"] == 10 + row["recommended_qty"]
     conn.close()

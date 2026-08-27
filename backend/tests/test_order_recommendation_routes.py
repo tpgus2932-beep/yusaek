@@ -15,6 +15,8 @@ import services.order_recommendation_collect as collect_mod
 from api.order_recommendation_routes import BACKTEST_TOP_N, build_order_recommendation_router
 from sdk.ezadmin import EzAdminSessionExpired
 from services.order_recommendation_calc import ORDER_LEAD_DAYS
+from services.order_recommendation_discover_snapshot import save_discover_snapshot
+from services.order_non_ably_backorder import init_non_ably_backorder_table
 from services.order_recommendation_store import (
     ensure_row,
     init_order_recommendation_tables,
@@ -42,6 +44,7 @@ def _make_db_factory():
 def _make_client(settings=None):
     get_db, keep_alive = _make_db_factory()
     init_order_recommendation_tables(get_db)
+    init_non_ably_backorder_table(get_db)
     get_shared_db, shared_keep_alive = _make_db_factory()
     store = dict(settings or {})
 
@@ -57,6 +60,7 @@ def _make_client(settings=None):
     )
     client = TestClient(app)
     client._shared_keep_alive = shared_keep_alive  # 참조 유지 - 없으면 in-memory 공유 DB가 사라짐
+    client._get_shared_db = get_shared_db  # discover 스냅샷 등 공유 DB에 직접 시드해야 하는 테스트용
     return client, get_db, keep_alive, store
 
 
@@ -66,6 +70,9 @@ def _stub_wonbe_product_name_map(monkeypatch):
     상품명 매칭 자체를 검증하는 테스트는 자기 안에서 with patch(...)로 덮어쓴다."""
     monkeypatch.setattr(
         "api.order_recommendation_routes.load_wonbe_product_name_map", lambda: {}
+    )
+    monkeypatch.setattr(
+        "api.order_recommendation_routes.load_wonbe_client_info_by_code", lambda: {}
     )
 
 
@@ -111,6 +118,38 @@ def test_daily_includes_product_name_when_wonbe_matches():
     assert items[0]["product_name"] == "나샤 실버 목걸이"
 
 
+def test_daily_includes_client_and_client_product_name_when_wonbe_matches():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    ensure_row(conn, "2026-07-29", "S24083")
+    conn.commit()
+    conn.close()
+
+    with patch(
+        "api.order_recommendation_routes.load_wonbe_client_info_by_code",
+        return_value={"S24083": {"거래처": "동대문상회", "거래처상품명": "목걸이A", "색상": "실버", "사이즈": "FREE"}},
+    ):
+        res = client.get("/order-recommendation/daily", params={"date": "2026-07-29"})
+
+    item = res.json()["items"][0]
+    assert item["client"] == "동대문상회"
+    assert item["client_product_name"] == "목걸이A"
+
+
+def test_daily_client_empty_string_when_wonbe_has_no_match():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    ensure_row(conn, "2026-07-29", "S24083")
+    conn.commit()
+    conn.close()
+
+    res = client.get("/order-recommendation/daily", params={"date": "2026-07-29"})
+
+    item = res.json()["items"][0]
+    assert item["client"] == ""
+    assert item["client_product_name"] == ""
+
+
 def test_daily_product_name_empty_string_when_wonbe_has_no_match():
     client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
@@ -126,6 +165,215 @@ def test_daily_product_name_empty_string_when_wonbe_has_no_match():
 
     items = res.json()["items"]
     assert items[0]["product_name"] == ""
+
+
+def test_top90_items_maps_confirmed_qty_to_top90_shape():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    ensure_row(conn, "2026-07-29", "S24083")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET confirmed_qty = ?, stock_qty = ?, "
+        "incoming_qty = ?, ezadmin_real_lack_qty = ? WHERE date = ? AND yusas_code = ?",
+        (12, 3, 1, 9, "2026-07-29", "S24083"),
+    )
+    conn.commit()
+    conn.close()
+
+    with patch(
+        "api.order_recommendation_routes.load_wonbe_product_name_map",
+        return_value={"S24083": "나샤 실버 목걸이"},
+    ), patch(
+        "api.order_recommendation_routes.load_wonbe_client_info_by_code",
+        return_value={"S24083": {"거래처": "동대문상회", "거래처상품명": "목걸이A", "색상": "실버", "사이즈": "FREE"}},
+    ):
+        res = client.get("/order-recommendation/2026-07-29/top90-items")
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["count"] == 1
+    assert body["skipped_no_client_info"] == []
+    item = body["items"][0]
+    assert item["code"] == "S24083"
+    assert item["name"] == "나샤 실버 목걸이"
+    assert item["supplyProductName"] == "동대문상회 목걸이A"
+    assert item["options"] == "실버-FREE"
+    assert item["requestQty"] == 12
+    assert item["stock"] == 3
+    assert item["notYetDeliv"] == 1
+    assert item["lackQty"] == 9
+    assert item["recommendedQtySource"] == "daily"
+
+
+def test_top90_items_excludes_rows_with_zero_or_null_confirmed_qty():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    ensure_row(conn, "2026-07-29", "S00001")  # confirmed_qty NULL
+    ensure_row(conn, "2026-07-29", "S00002")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET confirmed_qty = 0 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", "S00002"),
+    )
+    conn.commit()
+    conn.close()
+
+    res = client.get("/order-recommendation/2026-07-29/top90-items")
+
+    assert res.json()["count"] == 0
+    assert res.json()["items"] == []
+
+
+def test_top90_items_skips_products_missing_wonbe_client_info():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    ensure_row(conn, "2026-07-29", "S24083")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET confirmed_qty = 5 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", "S24083"),
+    )
+    conn.commit()
+    conn.close()
+
+    # 거래처/거래처상품명 매핑이 wonbe에 없는 상품 -> supplyProductName을 못 만들어서 제외
+    res = client.get("/order-recommendation/2026-07-29/top90-items")
+
+    body = res.json()
+    assert body["count"] == 0
+    assert body["skipped_no_client_info"] == ["S24083"]
+
+
+def test_top90_items_includes_confirmed_qty_from_discover_snapshot():
+    """추가된 상품(discover) 스냅샷에도 확정수량이 있으면 일별 데이터와 합쳐서 나와야 한다 —
+    discover 후보는 오늘자 order_recommendation_daily 행 자체가 없는 상품이라 daily
+    쿼리만으로는 절대 안 잡힌다."""
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    ensure_row(conn, "2026-07-29", "S24083")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET confirmed_qty = 5 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", "S24083"),
+    )
+    conn.commit()
+    conn.close()
+
+    save_discover_snapshot(
+        client._get_shared_db,
+        date="2026-07-29", days=3, limit=150, candidate_count=1,
+        items=[{
+            "yusas_code": "S99999", "product_name": "테스트상품",
+            "stock_qty": 0, "pending_qty": 4, "misong_qty": 1,
+            "recommended_qty": 6, "confirmed_qty": 9,
+        }],
+        need_ezadmin_session=False, updated_by="tester",
+    )
+
+    with patch(
+        "api.order_recommendation_routes.load_wonbe_client_info_by_code",
+        return_value={
+            "S24083": {"거래처": "동대문상회", "거래처상품명": "목걸이A", "색상": "실버", "사이즈": "FREE"},
+            "S99999": {"거래처": "남대문상회", "거래처상품명": "귀걸이B", "색상": "골드", "사이즈": "FREE"},
+        },
+    ):
+        res = client.get("/order-recommendation/2026-07-29/top90-items")
+
+    body = res.json()
+    codes = {item["code"] for item in body["items"]}
+    assert codes == {"S24083", "S99999"}
+    discover_item = next(item for item in body["items"] if item["code"] == "S99999")
+    assert discover_item["supplyProductName"] == "남대문상회 귀걸이B"
+    assert discover_item["stock"] == 0
+    assert discover_item["notYetDeliv"] == 1
+    assert discover_item["lackQty"] == 4
+    assert discover_item["requestQty"] == 9
+    assert discover_item["recommendedQty"] == 6  # discover 스냅샷에서 이미 계산된 값이 그대로 넘어와야 함
+    assert discover_item["recommendedQtySource"] == "discover"
+
+
+def test_top90_items_daily_row_takes_priority_over_discover_snapshot_for_same_code():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    ensure_row(conn, "2026-07-29", "S24083")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET confirmed_qty = 5 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", "S24083"),
+    )
+    conn.commit()
+    conn.close()
+
+    save_discover_snapshot(
+        client._get_shared_db,
+        date="2026-07-29", days=3, limit=150, candidate_count=1,
+        items=[{"yusas_code": "S24083", "confirmed_qty": 999}],
+        need_ezadmin_session=False, updated_by="tester",
+    )
+
+    with patch(
+        "api.order_recommendation_routes.load_wonbe_client_info_by_code",
+        return_value={"S24083": {"거래처": "동대문상회", "거래처상품명": "목걸이A"}},
+    ):
+        res = client.get("/order-recommendation/2026-07-29/top90-items")
+
+    body = res.json()
+    assert body["count"] == 1
+    assert body["items"][0]["requestQty"] == 5  # daily 쪽 값(5)이 우선, discover(999) 아님
+
+
+def test_top90_items_adds_non_ably_lack_qty_to_ably_confirmed_qty():
+    """requestQty = 에이블리 확정수량 + 비에이블리 부족수량 (final-order와 동일한 합산)."""
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    ensure_row(conn, "2026-07-29", "S24083")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET confirmed_qty = 5 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", "S24083"),
+    )
+    conn.execute(
+        "INSERT INTO order_non_ably_backorder (yusas_code, stock_qty, incoming_qty, lack_qty, updated_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("S24083", 1, 0, 3, "2026-07-29T00:00:00+09:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    with patch(
+        "api.order_recommendation_routes.load_wonbe_client_info_by_code",
+        return_value={"S24083": {"거래처": "동대문상회", "거래처상품명": "목걸이A"}},
+    ):
+        res = client.get("/order-recommendation/2026-07-29/top90-items")
+
+    body = res.json()
+    assert body["count"] == 1
+    assert body["items"][0]["requestQty"] == 8  # 5(에이블리) + 3(비에이블리)
+
+
+def test_top90_items_includes_non_ably_only_products_with_zero_ably_qty():
+    """에이블리 쪽엔 확정수량이 전혀 없어도 비에이블리 부족수량만 있으면 그만큼 별도 항목으로 포함된다."""
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO order_non_ably_backorder (yusas_code, stock_qty, incoming_qty, lack_qty, updated_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("S99999", 2, 1, 6, "2026-07-29T00:00:00+09:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    with patch(
+        "api.order_recommendation_routes.load_wonbe_client_info_by_code",
+        return_value={"S99999": {"거래처": "남대문상회", "거래처상품명": "귀걸이B"}},
+    ):
+        res = client.get("/order-recommendation/2026-07-29/top90-items")
+
+    body = res.json()
+    assert body["count"] == 1
+    item = body["items"][0]
+    assert item["code"] == "S99999"
+    assert item["requestQty"] == 6
+    assert item["stock"] == 2
+    assert item["notYetDeliv"] == 1
+    assert item["lackQty"] == 6
+    assert item["recommendedQty"] is None
+    assert item["recommendedQtySource"] == "non_ably_only"
 
 
 def test_backtest_date_range_returns_null_when_no_sales_data():

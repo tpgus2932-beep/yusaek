@@ -32,7 +32,7 @@ def _make_db_factory():
 EXPECTED_COLUMNS = {
     "date", "yusas_code", "day_of_week",
     "sales_qty", "stock_qty", "incoming_qty", "actual_received_qty",
-    "ezadmin_lack_qty",
+    "ezadmin_lack_qty", "ezadmin_real_lack_qty",
     "previous_day_sales_qty",
     "ad_budget", "wish_count", "cart_count",
     "ad_budget_change", "ad_budget_change_rate",

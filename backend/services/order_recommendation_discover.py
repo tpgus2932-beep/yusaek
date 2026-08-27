@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 
-from api.wonbe_routes import load_wonbe_product_name_map
+from api.wonbe_routes import build_dash_options, load_wonbe_client_info_by_code, load_wonbe_product_name_map
 from sdk.ezadmin import EzAdminClient, EzAdminSessionExpired
 from services.misong_lookup import load_misong_qty_by_code
 from services.order_recommendation_calc import (
@@ -100,6 +100,7 @@ async def discover_missed_reorder_candidates(
         )
         misong_qty_by_code = load_misong_qty_by_code(get_shared_db)
         name_map = load_wonbe_product_name_map()
+        client_info_by_code = load_wonbe_client_info_by_code()
         safety_stock_qty = _setting_float(
             get_setting, "order_recommendation_safety_stock_qty", DEFAULT_SAFETY_STOCK_QTY
         )
@@ -126,15 +127,21 @@ async def discover_missed_reorder_candidates(
             recommended_qty = calc_recommended_qty(coverage_period_expected_sales, safety_stock_qty)
             if expected_sales_today is not None and expected_sales_today < 3:
                 recommended_qty = 0
+            # pending_qty(접수)는 EZAdmin IO30 요청수량과 달리 재고/미송을 감안 안 한
+            # 값이라, 여기서는 stock_qty/incoming_qty(misong)를 직접 넘겨서 빼야 한다.
             confirmed_qty = default_confirmed_qty_for_row(
                 expected_sales_today, recommended_qty, pending_qty, stock_qty, incoming_qty
             )
             if not confirmed_qty:
                 continue
 
+            client_info = client_info_by_code.get(code) or {}
             items.append({
                 "yusas_code": code,
                 "product_name": name_map.get(code, ""),
+                "client": client_info.get("거래처", ""),
+                "client_product_name": client_info.get("거래처상품명", ""),
+                "options": build_dash_options(client_info),
                 "recent_avg_daily_sales": round(avg_sales, 2),
                 "expected_sales_today": expected_sales_today,
                 "coverage_days": coverage_days,

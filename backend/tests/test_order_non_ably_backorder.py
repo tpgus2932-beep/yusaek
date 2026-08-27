@@ -113,7 +113,10 @@ def test_upsert_overwrites_existing_row_values():
     conn.close()
 
 
-def test_upsert_preserves_rows_not_in_new_snapshot():
+def test_upsert_removes_rows_not_in_new_snapshot():
+    """이번 스냅샷에 없는 코드는 EZAdmin IO30에서 더 이상 안 잡히는(해소된) 상품이므로
+    예전 lack_qty가 영구히 남지 않도록 지워야 한다 — top90 발주 조회에 해소된
+    부족수량이 계속 끼어드는 걸 막기 위한 동작."""
     get_db, _keep_alive = _make_db_factory()
     init_non_ably_backorder_table(get_db)
     conn = get_db()
@@ -125,8 +128,7 @@ def test_upsert_preserves_rows_not_in_new_snapshot():
     upsert_non_ably_snapshot(conn, {"S24083": {"stock_qty": 9, "incoming_qty": 0, "lack_qty": 0}})
 
     rows = {r["yusas_code"]: r for r in list_non_ably_snapshot(conn)}
-    assert set(rows.keys()) == {"S24083", "S24067"}
-    assert rows["S24067"]["stock_qty"] == 2
+    assert set(rows.keys()) == {"S24083"}
     conn.close()
 
 

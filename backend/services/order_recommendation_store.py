@@ -142,6 +142,9 @@ def _ensure_order_performance_columns(conn) -> None:
 
 _EZADMIN_COLUMNS = [
     ("ezadmin_lack_qty", "INTEGER"),
+    # IO30 진짜 부족수량(lack_qty) — ezadmin_lack_qty는 요청수량(request_qty)이라
+    # 확정수량 계산엔 그대로 쓰고, 이건 화면 표시(특히 top90 발주 화면)용으로 따로 둔다.
+    ("ezadmin_real_lack_qty", "INTEGER"),
 ]
 
 

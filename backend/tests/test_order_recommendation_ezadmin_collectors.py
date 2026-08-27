@@ -22,11 +22,12 @@ def _setting(sessid="sess123"):
     return lambda key: sessid if key == "ezadmin_phpsessid" else None
 
 
-def _cell(product_id, stock, reserve_qty, lack_qty):
+def _cell(product_id, stock, reserve_qty, request_qty, lack_qty=0):
     return {
         "product_id": product_id,
         "stock": f"<a class=atd href='#' onclick=javascript:run_stock(this)>{stock}</a>",
         "reserve_qty": f"<input type='text' class='input22 right' value='{reserve_qty}' org_value='{reserve_qty}'>",
+        "request_qty": str(request_qty),
         "lack_qty": str(lack_qty),
     }
 
@@ -39,8 +40,8 @@ def test_fetch_snapshot_parses_single_page_response():
             200,
             json={
                 "rows": [
-                    {"id": 0, "cell": _cell("S24083", 0, 5, 3)},
-                    {"id": 1, "cell": _cell("S24067", 2, 1, 0)},
+                    {"id": 0, "cell": _cell("S24083", 0, 5, 3, lack_qty=7)},
+                    {"id": 1, "cell": _cell("S24067", 2, 1, 0, lack_qty=2)},
                 ],
                 "total": 1,
             },
@@ -50,8 +51,8 @@ def test_fetch_snapshot_parses_single_page_response():
     snapshot = asyncio.run(_fetch_ably_io30_snapshot(_setting(), "2026-07-30"))
 
     assert snapshot == {
-        "S24083": {"stock_qty": 0, "incoming_qty": 5, "ezadmin_lack_qty": 3},
-        "S24067": {"stock_qty": 2, "incoming_qty": 1, "ezadmin_lack_qty": 0},
+        "S24083": {"stock_qty": 0, "incoming_qty": 5, "ezadmin_lack_qty": 3, "ezadmin_real_lack_qty": 7},
+        "S24067": {"stock_qty": 2, "incoming_qty": 1, "ezadmin_lack_qty": 0, "ezadmin_real_lack_qty": 2},
     }
 
 
@@ -120,15 +121,15 @@ def test_fetch_snapshot_caches_within_ttl_for_same_date():
 
 
 @respx.mock
-def test_build_ezadmin_collectors_returns_three_columns_from_shared_fetch():
+def test_build_ezadmin_collectors_returns_four_columns_from_shared_fetch():
     ez_collect_mod._cache.clear()
     route = respx.post(_IO30_URL).mock(
         return_value=httpx.Response(
             200,
             json={
                 "rows": [
-                    {"id": 0, "cell": _cell("S24083", 0, 5, 3)},
-                    {"id": 1, "cell": _cell("S24067", 2, 1, 0)},
+                    {"id": 0, "cell": _cell("S24083", 0, 5, 3, lack_qty=7)},
+                    {"id": 1, "cell": _cell("S24067", 2, 1, 0, lack_qty=2)},
                 ],
                 "total": 1,
             },
@@ -136,13 +137,17 @@ def test_build_ezadmin_collectors_returns_three_columns_from_shared_fetch():
     )
 
     collectors = build_ezadmin_collectors(_setting())
-    assert set(collectors.keys()) == {"stock_qty", "incoming_qty", "ezadmin_lack_qty"}
+    assert set(collectors.keys()) == {
+        "stock_qty", "incoming_qty", "ezadmin_lack_qty", "ezadmin_real_lack_qty",
+    }
 
     stock = asyncio.run(collectors["stock_qty"]("2026-07-30"))
     incoming = asyncio.run(collectors["incoming_qty"]("2026-07-30"))
     lack = asyncio.run(collectors["ezadmin_lack_qty"]("2026-07-30"))
+    real_lack = asyncio.run(collectors["ezadmin_real_lack_qty"]("2026-07-30"))
 
     assert stock == {"S24083": 0, "S24067": 2}
     assert incoming == {"S24083": 5, "S24067": 1}
     assert lack == {"S24083": 3, "S24067": 0}
+    assert real_lack == {"S24083": 7, "S24067": 2}
     assert route.call_count == 1
