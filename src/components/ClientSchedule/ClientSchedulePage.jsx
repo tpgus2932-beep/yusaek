@@ -783,7 +783,7 @@ export default function ClientSchedulePage() {
         processed = mergeScheduleRows(processed, mergeSource, baseDate);
       }
 
-      // 입고 파일로 행 삭제 (단, 기준파일 요청수량(G)·입고대기(H) 중 하나라도 10개 이상이면 보존)
+      // 입고 파일로 행 삭제 (단, 기준파일 요청수량(G)·입고대기(H) 중 하나라도 5개 이상이면 보존)
       let removedCount = 0;
       if (ezadminIncomingRows || incomingFile) {
         const inRows = ezadminIncomingRows || (await readWorkbook(incomingFile)).rows;
@@ -791,7 +791,7 @@ export default function ClientSchedulePage() {
         const before = processed.length;
         processed = withIds(processed.filter((row) => {
           if (!incomingKeys.has(toDisplayText(row.productCode))) return true;
-          return toNumber(row.G) >= 10 || toNumber(row.H) >= 10;
+          return toNumber(row.G) >= 5 || toNumber(row.H) >= 5;
         }));
         removedCount = before - processed.length;
       }
