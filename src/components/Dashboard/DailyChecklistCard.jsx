@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
 import styles from './Dashboard.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import { useEzadminSession } from '../../lib/EzadminSessionContext';
@@ -89,6 +89,11 @@ export default function DailyChecklistCard() {
     const [loading, setLoading] = useState(true);
     const [activeKey, setActiveKey] = useState(() => activeJob?.key ?? null);
     const [resultMsg, setResultMsg] = useState({});
+    const [sellerFaultOpen, setSellerFaultOpen] = useState({});
+    const [sellerFaultItems, setSellerFaultItems] = useState({});
+    const [sellerFaultLoading, setSellerFaultLoading] = useState({});
+    const [sellerFaultProcessing, setSellerFaultProcessing] = useState(() => new Set());
+    const [zoomImage, setZoomImage] = useState(null);
     const { openModal: openEzadminModal } = useEzadminSession();
     const authHeaders = getAuthHeaders();
     const pollTimerRef = useRef(null);
@@ -263,6 +268,100 @@ export default function DailyChecklistCard() {
         daily_check_ship_pending: runShipPending,
     };
 
+    // 판매자 부담 사유로 신규반품/교환회수 자동처리에서 제외된 건은 스냅샷을
+    // 따로 두지 않고, 펼칠 때마다 에이블리에서 실시간으로 다시 조회한다 -
+    // 개별 실행처리로 한 건 넘기면 그 건의 status가 바뀌어 다음 조회부터
+    // 자연히 목록에서 빠지므로 별도 "완료" 상태 관리가 필요 없다.
+    const SELLER_FAULT_CONFIGS = {
+        daily_check_new_return_pickup: {
+            pendingUrl: `${API}/return-shipping/seller-fault-pending`,
+            singleUrl: `${API}/return-shipping/new-return-pickup-single`,
+            itemKey: (item) => `${item.invoice}_${item.sno}`,
+            buildPayload: (item) => ({
+                invoice: item.invoice,
+                sno: item.sno,
+                buyer_tel: item.buyer_tel,
+                buyer_name: item.buyer_name,
+                goods_name: item.goods_name,
+            }),
+            memo: (item) => item.user_comment,
+        },
+        daily_check_exchange_pickup: {
+            pendingUrl: `${API}/exchange-return/seller-fault-pending`,
+            singleUrl: `${API}/exchange-return/process-exchange-pickup-single`,
+            itemKey: (item) => `${item.exchange_sno}`,
+            buildPayload: (item) => ({
+                invoice: item.invoice,
+                exchange_sno: item.exchange_sno,
+                reason_code: item.reason_code,
+                exchange_items: item.exchange_items,
+                return_delivery: item.return_delivery,
+                exchange_delivery: item.exchange_delivery,
+                buyer_tel: item.buyer_tel,
+                buyer_name: item.buyer_name,
+                goods_name: item.goods_name,
+            }),
+            memo: (item) => item.detail_reason,
+        },
+    };
+
+    const fetchSellerFaultPending = async (configKey) => {
+        const config = SELLER_FAULT_CONFIGS[configKey];
+        setSellerFaultLoading((prev) => ({ ...prev, [configKey]: true }));
+        try {
+            const res = await fetch(config.pendingUrl, { headers: getAuthHeaders() });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json().catch(() => ({}));
+            setSellerFaultItems((prev) => ({ ...prev, [configKey]: res.ok && data.ok ? (data.items || []) : [] }));
+        } catch {
+            setSellerFaultItems((prev) => ({ ...prev, [configKey]: [] }));
+        } finally {
+            setSellerFaultLoading((prev) => ({ ...prev, [configKey]: false }));
+        }
+    };
+
+    const toggleSellerFault = (configKey) => {
+        const next = !sellerFaultOpen[configKey];
+        setSellerFaultOpen((prev) => ({ ...prev, [configKey]: next }));
+        if (next && sellerFaultItems[configKey] === undefined) fetchSellerFaultPending(configKey);
+    };
+
+    const processSellerFaultItem = async (configKey, item) => {
+        const config = SELLER_FAULT_CONFIGS[configKey];
+        const itemKey = config.itemKey(item);
+        const processingKey = `${configKey}:${itemKey}`;
+        if (!window.confirm(`송장 ${item.invoice} 건을 회수접수 처리할까요?`)) return;
+        setSellerFaultProcessing((prev) => new Set(prev).add(processingKey));
+        try {
+            const res = await fetch(config.singleUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify(config.buildPayload(item)),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.need_session) {
+                openEzadminModal(() => processSellerFaultItem(configKey, item));
+                return;
+            }
+            if (!res.ok || !data?.ok) {
+                alert(data?.error || data?.detail || '처리 실패');
+                return;
+            }
+            setSellerFaultItems((prev) => ({
+                ...prev,
+                [configKey]: (prev[configKey] || []).filter((i) => config.itemKey(i) !== itemKey),
+            }));
+        } catch (err) {
+            alert(err.message || '처리 실패');
+        } finally {
+            setSellerFaultProcessing((prev) => {
+                const next = new Set(prev);
+                next.delete(processingKey);
+                return next;
+            });
+        }
+    };
+
     if (loading || items.length === 0) return null;
 
     return (
@@ -281,34 +380,127 @@ export default function DailyChecklistCard() {
             <div className={styles.freshnessCard}>
                 <div className={styles.freshnessItems}>
                     {items.map((item) => (
-                        <div key={item.key} className={styles.freshnessInfo}>
-                            <span
-                                className={`${styles.freshnessDot} ${item.done_today ? styles.freshnessDotBlue : styles.freshnessDotRed}`}
-                            />
-                            <div className={styles.freshnessText}>
-                                <span className={styles.freshnessTextTitle}>{item.label}</span>
-                                <span>
-                                    {item.done_today
-                                        ? `오늘 ${formatDateTime(item.last_run_at)} 실행됨`
-                                        : item.last_run_at
-                                            ? `마지막 실행 ${formatDateTime(item.last_run_at)} (오늘 아직 안 함)`
-                                            : '아직 실행하지 않았습니다.'}
-                                    {(resultMsg[item.key] || item.last_result) && ` · ${resultMsg[item.key] || item.last_result}`}
-                                </span>
+                        <React.Fragment key={item.key}>
+                            <div className={styles.freshnessInfo}>
+                                <span
+                                    className={`${styles.freshnessDot} ${item.done_today ? styles.freshnessDotBlue : styles.freshnessDotRed}`}
+                                />
+                                <div className={styles.freshnessText}>
+                                    <span className={styles.freshnessTextTitle}>{item.label}</span>
+                                    <span>
+                                        {item.done_today
+                                            ? `오늘 ${formatDateTime(item.last_run_at)} 실행됨`
+                                            : item.last_run_at
+                                                ? `마지막 실행 ${formatDateTime(item.last_run_at)} (오늘 아직 안 함)`
+                                                : '아직 실행하지 않았습니다.'}
+                                        {(resultMsg[item.key] || item.last_result) && ` · ${resultMsg[item.key] || item.last_result}`}
+                                    </span>
+                                </div>
+                                <button
+                                    type="button"
+                                    className={styles.primaryBtn}
+                                    style={{ marginLeft: 'auto' }}
+                                    onClick={() => run(item.key, RUNNERS[item.key])}
+                                    disabled={!!activeKey}
+                                >
+                                    {activeKey === item.key ? '실행 중...' : '실행'}
+                                </button>
                             </div>
-                            <button
-                                type="button"
-                                className={styles.primaryBtn}
-                                style={{ marginLeft: 'auto' }}
-                                onClick={() => run(item.key, RUNNERS[item.key])}
-                                disabled={!!activeKey}
-                            >
-                                {activeKey === item.key ? '실행 중...' : '실행'}
-                            </button>
-                        </div>
+                            {SELLER_FAULT_CONFIGS[item.key] && (() => {
+                                const config = SELLER_FAULT_CONFIGS[item.key];
+                                const open = !!sellerFaultOpen[item.key];
+                                const faultItems = sellerFaultItems[item.key];
+                                const faultLoading = !!sellerFaultLoading[item.key];
+                                return (
+                                    <div style={{ marginLeft: '1.5rem', marginBottom: '0.5rem' }}>
+                                        <button
+                                            type="button"
+                                            onClick={() => toggleSellerFault(item.key)}
+                                            style={{
+                                                background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0',
+                                                display: 'flex', alignItems: 'center', gap: 4,
+                                                font: 'inherit', color: 'var(--text-muted, #6b7280)', fontSize: '0.85rem',
+                                            }}
+                                        >
+                                            {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                                            판매자 부담 확인{faultItems ? ` (${faultItems.length}건)` : ''}
+                                        </button>
+                                        {open && (
+                                            <div style={{ marginTop: '0.4rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                                {faultLoading && <div style={{ fontSize: '0.85rem' }}>불러오는 중...</div>}
+                                                {!faultLoading && (faultItems || []).length === 0 && (
+                                                    <div style={{ fontSize: '0.85rem', color: 'var(--text-muted, #6b7280)' }}>
+                                                        판매자 부담으로 제외된 건이 없습니다.
+                                                    </div>
+                                                )}
+                                                {!faultLoading && (faultItems || []).map((sf) => {
+                                                    const itemKey = config.itemKey(sf);
+                                                    const isProcessing = sellerFaultProcessing.has(`${item.key}:${itemKey}`);
+                                                    const memo = config.memo(sf);
+                                                    return (
+                                                        <div
+                                                            key={itemKey}
+                                                            style={{
+                                                                display: 'flex', gap: '0.75rem', alignItems: 'flex-start',
+                                                                border: '1px solid var(--border-color, #e5e7eb)', borderRadius: 8, padding: '0.6rem',
+                                                            }}
+                                                        >
+                                                            {(sf.images || []).slice(0, 3).map((src, i) => (
+                                                                <img
+                                                                    key={i}
+                                                                    src={src}
+                                                                    alt="반품 사진"
+                                                                    onClick={() => setZoomImage(src)}
+                                                                    style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 6, flexShrink: 0, cursor: 'zoom-in' }}
+                                                                />
+                                                            ))}
+                                                            <div style={{ flex: 1, fontSize: '0.85rem' }}>
+                                                                <div style={{ fontWeight: 600 }}>{sf.goods_name}</div>
+                                                                <div>송장 {sf.invoice} · 사유: {sf.reason}</div>
+                                                                {memo && <div>고객메모: {memo}</div>}
+                                                            </div>
+                                                            <button
+                                                                type="button"
+                                                                className={styles.primaryBtn}
+                                                                onClick={() => processSellerFaultItem(item.key, sf)}
+                                                                disabled={isProcessing}
+                                                            >
+                                                                {isProcessing ? '처리 중...' : '실행'}
+                                                            </button>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })()}
+                        </React.Fragment>
                     ))}
                 </div>
             </div>
+
+            {zoomImage && (
+                <div
+                    onClick={() => setZoomImage(null)}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0,0,0,0.85)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 1000,
+                        cursor: 'zoom-out',
+                    }}
+                >
+                    <img
+                        src={zoomImage}
+                        alt="확대 사진"
+                        style={{ maxWidth: '90vw', maxHeight: '90vh', objectFit: 'contain', borderRadius: 8 }}
+                    />
+                </div>
+            )}
         </div>
     );
 }
