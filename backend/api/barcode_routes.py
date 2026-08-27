@@ -2557,18 +2557,23 @@ def build_barcode_router(
             raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
 
         ably_base = "https://api.a-bly.com"
-        my_headers = {
-            "Authorization": f"JWT {token}", "Accept": "application/json",
-            "Origin": "https://my.a-bly.com", "Referer": "https://my.a-bly.com/",
-            "User-Agent": "Mozilla/5.0",
-        }
-        admin_headers = {
-            "Authorization": f"JWT {token}", "Accept": "application/json",
-            "Content-Type": "application/json",
-            "Origin": "https://seller-admin.a-bly.com",
-            "Referer": "https://seller-admin.a-bly.com/",
-            "User-Agent": "Mozilla/5.0",
-        }
+
+        def _ably_headers(tok: str) -> tuple[dict, dict]:
+            my_h = {
+                "Authorization": f"JWT {tok}", "Accept": "application/json",
+                "Origin": "https://my.a-bly.com", "Referer": "https://my.a-bly.com/",
+                "User-Agent": "Mozilla/5.0",
+            }
+            admin_h = {
+                "Authorization": f"JWT {tok}", "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Origin": "https://seller-admin.a-bly.com",
+                "Referer": "https://seller-admin.a-bly.com/",
+                "User-Agent": "Mozilla/5.0",
+            }
+            return my_h, admin_h
+
+        my_headers, admin_headers = _ably_headers(token)
 
         all_opts = []
         page = 1
@@ -2579,14 +2584,31 @@ def build_barcode_router(
                     headers=my_headers,
                     params={"keyword_type": "goods_name", "current_page": page, "per_page": 50},
                 )
+                if res.status_code == 401:
+                    token = await pastelco_login(force=True)
+                    my_headers, admin_headers = _ably_headers(token)
+                    res = await client.get(
+                        f"{ably_base}/seller/today-delivery-goods-options/",
+                        headers=my_headers,
+                        params={"keyword_type": "goods_name", "current_page": page, "per_page": 50},
+                    )
                 if res.status_code != 200:
-                    break
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"에이블리 오늘출발 옵션 목록 조회 실패 (page {page}, HTTP {res.status_code}): {res.text[:300]}",
+                    )
                 data = res.json()
                 opts = data.get("data", [])
+                max_page = data.get("max_page_number", 1)
+                if not opts and page < max_page:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"에이블리 오늘출발 옵션 목록 조회 중 데이터 누락 (page {page}/{max_page})",
+                    )
                 if not opts:
                     break
                 all_opts.extend(opts)
-                if page >= data.get("max_page_number", 1):
+                if page >= max_page:
                     break
                 page += 1
 
@@ -2626,6 +2648,14 @@ def build_barcode_router(
                     headers=admin_headers,
                     json={"options": patch_payload},
                 )
+                if res.status_code == 401:
+                    token = await pastelco_login(force=True)
+                    _, admin_headers = _ably_headers(token)
+                    res = await client.patch(
+                        f"{ably_base}/seller/today-delivery-goods-options/bulk-update/",
+                        headers=admin_headers,
+                        json={"options": patch_payload},
+                    )
             if res.status_code not in (200, 201, 204):
                 raise HTTPException(status_code=502,
                     detail=f"bulk-update 실패 (HTTP {res.status_code}): {res.text[:300]}")
