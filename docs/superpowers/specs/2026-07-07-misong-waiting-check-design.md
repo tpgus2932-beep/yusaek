@@ -32,7 +32,7 @@ WHERE TRIM(original_f) != '' GROUP BY original_f
 ```
 
 → `{정규화된 상품코드: 미송수량}` 맵 (`_normalize_code` 재사용)
-
+q
 ### 2. EZAdmin 실제값 조회
 
 `template=I100&action=search`를 호출한다. 사용자가 캡처한 요청 파라미터를 그대로 사용하되:

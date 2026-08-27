@@ -53,16 +53,16 @@ _ensure_client_schedule_column(
 ## 프론트엔드 변경 (`src/components/ClientSchedule/ClientSchedulePage.jsx`)
 
 - `preprocessBaseSheet`: 필드명 `srcI` → `productCode`로 변경 (값 위치는 그대로 `row[8]`).
-- `handleBaseProcess`의 입고파일 매칭 필터(`row.srcI` 참조)도 `row.productCode`로 함께 변경.
-- `mergeScheduleRows`, `buildSheet1AndSheet2`는 이미 `{...row}` 스프레드 방식이라
-  `productCode` 필드가 자동으로 유지된다 (별도 수정 불필요).
-- `autoSaveToDb`의 payload 구성에 `productCode` 포함:
-  ```js
-  const payload = rowsToSave.map(
-    ({ A, B, C, D, E, F, G, H, I, productCode }) => ({ A, B, C, D, E, F, G, H, I, productCode })
-  );
-  ```
-- DB 로드 시(`GET /client-schedule/db` 응답 매핑) `productCode` 필드를 그대로 state에 반영.
+  - `handleBaseProcess`의 입고파일 매칭 필터(`row.srcI` 참조)도 `row.productCode`로 함께 변경.
+  - `mergeScheduleRows`, `buildSheet1AndSheet2`는 이미 `{...row}` 스프레드 방식이라
+    `productCode` 필드가 자동으로 유지된다 (별도 수정 불필요).
+  - `autoSaveToDb`의 payload 구성에 `productCode` 포함:
+    ```js
+    const payload = rowsToSave.map(
+      ({ A, B, C, D, E, F, G, H, I, productCode }) => ({ A, B, C, D, E, F, G, H, I, productCode })
+    );
+    ```
+  - DB 로드 시(`GET /client-schedule/db` 응답 매핑) `productCode` 필드를 그대로 state에 반영.
 
 ### 새 버튼 & 내보내기 흐름
 
@@ -137,3 +137,4 @@ _ensure_client_schedule_column(
 - `misong_routes.py`의 I200 입고대기설정(3단계 업로드) 로직과는 무관 — 이번 기능은 C620
   단일 업로드 흐름만 사용.
 - E열(보조 일정)을 상품메모에 포함하는 것은 이번 범위에 포함하지 않음.
+  
