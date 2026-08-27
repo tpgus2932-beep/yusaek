@@ -1,8 +1,9 @@
-import { Bell, CalendarDays, CircleDollarSign, ClipboardList, DatabaseZap, Key, NotebookPen, Timer, Warehouse } from 'lucide-react';
+import { Bell, CalendarDays, CircleDollarSign, ClipboardList, DatabaseZap, Key, ListChecks, NotebookPen, Timer, Warehouse } from 'lucide-react';
 import { useState } from 'react';
 import styles from './Header.module.css';
 import { COLLAB_API_BASE, LOCAL_API_BASE, getAuthHeaders } from '../../lib/api';
 import EventCalendarModal from '../EventCalendar/EventCalendarModal';
+import { useZigzagBulkUpload } from '../../lib/ZigzagBulkUploadContext';
 
 const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode }) => {
     const initials = displayName ? displayName.slice(0, 2) : 'JD';
@@ -18,6 +19,7 @@ const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode })
     const [ezadminMsg, setEzadminMsg] = useState('');
     const [ezadminMsgType, setEzadminMsgType] = useState('');
     const [showEventCalendar, setShowEventCalendar] = useState(false);
+    const zigzagBulkUpload = useZigzagBulkUpload();
 
     const saveProfile = async () => {
         setError('');
@@ -165,6 +167,17 @@ const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode })
                 >
                     <CalendarDays size={15} />
                     행사 일정
+                </button>
+                <button
+                    type="button"
+                    className={styles.eventCalendarButton}
+                    style={{ position: 'relative' }}
+                    onClick={() => zigzagBulkUpload?.setShowModal(true)}
+                    title="지그재그 일괄 업로드 진행상황"
+                >
+                    <ListChecks size={15} />
+                    작업진행목록
+                    {zigzagBulkUpload?.running && <span className={styles.badge}></span>}
                 </button>
                 <a
                     href="/payment-request"
