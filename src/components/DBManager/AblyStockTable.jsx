@@ -13,6 +13,9 @@ export default function AblyStockTable() {
   const [inputQuery, setInputQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [deleteDate, setDeleteDate] = useState(todayStr);
+  const [deletingByDate, setDeletingByDate] = useState(false);
 
   const fetchRows = useCallback(async (q, off) => {
     setLoading(true);
@@ -76,6 +79,29 @@ export default function AblyStockTable() {
     }
   };
 
+  const handleDeleteByDate = async () => {
+    if (!deleteDate) return;
+    if (!window.confirm(`"${deleteDate}" 날짜에 추가된 데이터를 삭제합니다.\n진행하시겠습니까?`)) return;
+    setDeletingByDate(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/ably-stock/by-date`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ 날짜: deleteDate }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "삭제 실패");
+      setMessage(`삭제 완료: ${data.deleted}건`);
+      setOffset(0);
+      await fetchRows(query, 0);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setDeletingByDate(false);
+    }
+  };
+
   const handleDownload = () => {
     fetch(`${API}/wonbe/ably-stock/export`, { headers: getAuthHeaders() })
       .then((r) => r.blob())
@@ -125,6 +151,12 @@ export default function AblyStockTable() {
         <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={handleSyncFromWonbe} disabled={loading}>
           <RotateCcw size={13} />최신업데이트
         </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+          <input type="date" className={styles.syncDateInput} value={deleteDate} onChange={(e) => setDeleteDate(e.target.value)} disabled={deletingByDate} />
+          <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={handleDeleteByDate} disabled={loading || deletingByDate || !deleteDate}>
+            <Trash2 size={13} />{deletingByDate ? "삭제 중..." : "삭제"}
+          </button>
+        </div>
       </div>
 
       {message && <div className={styles.message}>{message}</div>}

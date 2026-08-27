@@ -19,6 +19,8 @@ function JanggiListView() {
   const [query, setQuery] = useState("");
   const [inputQuery, setInputQuery] = useState("");
   const [dateFilter, setDateFilter] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [misongFilter, setMisongFilter] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -29,6 +31,8 @@ function JanggiListView() {
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
   const [misongLoading, setMisongLoading] = useState(false);
+  const [misongLock, setMisongLock] = useState(null);
+  const [misongUnlockLoading, setMisongUnlockLoading] = useState(false);
   const [ichaeLoading, setIchaeLoading] = useState(false);
   const [ichaeConfirmMode, setIchaeConfirmMode] = useState(false);
   const [bulkMarkLoading, setBulkMarkLoading] = useState(false);
@@ -65,10 +69,10 @@ function JanggiListView() {
     });
   }, [rows, sortCol, sortDir]);
 
-  const fetchRows = useCallback(async (q, date, off, misong = "", ilgwal = false) => {
+  const fetchRows = useCallback(async (q, date, off, misong = "", ilgwal = false, dFrom = "", dTo = "") => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ q, date, misong_filter: misong, ilgwal_only: ilgwal ? "Y" : "", offset: off, limit: PAGE_SIZE });
+      const params = new URLSearchParams({ q, date, date_from: dFrom, date_to: dTo, misong_filter: misong, ilgwal_only: ilgwal ? "Y" : "", offset: off, limit: PAGE_SIZE });
       const res = await fetch(`${API}/wonbe/janggi/search?${params}`, { headers: getAuthHeaders() });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "조회 실패");
@@ -81,7 +85,20 @@ function JanggiListView() {
     }
   }, []);
 
-  useEffect(() => { fetchRows(query, dateFilter, offset, misongFilter, ilgwalOnly); }, [fetchRows, query, dateFilter, offset, misongFilter, ilgwalOnly]);
+  useEffect(() => { fetchRows(query, dateFilter, offset, misongFilter, ilgwalOnly, dateFrom, dateTo); }, [fetchRows, query, dateFilter, offset, misongFilter, ilgwalOnly, dateFrom, dateTo]);
+
+  const fetchMisongLock = useCallback(async (date) => {
+    if (!date) { setMisongLock(null); return; }
+    try {
+      const res = await fetch(`${API}/noye-kimsungil/misong/move-lock?date=${encodeURIComponent(date)}`, { headers: getAuthHeaders() });
+      const data = await res.json().catch(() => ({}));
+      setMisongLock(res.ok ? data : null);
+    } catch {
+      setMisongLock(null);
+    }
+  }, []);
+
+  useEffect(() => { fetchMisongLock(dateFilter); }, [fetchMisongLock, dateFilter]);
 
   useEffect(() => () => { if (quickActionTimerRef.current) clearTimeout(quickActionTimerRef.current); }, []);
 
@@ -132,7 +149,7 @@ function JanggiListView() {
       }
     } catch (err) {
       setMessage(err.message);
-      fetchRows(query, dateFilter, offset, misongFilter, ilgwalOnly);
+      fetchRows(query, dateFilter, offset, misongFilter, ilgwalOnly, dateFrom, dateTo);
     }
   };
 
@@ -333,7 +350,7 @@ function JanggiListView() {
       if (!res.ok || !data.ok) throw new Error(data?.detail || "삭제 실패");
       setMessage(`삭제 완료: ${data.deleted}건`);
       setOffset(0);
-      await fetchRows(query, dateFilter, 0, misongFilter);
+      await fetchRows(query, dateFilter, 0, misongFilter, ilgwalOnly, dateFrom, dateTo);
     } catch (err) {
       setMessage(err.message);
     } finally {
@@ -343,6 +360,10 @@ function JanggiListView() {
 
   const handleSendToMisong = async () => {
     if (!dateFilter) return;
+    if (misongLock?.locked) {
+      setMessage(`${dateFilter} 날짜는 이미 미송관리로 이동 처리되었습니다 (${misongLock.locked_by}, ${misongLock.locked_at}).`);
+      return;
+    }
     setMisongLoading(true);
     setMessage("");
     try {
@@ -389,10 +410,32 @@ function JanggiListView() {
 
       const alertMsg = (result.new_alert_count || 0) > 0 ? ` / 알림 ${result.new_alert_count}건` : "";
       setMessage(`미송관리 반영 완료: 미송 ${addCount}건 / 미송픽업 ${pickupCount}건${alertMsg}`);
+      fetchMisongLock(dateFilter);
     } catch (err) {
       setMessage(err.message || "미송 반영 실패");
     } finally {
       setMisongLoading(false);
+    }
+  };
+
+  const handleUnlockMisong = async () => {
+    if (!dateFilter) return;
+    if (!window.confirm(`${dateFilter} 날짜의 미송관리 이동 잠금을 해제하시겠습니까? 해제하면 다시 이동을 실행할 수 있습니다.`)) return;
+    setMisongUnlockLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/noye-kimsungil/misong/move-lock?date=${encodeURIComponent(dateFilter)}`, {
+        method: "DELETE",
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "잠금 해제 실패");
+      setMessage(`${dateFilter} 날짜의 미송관리 이동 잠금을 해제했습니다.`);
+      fetchMisongLock(dateFilter);
+    } catch (err) {
+      setMessage(err.message || "잠금 해제 실패");
+    } finally {
+      setMisongUnlockLoading(false);
     }
   };
 
@@ -435,7 +478,7 @@ function JanggiListView() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "일괄이체 지정 실패");
       setMessage(`일괄이체목록 지정 완료: ${data.marked}건`);
-      fetchRows(query, dateFilter, offset, misongFilter, ilgwalOnly);
+      fetchRows(query, dateFilter, offset, misongFilter, ilgwalOnly, dateFrom, dateTo);
     } catch (err) {
       setMessage(err.message);
     } finally {
@@ -456,7 +499,7 @@ function JanggiListView() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "일괄이체 해제 실패");
       setMessage(`일괄이체 해제 완료: ${data.cleared}건`);
-      fetchRows(query, dateFilter, offset, misongFilter, ilgwalOnly);
+      fetchRows(query, dateFilter, offset, misongFilter, ilgwalOnly, dateFrom, dateTo);
     } catch (err) {
       setMessage(err.message);
     } finally {
@@ -533,9 +576,29 @@ function JanggiListView() {
           type="date"
           className={styles.syncDateInput}
           value={dateFilter}
-          onChange={(e) => { setDateFilter(e.target.value); setOffset(0); setIchaeConfirmMode(false); }}
+          onChange={(e) => { setDateFilter(e.target.value); setDateFrom(""); setDateTo(""); setOffset(0); setIchaeConfirmMode(false); }}
           disabled={loading}
+          title="단일 날짜 (미송관리 이동/이체파일 전환 등 날짜 단위 작업에 사용)"
         />
+        <span style={{ display: "flex", alignItems: "center", gap: "0.3rem" }}>
+          <input
+            type="date"
+            className={styles.syncDateInput}
+            value={dateFrom}
+            onChange={(e) => { setDateFrom(e.target.value); setDateFilter(""); setOffset(0); setIchaeConfirmMode(false); }}
+            disabled={loading}
+            title="조회 시작일"
+          />
+          <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>~</span>
+          <input
+            type="date"
+            className={styles.syncDateInput}
+            value={dateTo}
+            onChange={(e) => { setDateTo(e.target.value); setDateFilter(""); setOffset(0); setIchaeConfirmMode(false); }}
+            disabled={loading}
+            title="조회 종료일"
+          />
+        </span>
         <select
           value={misongFilter}
           onChange={(e) => { setMisongFilter(e.target.value); setOffset(0); }}
@@ -556,12 +619,12 @@ function JanggiListView() {
         >
           일괄이체목록{ilgwalOnly ? " ✓" : ""}
         </button>
-        {(query || dateFilter || misongFilter || ilgwalOnly) && (
-          <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => { setInputQuery(""); setQuery(""); setDateFilter(""); setMisongFilter(""); setIlgwalOnly(false); setOffset(0); setIchaeConfirmMode(false); }} disabled={loading}>
+        {(query || dateFilter || dateFrom || dateTo || misongFilter || ilgwalOnly) && (
+          <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => { setInputQuery(""); setQuery(""); setDateFilter(""); setDateFrom(""); setDateTo(""); setMisongFilter(""); setIlgwalOnly(false); setOffset(0); setIchaeConfirmMode(false); }} disabled={loading}>
             필터 초기화
           </button>
         )}
-        <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => fetchRows(query, dateFilter, offset, misongFilter, ilgwalOnly)} disabled={loading}>
+        <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => fetchRows(query, dateFilter, offset, misongFilter, ilgwalOnly, dateFrom, dateTo)} disabled={loading}>
           <RefreshCw size={13} />새로고침
         </button>
         <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleAddRow} disabled={loading}>
@@ -576,11 +639,27 @@ function JanggiListView() {
         <button
           className={`${styles.btn} ${styles.btnPrimary}`}
           onClick={handleSendToMisong}
-          disabled={!dateFilter || loading || misongLoading}
-          title={!dateFilter ? "날짜를 먼저 선택하세요" : `${dateFilter} 미송/미송픽업 행을 미송관리에 반영`}
+          disabled={!dateFilter || loading || misongLoading || misongLock?.locked}
+          title={
+            !dateFilter
+              ? "날짜를 먼저 선택하세요"
+              : misongLock?.locked
+              ? `이미 이동 처리됨 (${misongLock.locked_by}, ${misongLock.locked_at})`
+              : `${dateFilter} 미송/미송픽업 행을 미송관리에 반영`
+          }
         >
-          <PackagePlus size={13} />미송관리로 이동
+          <PackagePlus size={13} />{misongLock?.locked ? "이동 완료됨" : "미송관리로 이동"}
         </button>
+        {dateFilter && misongLock?.locked && (
+          <button
+            className={`${styles.btn} ${styles.btnSecondary}`}
+            onClick={handleUnlockMisong}
+            disabled={misongUnlockLoading}
+            title={`${dateFilter} 날짜의 미송관리 이동 잠금 해제 (다시 실행 가능하게 함)`}
+          >
+            {misongUnlockLoading ? "해제 중..." : "이동 잠금 해제"}
+          </button>
+        )}
         <button
           className={`${styles.btn} ${styles.btnSecondary}`}
           onClick={handleBulkMark}
@@ -839,6 +918,7 @@ function JanggiTopComparison() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedMatchIndex, setSelectedMatchIndex] = useState(0);
+  const [scrollTrigger, setScrollTrigger] = useState(0);
   const searchInputRef = useRef(null);
   const selectedRowRef = useRef(null);
 
@@ -851,6 +931,12 @@ function JanggiTopComparison() {
     const onKeyDown = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
         e.preventDefault();
+        // 검색창이 이미 열려 있으면(input이 이미 DOM에 있으면) 여기서 바로
+        // 포커스+전체선택 - searchOpen이 true→true라 아래 effect는 재실행되지 않는다
+        if (searchInputRef.current) {
+          searchInputRef.current.focus();
+          searchInputRef.current.select();
+        }
         setSearchOpen(true);
       }
     };
@@ -859,7 +945,10 @@ function JanggiTopComparison() {
   }, [dbLoaded]);
 
   useEffect(() => {
-    if (searchOpen) searchInputRef.current?.focus();
+    if (searchOpen) {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    }
   }, [searchOpen]);
 
   useEffect(() => {
@@ -1038,6 +1127,7 @@ function JanggiTopComparison() {
       if (!searchMatches.length) return;
       const dir = e.shiftKey ? -1 : 1;
       setSelectedMatchIndex((i) => (i + dir + searchMatches.length) % searchMatches.length);
+      setScrollTrigger((t) => t + 1);
       return;
     }
     if (e.key === " ") {
@@ -1124,8 +1214,11 @@ function JanggiTopComparison() {
   const selectedMatch = searchMatches[selectedMatchIndex] || null;
 
   useEffect(() => {
-    if (selectedRowRef.current) selectedRowRef.current.scrollIntoView({ block: "nearest" });
-  }, [selectedMatch]);
+    // 타이핑할 때마다(첫 매칭 자동 선택 포함) 스크롤이 움직이면 산만하므로,
+    // Enter/Shift+Enter로 다음 매칭을 넘길 때(scrollTrigger 증가)만 이동시킨다.
+    if (scrollTrigger === 0) return;
+    selectedRowRef.current?.scrollIntoView({ block: "center", behavior: "instant" });
+  }, [scrollTrigger]);
 
   const visibleTopShops = topShops
     .filter((s) => !dismissed.has(`top:${s}`))
@@ -1246,6 +1339,7 @@ function JanggiTopComparison() {
                 </button>
               </div>
             )}
+            <div className={topStyles.panelScroll}>
             <table className={topStyles.table}>
               <thead>
                 <tr>
@@ -1372,6 +1466,7 @@ function JanggiTopComparison() {
                 {!sortedDbRows.length && <tr><td colSpan={topLoaded ? 5 : 4} style={{ textAlign: "center", color: "var(--text-muted)", padding: "1rem" }}>데이터 없음</td></tr>}
               </tbody>
             </table>
+            </div>
           </div>
 
           {/* TOP 패널 - 비교 버튼 눌렀을 때만 표시 */}
@@ -1381,6 +1476,7 @@ function JanggiTopComparison() {
                 TOP90 완료 매장
                 <span className={topStyles.panelDate}>{topDate}</span>
               </div>
+              <div className={topStyles.panelScroll}>
               <table className={topStyles.table}>
                 <thead>
                   <tr>
@@ -1408,6 +1504,7 @@ function JanggiTopComparison() {
                   {!visibleTopShops.length && !topShops.length && <tr><td colSpan={2} style={{ textAlign: "center", color: "var(--text-muted)", padding: "1rem" }}>데이터 없음</td></tr>}
                 </tbody>
               </table>
+              </div>
             </div>
           )}
         </div>

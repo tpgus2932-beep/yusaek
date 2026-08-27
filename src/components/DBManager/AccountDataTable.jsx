@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Plus, RefreshCw, Search, X } from "lucide-react";
+import { Download, Plus, RefreshCw, Search, X } from "lucide-react";
 import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
@@ -77,6 +77,21 @@ export default function AccountDataTable() {
     }
   };
 
+  const handleDownload = () => {
+    fetch(`${API}/wonbe/account/export`, { headers: getAuthHeaders() })
+      .then((r) => r.blob())
+      .then((blob) => {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "거래처계좌데이터.xls";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(a.href);
+      })
+      .catch(() => setMessage("다운로드 실패"));
+  };
+
   const handleDeleteRow = async (id) => {
     if (!window.confirm("이 행을 삭제하시겠습니까?")) return;
     try {
@@ -131,6 +146,9 @@ export default function AccountDataTable() {
         </button>
         <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleAddRow} disabled={loading}>
           <Plus size={13} />행 추가
+        </button>
+        <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={handleDownload} disabled={loading}>
+          <Download size={13} />엑셀 내보내기
         </button>
       </div>
 

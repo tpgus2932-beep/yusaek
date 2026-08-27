@@ -57,7 +57,15 @@
 .panel {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg, 8px);
+}
+
+/* 가로 스크롤은 테이블에만 걸어야 한다 - .panel에 걸면 overflow-x가 있는 순간
+   overflow-y도 강제로 auto가 되어(CSS 규칙), 검색창의 position: sticky가 이 박스를
+   기준으로 계산되면서 창 스크롤을 따라가지 못하게 된다. .panel 자체가 더 이상
+   클리핑을 안 하므로 모서리는 헤더/스크롤래퍼에서 직접 둥글게 맞춰준다 */
+.panelScroll {
   overflow-x: auto;
+  border-radius: 0 0 var(--radius-lg, 8px) var(--radius-lg, 8px);
 }
 
 .panelHeader {
@@ -67,6 +75,7 @@
   padding: 0.6rem 0.9rem;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
+  border-radius: var(--radius-lg, 8px) var(--radius-lg, 8px) 0 0;
   font-size: 0.82rem;
   font-weight: 700;
   color: var(--text-primary);
@@ -260,6 +269,9 @@
 }
 
 .searchBar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 0.5rem;

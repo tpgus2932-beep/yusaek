@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, RefreshCw, Upload } from "lucide-react";
+import { Download, RefreshCw, RefreshCcw, Upload, Search, X } from "lucide-react";
 import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
@@ -18,6 +18,14 @@ export default function KdgTable() {
   const inputRef = useRef(null);
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
+
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
+  const [wonbeSearch, setWonbeSearch] = useState("");
+  const [wonbeResults, setWonbeResults] = useState([]);
+  const [wonbeSearchLoading, setWonbeSearchLoading] = useState(false);
+  const [selectedWonbeCodes, setSelectedWonbeCodes] = useState(new Set());
+  const [importing, setImporting] = useState(false);
+  const wonbeSearchRef = useRef(null);
 
   const handleSort = (col) => {
     if (sortCol === col) {
@@ -58,6 +66,80 @@ export default function KdgTable() {
   }, []);
 
   useEffect(() => { fetchRows(query, offset); }, [fetchRows, query, offset]);
+
+  useEffect(() => {
+    if (!showUpdateModal) return;
+    const timer = setTimeout(async () => {
+      setWonbeSearchLoading(true);
+      try {
+        const params = new URLSearchParams({ q: wonbeSearch.trim(), limit: 100 });
+        const res = await fetch(`${API}/wonbe/search?${params}`, { headers: getAuthHeaders() });
+        const data = await res.json().catch(() => ({}));
+        setWonbeResults(data.rows || []);
+      } catch {
+        setWonbeResults([]);
+      } finally {
+        setWonbeSearchLoading(false);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [wonbeSearch, showUpdateModal]);
+
+  useEffect(() => {
+    if (showUpdateModal) setTimeout(() => wonbeSearchRef.current?.focus(), 50);
+  }, [showUpdateModal]);
+
+  const openUpdateModal = () => {
+    setWonbeSearch("");
+    setWonbeResults([]);
+    setSelectedWonbeCodes(new Set());
+    setShowUpdateModal(true);
+  };
+
+  const toggleWonbeSelect = (code) => {
+    setSelectedWonbeCodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
+  };
+
+  const toggleWonbeSelectAll = () => {
+    setSelectedWonbeCodes((prev) => {
+      if (prev.size === wonbeResults.length) return new Set();
+      return new Set(wonbeResults.map((r) => r["상품코드"]));
+    });
+  };
+
+  const handleImportFromWonbe = async () => {
+    const selectedRows = wonbeResults.filter((r) => selectedWonbeCodes.has(r["상품코드"]));
+    if (!selectedRows.length) return;
+    setImporting(true);
+    setMessage("");
+    try {
+      const text = selectedRows
+        .map((r) => `${String(r["거래처합"] || "").trim()}\t${String(r["상품코드"] || "").trim()}`)
+        .join("\n");
+      const res = await fetch(`${API}/noye-kimsungil/kdg/base/append-tsv`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "가져오기 실패");
+      setMessage(`원가베이스유에서 가져오기 완료: ${data.appended}건`);
+      setShowUpdateModal(false);
+      setOffset(0);
+      setQuery("");
+      setInputQuery("");
+      await fetchRows("", 0);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -181,6 +263,9 @@ export default function KdgTable() {
         <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={handleDownload} disabled={loading}>
           <Download size={13} />xls 내보내기
         </button>
+        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={openUpdateModal} disabled={loading}>
+          <RefreshCcw size={13} />업데이트
+        </button>
       </div>
 
       {message && <div className={styles.message}>{message}</div>}
@@ -246,6 +331,95 @@ export default function KdgTable() {
             onClick={() => setOffset(offset + PAGE_SIZE)}
             disabled={currentPage >= totalPages || loading}
           >다음</button>
+        </div>
+      )}
+
+      {showUpdateModal && (
+        <div
+          onClick={() => setShowUpdateModal(false)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "5vh" }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: "var(--surface, #fff)", borderRadius: "10px", boxShadow: "0 8px 32px rgba(0,0,0,0.22)", width: "min(720px, 95vw)", maxHeight: "80vh", display: "flex", flexDirection: "column", overflow: "hidden" }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", padding: "0.9rem 1rem", borderBottom: "1px solid var(--border, #e5e7eb)" }}>
+              <RefreshCcw size={16} style={{ color: "#7c3aed", flexShrink: 0 }} />
+              <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>원가베이스유에서 가져오기</span>
+              <div style={{ flex: 1, position: "relative" }}>
+                <Search size={13} style={{ position: "absolute", left: "0.5rem", top: "50%", transform: "translateY(-50%)", color: "var(--text-muted, #888)", pointerEvents: "none" }} />
+                <input
+                  ref={wonbeSearchRef}
+                  value={wonbeSearch}
+                  onChange={(e) => setWonbeSearch(e.target.value)}
+                  placeholder="상품코드·거래처합·거래처 검색…"
+                  style={{ width: "100%", padding: "0.4rem 0.5rem 0.4rem 1.8rem", border: "1px solid var(--border, #d1d5db)", borderRadius: "6px", fontSize: "0.83rem", outline: "none", background: "var(--input-bg, #f9fafb)" }}
+                />
+              </div>
+              <button onClick={() => setShowUpdateModal(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted, #888)", padding: "0.2rem", lineHeight: 1 }}>
+                <X size={16} />
+              </button>
+            </div>
+            <div style={{ overflowY: "auto", flex: 1 }}>
+              {wonbeSearchLoading ? (
+                <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted, #888)", fontSize: "0.85rem" }}>검색 중…</div>
+              ) : wonbeResults.length === 0 ? (
+                <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted, #888)", fontSize: "0.85rem" }}>
+                  {wonbeSearch.trim() ? "검색 결과가 없습니다." : "키워드를 입력하면 원가베이스유에서 검색됩니다."}
+                </div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem" }}>
+                  <thead>
+                    <tr style={{ background: "var(--table-header, #f3f4f6)", position: "sticky", top: 0 }}>
+                      <th style={{ padding: "0.45rem 0.6rem", width: "28px" }}>
+                        <input
+                          type="checkbox"
+                          checked={wonbeResults.length > 0 && selectedWonbeCodes.size === wonbeResults.length}
+                          onChange={toggleWonbeSelectAll}
+                        />
+                      </th>
+                      {["거래처합", "상품코드", "거래처", "상품명합"].map((h) => (
+                        <th key={h} style={{ padding: "0.45rem 0.6rem", textAlign: "left", fontWeight: 600, borderBottom: "1px solid var(--border, #e5e7eb)", whiteSpace: "nowrap" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {wonbeResults.map((row) => {
+                      const code = row["상품코드"];
+                      const checked = selectedWonbeCodes.has(code);
+                      return (
+                        <tr
+                          key={code}
+                          onClick={() => toggleWonbeSelect(code)}
+                          style={{ cursor: "pointer", borderBottom: "1px solid var(--border, #f0f0f0)", background: checked ? "#f5f3ff" : undefined }}
+                        >
+                          <td style={{ padding: "0.4rem 0.6rem" }} onClick={(e) => e.stopPropagation()}>
+                            <input type="checkbox" checked={checked} onChange={() => toggleWonbeSelect(code)} />
+                          </td>
+                          <td style={{ padding: "0.4rem 0.6rem", fontWeight: 600 }}>{row["거래처합"] ?? ""}</td>
+                          <td style={{ padding: "0.4rem 0.6rem" }}>{code ?? ""}</td>
+                          <td style={{ padding: "0.4rem 0.6rem", color: "var(--text-muted, #666)" }}>{row["거래처"] ?? ""}</td>
+                          <td style={{ padding: "0.4rem 0.6rem", color: "var(--text-muted, #666)" }}>{row["상품명합"] ?? ""}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.6rem", padding: "0.6rem 1rem", borderTop: "1px solid var(--border, #e5e7eb)" }}>
+              <span style={{ fontSize: "0.75rem", color: "var(--text-muted, #888)" }}>
+                선택 {selectedWonbeCodes.size}건 · 거래처합 → 변환품명, 상품코드 그대로 반영됩니다
+              </span>
+              <button
+                className={`${styles.btn} ${styles.btnPrimary}`}
+                onClick={handleImportFromWonbe}
+                disabled={importing || !selectedWonbeCodes.size}
+              >
+                {importing ? "가져오는 중..." : `가져오기 (${selectedWonbeCodes.size})`}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </>
