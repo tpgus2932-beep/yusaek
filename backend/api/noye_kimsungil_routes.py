@@ -1232,7 +1232,7 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
         out_wb = openpyxl.Workbook()
         out_ws = out_wb.active
         out_ws.title = "Sheet1"
-        out_ws.cell(1, 1, "솔루션사 고유코드")
+        out_ws.cell(1, 1, "에이블리 옵션 번호")
         out_ws.cell(1, 2, "재고 수량")
         for ri, r in enumerate(base_rows, start=2):
             option_no = r["옵션번호"]

@@ -1079,7 +1079,7 @@ export default function NoyeKimPage() {
     try {
       const XLSX = await import("xlsx");
       const wsData = [
-        ["솔루션사 고유코드", "재고 수량"],
+        ["에이블리 옵션 번호", "재고 수량"],
         ...todayRows.map((r) => [r.A, r.B]),
       ];
       const ws = XLSX.utils.aoa_to_sheet(wsData);
@@ -1169,7 +1169,7 @@ export default function NoyeKimPage() {
     setLoading(true);
     setMessage("");
     try {
-      const header = "솔루션사 고유코드\t재고 수량";
+      const header = "에이블리 옵션 번호\t재고 수량";
       const body = todayRows.map((r) => `${r.A}\t${r.B}`).join("\n");
       const tsv = `${header}\n${body}`;
       if (navigator.clipboard?.writeText) {
@@ -1256,24 +1256,33 @@ export default function NoyeKimPage() {
     setLoading(true);
     setMessage("EZAdmin에서 불러오는 중... (최대 60초)");
     setExcelSlipRows([]); setExcelSlipOutput("");
+    const maxAttempts = 3;
     try {
-      const res = await fetch(`${API}/barcode/incoming/raw-file-from-ezadmin`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ sheet_list: selectedSlipSheets, page_code: "IM10_file" }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        if (data?.need_session) { openEzadminModal(handleSlipFromEzadmin); return; }
-        throw new Error(data?.error || data?.detail || "EZAdmin 다운로드 실패");
-      }
-      const arrayBuffer = await res.arrayBuffer();
       const XLSX = await import("xlsx");
-      const workbook = XLSX.read(arrayBuffer, { type: "array" });
-      const sheet = getFirstDataSheet(workbook);
-      const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-      const rawRows = convertCurrentReceiptExcelRowsSplitV3(rawData);
-      if (!rawRows.length) { setMessage("변환 가능한 행을 찾지 못했습니다."); return; }
+      let rawRows = [];
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        const res = await fetch(`${API}/barcode/incoming/raw-file-from-ezadmin`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+          body: JSON.stringify({ sheet_list: selectedSlipSheets, page_code: "IM10_file" }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          if (data?.need_session) { openEzadminModal(handleSlipFromEzadmin); return; }
+          throw new Error(data?.error || data?.detail || "EZAdmin 다운로드 실패");
+        }
+        const arrayBuffer = await res.arrayBuffer();
+        const workbook = XLSX.read(arrayBuffer, { type: "array" });
+        const sheet = getFirstDataSheet(workbook);
+        const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+        rawRows = convertCurrentReceiptExcelRowsSplitV3(rawData);
+        if (rawRows.length) break;
+        if (attempt < maxAttempts) {
+          setMessage(`전표 파일이 아직 비어 있어 재조회합니다. (${attempt}/${maxAttempts})`);
+          await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        }
+      }
+      if (!rawRows.length) { setMessage("변환 가능한 행을 찾지 못했습니다. (EZAdmin에서 전표 완료 처리 직후라면 잠시 후 다시 시도해주세요)"); return; }
       const rows = applyPurchaseDeductionCap(applyVendorVat(await fillCostPrices(rawRows, getAuthHeaders()), vatVendors), vatVendors);
       setExcelSlipRows(rows);
       setExcelSlipOutput(rowsToTsv(rows));
@@ -3006,7 +3015,7 @@ export default function NoyeKimPage() {
                 <table className={styles.table}>
                   <thead>
                     <tr>
-                      <th>솔루션사 고유코드 (G열)</th>
+                      <th>에이블리 옵션 번호 (G열)</th>
                       <th>재고 수량 (E열)</th>
                     </tr>
                   </thead>
