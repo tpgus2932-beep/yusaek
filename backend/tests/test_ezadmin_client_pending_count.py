@@ -53,3 +53,31 @@ def test_get_pending_order_count_raises_when_product_not_found():
     with patch.object(client, "post", new=AsyncMock(return_value={"rows": []})):
         with pytest.raises(ValueError):
             asyncio.run(client.get_pending_order_count("NOTFOUND"))
+
+
+def test_get_stock_for_codes_maps_stock_by_key():
+    client = _client()
+    response = {
+        "rows": [
+            {"cell": {"key": "S13366", "stock_normal": "3"}},
+            {"cell": {"key": "S13368", "stock_normal": "0"}},
+        ],
+    }
+    with patch.object(client, "post", new=AsyncMock(return_value=response)) as mock_post:
+        result = asyncio.run(client.get_stock_for_codes(["S13366", "S13368"]))
+
+    assert result == {"S13366": 3, "S13368": 0}
+    call_args = mock_post.call_args
+    assert call_args.args == ("I100", "search")
+    assert call_args.kwargs["time_flag"] is None
+    assert "query_type=product_id" in call_args.kwargs["par"]
+    assert "query_str=S13366, S13368" in call_args.kwargs["par"]
+
+
+def test_get_stock_for_codes_returns_empty_dict_for_no_codes():
+    client = _client()
+    with patch.object(client, "post", new=AsyncMock()) as mock_post:
+        result = asyncio.run(client.get_stock_for_codes([]))
+
+    assert result == {}
+    mock_post.assert_not_awaited()
