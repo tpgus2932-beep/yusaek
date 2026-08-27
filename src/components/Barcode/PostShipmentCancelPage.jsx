@@ -408,8 +408,10 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
     }
   }, [loadStockSmsLogs]);
 
-  // 완료 버튼 - 이 버튼을 누르기 전까지 발송내역은 목록에서 지워지지 않는다.
+  // 완료 버튼 - 에이블리에서 실제 취소 승인을 실행하고, 성공해야 목록에서 지운다.
+  // 승인 전까지는 로컬 DB에 그대로 남아 목록에서 지워지지 않는다.
   const handleCloseSentSms = useCallback(async (cancelSno) => {
+    if (!window.confirm("에이블리에서 이 주문의 취소를 승인 처리합니다. 되돌리기 어려운 작업입니다.\n\n진행하시겠습니까?")) return;
     setClosingSno(cancelSno);
     setRepliesMessage("");
     try {
@@ -861,7 +863,8 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
           <p className={pageStyles.subtitle}>
             위에서 발송한 "재고있는 취소주문 확인문자" 목록입니다. "수신확인"을 누르면 이지데스크에서
             각 연락처의 대화 내역을 다시 조회해, 문자 발송 이후 온 고객 답장을 가져와 표시합니다.
-            이 목록은 로컬 DB에 저장되며, 각 건마다 "완료"를 누르기 전까지는 지워지지 않습니다.
+            이 목록은 로컬 DB에 저장되며, 각 건마다 "완료"를 눌러야 에이블리에서 취소 승인이 실행되고
+            목록에서 사라집니다. 누르기 전까지는 계속 남아있습니다.
           </p>
 
           {repliesMessage && (

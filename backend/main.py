@@ -1706,6 +1706,9 @@ _ensure_post_shipment_cancel_stock_review_column(
 _ensure_post_shipment_cancel_stock_review_column(
     "closed_at", "ALTER TABLE post_shipment_cancel_stock_review ADD COLUMN closed_at TEXT NOT NULL DEFAULT ''"
 )
+_ensure_post_shipment_cancel_stock_review_column(
+    "item_snos", "ALTER TABLE post_shipment_cancel_stock_review ADD COLUMN item_snos TEXT NOT NULL DEFAULT '[]'"
+)
 
 app.include_router(
     build_post_shipment_cancel_stock_sms_router(

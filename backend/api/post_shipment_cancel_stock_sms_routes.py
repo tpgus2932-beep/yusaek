@@ -47,16 +47,18 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
         return {row["cancel_sno"] for row in rows}
 
     def _save_review(username: str, cancel_sno: str, order_sno: str, buyer_tel: str,
-                      product_names: list[str], action: str, error: str | None = None):
+                      product_names: list[str], action: str, item_snos: list | None = None,
+                      error: str | None = None):
         conn = get_db()
         try:
             conn.execute(
                 "INSERT OR IGNORE INTO post_shipment_cancel_stock_review "
-                "(created_at, username, cancel_sno, order_sno, buyer_tel, product_names, action, error) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(created_at, username, cancel_sno, order_sno, buyer_tel, product_names, action, item_snos, error) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now().isoformat(), username, cancel_sno, order_sno, buyer_tel,
-                    json.dumps(product_names, ensure_ascii=False), action, error,
+                    json.dumps(product_names, ensure_ascii=False), action,
+                    json.dumps(item_snos or [], ensure_ascii=False), error,
                 ),
             )
             conn.commit()
@@ -176,6 +178,7 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
             order_sno = str(p.get("order_sno") or "")
             buyer_tel = str(p.get("buyer_tel") or "")
             product_names = p.get("product_names") or []
+            item_snos = [s for s in (p.get("item_snos") or []) if s]
             row = {"cancel_sno": cancel_sno, "order_sno": order_sno, "buyer_tel": buyer_tel, "product_names": product_names}
 
             if not buyer_tel:
@@ -193,7 +196,7 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
                 failed.append({**row, "reason": str(exc)})
                 continue
 
-            _save_review(user, cancel_sno, order_sno, buyer_tel, product_names, "sms_sent")
+            _save_review(user, cancel_sno, order_sno, buyer_tel, product_names, "sms_sent", item_snos)
             sms_sent.append(row)
 
         for p in no_stock:
@@ -307,14 +310,44 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
         }
 
     @router.post("/close")
-    def close(payload: dict = Body(...), user: str = Depends(get_current_user)):
+    async def close(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """완료 버튼 - 고객 답장을 확인한 뒤, 실제 에이블리 취소 승인까지 처리하고 목록에서 내린다."""
         cancel_sno = str(payload.get("cancel_sno") or "").strip()
         if not cancel_sno:
             raise HTTPException(status_code=400, detail="cancel_sno is required")
+
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT item_snos FROM post_shipment_cancel_stock_review WHERE cancel_sno = ?",
+                (cancel_sno,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            raise HTTPException(status_code=404, detail="발송내역을 찾을 수 없습니다")
+
+        try:
+            item_snos = [s for s in json.loads(row["item_snos"] or "[]") if s]
+        except (TypeError, ValueError):
+            item_snos = []
+        if not item_snos:
+            raise HTTPException(
+                status_code=400,
+                detail="승인할 주문상품 정보가 없습니다. 에이블리에서 직접 취소 승인해주세요.",
+            )
+
+        ably = AblyClient()
+        try:
+            await ably.confirm_order_items(item_snos)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"에이블리 취소 승인 실패: {exc}")
+
         conn = get_db()
         try:
             conn.execute(
-                "UPDATE post_shipment_cancel_stock_review SET closed_at = ? WHERE cancel_sno = ?",
+                "UPDATE post_shipment_cancel_stock_review SET action = 'completed', closed_at = ? "
+                "WHERE cancel_sno = ?",
                 (datetime.now().isoformat(), cancel_sno),
             )
             conn.commit()

@@ -27,7 +27,7 @@ def _make_db_factory():
         "order_sno TEXT NOT NULL DEFAULT '', buyer_tel TEXT NOT NULL DEFAULT '', "
         "product_names TEXT NOT NULL DEFAULT '[]', action TEXT NOT NULL, error TEXT, "
         "reply_content TEXT NOT NULL DEFAULT '', reply_at TEXT NOT NULL DEFAULT '', "
-        "closed_at TEXT NOT NULL DEFAULT '')"
+        "closed_at TEXT NOT NULL DEFAULT '', item_snos TEXT NOT NULL DEFAULT '[]')"
     )
     keep_alive.commit()
 
@@ -159,7 +159,7 @@ def test_send_sends_sms_and_completes_no_stock():
     payload = {
         "with_stock": [{
             "cancel_sno": "1001", "order_sno": "5001", "buyer_tel": "010-1111-2222",
-            "product_names": ["빈티지 흑청 스커트"],
+            "product_names": ["빈티지 흑청 스커트"], "item_snos": [648138700],
         }],
         "no_stock": [{
             "cancel_sno": "1002", "order_sno": "5002", "buyer_tel": "010-3333-4444",
@@ -190,10 +190,12 @@ def test_send_sends_sms_and_completes_no_stock():
     mock_confirm.assert_awaited_once_with([648138733])
 
     review_rows = {
-        row["cancel_sno"]: row["action"]
-        for row in keep_alive.execute("SELECT cancel_sno, action FROM post_shipment_cancel_stock_review").fetchall()
+        row["cancel_sno"]: (row["action"], row["item_snos"])
+        for row in keep_alive.execute(
+            "SELECT cancel_sno, action, item_snos FROM post_shipment_cancel_stock_review"
+        ).fetchall()
     }
-    assert review_rows == {"1001": "sms_sent", "1002": "completed"}
+    assert review_rows == {"1001": ("sms_sent", "[648138700]"), "1002": ("completed", "[]")}
 
 
 def test_send_ezdesk_session_expired_reports_failed_and_flag():
@@ -430,7 +432,49 @@ def test_check_replies_skips_closed_rows():
     mock_chat.assert_not_awaited()
 
 
-def test_close_marks_row_closed():
+def test_close_confirms_ably_cancel_and_marks_row_closed():
+    client, _get_db, keep_alive = _make_client()
+    keep_alive.execute(
+        "INSERT INTO post_shipment_cancel_stock_review "
+        "(created_at, username, cancel_sno, order_sno, buyer_tel, product_names, action, item_snos) "
+        "VALUES ('2026-08-01T10:00:00', 'tester', '1001', '5001', '010-1111-2222', '[\"A\"]', 'sms_sent', '[10010]')"
+    )
+    keep_alive.commit()
+
+    with patch(
+        "api.post_shipment_cancel_stock_sms_routes.AblyClient.confirm_order_items",
+        new=AsyncMock(return_value=None),
+    ) as mock_confirm:
+        res = client.post("/post-shipment-cancel-stock-sms/close", json={"cancel_sno": "1001"})
+
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "cancel_sno": "1001"}
+    mock_confirm.assert_awaited_once_with([10010])
+
+    row = keep_alive.execute(
+        "SELECT closed_at, action FROM post_shipment_cancel_stock_review WHERE cancel_sno = '1001'"
+    ).fetchone()
+    assert row["closed_at"] != ""
+    assert row["action"] == "completed"
+
+
+def test_close_missing_cancel_sno_returns_400():
+    client, _get_db, _keep_alive = _make_client()
+
+    res = client.post("/post-shipment-cancel-stock-sms/close", json={})
+
+    assert res.status_code == 400
+
+
+def test_close_unknown_cancel_sno_returns_404():
+    client, _get_db, _keep_alive = _make_client()
+
+    res = client.post("/post-shipment-cancel-stock-sms/close", json={"cancel_sno": "9999"})
+
+    assert res.status_code == 404
+
+
+def test_close_without_item_snos_returns_400_and_stays_open():
     client, _get_db, keep_alive = _make_client()
     keep_alive.execute(
         "INSERT INTO post_shipment_cancel_stock_review "
@@ -441,17 +485,30 @@ def test_close_marks_row_closed():
 
     res = client.post("/post-shipment-cancel-stock-sms/close", json={"cancel_sno": "1001"})
 
-    assert res.status_code == 200
-    assert res.json() == {"ok": True, "cancel_sno": "1001"}
+    assert res.status_code == 400
     row = keep_alive.execute(
         "SELECT closed_at FROM post_shipment_cancel_stock_review WHERE cancel_sno = '1001'"
     ).fetchone()
-    assert row["closed_at"] != ""
+    assert row["closed_at"] == ""
 
 
-def test_close_missing_cancel_sno_returns_400():
-    client, _get_db, _keep_alive = _make_client()
+def test_close_ably_confirm_failure_returns_502_and_stays_open():
+    client, _get_db, keep_alive = _make_client()
+    keep_alive.execute(
+        "INSERT INTO post_shipment_cancel_stock_review "
+        "(created_at, username, cancel_sno, order_sno, buyer_tel, product_names, action, item_snos) "
+        "VALUES ('2026-08-01T10:00:00', 'tester', '1001', '5001', '010-1111-2222', '[\"A\"]', 'sms_sent', '[10010]')"
+    )
+    keep_alive.commit()
 
-    res = client.post("/post-shipment-cancel-stock-sms/close", json={})
+    with patch(
+        "api.post_shipment_cancel_stock_sms_routes.AblyClient.confirm_order_items",
+        new=AsyncMock(side_effect=RuntimeError("boom")),
+    ):
+        res = client.post("/post-shipment-cancel-stock-sms/close", json={"cancel_sno": "1001"})
 
-    assert res.status_code == 400
+    assert res.status_code == 502
+    row = keep_alive.execute(
+        "SELECT closed_at FROM post_shipment_cancel_stock_review WHERE cancel_sno = '1001'"
+    ).fetchone()
+    assert row["closed_at"] == ""
