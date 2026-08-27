@@ -1892,11 +1892,20 @@ def build_barcode_router(
         for order in api_rows:
             cell = order.get("cell", {})
             products_str = str(cell.get("products", ""))
+            order_items = []
             for m in _product_re.finditer(products_str):
                 code = m.group(1).strip()
                 name = m.group(2).strip().rstrip("-").strip()
                 option = m.group(3).strip() if m.group(3) else ""
                 qty = int(m.group(4))
+                order_items.append((code, name, option, qty))
+
+            # 합배송(한 주문에 서로 다른 상품코드가 섞인 경우)은 재고대량 집계에서 제외
+            distinct_codes = {item[0] for item in order_items}
+            if len(distinct_codes) > 1:
+                continue
+
+            for code, name, option, qty in order_items:
                 counts[(code, name, option)] += qty
 
         bulk_rows = [

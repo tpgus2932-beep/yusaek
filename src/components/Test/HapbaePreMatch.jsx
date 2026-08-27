@@ -3,12 +3,15 @@ import { RefreshCw, TrendingUp, Package, Archive, Zap, Download, ChevronDown, Ch
 import styles from "./TestTabs.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
+const sortByProductNameAsc = (list) =>
+  [...list].sort((a, b) => String(a.productName || "").localeCompare(String(b.productName || ""), "ko"));
+
 export default function HapbaePreMatch() {
   const [rows, setRows] = useState([]);
   const [stockRows, setStockRows] = useState([]);
   const [todayBulkRows, setTodayBulkRows] = useState([]);
   const [stockBulkRows, setStockBulkRows] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("hapbae_stock_bulk_rows") || "[]"); } catch { return []; }
+    try { return sortByProductNameAsc(JSON.parse(localStorage.getItem("hapbae_stock_bulk_rows") || "[]")); } catch { return []; }
   });
   const [stockBulkFetchedAt, setStockBulkFetchedAt] = useState(() => {
     try { return localStorage.getItem("hapbae_stock_bulk_fetched_at") || ""; } catch { return ""; }
@@ -153,8 +156,9 @@ export default function HapbaePreMatch() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "재고대량 불러오기 실패");
       if (data.need_session) { setMessage("이지어드민 세션이 없습니다. 설정에서 PHPSESSID를 입력하세요."); return; }
-      setStockBulkRows(data.rows || []);
-      localStorage.setItem("hapbae_stock_bulk_rows", JSON.stringify(data.rows || []));
+      const sortedRows = sortByProductNameAsc(data.rows || []);
+      setStockBulkRows(sortedRows);
+      localStorage.setItem("hapbae_stock_bulk_rows", JSON.stringify(sortedRows));
       const fetchedAt = new Date().toISOString();
       setStockBulkFetchedAt(fetchedAt);
       localStorage.setItem("hapbae_stock_bulk_fetched_at", fetchedAt);
