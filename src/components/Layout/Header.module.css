@@ -228,7 +228,7 @@
     font-size: 0.9rem;
 }
 
-.attendanceLink {
+.managementLink {
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -242,7 +242,7 @@
     white-space: nowrap;
     transition: opacity 0.15s;
 }
-.attendanceLink:hover { opacity: 0.88; }
+.managementLink:hover { opacity: 0.88; }
 
 .eventCalendarButton {
     display: inline-flex;
@@ -264,22 +264,6 @@
     border-color: #9aa7b8;
     background: #f8fafc;
 }
-
-.paymentRequestLink {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 0.45rem 0.85rem;
-    background: linear-gradient(135deg, #7c3aed, #6d28d9);
-    color: #fff;
-    border-radius: var(--radius-sm);
-    font-size: 0.82rem;
-    font-weight: 700;
-    text-decoration: none;
-    white-space: nowrap;
-    transition: opacity 0.15s;
-}
-.paymentRequestLink:hover { opacity: 0.88; }
 
 .guidebookLink {
     display: inline-flex;
@@ -348,7 +332,7 @@
         display: none;
     }
 
-    .attendanceLink {
+    .managementLink {
         font-size: 0.75rem;
         padding: 0.35rem 0.6rem;
     }
@@ -356,11 +340,6 @@
     .eventCalendarButton {
         padding: 0.35rem 0.6rem;
         font-size: 0.75rem;
-    }
-
-    .paymentRequestLink {
-        font-size: 0.75rem;
-        padding: 0.35rem 0.6rem;
     }
 
     .guidebookLink {

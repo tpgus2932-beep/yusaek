@@ -180,32 +180,14 @@ const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode })
                     {zigzagBulkUpload?.running && <span className={styles.badge}></span>}
                 </button>
                 <a
-                    href="/payment-request"
+                    href="https://gwanri-page.vercel.app/"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className={styles.paymentRequestLink}
-                    title="입금요청 열기"
+                    className={styles.managementLink}
+                    title="관리페이지 열기"
                 >
                     <CircleDollarSign size={15} />
-                    입금요청
-                </a>
-                <a
-                    href="/payroll"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className={styles.attendanceLink}
-                    title="급여계산 열기"
-                >
-                    🧾 급여계산
-                </a>
-                <a
-                    href="/attendance"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className={styles.attendanceLink}
-                    title="출퇴근 체크 페이지 열기"
-                >
-                    🏢 출퇴근
+                    관리페이지
                 </a>
                 <a
                     href="/guidebook"
