@@ -102,8 +102,8 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 0.6rem;
   text-align: left;
-  cursor: pointer;
   transition: border-color 0.15s ease, transform 0.15s ease, background-color 0.15s ease;
 }
 
@@ -124,12 +124,37 @@
   font-weight: 600;
 }
 
+.menuNameInput {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 0.25rem 0.4rem;
+  margin: -0.25rem -0.4rem;
+}
+
+.menuNameInput:hover {
+  border-color: var(--border-color);
+}
+
+.menuNameInput:focus {
+  outline: none;
+  border-color: var(--text-muted);
+  background: var(--bg-primary);
+}
+
 .switch {
   width: 42px;
   height: 24px;
   background: #c4c7cc;
   border-radius: 999px;
   position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
   transition: background-color 0.18s ease;
 }
 

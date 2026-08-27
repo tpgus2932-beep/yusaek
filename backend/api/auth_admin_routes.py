@@ -395,6 +395,39 @@ def build_auth_admin_router(
         set_setting(f"menu_hidden_tabs:{user}", json.dumps(clean, ensure_ascii=False))
         return {"ok": True, "hidden_tabs": clean}
 
+    @router.get("/settings/menu-labels")
+    def get_menu_labels(user: str = Depends(get_current_user)):
+        raw = get_setting(f"menu_labels:{user}") or "{}"
+        try:
+            labels = json.loads(raw)
+        except Exception:
+            labels = {}
+        if not isinstance(labels, dict):
+            labels = {}
+        clean = {}
+        for k, v in labels.items():
+            if isinstance(k, str) and isinstance(v, str):
+                key = k.strip()
+                val = v.strip()[:20]
+                if key and val:
+                    clean[key] = val
+        return {"ok": True, "menu_labels": clean}
+
+    @router.patch("/settings/menu-labels")
+    def set_menu_labels(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        incoming = payload.get("menu_labels")
+        if not isinstance(incoming, dict):
+            raise HTTPException(status_code=400, detail="menu_labels must be an object")
+        clean = {}
+        for k, v in incoming.items():
+            if isinstance(k, str) and isinstance(v, str):
+                key = k.strip()
+                val = v.strip()[:20]
+                if key and val:
+                    clean[key] = val
+        set_setting(f"menu_labels:{user}", json.dumps(clean, ensure_ascii=False))
+        return {"ok": True, "menu_labels": clean}
+
     @router.get("/settings/dashboard-layout")
     def get_dashboard_layout(user: str = Depends(get_current_user)):
         raw = get_setting(f"dashboard_layout:{user}") or "{}"

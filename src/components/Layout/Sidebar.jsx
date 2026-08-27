@@ -18,14 +18,16 @@ import {
     Handshake,
     FlaskConical,
     TrendingUp,
+    Zap,
 } from 'lucide-react';
 import styles from './Sidebar.module.css';
 import ServerStatsModal from '../Admin/ServerStatsModal';
 
 
 
-const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hiddenTabs = [], onLogout }) => {
+const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hiddenTabs = [], menuLabels = {}, onLogout }) => {
     const isHidden = (tab) => hiddenTabs.includes(tab);
+    const label = (tab, fallback) => menuLabels[tab] || fallback;
     const [showStats, setShowStats] = useState(false);
     return (
         <>
@@ -42,7 +44,7 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     onClick={() => setActiveTab('dashboard')}
                 >
                     <LayoutDashboard size={20} />
-                    대시보드
+                    {label('dashboard', '대시보드')}
                 </div>
                 )}
                 {!isHidden('barcode') && (
@@ -51,7 +53,7 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                 onClick={() => setActiveTab('barcode')}
                 >
                 <Barcode size={20} />
-                바코드
+                {label('barcode', '바코드')}
                 </div>
                 )}
                 {!isHidden('returns') && (
@@ -60,7 +62,7 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     onClick={() => setActiveTab('returns')}
                 >
                     <RotateCcw size={20} />
-                    반품
+                    {label('returns', '반품')}
                 </div>
                 )}
                 {!isHidden('barcode-product-upload') && (
@@ -69,7 +71,7 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     onClick={() => setActiveTab('barcode-product-upload')}
                 >
                     <Upload size={20} />
-                    상품 업로드
+                    {label('barcode-product-upload', '상품 업로드')}
                 </div>
                 )}
                 {!isHidden('noye-kimsungil') && (
@@ -78,7 +80,7 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     onClick={() => setActiveTab('noye-kimsungil')}
                 >
                     <Users size={20} />
-                    노예김승일
+                    {label('noye-kimsungil', '노예김승일')}
                 </div>
                 )}
                 {!isHidden('client-schedule') && (
@@ -87,7 +89,7 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     onClick={() => setActiveTab('client-schedule')}
                 >
                     <CalendarDays size={20} />
-                    거래처
+                    {label('client-schedule', '거래처')}
                 </div>
                 )}
                 {!isHidden('sms') && (
@@ -96,7 +98,7 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     onClick={() => setActiveTab('sms')}
                 >
                     <MessageSquare size={20} />
-                    문자 발송
+                    {label('sms', '문자 발송')}
                 </div>
                 )}
                 {!isHidden('collaboration-menu') && (
@@ -105,7 +107,7 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     onClick={() => setActiveTab('collaboration-menu')}
                 >
                     <Handshake size={20} />
-                    협업메뉴
+                    {label('collaboration-menu', '협업메뉴')}
                 </div>
                 )}
                 {!isHidden('hapbae-management') && (
@@ -114,7 +116,16 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     onClick={() => setActiveTab('hapbae-management')}
                 >
                     <PackageCheck size={20} />
-                    합배송관리
+                    {label('hapbae-management', '합배송관리')}
+                </div>
+                )}
+                {!isHidden('zigzag-upload') && (
+                <div
+                    className={`${styles.navItem} ${activeTab === 'zigzag-upload' ? styles.active : ''}`}
+                    onClick={() => setActiveTab('zigzag-upload')}
+                >
+                    <Zap size={20} />
+                    {label('zigzag-upload', '지그재그 업로드')}
                 </div>
                 )}
 {!isHidden('test') && (
@@ -123,7 +134,7 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     onClick={() => setActiveTab('test')}
                 >
                     <FlaskConical size={20} />
-                    테스트
+                    {label('test', '테스트')}
                 </div>
                 )}
                 {!isHidden('margin-calc') && (
@@ -132,7 +143,7 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     onClick={() => setActiveTab('margin-calc')}
                 >
                     <TrendingUp size={20} />
-                    마진계산
+                    {label('margin-calc', '마진계산')}
                 </div>
                 )}
 
@@ -142,7 +153,7 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                         onClick={() => setActiveTab('order')}
                     >
                         <ShoppingBag size={20} />
-                        발주
+                        {label('order', '발주')}
                     </div>
                 )}
 
@@ -152,7 +163,7 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                         onClick={() => setActiveTab('admin')}
                     >
                         <Shield size={20} />
-                        관리자
+                        {label('admin', '관리자')}
                     </div>
                 )}
                 <div

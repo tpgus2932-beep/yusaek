@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { EzadminSessionProvider } from './lib/EzadminSessionContext';
+import { ZigzagBulkUploadProvider } from './lib/ZigzagBulkUploadContext';
 import Sidebar from './components/Layout/Sidebar';
 import Header from './components/Layout/Header';
 import Overview from './components/Dashboard/Overview';
@@ -25,6 +26,7 @@ import GuidebookPage from './components/Guidebook/GuidebookPage';
 import AmoodSettlement from './components/AmoodSettlement/AmoodSettlement';
 import DBManagerLayout from './components/DBManager/DBManagerLayout';
 import InventoryDashboardPage from './components/InventoryDashboard/InventoryDashboardPage';
+import ZigzagUploadPage from './components/Zigzag/ZigzagUploadPage';
 import OrderRecommendationDashboardPage from './components/OrderRecommendation/OrderRecommendationDashboardPage';
 import TimeboxPage from './components/Timebox/TimeboxPage';
 import WorklogPage from './components/Worklog/WorklogPage';
@@ -34,7 +36,7 @@ import { COLLAB_API_BASE } from './lib/api';
 const KNOWN_TABS = [
   'dashboard', 'barcode', 'returns', 'barcode-product-upload',
   'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'hapbae-management',
-  'test', 'order', 'admin', 'settings', 'margin-calc',
+  'zigzag-upload', 'test', 'order', 'admin', 'settings', 'margin-calc',
 ];
 
 const App = () => {
@@ -57,6 +59,7 @@ const App = () => {
   const [isAdmin, setIsAdmin] = useState(localStorage.getItem('isAdmin') === 'true');
   const [role, setRole] = useState(localStorage.getItem('role') || 'user');
   const [hiddenTabs, setHiddenTabs] = useState([]);
+  const [menuLabels, setMenuLabels] = useState({});
   const [amoodHapbaeTransfer, setAmoodHapbaeTransfer] = useState(null);
 
   const isTabAllowed = (tab, adminFlag = isAdmin, hidden = hiddenTabs, userRole = role) => {
@@ -154,6 +157,21 @@ const App = () => {
       .catch(() => {});
   }, [token]);
 
+  useEffect(() => {
+    if (!token) return;
+    fetch(`${COLLAB_API_BASE}/settings/menu-labels`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(async (res) => {
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data && data.menu_labels && typeof data.menu_labels === 'object') {
+          setMenuLabels(data.menu_labels);
+        }
+      })
+      .catch(() => {});
+  }, [token]);
+
   const handleAuth = (newToken, name, nextPhoneNumber = '') => {
     localStorage.setItem('token', newToken);
     setToken(newToken);
@@ -186,7 +204,7 @@ const App = () => {
 
   // viewer 역할이면 hiddenTabs 무시하고 대시보드만 허용
   const effectiveHiddenTabs = role === 'viewer'
-    ? ['barcode', 'returns', 'barcode-product-upload', 'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'order', 'admin', 'settings', 'hapbae-management', 'test', 'margin-calc']
+    ? ['barcode', 'returns', 'barcode-product-upload', 'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'order', 'admin', 'settings', 'hapbae-management', 'zigzag-upload', 'test', 'margin-calc']
     : hiddenTabs;
 
   const handleLogout = () => {
@@ -255,6 +273,7 @@ const App = () => {
 
   return (
     <EzadminSessionProvider>
+    <ZigzagBulkUploadProvider>
     <div className={styles.appContainer}>
       {topMode === 'home' && (
         <Sidebar
@@ -264,6 +283,7 @@ const App = () => {
           toggleTheme={toggleTheme}
           isAdmin={isAdmin}
           hiddenTabs={effectiveHiddenTabs}
+          menuLabels={menuLabels}
           onLogout={handleLogout}
         />
       )}
@@ -305,12 +325,19 @@ const App = () => {
             {visibleActiveTab === 'hapbae-management' && !effectiveHiddenTabs.includes('hapbae-management') && (
               <HapbaeManagementTabs transferredAmoodFile={amoodHapbaeTransfer} />
             )}
+            {visibleActiveTab === 'zigzag-upload' && !effectiveHiddenTabs.includes('zigzag-upload') && <ZigzagUploadPage />}
             {visibleActiveTab === 'test' && !effectiveHiddenTabs.includes('test') && <TestTabs />}
             {visibleActiveTab === 'order' && isAdmin && !effectiveHiddenTabs.includes('order') && <OrderPage />}
             {visibleActiveTab === 'admin' && isAdmin && !effectiveHiddenTabs.includes('admin') && <AdminUsers currentUser={username} />}
             {visibleActiveTab === 'margin-calc' && !effectiveHiddenTabs.includes('margin-calc') && <AmoodSettlement />}
             {visibleActiveTab === 'settings' && (
-              <SettingsPage hiddenTabs={hiddenTabs} setHiddenTabs={setHiddenTabs} isAdmin={isAdmin} />
+              <SettingsPage
+                hiddenTabs={hiddenTabs}
+                setHiddenTabs={setHiddenTabs}
+                menuLabels={menuLabels}
+                setMenuLabels={setMenuLabels}
+                isAdmin={isAdmin}
+              />
             )}
           </>
         )}
@@ -324,6 +351,7 @@ const App = () => {
 
       </main>
     </div>
+    </ZigzagBulkUploadProvider>
     </EzadminSessionProvider>
   );
 };
