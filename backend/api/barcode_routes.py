@@ -20,6 +20,7 @@ from openpyxl import load_workbook
 
 from sdk.ably import AblyClient
 from services.easyadmin_product import process_easyadmin_product_from_api
+from services.order_history_store import init_order_history_table
 from services.pastelco_utils import pastelco_login
 
 _ABLY_BASE     = "https://api.a-bly.com"
@@ -29,6 +30,7 @@ _ABLY_PASSWORD = "!Glqgkqdldi1126"
 _EZADMIN_BASE        = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
 _KST = ZoneInfo("Asia/Seoul")
+_INCOMING_VERIFY_EXCLUDED_CLIENTS = {"케이디지", "리자드스탠다드", "리마인드", "계란속노른자", "도매킴"}
 _SCHEDULE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 from api.wonbe_routes import _get_wonbe_db as _get_wonbe_db, record_defect_process_logs
@@ -55,6 +57,7 @@ def build_barcode_router(
     set_setting,
     get_user_display,
     get_shared_db,
+    get_db,
 ):
     router = APIRouter()
     _DEFECT_BASE_HEADERS = ["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]
@@ -1931,6 +1934,7 @@ def build_barcode_router(
             "defects": _get_defect_list(state),
             "kimsungil": _get_kimsungil_list(state),
             "invoice_has_defect": _invoice_has_defect(state, resolved_invoice),
+            "post_shipment_cancelled": _is_post_shipment_cancelled(resolved_invoice),
         }
 
     @router.post("/barcode/scan/item")
@@ -3279,5 +3283,313 @@ def build_barcode_router(
             conn.close()
 
         return {"ok": True, "count": int(m.group(1))}
+
+    def _post_shipment_cancel_rows() -> list[dict]:
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT date, seq, invoice_no, shop, manager, ship_time, cancel_time, "
+                "product_name, carrier, fetched_at FROM post_shipment_cancel ORDER BY id"
+            ).fetchall()
+        finally:
+            conn.close()
+        return [dict(row) for row in rows]
+
+    def _is_post_shipment_cancelled(invoice_no: str) -> bool:
+        value = str(invoice_no or "").strip()
+        if not value:
+            return False
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM post_shipment_cancel WHERE invoice_no = ? LIMIT 1", (value,)
+            ).fetchone()
+        finally:
+            conn.close()
+        return row is not None
+
+    @router.get("/barcode/post-shipment-cancel/list")
+    def post_shipment_cancel_list(user: str = Depends(get_current_user)):
+        """저장된(새로고침으로 불러온) 배송후취소 목록을 로컬 DB에서 그대로 반환.
+
+        EZAdmin을 호출하지 않는다 - 실제 조회는 refresh 엔드포인트에서만 일어난다."""
+        rows = _post_shipment_cancel_rows()
+        date = rows[0]["date"] if rows else ""
+        fetched_at = rows[0]["fetched_at"] if rows else ""
+        return {"ok": True, "date": date, "fetched_at": fetched_at, "count": len(rows), "items": rows}
+
+    @router.post("/barcode/post-shipment-cancel/refresh")
+    async def post_shipment_cancel_refresh(user: str = Depends(get_current_user)):
+        """E807(배송후취소) - 오늘 발송 후 취소된 주문의 송장번호 목록을 EZAdmin에서 다시 조회해 로컬 DB에 저장.
+
+        실캡처(브라우저 요청) 그대로: template=E800으로 grid_E807을 호출하고,
+        실제 조회조건(E807/status=8/type=cancel/오늘 날짜)은 par에 담는다."""
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        today = datetime.now(_KST).strftime("%Y-%m-%d")
+        par = (
+            f"template=E807&action=&start_date={today}&end_date={today}"
+            "&date_period_sel=0&multi_shop_group=&multi_shop=&str_shop_code=0"
+            "&trans_corp=99&cancel_qty=&qty=&status=8&order_cs=0&type=cancel&view=1"
+        )
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": f"{_EZADMIN_BASE}/template40.htm?winmode=none&template=E807&act=action&view=1",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=20.0, verify=False, follow_redirects=True) as client:
+                r = await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data={
+                        "_search": "false",
+                        "nd": str(int(datetime.now().timestamp() * 1000)),
+                        "rows": "9999",
+                        "page": "1",
+                        "sidx": "",
+                        "sord": "asc",
+                        "readonly": "T",
+                        "template": "E800",
+                        "action": "grid_E807",
+                        "par": par,
+                        "index": "",
+                        "sort_order": "",
+                    },
+                    cookies={"PHPSESSID": phpsessid},
+                    headers=headers,
+                )
+        except Exception:
+            return {"ok": False, "need_session": True}
+        try:
+            obj = r.json()
+        except Exception:
+            return {"ok": False, "need_session": True}
+        if "rows" not in obj:
+            # 오늘 배송후취소 건이 0건이면 EZAdmin이 "rows" 키 자체를 안 내려줄 때가 있다 -
+            # 이걸 세션 만료로 오판하면 세션이 멀쩡한데도 계속 재입력을 요구하게 된다.
+            # 진짜 세션 만료 응답에만 있는 로그인/세션 관련 문구가 있을 때만 need_session 처리.
+            body_lower = (r.text or "").lower()
+            if any(t in body_lower for t in ("login", "phpsessid", "session", "로그인")):
+                return {"ok": False, "need_session": True}
+            obj = {"rows": []}
+
+        _html_tag = re.compile(r"<[^>]+>")
+        items = []
+        for row in obj.get("rows", []):
+            cell = row.get("cell") or {}
+            invoice_no = str(cell.get("col6") or "").strip()
+            if not invoice_no:
+                continue
+            seq_match = re.search(r"popupcs\(\s*(\d+)", str(cell.get("col3") or ""))
+            items.append({
+                "seq": seq_match.group(1) if seq_match else None,
+                "invoice_no": invoice_no,
+                "shop": _html_tag.sub("", str(cell.get("col4") or "")).strip(),
+                "manager": _html_tag.sub("", str(cell.get("col18") or "")).strip(),
+                "ship_time": str(cell.get("col7") or "").strip(),
+                "cancel_time": str(cell.get("col10") or "").strip(),
+                "product_name": _html_tag.sub("", str(cell.get("col20") or cell.get("col15") or "")).strip(),
+                "carrier": str(cell.get("col21") or "").strip(),
+            })
+
+        fetched_at = datetime.now(_KST).isoformat()
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM post_shipment_cancel")
+            conn.executemany(
+                "INSERT INTO post_shipment_cancel "
+                "(date, seq, invoice_no, shop, manager, ship_time, cancel_time, product_name, carrier, fetched_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (today, item["seq"], item["invoice_no"], item["shop"], item["manager"],
+                     item["ship_time"], item["cancel_time"], item["product_name"], item["carrier"], fetched_at)
+                    for item in items
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        return {"ok": True, "date": today, "fetched_at": fetched_at, "count": len(items), "items": items}
+
+    @router.post("/barcode/incoming/verify-trans-in")
+    async def barcode_incoming_verify_trans_in(user: str = Depends(get_current_user)):
+        """바코드탭에서 불러온 입고 파일의 상품코드를, 이지어드민 I100(오늘 입고 거래발생) 목록과
+        대조해 이지어드민 쪽에 안 잡히는 상품코드만 골라낸다.
+
+        조회 자체는 이지어드민 실캡처(work_type=trans&work_start=1, 오늘 날짜) 그대로 -
+        backend/api/inventory_dashboard_routes.py의 today_stock_check와 같은 I100/search
+        호출 형태를 쓰되 par 조건(재고 stockin이 아니라 거래발생 입고)과 결과(일치 대신
+        불일치)만 다르다."""
+        incoming_counts = get_shared_incoming_counts() or {}
+        if not incoming_counts:
+            return {"ok": False, "detail": "불러온 입고 파일이 없습니다. 바코드 탭에서 입고 파일을 먼저 불러오세요."}
+
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        today = datetime.now(_KST).strftime("%Y-%m-%d")
+        nd = str(int(datetime.now().timestamp() * 1000))
+        par = (
+            "auto_search=&search_all_product=&multi_supply_group=&multi_supply=&str_supply_code=0"
+            "&tags_string=&product_tag_include_type=1&query_type=name&query_str="
+            "&stock_type=0&stock_start=&stock_end=&notrans_day=&notrans_cnt=&notrans_status=0&stock_status=0"
+            f"&start_date={today}&start_hour=00%3A00%3A00&end_date={today}&end_hour=23%3A59%3A59"
+            "&date_period_sel=1&work_type=trans&work_start=1&work_end=&inout_type=0&product_date="
+            f"&start_date2={today}&end_date2={today}&date_period_sel2=1"
+            "&products_sort=1&category=0&except_soldout=0&temp_soldout=0&location=0"
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+                r = await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data={
+                        "_search": "false", "nd": nd,
+                        "rows": "9999", "page": "1", "sidx": "", "sord": "asc",
+                        "template": "I100", "action": "search", "page_code": "I100",
+                        "par": par,
+                    },
+                    cookies={"PHPSESSID": phpsessid},
+                    headers={
+                        "User-Agent": "Mozilla/5.0",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": f"{_EZADMIN_BASE}/template40.htm?template=I100",
+                    },
+                )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"이지어드민 연결 실패: {exc}")
+
+        body = (r.text or "").strip()
+        if _looks_like_ez_session_error(r, body):
+            return {"ok": False, "need_session": True}
+        try:
+            obj = r.json()
+        except Exception:
+            return {"ok": False, "need_session": True}
+        if not isinstance(obj, dict) or "rows" not in obj:
+            return {"ok": False, "unexpected_response": True, "raw": obj}
+
+        found_codes: set[str] = set()
+        for row in obj.get("rows", []):
+            cell = row.get("cell") or {}
+            raw_code = cell.get("key") or cell.get("product_id") or cell.get("code") or ""
+            code = normalize_to_yusas(raw_code) or str(raw_code).strip()
+            if code:
+                found_codes.add(code)
+
+        missing_codes = sorted(code for code in incoming_counts if code not in found_codes)
+
+        info_map: dict[str, dict] = {}
+        if missing_codes:
+            s_code_map = {_to_s_code(code): code for code in missing_codes}
+            conn = _get_wonbe_db()
+            try:
+                placeholders = ",".join(["?"] * len(s_code_map))
+                rows = conn.execute(
+                    f"SELECT 상품코드, 상품명, 색상, 사이즈 FROM wonbe WHERE 상품코드 IN ({placeholders})",
+                    list(s_code_map.keys()),
+                ).fetchall()
+                info_map = {
+                    s_code_map[row["상품코드"]]: dict(row)
+                    for row in rows
+                    if row["상품코드"] in s_code_map
+                }
+            finally:
+                conn.close()
+
+        missing = [
+            {
+                "code": code,
+                "incomingQty": incoming_counts.get(code, 0),
+                "productName": info_map.get(code, {}).get("상품명", ""),
+                "color": info_map.get(code, {}).get("색상", ""),
+                "size": info_map.get(code, {}).get("사이즈", ""),
+            }
+            for code in missing_codes
+        ]
+
+        return {
+            "ok": True,
+            "date": today,
+            "total_rows": len(obj.get("rows", [])),
+            "incoming_codes": len(incoming_counts),
+            "missing": missing,
+        }
+
+    @router.post("/barcode/incoming/verify-order-history")
+    async def barcode_incoming_verify_order_history(user: str = Depends(get_current_user)):
+        """바코드탭에서 불러온 입고 파일의 상품코드를, DB관리 > 발주내역의 전날(어제) 등록분과
+        대조해 전날 발주내역에 없는 상품코드만 골라낸다 - verify_trans_in과 같은 패턴이지만
+        비교 대상이 이지어드민 I100이 아니라 우리 쪽 order_history 테이블.
+
+        incoming_counts의 키는 normalize_to_yusas가 만든 "YUSAS00000" 형식인데,
+        order_history.product_code/wonbe.상품코드는 top90 발주 형식 그대로인 "S00000"
+        형식이라 형식이 다르다 - _to_s_code로 맞춰서 비교해야 한다(안 그러면 형식이
+        달라서 전부 미확인으로 잘못 뜬다)."""
+        incoming_counts = get_shared_incoming_counts() or {}
+        if not incoming_counts:
+            return {"ok": False, "detail": "불러온 입고 파일이 없습니다. 바코드 탭에서 입고 파일을 먼저 불러오세요."}
+
+        yesterday = (datetime.now(_KST) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+        init_order_history_table(get_db)
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT product_code FROM order_history "
+                "WHERE recorded_at >= ? AND recorded_at <= ? AND product_code != ''",
+                (f"{yesterday} 00:00:00", f"{yesterday} 23:59:59"),
+            ).fetchall()
+        finally:
+            conn.close()
+        ordered_codes = {row["product_code"] for row in rows}
+
+        # S코드 기준으로 비교/표시한다 - 여러 YUSAS코드가 같은 S코드로 겹치면 수량은 합산.
+        s_incoming_counts: dict[str, int] = {}
+        for code, qty in incoming_counts.items():
+            s_incoming_counts[_to_s_code(code)] = s_incoming_counts.get(_to_s_code(code), 0) + int(qty or 0)
+
+        candidate_codes = sorted(s_code for s_code in s_incoming_counts if s_code not in ordered_codes)
+
+        info_map: dict[str, dict] = {}
+        if candidate_codes:
+            wonbe_conn = _get_wonbe_db()
+            try:
+                placeholders = ",".join(["?"] * len(candidate_codes))
+                wrows = wonbe_conn.execute(
+                    f"SELECT 상품코드, 상품명, 색상, 사이즈, 거래처 FROM wonbe WHERE 상품코드 IN ({placeholders})",
+                    candidate_codes,
+                ).fetchall()
+                info_map = {row["상품코드"]: dict(row) for row in wrows}
+            finally:
+                wonbe_conn.close()
+
+        # 케이디지/리자드스탠다드/리마인드/계란속노른자/도매킴 거래처 상품은 조회 대상에서 제외.
+        missing_codes = [
+            s_code for s_code in candidate_codes
+            if info_map.get(s_code, {}).get("거래처", "") not in _INCOMING_VERIFY_EXCLUDED_CLIENTS
+        ]
+
+        missing = [
+            {
+                "code": s_code,
+                "incomingQty": s_incoming_counts.get(s_code, 0),
+                "productName": info_map.get(s_code, {}).get("상품명", ""),
+                "color": info_map.get(s_code, {}).get("색상", ""),
+                "size": info_map.get(s_code, {}).get("사이즈", ""),
+            }
+            for s_code in missing_codes
+        ]
+
+        return {
+            "ok": True,
+            "date": yesterday,
+            "incoming_codes": len(incoming_counts),
+            "missing": missing,
+        }
 
     return router

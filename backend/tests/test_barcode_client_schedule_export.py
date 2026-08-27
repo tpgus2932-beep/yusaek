@@ -104,6 +104,7 @@ def _make_client(phpsessid="SESSIDVALUE"):
             set_setting=lambda key, value: settings.__setitem__(key, value),
             get_user_display=lambda u: u,
             get_shared_db=get_shared_db,
+            get_db=get_shared_db,
         )
     )
     return TestClient(app), get_shared_db, keep_alive

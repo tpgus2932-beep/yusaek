@@ -1030,6 +1030,35 @@ def _init_order_registered_codes():
 _init_order_registered_codes()
 
 
+def _init_post_shipment_cancel():
+    conn = _get_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS post_shipment_cancel (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            seq TEXT,
+            invoice_no TEXT NOT NULL,
+            shop TEXT,
+            manager TEXT,
+            ship_time TEXT,
+            cancel_time TEXT,
+            product_name TEXT,
+            carrier TEXT,
+            fetched_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_post_shipment_cancel_invoice ON post_shipment_cancel(invoice_no)"
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_post_shipment_cancel()
+
+
 def _init_return_saved_states():
     conn = _get_shared_db()
     conn.execute(
@@ -1529,6 +1558,7 @@ app.include_router(
         set_setting=_set_setting,
         get_user_display=_get_user_display,
         get_shared_db=_get_shared_db,
+        get_db=_get_db,
     )
 )
 app.include_router(

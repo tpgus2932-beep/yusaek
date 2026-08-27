@@ -148,6 +148,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       itemDone: makeAudio("/sounds/xx.wav"),
       bad: makeAudio("/sounds/dd.wav"),
       invoiceDefect: makeAudio("/sounds/bb.wav"),
+      postShipmentCancel: makeAudio("/sounds/ice.wav"),
     };
   }, []);
 
@@ -444,6 +445,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
           setItems(data.items ?? []);          setDefectList(data.defects ?? defectList);
           setKimsungilList(data.kimsungil ?? kimsungilList);
           if (data.invoice_has_defect) playSound("invoiceDefect");
+          if (data.post_shipment_cancelled) { playSound("postShipmentCancel"); pushLog(`⚠ 배송후취소 송장: ${data.invoice}`); }
           pushLog(`송장 SET: ${data.invoice}`);
         }
       } else {
