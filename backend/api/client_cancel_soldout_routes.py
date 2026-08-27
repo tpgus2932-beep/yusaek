@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -17,10 +19,12 @@ from services.client_cancel_soldout_utils import (
 _SOLDOUT_TEMPLATE_NAME = "품절 문자"
 
 
-def _parse_products(products: list[dict]) -> tuple[dict[str, str], dict[str, str]]:
-    """products: [{name, options: [{code, product_id}]}] → (code→name, code→product_id)."""
+def _parse_products(products: list[dict]) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """products: [{name, options: [{code, product_id, label}]}] →
+    (code→name, code→product_id, code→label)."""
     option_code_to_name: dict[str, str] = {}
     option_code_to_product_id: dict[str, str] = {}
+    option_code_to_label: dict[str, str] = {}
     for product in products:
         name = str(product.get("name") or "").strip()
         for option in product.get("options") or []:
@@ -32,7 +36,26 @@ def _parse_products(products: list[dict]) -> tuple[dict[str, str], dict[str, str
             product_id = str(option.get("product_id") or "").strip()
             if product_id:
                 option_code_to_product_id[code] = product_id
-    return option_code_to_name, option_code_to_product_id
+            label = str(option.get("label") or "").strip()
+            if label:
+                option_code_to_label[code] = label
+    return option_code_to_name, option_code_to_product_id, option_code_to_label
+
+
+def _product_summaries(products: list[dict], option_code_to_label: dict[str, str]) -> list[dict]:
+    """로그용 상품 요약: [{name, options: [{code, label}]}]."""
+    summaries = []
+    for product in products:
+        name = str(product.get("name") or "").strip()
+        if not name:
+            continue
+        options = [
+            {"code": str(o.get("code") or "").strip(), "label": option_code_to_label.get(str(o.get("code") or "").strip(), "")}
+            for o in (product.get("options") or [])
+            if str(o.get("code") or "").strip()
+        ]
+        summaries.append({"name": name, "options": options})
+    return summaries
 
 
 def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db, cost_base_path: Path):
@@ -47,6 +70,18 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
         finally:
             conn.close()
         return row["msg"] if row else None
+
+    def _save_log(username: str, action: str, summary: dict):
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT INTO client_cancel_soldout_logs (created_at, username, action, summary_json) "
+                "VALUES (?, ?, ?, ?)",
+                (datetime.now().isoformat(), username, action, json.dumps(summary, ensure_ascii=False)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     @router.get("/cost-base/search")
     def cost_base_search(q: str = "", limit: int = 20, user: str = Depends(get_current_user)):
@@ -82,7 +117,7 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
         되므로, 대상 주문을 찾을 필요 없이 옵션 코드만으로 바로 처리한다.
         """
         products = payload.get("products") or []
-        option_code_to_name, _ = _parse_products(products)
+        option_code_to_name, _, option_code_to_label = _parse_products(products)
         if not option_code_to_name:
             raise HTTPException(status_code=400, detail="미진열 처리할 옵션이 없습니다.")
 
@@ -99,12 +134,17 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"미진열 처리 실패: {exc}")
 
+        _save_log(user, "delist", {
+            "products": _product_summaries(products, option_code_to_label),
+            "non_display_option_count": len(non_display_snos),
+        })
+
         return {"ok": True, "non_display_option_count": len(non_display_snos)}
 
     @router.post("/run")
     async def run(payload: dict = Body(...), user: str = Depends(get_current_user)):
         products = payload.get("products") or []
-        option_code_to_name, option_code_to_product_id = _parse_products(products)
+        option_code_to_name, option_code_to_product_id, option_code_to_label = _parse_products(products)
         if not option_code_to_name:
             raise HTTPException(status_code=400, detail="취소할 상품/옵션이 없습니다.")
 
@@ -223,6 +263,14 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
             except Exception as exc:
                 pending_counts.append({"product_id": product_id, "remaining": None, "error": str(exc)})
 
+        _save_log(user, "run", {
+            "products": _product_summaries(products, option_code_to_label),
+            "cancelled_orders": cancelled,
+            "failed_orders": failed,
+            "non_display_option_count": len(non_display_snos),
+            "soldout_goods_count": len(soldout_snos),
+        })
+
         return {
             "ok": True,
             "cancelled_orders": cancelled,
@@ -233,5 +281,30 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
             "need_ezadmin_session": need_ezadmin_session,
             "pending_counts": pending_counts,
         }
+
+    @router.get("/logs")
+    def logs(limit: int = 100, user: str = Depends(get_current_user)):
+        if limit <= 0 or limit > 500:
+            limit = 100
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT id, created_at, username, action, summary_json "
+                "FROM client_cancel_soldout_logs ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        finally:
+            conn.close()
+        items = [
+            {
+                "id": row["id"],
+                "created_at": row["created_at"],
+                "username": row["username"],
+                "action": row["action"],
+                "summary": json.loads(row["summary_json"]),
+            }
+            for row in rows
+        ]
+        return {"ok": True, "items": items}
 
     return router

@@ -2,10 +2,12 @@ import React, { useState } from 'react';
 import styles from './ClientPage.module.css';
 import ClientSchedulePage from './ClientSchedulePage';
 import ClientCancelSoldOutPage from './ClientCancelSoldOutPage';
+import ClientCancelSoldOutLogPage from './ClientCancelSoldOutLogPage';
 
 const TABS = [
   { key: 'schedule', label: '일정' },
   { key: 'cancel-soldout', label: '품절취소' },
+  { key: 'cancel-soldout-log', label: '품절취소로그' },
 ];
 
 const ClientPage = () => {
@@ -28,6 +30,7 @@ const ClientPage = () => {
 
       {activeTab === 'schedule' && <ClientSchedulePage />}
       {activeTab === 'cancel-soldout' && <ClientCancelSoldOutPage />}
+      {activeTab === 'cancel-soldout-log' && <ClientCancelSoldOutLogPage />}
     </div>
   );
 };

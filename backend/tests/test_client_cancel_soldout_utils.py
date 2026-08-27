@@ -1,9 +1,9 @@
+import sqlite3
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import openpyxl
 import pytest
 
 from services.client_cancel_soldout_utils import (
@@ -15,24 +15,26 @@ from services.client_cancel_soldout_utils import (
 
 
 def _write_cost_base(path: Path):
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.append(["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명",
-               "거래처합", "상품명합", "거래처주소", "옵션번호"])
-    ws.append(["S10456", "빈티지 흑청 스커트", "흑청", "S", "10000", "오즈브릿지",
-               "273빈티지흑청스커트", "273빈티지흑청스커트 흑청 S",
-               "빈티지 흑청 스커트 흑청 S", "디오트 1층 C 9호", "175252569"])
-    ws.append(["S10457", "빈티지 흑청 스커트", "흑청", "M", "10000", "오즈브릿지",
-               "273빈티지흑청스커트", "273빈티지흑청스커트 흑청 M",
-               "빈티지 흑청 스커트 흑청 M", "디오트 1층 C 9호", "175252570"])
-    ws.append(["S12369", "노에 린넨 셔츠", "그레이", "free", "10000", "스크램블",
-               "라온카라티", "라온카라티 그레이 free",
-               "노에 린넨 셔츠 그레이 free", "누존 B1층 621호", "362752600"])
-    wb.save(path)
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE wonbe (상품코드 TEXT, 상품명 TEXT, 색상 TEXT, 사이즈 TEXT, 거래처 TEXT, "
+        "거래처상품명 TEXT, 옵션번호 TEXT)"
+    )
+    conn.executemany(
+        "INSERT INTO wonbe (상품코드, 상품명, 색상, 사이즈, 거래처, 거래처상품명, 옵션번호) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("S10456", "빈티지 흑청 스커트", "흑청", "S", "오즈브릿지", "273빈티지흑청스커트", "175252569"),
+            ("S10457", "빈티지 흑청 스커트", "흑청", "M", "오즈브릿지", "273빈티지흑청스커트", "175252570"),
+            ("S12369", "노에 린넨 셔츠", "그레이", "free", "스크램블", "라온카라티", "362752600"),
+        ],
+    )
+    conn.commit()
+    conn.close()
 
 
 def test_search_cost_base_products_groups_by_name(tmp_path):
-    path = tmp_path / "cost_base.xlsx"
+    path = tmp_path / "cost_base.db"
     _write_cost_base(path)
 
     results = search_cost_base_products(path, "빈티지 흑청 스커트")
@@ -49,7 +51,7 @@ def test_search_cost_base_products_groups_by_name(tmp_path):
 
 
 def test_search_cost_base_products_matches_supplier_name(tmp_path):
-    path = tmp_path / "cost_base.xlsx"
+    path = tmp_path / "cost_base.db"
     _write_cost_base(path)
 
     results = search_cost_base_products(path, "273빈티지흑청스커트")
@@ -66,18 +68,18 @@ def test_search_cost_base_products_matches_supplier_name(tmp_path):
 
 
 def test_search_cost_base_products_no_match_returns_empty(tmp_path):
-    path = tmp_path / "cost_base.xlsx"
+    path = tmp_path / "cost_base.db"
     _write_cost_base(path)
 
     assert search_cost_base_products(path, "존재하지않는상품") == []
 
 
 def test_search_cost_base_products_missing_file_returns_empty(tmp_path):
-    assert search_cost_base_products(tmp_path / "missing.xlsx", "아무거나") == []
+    assert search_cost_base_products(tmp_path / "missing.db", "아무거나") == []
 
 
 def test_search_cost_base_products_respects_limit(tmp_path):
-    path = tmp_path / "cost_base.xlsx"
+    path = tmp_path / "cost_base.db"
     _write_cost_base(path)
 
     results = search_cost_base_products(path, "", limit=1)

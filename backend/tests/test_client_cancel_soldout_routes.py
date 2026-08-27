@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import sys
 import uuid
@@ -6,7 +7,6 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import openpyxl
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -20,6 +20,10 @@ def _make_db_factory():
     keep_alive.row_factory = sqlite3.Row
     keep_alive.execute(
         "CREATE TABLE sms_templates (id TEXT PRIMARY KEY, name TEXT, msg TEXT, title TEXT, msg_type TEXT, sort_order INTEGER)"
+    )
+    keep_alive.execute(
+        "CREATE TABLE client_cancel_soldout_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "created_at TEXT NOT NULL, username TEXT NOT NULL, action TEXT NOT NULL, summary_json TEXT NOT NULL)"
     )
     keep_alive.commit()
 
@@ -52,18 +56,22 @@ def _make_client(cost_base_path: Path):
 
 
 def _write_cost_base(path: Path):
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.append(["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명",
-               "거래처합", "상품명합", "거래처주소", "옵션번호"])
-    ws.append(["S10456", "빈티지 흑청 스커트", "흑청", "S", "10000", "오즈브릿지",
-               "273빈티지흑청스커트", "273빈티지흑청스커트 흑청 S",
-               "빈티지 흑청 스커트 흑청 S", "디오트 1층 C 9호", "175252569"])
-    wb.save(path)
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE wonbe (상품코드 TEXT, 상품명 TEXT, 색상 TEXT, 사이즈 TEXT, 거래처 TEXT, "
+        "거래처상품명 TEXT, 옵션번호 TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO wonbe (상품코드, 상품명, 색상, 사이즈, 거래처, 거래처상품명, 옵션번호) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("S10456", "빈티지 흑청 스커트", "흑청", "S", "오즈브릿지", "273빈티지흑청스커트", "175252569"),
+    )
+    conn.commit()
+    conn.close()
 
 
 def test_cost_base_search_returns_grouped_items(tmp_path):
-    cost_base_path = tmp_path / "cost_base.xlsx"
+    cost_base_path = tmp_path / "cost_base.db"
     _write_cost_base(cost_base_path)
     client, _get_db, _keep_alive = _make_client(cost_base_path)
 
@@ -80,7 +88,7 @@ def test_cost_base_search_returns_grouped_items(tmp_path):
 
 
 def test_pending_count_without_product_id_returns_400(tmp_path):
-    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.db")
 
     res = client.get("/client-cancel-soldout/pending-count", params={"product_id": ""})
 
@@ -88,7 +96,7 @@ def test_pending_count_without_product_id_returns_400(tmp_path):
 
 
 def test_pending_count_returns_remaining(tmp_path):
-    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.db")
 
     with patch(
         "api.client_cancel_soldout_routes.EzAdminClient.get_pending_order_count",
@@ -102,7 +110,7 @@ def test_pending_count_returns_remaining(tmp_path):
 
 
 def test_pending_count_product_not_found_returns_404(tmp_path):
-    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.db")
 
     with patch(
         "api.client_cancel_soldout_routes.EzAdminClient.get_pending_order_count",
@@ -114,7 +122,7 @@ def test_pending_count_product_not_found_returns_404(tmp_path):
 
 
 def test_pending_count_ezadmin_session_expired_returns_409(tmp_path):
-    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.db")
 
     with patch(
         "api.client_cancel_soldout_routes.EzAdminClient.get_pending_order_count",
@@ -126,7 +134,7 @@ def test_pending_count_ezadmin_session_expired_returns_409(tmp_path):
 
 
 def test_delist_without_products_returns_400(tmp_path):
-    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.db")
 
     res = client.post("/client-cancel-soldout/delist", json={"products": []})
 
@@ -134,7 +142,7 @@ def test_delist_without_products_returns_400(tmp_path):
 
 
 def test_delist_calls_stop_selling_with_option_codes_as_ints(tmp_path):
-    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.db")
 
     with patch(
         "api.client_cancel_soldout_routes.AblyClient.stop_selling",
@@ -158,9 +166,16 @@ def test_delist_calls_stop_selling_with_option_codes_as_ints(tmp_path):
     assert sorted(call_kwargs["non_display_option_snos"]) == [175252569, 175252570]
     assert call_kwargs["soldout_goods_snos"] == []
 
+    log_row = _keep_alive.execute(
+        "SELECT username, action, summary_json FROM client_cancel_soldout_logs"
+    ).fetchone()
+    assert log_row["username"] == "tester"
+    assert log_row["action"] == "delist"
+    assert json.loads(log_row["summary_json"])["non_display_option_count"] == 2
+
 
 def test_delist_stop_selling_failure_returns_502(tmp_path):
-    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.db")
 
     with patch(
         "api.client_cancel_soldout_routes.AblyClient.stop_selling",
@@ -174,7 +189,7 @@ def test_delist_stop_selling_failure_returns_502(tmp_path):
 
 
 def test_run_without_products_returns_400(tmp_path):
-    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.db")
 
     res = client.post("/client-cancel-soldout/run", json={"products": []})
 
@@ -189,7 +204,7 @@ def test_run_missing_template_returns_400(tmp_path):
             get_current_user=lambda: "tester",
             get_setting=lambda key: None,
             get_db=get_db,
-            cost_base_path=tmp_path / "missing.xlsx",
+            cost_base_path=tmp_path / "missing.db",
         )
     )
     client = TestClient(app)
@@ -203,7 +218,7 @@ def test_run_missing_template_returns_400(tmp_path):
 
 
 def test_run_cancels_matching_order_sends_sms_and_reports_pending_count(tmp_path):
-    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.db")
 
     search_result = [{
         "sno": 636699893, "order_sno": 1784397062398,
@@ -272,9 +287,41 @@ def test_run_cancels_matching_order_sends_sms_and_reports_pending_count(tmp_path
     )
     mock_pending_count.assert_awaited_once_with("S10456")
 
+    log_row = _keep_alive.execute(
+        "SELECT username, action, summary_json FROM client_cancel_soldout_logs"
+    ).fetchone()
+    assert log_row["username"] == "tester"
+    assert log_row["action"] == "run"
+    summary = json.loads(log_row["summary_json"])
+    assert summary["products"] == [{"name": "빈티지 흑청 스커트", "options": [{"code": "175252569", "label": ""}]}]
+    assert summary["cancelled_orders"][0]["order_sno"] == 1784397062398
+    assert summary["non_display_option_count"] == 1
+
+
+def test_logs_endpoint_returns_recent_entries_newest_first(tmp_path):
+    client, _get_db, keep_alive = _make_client(tmp_path / "missing.db")
+    keep_alive.execute(
+        "INSERT INTO client_cancel_soldout_logs (created_at, username, action, summary_json) VALUES (?, ?, ?, ?)",
+        ("2026-07-28T10:00:00", "tester", "delist", '{"products": [], "non_display_option_count": 0}'),
+    )
+    keep_alive.execute(
+        "INSERT INTO client_cancel_soldout_logs (created_at, username, action, summary_json) VALUES (?, ?, ?, ?)",
+        ("2026-07-28T11:00:00", "tester2", "run", '{"products": [], "cancelled_orders": []}'),
+    )
+    keep_alive.commit()
+
+    res = client.get("/client-cancel-soldout/logs")
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
+    assert [item["action"] for item in data["items"]] == ["run", "delist"]
+    assert data["items"][0]["username"] == "tester2"
+    assert data["items"][0]["summary"] == {"products": [], "cancelled_orders": []}
+
 
 def test_run_records_ezdesk_session_expired_but_keeps_cancel_result(tmp_path):
-    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.db")
 
     search_result = [{
         "sno": 636699893, "order_sno": 1784397062398,
@@ -315,7 +362,7 @@ def test_run_records_ezdesk_session_expired_but_keeps_cancel_result(tmp_path):
 
 
 def test_run_records_cancel_failure_and_continues(tmp_path):
-    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.db")
 
     search_result = [{
         "sno": 636699893, "order_sno": 1784397062398,
@@ -354,7 +401,7 @@ def test_run_records_cancel_failure_and_continues(tmp_path):
 
 
 def test_run_pending_count_ezadmin_session_expired_is_reported(tmp_path):
-    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.xlsx")
+    client, _get_db, _keep_alive = _make_client(tmp_path / "missing.db")
 
     search_result = [{
         "sno": 636699893, "order_sno": 1784397062398,

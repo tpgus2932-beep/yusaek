@@ -95,7 +95,7 @@ const ClientCancelSoldOutPage = () => {
   const toPayloadProducts = () =>
     products.map((p) => ({
       name: p.name,
-      options: p.options.map((o) => ({ code: o.code, product_id: o.product_id })),
+      options: p.options.map((o) => ({ code: o.code, product_id: o.product_id, label: o.label })),
     }));
 
   const handleRun = async () => {
