@@ -2,7 +2,7 @@ import asyncio
 import sqlite3
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -406,3 +406,91 @@ def test_run_scheduled_attribute_skips_when_already_run_today():
     )
     assert hasattr(router, "run_scheduled")
     asyncio.run(router.run_scheduled(force=False))  # 네트워크 호출 없이 즉시 반환돼야 함
+
+
+def _sms_row(content: str, input_time: str, msg_type: str = "you"):
+    return {"msg_type": msg_type, "message": content, "crdate": input_time}
+
+
+def test_new_reply_after_lost_response_does_not_hide_copy_order_button():
+    """미수령 응대(주문복사 버튼 활성화) 후 고객에게서 새 답장이 오면 응대 버튼은
+    다시 뜨되(response_sent_at 초기화), 이미 활성화된 주문복사 버튼(isLostResponse)은
+    계속 보여야 한다 - 주문복사가 실제로 완료되기 전까지는 사라지면 안 된다."""
+    client, get_db, _keep_alive = _make_client()
+    conn = get_db()
+    sync_anomalies(conn, {"999": _sample()})
+    conn.close()
+    anomaly_id = client.get("/delivery-anomaly/list").json()["items"][0]["id"]
+
+    with patch("api.delivery_anomaly_routes.EzAdminClient.send_sms", new=AsyncMock(return_value={"ok": True})):
+        client.post(f"/delivery-anomaly/{anomaly_id}/respond-lost")
+
+    items = client.get("/delivery-anomaly/list").json()["items"]
+    assert items[0]["isLostResponse"] is True
+    assert items[0]["responseSentAt"] is not None
+
+    router = build_delivery_anomaly_router(
+        get_current_user=lambda: "tester",
+        get_db=get_db,
+        get_setting=lambda key: None,
+        set_setting=lambda key, value: None,
+    )
+    new_reply_time = (datetime.now(_KST) + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    with patch(
+        "api.delivery_anomaly_routes.EzAdminClient.sms_chat_detail",
+        new=AsyncMock(return_value={"list": [_sms_row("그래도 다시 보내주세요", new_reply_time)]}),
+    ):
+        conn = get_db()
+        asyncio.run(router.check_confirm_replies(conn))
+        conn.close()
+
+    items = client.get("/delivery-anomaly/list").json()["items"]
+    assert items[0]["responseSentAt"] is None  # 응대 버튼은 새 답장으로 다시 활성화됨
+    assert items[0]["isLostResponse"] is True  # 주문복사 버튼은 계속 보여야 함
+    assert items[0]["orderCopiedAt"] is None
+
+
+def test_ever_lost_response_backfilled_for_rows_from_before_the_column_existed():
+    """ever_lost_response 컬럼 추가 전에 이미 미수령 응대를 보낸 행은, 마이그레이션 시점에
+    response_text로부터 소급 적용되어 주문복사 버튼이 갑자기 사라지지 않아야 한다."""
+    get_db, keep_alive = _make_db_factory()
+    conn = get_db()
+    conn.execute(
+        """
+        CREATE TABLE delivery_anomalies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice_no TEXT NOT NULL UNIQUE,
+            order_no TEXT NOT NULL DEFAULT '',
+            product_name TEXT NOT NULL DEFAULT '',
+            option_info TEXT NOT NULL DEFAULT '',
+            phone TEXT NOT NULL DEFAULT '',
+            sent_date TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT '',
+            location TEXT NOT NULL DEFAULT '',
+            scan_date TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            detected_at TEXT NOT NULL,
+            confirm_sent_at TEXT NOT NULL DEFAULT '',
+            confirm_reply TEXT NOT NULL DEFAULT '',
+            confirm_reply_at TEXT NOT NULL DEFAULT '',
+            response_sent_at TEXT NOT NULL DEFAULT '',
+            response_text TEXT NOT NULL DEFAULT '',
+            order_copied_at TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    from services.delivery_anomaly_logic import LOST_PACKAGE_MESSAGE
+    conn.execute(
+        "INSERT INTO delivery_anomalies (invoice_no, detected_at, response_sent_at, response_text) "
+        "VALUES ('999', '2026-07-01T00:00:00', '2026-07-01T00:00:00', ?)",
+        (LOST_PACKAGE_MESSAGE,),
+    )
+    conn.commit()
+    conn.close()
+
+    init_delivery_anomaly_tables(get_db)  # ever_lost_response 컬럼을 추가하며 소급 적용
+
+    conn = get_db()
+    row = conn.execute("SELECT ever_lost_response FROM delivery_anomalies WHERE invoice_no = '999'").fetchone()
+    conn.close()
+    assert row["ever_lost_response"] == 1

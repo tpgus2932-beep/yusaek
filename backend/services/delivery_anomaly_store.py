@@ -2,16 +2,21 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from services.delivery_anomaly_logic import LOST_PACKAGE_MESSAGE
+
 _KST = timezone(timedelta(hours=9))
 
 
-def _ensure_column(get_db, table: str, column: str, ddl: str) -> None:
+def _ensure_column(get_db, table: str, column: str, ddl: str) -> bool:
+    """column을 추가한다. 이번 호출에서 실제로 새로 추가했으면 True를 반환한다."""
     conn = get_db()
     cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
-    if column not in cols:
+    added = column not in cols
+    if added:
         conn.execute(ddl)
         conn.commit()
     conn.close()
+    return added
 
 
 def init_delivery_anomaly_tables(get_db) -> None:
@@ -52,6 +57,24 @@ def init_delivery_anomaly_tables(get_db) -> None:
     # 미수령 응대 후 EZAdmin CS창에서 주문복사(재출고용)를 실행했는지 여부
     _ensure_column(get_db, "delivery_anomalies", "order_copied_at",
                    "ALTER TABLE delivery_anomalies ADD COLUMN order_copied_at TEXT NOT NULL DEFAULT ''")
+    # 미수령 응대를 한 번이라도 보냈는지 여부 - response_text/response_sent_at은
+    # 새 답장이 오면 응대 버튼을 다시 띄우기 위해 초기화되지만, 그와 별개로
+    # 주문복사 버튼은 한 번 활성화되면 주문복사가 완료될 때까지 계속 보여야 하므로
+    # 초기화되지 않는 별도 플래그로 추적한다
+    just_added_ever_lost = _ensure_column(
+        get_db, "delivery_anomalies", "ever_lost_response",
+        "ALTER TABLE delivery_anomalies ADD COLUMN ever_lost_response INTEGER NOT NULL DEFAULT 0",
+    )
+    if just_added_ever_lost:
+        # 이미 미수령 응대를 보내둔 기존 행은 새 플래그가 없어 주문복사 버튼이
+        # 갑자기 사라지지 않도록, 배포 시점에 한 번만 소급 적용한다
+        conn = get_db()
+        conn.execute(
+            "UPDATE delivery_anomalies SET ever_lost_response = 1 WHERE response_text = ?",
+            (LOST_PACKAGE_MESSAGE,),
+        )
+        conn.commit()
+        conn.close()
 
 
 def sync_anomalies(conn, computed: dict[str, dict]) -> None:

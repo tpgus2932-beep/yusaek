@@ -69,7 +69,7 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
                 },
             )
             res.raise_for_status()
-        token = res.json().get("token")
+        token = res.json().get("access_token") or res.json().get("token")
         if not token:
             raise HTTPException(status_code=502, detail="에이블리 로그인 실패: 토큰 없음")
         return token
@@ -190,7 +190,7 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
                     "confirmReplyAt": r["confirm_reply_at"] or None,
                     "responseSentAt": r["response_sent_at"] or None,
                     "responseText": r["response_text"] or None,
-                    "isLostResponse": (r["response_text"] or None) == LOST_PACKAGE_MESSAGE,
+                    "isLostResponse": bool(r["ever_lost_response"]),
                     "orderCopiedAt": r["order_copied_at"] or None,
                 }
                 for r in rows
@@ -245,10 +245,17 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
 
         sent_at = datetime.now(_KST).isoformat()
         conn = get_db()
-        conn.execute(
-            "UPDATE delivery_anomalies SET response_sent_at = ?, response_text = ? WHERE id = ?",
-            (sent_at, msg, anomaly_id),
-        )
+        if msg == LOST_PACKAGE_MESSAGE:
+            conn.execute(
+                "UPDATE delivery_anomalies SET response_sent_at = ?, response_text = ?, ever_lost_response = 1 "
+                "WHERE id = ?",
+                (sent_at, msg, anomaly_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE delivery_anomalies SET response_sent_at = ?, response_text = ? WHERE id = ?",
+                (sent_at, msg, anomaly_id),
+            )
         conn.commit()
         conn.close()
         return {"ok": True, "responseSentAt": sent_at}
@@ -474,4 +481,5 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
         return list_anomalies(user=user)
 
     router.run_scheduled = _run_check_core
+    router.check_confirm_replies = _check_confirm_replies
     return router
