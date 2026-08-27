@@ -222,6 +222,19 @@ class AblyClient:
         """취소/반품 요청 거부 처리."""
         return await self.request("PUT", f"/seller/order_cancels/{sno}/reject_request/", json={"refuse_cause_comment": refuse_cause_comment}, origin="my.a-bly.com")
 
+    async def confirm_order_items(self, sno_list: list[int]) -> None:
+        """구매자 취소요청 승인(확정) 처리 (실제 브라우저 캡처로 확인).
+
+        order_cancels 목록의 order_items[].sno(주문상품 sno, cancel_sno나
+        order_sno와는 다름)를 넘겨야 한다.
+        """
+        response = await self.request(
+            "PUT", "/seller/order_items/request_confirm/",
+            json={"sno_list": sno_list},
+            origin="my.a-bly.com",
+        )
+        response.raise_for_status()
+
     async def search_order_items_by_goods_name(self, keyword: str, *, per_page: int = 100) -> list[dict]:
         """상품명으로 미발송(processing_status=2) 주문상품 전체 페이지 조회.
 

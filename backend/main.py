@@ -69,6 +69,7 @@ from api.return_processing_log_routes import build_return_processing_log_router
 from api.return_special_notes_routes import build_return_special_notes_router
 from api.delivery_anomaly_routes import build_delivery_anomaly_router
 from api.client_cancel_soldout_routes import build_client_cancel_soldout_router
+from api.post_shipment_cancel_stock_sms_routes import build_post_shipment_cancel_stock_sms_router
 from api.exchange_return_anomaly_routes import build_exchange_return_anomaly_router
 from api.return_anomaly_routes import build_return_anomaly_router
 from api.daily_checklist_routes import build_daily_checklist_router
@@ -1612,6 +1613,41 @@ app.include_router(
         get_setting=_get_setting,
         get_db=_get_shared_db,
         cost_base_path=WONBE_DB_PATH,
+    )
+)
+
+def _init_post_shipment_cancel_stock_review():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS post_shipment_cancel_stock_review (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            username TEXT NOT NULL,
+            cancel_sno TEXT NOT NULL UNIQUE,
+            order_sno TEXT NOT NULL DEFAULT '',
+            buyer_tel TEXT NOT NULL DEFAULT '',
+            product_names TEXT NOT NULL DEFAULT '[]',
+            action TEXT NOT NULL,
+            error TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_post_shipment_cancel_stock_review_created_at "
+        "ON post_shipment_cancel_stock_review(created_at DESC)"
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_post_shipment_cancel_stock_review()
+
+app.include_router(
+    build_post_shipment_cancel_stock_sms_router(
+        get_current_user=_get_current_user,
+        get_setting=_get_setting,
+        get_db=_get_shared_db,
     )
 )
 
