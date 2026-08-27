@@ -38,10 +38,8 @@ const ClientCancelSoldOutPage = () => {
       if (!res.ok || data?.ok === false) throw new Error(data?.detail || '검색에 실패했습니다.');
       const items = Array.isArray(data.items) ? data.items : [];
       setSearchResults(items);
-      // 기본값: 옵션 전부 선택된 상태로 시작 (전부 취소하고 싶은 경우가 대부분)
-      setCheckedCodes(
-        Object.fromEntries(items.map((item) => [item.name, new Set(item.options.map((o) => o.code))]))
-      );
+      // 기본값: 옵션 전부 선택 해제된 상태로 시작
+      setCheckedCodes(Object.fromEntries(items.map((item) => [item.name, new Set()])));
     } catch (err) {
       setSearchError(err.message || '검색에 실패했습니다.');
       setSearchResults([]);
