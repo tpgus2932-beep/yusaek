@@ -25,7 +25,8 @@ def _make_db_factory():
         "CREATE TABLE post_shipment_cancel_stock_review (id INTEGER PRIMARY KEY AUTOINCREMENT, "
         "created_at TEXT NOT NULL, username TEXT NOT NULL, cancel_sno TEXT NOT NULL UNIQUE, "
         "order_sno TEXT NOT NULL DEFAULT '', buyer_tel TEXT NOT NULL DEFAULT '', "
-        "product_names TEXT NOT NULL DEFAULT '[]', action TEXT NOT NULL, error TEXT)"
+        "product_names TEXT NOT NULL DEFAULT '[]', action TEXT NOT NULL, error TEXT, "
+        "reply_content TEXT NOT NULL DEFAULT '', reply_at TEXT NOT NULL DEFAULT '')"
     )
     keep_alive.commit()
 
@@ -312,3 +313,97 @@ def test_logs_endpoint_returns_recent_entries_newest_first():
     data = res.json()
     assert [item["cancel_sno"] for item in data["items"]] == ["1002", "1001"]
     assert data["items"][0]["product_names"] == ["B"]
+
+
+def test_check_replies_updates_reply_after_send_time():
+    client, _get_db, keep_alive = _make_client()
+    keep_alive.execute(
+        "INSERT INTO post_shipment_cancel_stock_review "
+        "(created_at, username, cancel_sno, order_sno, buyer_tel, product_names, action) "
+        "VALUES ('2026-08-01T10:00:00', 'tester', '1001', '5001', '010-1111-2222', '[\"A\"]', 'sms_sent')"
+    )
+    keep_alive.commit()
+
+    chat = {"list": [
+        {"msg_type": "me", "message": "취소 진행해드릴까요?", "crdate": "2026-08-01 10:00:00"},
+        {"msg_type": "you", "message": "네 취소해주세요", "crdate": "2026-08-01 11:00:00"},
+    ]}
+
+    with patch(
+        "api.post_shipment_cancel_stock_sms_routes.EzAdminClient.sms_chat_detail",
+        new=AsyncMock(return_value=chat),
+    ) as mock_chat:
+        res = client.post("/post-shipment-cancel-stock-sms/check-replies")
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
+    assert data["checked"] == 1
+    assert data["need_ezdesk_session"] is False
+    assert data["updated"] == [{
+        "cancel_sno": "1001", "reply_content": "네 취소해주세요", "reply_at": "2026-08-01T11:00:00",
+    }]
+    mock_chat.assert_awaited_once_with("010-1111-2222", "15339827")
+
+    row = keep_alive.execute(
+        "SELECT reply_content, reply_at FROM post_shipment_cancel_stock_review WHERE cancel_sno = '1001'"
+    ).fetchone()
+    assert row["reply_content"] == "네 취소해주세요"
+    assert row["reply_at"] == "2026-08-01T11:00:00"
+
+
+def test_check_replies_ignores_replies_before_send_time():
+    client, _get_db, keep_alive = _make_client()
+    keep_alive.execute(
+        "INSERT INTO post_shipment_cancel_stock_review "
+        "(created_at, username, cancel_sno, order_sno, buyer_tel, product_names, action) "
+        "VALUES ('2026-08-01T10:00:00', 'tester', '1001', '5001', '010-1111-2222', '[\"A\"]', 'sms_sent')"
+    )
+    keep_alive.commit()
+
+    chat = {"list": [
+        {"msg_type": "you", "message": "이전 문의", "crdate": "2026-08-01 09:00:00"},
+    ]}
+
+    with patch(
+        "api.post_shipment_cancel_stock_sms_routes.EzAdminClient.sms_chat_detail",
+        new=AsyncMock(return_value=chat),
+    ):
+        res = client.post("/post-shipment-cancel-stock-sms/check-replies")
+
+    data = res.json()
+    assert data["updated"] == []
+    row = keep_alive.execute(
+        "SELECT reply_content FROM post_shipment_cancel_stock_review WHERE cancel_sno = '1001'"
+    ).fetchone()
+    assert row["reply_content"] == ""
+
+
+def test_check_replies_session_expired_stops_and_reports_flag():
+    client, _get_db, keep_alive = _make_client()
+    keep_alive.execute(
+        "INSERT INTO post_shipment_cancel_stock_review "
+        "(created_at, username, cancel_sno, order_sno, buyer_tel, product_names, action) "
+        "VALUES ('2026-08-01T10:00:00', 'tester', '1001', '5001', '010-1111-2222', '[\"A\"]', 'sms_sent')"
+    )
+    keep_alive.commit()
+
+    with patch(
+        "api.post_shipment_cancel_stock_sms_routes.EzAdminClient.sms_chat_detail",
+        new=AsyncMock(side_effect=EzDeskSessionExpired()),
+    ):
+        res = client.post("/post-shipment-cancel-stock-sms/check-replies")
+
+    data = res.json()
+    assert data["ok"] is True
+    assert data["need_ezdesk_session"] is True
+    assert data["updated"] == []
+
+
+def test_check_replies_no_sent_rows_returns_zero():
+    client, _get_db, _keep_alive = _make_client()
+
+    res = client.post("/post-shipment-cancel-stock-sms/check-replies")
+
+    data = res.json()
+    assert data == {"ok": True, "updated": [], "checked": 0, "need_ezdesk_session": False}

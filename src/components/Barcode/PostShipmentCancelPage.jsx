@@ -85,6 +85,11 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
   const [stockSmsPreview, setStockSmsPreview] = useState(null);
   const [stockSmsResult, setStockSmsResult] = useState(null);
 
+  const [stockSmsLogs, setStockSmsLogs] = useState([]);
+  const [stockSmsLogsLoading, setStockSmsLogsLoading] = useState(false);
+  const [repliesChecking, setRepliesChecking] = useState(false);
+  const [repliesMessage, setRepliesMessage] = useState("");
+
   useEffect(() => {
     const pool = Array.from({ length: 3 }, () => new Audio("/sounds/ice.wav"));
     soundRef.current = pool;
@@ -325,6 +330,26 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
     }
   }, [openEzadminModal]);
 
+  // 발송내역(문자 보냈던 리스트) - action='sms_sent' 건만 보여준다.
+  const loadStockSmsLogs = useCallback(async () => {
+    setStockSmsLogsLoading(true);
+    try {
+      const res = await fetch(`${API}/post-shipment-cancel-stock-sms/logs?limit=200`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "발송내역 조회 실패");
+      setStockSmsLogs((data.items ?? []).filter((item) => item.action === "sms_sent"));
+    } catch (err) {
+      setRepliesMessage(err.message || "발송내역 조회 실패");
+    } finally {
+      setStockSmsLogsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadStockSmsLogs();
+  }, [loadStockSmsLogs]);
+
   const handleSendStockSms = useCallback(async () => {
     if (!stockSmsPreview) return;
     setStockSmsSending(true);
@@ -346,12 +371,40 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
       setStockSmsMessage(
         `문자발송 ${data.sms_sent.length}건 · 취소완료처리 ${data.completed.length}건 · 실패 ${data.failed.length}건`
       );
+      loadStockSmsLogs();
     } catch (err) {
       setStockSmsMessage(err.message || "문자 보내기 실패");
     } finally {
       setStockSmsSending(false);
     }
-  }, [stockSmsPreview]);
+  }, [stockSmsPreview, loadStockSmsLogs]);
+
+  // 수신확인 버튼 - 문자 보냈던 리스트를 이지데스크에서 다시 조회해 수신된 답장을 긁어온다.
+  const handleCheckReplies = useCallback(async () => {
+    setRepliesChecking(true);
+    setRepliesMessage("");
+    try {
+      const res = await fetch(`${API}/post-shipment-cancel-stock-sms/check-replies`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "수신확인 실패");
+      setRepliesMessage(
+        data.need_ezdesk_session
+          ? "EZDesk 세션이 만료되었습니다. 세션을 다시 붙여넣고 수신확인을 다시 눌러주세요."
+          : data.checked === 0
+          ? "확인할 발송내역이 없습니다."
+          : `수신확인 완료: ${data.checked}건 중 새 답장 ${data.updated.length}건`
+      );
+      await loadStockSmsLogs();
+    } catch (err) {
+      setRepliesMessage(err.message || "수신확인 실패");
+    } finally {
+      setRepliesChecking(false);
+    }
+  }, [loadStockSmsLogs]);
 
   const handleScan = () => {
     const value = scanText.trim();
@@ -770,6 +823,66 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
               </table>
             </div>
           )}
+        </section>
+
+        <section className={pageStyles.card}>
+          <div className={pageStyles.cardHeader}>
+            <h3 className={pageStyles.cardTitle}>확인문자 발송내역 · 수신확인</h3>
+            <div className={pageStyles.headerActions}>
+              <span className={pageStyles.pill}>{stockSmsLogs.length}건</span>
+              <button className={pageStyles.primaryBtn} onClick={handleCheckReplies} disabled={repliesChecking || stockSmsLogsLoading}>
+                {repliesChecking ? "수신확인 중..." : "수신확인"}
+              </button>
+            </div>
+          </div>
+          <p className={pageStyles.subtitle}>
+            위에서 발송한 "재고있는 취소주문 확인문자" 목록입니다. "수신확인"을 누르면 이지데스크에서
+            각 연락처의 대화 내역을 다시 조회해, 문자 발송 이후 온 고객 답장을 가져와 표시합니다.
+          </p>
+
+          {repliesMessage && (
+            <div
+              className={pageStyles.statusMsg}
+              style={{
+                borderColor: repliesMessage.includes("실패") || repliesMessage.includes("만료") ? "rgba(220,53,69,0.4)" : "rgba(34,197,94,0.4)",
+                backgroundColor: repliesMessage.includes("실패") || repliesMessage.includes("만료") ? "rgba(220,53,69,0.07)" : "rgba(34,197,94,0.07)",
+              }}
+            >
+              <strong>{repliesMessage}</strong>
+            </div>
+          )}
+
+          <div className={pageStyles.tableWrap}>
+            <table className={pageStyles.table}>
+              <thead>
+                <tr>
+                  <th>발송시각</th>
+                  <th>주문번호</th>
+                  <th>연락처</th>
+                  <th>상품명</th>
+                  <th>고객 답장</th>
+                  <th>답장시각</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stockSmsLogs.map((row) => (
+                  <tr key={row.id}>
+                    <td>{row.created_at}</td>
+                    <td>{row.order_sno}</td>
+                    <td>{row.buyer_tel}</td>
+                    <td>{(row.product_names || []).join(", ")}</td>
+                    <td style={{ whiteSpace: "pre-wrap" }}>{row.reply_content || "-"}</td>
+                    <td>{row.reply_at || "-"}</td>
+                  </tr>
+                ))}
+                {stockSmsLogs.length === 0 && !stockSmsLogsLoading && (
+                  <tr>
+                    <td colSpan={6}>발송된 확인문자가 없습니다.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </section>
       </div>
 

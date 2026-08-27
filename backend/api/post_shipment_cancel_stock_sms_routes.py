@@ -7,7 +7,14 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 from sdk import config as ez_config
 from sdk.ably import AblyClient
-from sdk.ezadmin import EzAdminClient, EzAdminSessionExpired, EzDeskSessionExpired
+from sdk.ezadmin import (
+    EzAdminClient,
+    EzAdminSessionExpired,
+    EzDeskSessionExpired,
+    extract_sms_rows,
+    normalize_sms_row,
+)
+from services.delivery_anomaly_logic import latest_reply_after, parse_ezdesk_time
 
 _TEMPLATE_NAME = "배송후취소 확인문자"
 _LOOKBACK_DAYS = 30
@@ -227,7 +234,8 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
         conn = get_db()
         try:
             rows = conn.execute(
-                "SELECT id, created_at, username, cancel_sno, order_sno, buyer_tel, product_names, action, error "
+                "SELECT id, created_at, username, cancel_sno, order_sno, buyer_tel, product_names, "
+                "action, error, reply_content, reply_at "
                 "FROM post_shipment_cancel_stock_review ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -242,5 +250,60 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
                 item["product_names"] = []
             items.append(item)
         return {"ok": True, "items": items}
+
+    @router.post("/check-replies")
+    async def check_replies(user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT cancel_sno, buyer_tel, created_at FROM post_shipment_cancel_stock_review "
+                "WHERE action = 'sms_sent' ORDER BY id DESC"
+            ).fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return {"ok": True, "updated": [], "checked": 0, "need_ezdesk_session": False}
+
+        ez = EzAdminClient(get_setting)
+        updated: list[dict] = []
+        need_ezdesk_session = False
+        conn = get_db()
+        try:
+            for row in rows:
+                phone = str(row["buyer_tel"] or "").strip()
+                since = parse_ezdesk_time(row["created_at"])
+                if not phone or since is None:
+                    continue
+                try:
+                    chat = await ez.sms_chat_detail(phone, ez_config.EZDESK_SMS_SENDER)
+                except EzDeskSessionExpired:
+                    need_ezdesk_session = True
+                    break
+                except Exception:
+                    continue
+                normalized = [normalize_sms_row(r) for r in extract_sms_rows(chat)]
+                reply = latest_reply_after(normalized, since)
+                if not reply:
+                    continue
+                conn.execute(
+                    "UPDATE post_shipment_cancel_stock_review SET reply_content = ?, reply_at = ? "
+                    "WHERE cancel_sno = ?",
+                    (reply["content"], reply["input_time"], row["cancel_sno"]),
+                )
+                updated.append({
+                    "cancel_sno": row["cancel_sno"],
+                    "reply_content": reply["content"],
+                    "reply_at": reply["input_time"],
+                })
+            conn.commit()
+        finally:
+            conn.close()
+
+        return {
+            "ok": True,
+            "updated": updated,
+            "checked": len(rows),
+            "need_ezdesk_session": need_ezdesk_session,
+        }
 
     return router

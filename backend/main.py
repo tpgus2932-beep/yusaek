@@ -1687,7 +1687,22 @@ def _init_post_shipment_cancel_stock_review():
     conn.close()
 
 
+def _ensure_post_shipment_cancel_stock_review_column(column: str, ddl: str):
+    conn = _get_shared_db()
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(post_shipment_cancel_stock_review)").fetchall()]
+    if column not in cols:
+        conn.execute(ddl)
+        conn.commit()
+    conn.close()
+
+
 _init_post_shipment_cancel_stock_review()
+_ensure_post_shipment_cancel_stock_review_column(
+    "reply_content", "ALTER TABLE post_shipment_cancel_stock_review ADD COLUMN reply_content TEXT NOT NULL DEFAULT ''"
+)
+_ensure_post_shipment_cancel_stock_review_column(
+    "reply_at", "ALTER TABLE post_shipment_cancel_stock_review ADD COLUMN reply_at TEXT NOT NULL DEFAULT ''"
+)
 
 app.include_router(
     build_post_shipment_cancel_stock_sms_router(
