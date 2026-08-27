@@ -126,6 +126,15 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
         for col, col_def in alert_column_defs.items():
             if col not in alert_cols:
                 conn.execute(f"ALTER TABLE misong_alerts ADD COLUMN {col} {col_def}")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS misong_move_locks (
+                work_date  TEXT PRIMARY KEY,
+                locked_at  TEXT NOT NULL,
+                locked_by  TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
         conn.commit()
 
     # ── 헬퍼 ──────────────────────────────────────────────────────────────────
@@ -632,6 +641,17 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
         conn = get_db()
         try:
             _init(conn)
+
+            if today:
+                lock = conn.execute(
+                    "SELECT locked_at, locked_by FROM misong_move_locks WHERE work_date = ?", (today,)
+                ).fetchone()
+                if lock:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"{today} 날짜는 이미 미송관리로 이동 처리되었습니다 ({lock['locked_by']}, {lock['locked_at']}). 다시 실행하려면 잠금을 해제하세요.",
+                    )
+
             new_alerts = []
             now = _now()
 
@@ -817,6 +837,12 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
                                 (new_f, existing["id"]),
                             )
 
+            if today:
+                conn.execute(
+                    "INSERT OR IGNORE INTO misong_move_locks (work_date, locked_at, locked_by) VALUES (?, ?, ?)",
+                    (today, now, user),
+                )
+
             conn.commit()
 
             items = _fetch_item_rows(conn, today=today)
@@ -830,6 +856,38 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
                 "alerts": [_alert_row_to_dict(r) for r in alerts],
                 "new_alert_count": len(new_alerts),
             }
+        finally:
+            conn.close()
+
+    # ── 날짜별 미송관리 이동 잠금 조회/해제 ──────────────────────────────────
+    @router.get("/move-lock")
+    def get_move_lock(date: str = "", user: str = Depends(get_current_user)):
+        date = (date or "").strip()
+        if not date:
+            return {"locked": False}
+        conn = get_db()
+        try:
+            _init(conn)
+            row = conn.execute(
+                "SELECT locked_at, locked_by FROM misong_move_locks WHERE work_date = ?", (date,)
+            ).fetchone()
+            if not row:
+                return {"locked": False}
+            return {"locked": True, "locked_at": row["locked_at"], "locked_by": row["locked_by"]}
+        finally:
+            conn.close()
+
+    @router.delete("/move-lock")
+    def delete_move_lock(date: str = "", user: str = Depends(get_current_user)):
+        date = (date or "").strip()
+        if not date:
+            raise HTTPException(status_code=400, detail="date가 필요합니다.")
+        conn = get_db()
+        try:
+            _init(conn)
+            conn.execute("DELETE FROM misong_move_locks WHERE work_date = ?", (date,))
+            conn.commit()
+            return {"ok": True}
         finally:
             conn.close()
 
