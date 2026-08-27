@@ -89,6 +89,7 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
   const [stockSmsLogsLoading, setStockSmsLogsLoading] = useState(false);
   const [repliesChecking, setRepliesChecking] = useState(false);
   const [repliesMessage, setRepliesMessage] = useState("");
+  const [closingSno, setClosingSno] = useState(null);
 
   useEffect(() => {
     const pool = Array.from({ length: 3 }, () => new Audio("/sounds/ice.wav"));
@@ -330,7 +331,8 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
     }
   }, [openEzadminModal]);
 
-  // 발송내역(문자 보냈던 리스트) - action='sms_sent' 건만 보여준다.
+  // 발송내역(문자 보냈던 리스트) - action='sms_sent' 이면서 완료 처리 안 된 건만 보여준다.
+  // "완료" 버튼을 누르기 전까지는 로컬 DB에 그대로 남아 목록에서 지워지지 않는다.
   const loadStockSmsLogs = useCallback(async () => {
     setStockSmsLogsLoading(true);
     try {
@@ -338,7 +340,7 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "발송내역 조회 실패");
-      setStockSmsLogs((data.items ?? []).filter((item) => item.action === "sms_sent"));
+      setStockSmsLogs((data.items ?? []).filter((item) => item.action === "sms_sent" && !item.closed_at));
     } catch (err) {
       setRepliesMessage(err.message || "발송내역 조회 실패");
     } finally {
@@ -405,6 +407,27 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
       setRepliesChecking(false);
     }
   }, [loadStockSmsLogs]);
+
+  // 완료 버튼 - 이 버튼을 누르기 전까지 발송내역은 목록에서 지워지지 않는다.
+  const handleCloseSentSms = useCallback(async (cancelSno) => {
+    setClosingSno(cancelSno);
+    setRepliesMessage("");
+    try {
+      const res = await fetch(`${API}/post-shipment-cancel-stock-sms/close`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ cancel_sno: cancelSno }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "완료 처리 실패");
+      setStockSmsLogs((prev) => prev.filter((row) => row.cancel_sno !== cancelSno));
+    } catch (err) {
+      setRepliesMessage(err.message || "완료 처리 실패");
+    } finally {
+      setClosingSno(null);
+    }
+  }, []);
 
   const handleScan = () => {
     const value = scanText.trim();
@@ -838,6 +861,7 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
           <p className={pageStyles.subtitle}>
             위에서 발송한 "재고있는 취소주문 확인문자" 목록입니다. "수신확인"을 누르면 이지데스크에서
             각 연락처의 대화 내역을 다시 조회해, 문자 발송 이후 온 고객 답장을 가져와 표시합니다.
+            이 목록은 로컬 DB에 저장되며, 각 건마다 "완료"를 누르기 전까지는 지워지지 않습니다.
           </p>
 
           {repliesMessage && (
@@ -862,6 +886,7 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                   <th>상품명</th>
                   <th>고객 답장</th>
                   <th>답장시각</th>
+                  <th>완료</th>
                 </tr>
               </thead>
               <tbody>
@@ -873,11 +898,20 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                     <td>{(row.product_names || []).join(", ")}</td>
                     <td style={{ whiteSpace: "pre-wrap" }}>{row.reply_content || "-"}</td>
                     <td>{row.reply_at || "-"}</td>
+                    <td>
+                      <button
+                        className={pageStyles.secondaryBtn}
+                        onClick={() => handleCloseSentSms(row.cancel_sno)}
+                        disabled={closingSno === row.cancel_sno}
+                      >
+                        {closingSno === row.cancel_sno ? "처리 중..." : "완료"}
+                      </button>
+                    </td>
                   </tr>
                 ))}
                 {stockSmsLogs.length === 0 && !stockSmsLogsLoading && (
                   <tr>
-                    <td colSpan={6}>발송된 확인문자가 없습니다.</td>
+                    <td colSpan={7}>발송된 확인문자가 없습니다.</td>
                   </tr>
                 )}
               </tbody>

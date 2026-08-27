@@ -235,7 +235,7 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
         try:
             rows = conn.execute(
                 "SELECT id, created_at, username, cancel_sno, order_sno, buyer_tel, product_names, "
-                "action, error, reply_content, reply_at "
+                "action, error, reply_content, reply_at, closed_at "
                 "FROM post_shipment_cancel_stock_review ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -257,7 +257,7 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
         try:
             rows = conn.execute(
                 "SELECT cancel_sno, buyer_tel, created_at FROM post_shipment_cancel_stock_review "
-                "WHERE action = 'sms_sent' ORDER BY id DESC"
+                "WHERE action = 'sms_sent' AND closed_at = '' ORDER BY id DESC"
             ).fetchall()
         finally:
             conn.close()
@@ -305,5 +305,21 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
             "checked": len(rows),
             "need_ezdesk_session": need_ezdesk_session,
         }
+
+    @router.post("/close")
+    def close(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        cancel_sno = str(payload.get("cancel_sno") or "").strip()
+        if not cancel_sno:
+            raise HTTPException(status_code=400, detail="cancel_sno is required")
+        conn = get_db()
+        try:
+            conn.execute(
+                "UPDATE post_shipment_cancel_stock_review SET closed_at = ? WHERE cancel_sno = ?",
+                (datetime.now().isoformat(), cancel_sno),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "cancel_sno": cancel_sno}
 
     return router
