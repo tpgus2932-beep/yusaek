@@ -48,6 +48,10 @@ const WorklogPage = ({ currentUser }) => {
     const [notesInput, setNotesInput] = useState('');
     const [completing, setCompleting] = useState(false);
 
+    const [expandedComments, setExpandedComments] = useState(new Set());
+    const [commentsCache, setCommentsCache] = useState({});
+    const [commentInput, setCommentInput] = useState({});
+
     const authHeaders = getAuthHeaders();
     const isToday = selectedDate === todayStr;
 
@@ -129,6 +133,133 @@ const WorklogPage = ({ currentUser }) => {
         }
     };
 
+    const loadComments = async (entryId) => {
+        try {
+            const res = await fetch(`${API}/worklog/entries/${entryId}/comments`, { headers: authHeaders });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json();
+            setCommentsCache((prev) => ({ ...prev, [entryId]: data.comments || [] }));
+        } catch {
+            setCommentsCache((prev) => ({ ...prev, [entryId]: prev[entryId] || [] }));
+        }
+    };
+
+    const toggleComments = (entryId) => {
+        setExpandedComments((prev) => {
+            const next = new Set(prev);
+            if (next.has(entryId)) {
+                next.delete(entryId);
+            } else {
+                next.add(entryId);
+                if (!commentsCache[entryId]) loadComments(entryId);
+            }
+            return next;
+        });
+    };
+
+    const handleAddComment = async (entryId) => {
+        const content = (commentInput[entryId] || '').trim();
+        if (!content) return;
+        try {
+            const res = await fetch(`${API}/worklog/entries/${entryId}/comments`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...authHeaders },
+                body: JSON.stringify({ content }),
+            });
+            if (handleUnauthorized(res)) return;
+            const data = await res.json();
+            if (res.ok && data.comment) {
+                setCommentsCache((prev) => ({ ...prev, [entryId]: [...(prev[entryId] || []), data.comment] }));
+                setCommentInput((prev) => ({ ...prev, [entryId]: '' }));
+            } else {
+                setError(data.detail || '코멘트 등록에 실패했습니다.');
+            }
+        } catch {
+            setError('코멘트 등록에 실패했습니다.');
+        }
+    };
+
+    const handleDeleteComment = async (entryId, commentId) => {
+        try {
+            const res = await fetch(`${API}/worklog/entries/${entryId}/comments/${commentId}`, {
+                method: 'DELETE',
+                headers: authHeaders,
+            });
+            if (handleUnauthorized(res)) return;
+            if (res.ok) {
+                setCommentsCache((prev) => ({
+                    ...prev,
+                    [entryId]: (prev[entryId] || []).filter((c) => c.id !== commentId),
+                }));
+            }
+        } catch {
+            setError('코멘트 삭제에 실패했습니다.');
+        }
+    };
+
+    const renderComments = (entryId) => {
+        const isExpanded = expandedComments.has(entryId);
+        const comments = commentsCache[entryId] || [];
+        return (
+            <div className={styles.commentBlock}>
+                <button
+                    type="button"
+                    className={styles.commentToggleBtn}
+                    onClick={() => toggleComments(entryId)}
+                >
+                    {isExpanded ? '코멘트 접기' : `코멘트${comments.length ? ` (${comments.length})` : ''}`}
+                </button>
+                {isExpanded && (
+                    <div className={styles.commentSection}>
+                        {comments.length === 0 && (
+                            <div className={styles.commentEmpty}>아직 코멘트가 없습니다.</div>
+                        )}
+                        {comments.map((c) => (
+                            <div key={c.id} className={styles.commentItem}>
+                                <div className={styles.commentMeta}>
+                                    <span className={styles.commentAuthor}>{c.authorDisplay || c.author}</span>
+                                    <span className={styles.commentTime}>{fmtTime(c.createdAt)}</span>
+                                    {c.author === currentUser && (
+                                        <button
+                                            type="button"
+                                            className={styles.commentDeleteBtn}
+                                            onClick={() => handleDeleteComment(entryId, c.id)}
+                                        >
+                                            삭제
+                                        </button>
+                                    )}
+                                </div>
+                                <div className={styles.commentText}>{c.content}</div>
+                            </div>
+                        ))}
+                        <div className={styles.commentInputRow}>
+                            <textarea
+                                rows={1}
+                                className={styles.commentInput}
+                                placeholder="코멘트를 남겨주세요 (Shift+Enter로 줄바꿈)"
+                                value={commentInput[entryId] || ''}
+                                onChange={(e) => setCommentInput((prev) => ({ ...prev, [entryId]: e.target.value }))}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && !e.shiftKey) {
+                                        e.preventDefault();
+                                        handleAddComment(entryId);
+                                    }
+                                }}
+                            />
+                            <button
+                                type="button"
+                                className={styles.commentSubmitBtn}
+                                onClick={() => handleAddComment(entryId)}
+                            >
+                                등록
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    };
+
     const renderEntryRow = (e) => (
         <div key={e.id} className={styles.entryRow}>
             <div className={styles.entryTop}>
@@ -141,6 +272,7 @@ const WorklogPage = ({ currentUser }) => {
                 {fmtTime(e.startedAt)} ~ {e.status === 'done' ? fmtTime(e.endedAt) : '진행중'}
             </div>
             {e.notes && <div className={styles.entryNotes}>특이사항: {e.notes}</div>}
+            {renderComments(e.id)}
         </div>
     );
 
@@ -305,6 +437,7 @@ const WorklogPage = ({ currentUser }) => {
                                                             완료
                                                         </button>
                                                     )}
+                                                    {renderComments(entry.id)}
                                                 </div>
                                             ))}
                                         </div>

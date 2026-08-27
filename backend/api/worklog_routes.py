@@ -28,6 +28,22 @@ def build_worklog_router(*, get_current_user, get_db, get_user_display):
             "createdAt": row["created_at"],
         }
 
+    def _row_to_comment(row) -> dict:
+        return {
+            "id": row["id"],
+            "entryId": row["entry_id"],
+            "author": row["author"],
+            "authorDisplay": get_user_display(row["author"]) or row["author"],
+            "content": row["content"],
+            "createdAt": row["created_at"],
+        }
+
+    def _get_entry_or_404(conn, entry_id: int):
+        row = conn.execute("SELECT * FROM worklog_entries WHERE id = ?", (entry_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="entry not found")
+        return row
+
     def _auto_complete_stale(conn) -> None:
         # started_at is always an ISO string with a fixed +09:00 offset, so
         # lexical comparison against another such string is safe.
@@ -116,5 +132,51 @@ def build_worklog_router(*, get_current_user, get_db, get_user_display):
         row = conn.execute("SELECT * FROM worklog_entries WHERE id = ?", (entry_id,)).fetchone()
         conn.close()
         return {"ok": True, "entry": _row_to_entry(row)}
+
+    @router.get("/entries/{entry_id}/comments")
+    def list_comments(entry_id: int, user: str = Depends(get_current_user)):
+        conn = get_db()
+        _get_entry_or_404(conn, entry_id)
+        rows = conn.execute(
+            "SELECT * FROM worklog_comments WHERE entry_id = ? ORDER BY created_at ASC",
+            (entry_id,),
+        ).fetchall()
+        conn.close()
+        return {"ok": True, "comments": [_row_to_comment(r) for r in rows]}
+
+    @router.post("/entries/{entry_id}/comments")
+    def add_comment(entry_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
+        content = (payload.get("content") or "").strip()
+        if not content:
+            raise HTTPException(status_code=400, detail="코멘트 내용을 입력해주세요.")
+
+        conn = get_db()
+        _get_entry_or_404(conn, entry_id)
+        now = _now()
+        cur = conn.execute(
+            "INSERT INTO worklog_comments (entry_id, author, content, created_at) VALUES (?, ?, ?, ?)",
+            (entry_id, user, content, now),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM worklog_comments WHERE id = ?", (cur.lastrowid,)).fetchone()
+        conn.close()
+        return {"ok": True, "comment": _row_to_comment(row)}
+
+    @router.delete("/entries/{entry_id}/comments/{comment_id}")
+    def delete_comment(entry_id: int, comment_id: int, user: str = Depends(get_current_user)):
+        conn = get_db()
+        row = conn.execute(
+            "SELECT * FROM worklog_comments WHERE id = ? AND entry_id = ?", (comment_id, entry_id)
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="comment not found")
+        if row["author"] != user:
+            conn.close()
+            raise HTTPException(status_code=403, detail="본인 코멘트만 삭제할 수 있습니다.")
+        conn.execute("DELETE FROM worklog_comments WHERE id = ?", (comment_id,))
+        conn.commit()
+        conn.close()
+        return {"ok": True}
 
     return router

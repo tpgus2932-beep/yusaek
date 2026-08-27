@@ -160,6 +160,23 @@
   gap: 0.5rem;
 }
 
+.activeList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.7rem;
+}
+
+.activeItem {
+  padding-top: 0.6rem;
+  border-top: 1px dashed var(--border-color);
+}
+
+.activeItem:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
 .taskInput {
   flex: 1;
   min-width: 0;
@@ -296,4 +313,112 @@
   font-size: 0.8rem;
   color: var(--text-primary);
   white-space: pre-wrap;
+}
+
+.commentBlock {
+  margin-top: 0.4rem;
+}
+
+.commentToggleBtn {
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+
+.commentToggleBtn:hover {
+  color: var(--text-primary);
+}
+
+.commentSection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+  padding-top: 0.45rem;
+  border-top: 1px dashed var(--border-color);
+}
+
+.commentEmpty {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.commentItem {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.6rem;
+}
+
+.commentMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.2rem;
+}
+
+.commentAuthor {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.commentTime {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}
+
+.commentDeleteBtn {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: #dc2626;
+  font-size: 0.7rem;
+  cursor: pointer;
+  padding: 0;
+}
+
+.commentText {
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+}
+
+.commentInputRow {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.commentInput {
+  flex: 1;
+  min-width: 0;
+  font-family: inherit;
+  font-size: 0.82rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.6rem;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  resize: vertical;
+  min-height: 2.2rem;
+  line-height: 1.4;
+}
+
+.commentSubmitBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
 }
