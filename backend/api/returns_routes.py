@@ -19,9 +19,11 @@ from fastapi.responses import FileResponse
 try:
     from sdk.ezadmin import EzAdminClient, EzAdminSessionExpired
     from sdk.ably import AblyClient
+    from sdk.zigzag import ZigzagClient, classify_return_charge_method
 except ModuleNotFoundError:  # package import in unit tests
     from backend.sdk.ezadmin import EzAdminClient, EzAdminSessionExpired
     from backend.sdk.ably import AblyClient
+    from backend.sdk.zigzag import ZigzagClient, classify_return_charge_method
 
 from api.wonbe_routes import load_wonbe_option_sno_map, _get_wonbe_db
 
@@ -460,22 +462,35 @@ def build_returns_router(
             text = text[:-2]
         return text
 
-    def _find_related_unscanned(df, order_key_col: str, order_keys: set, invoice_col: str, matched_invoices: set) -> list[dict]:
-        """같은 order_key(주문번호)를 가진, 아직 큐에 없는 다른 행들을 찾는다.
+    def _clean_tel(value) -> str:
+        """전화번호에서 숫자만 남긴다 (구분자/서식 차이에 영향 안 받도록)."""
+        if value is None:
+            return ""
+        try:
+            if pd.isna(value):
+                return ""
+        except (TypeError, ValueError):
+            pass
+        return "".join(ch for ch in str(value) if ch.isdigit())
 
-        반품/교환이 같은 주문번호로 여러 건 나눠 접수됐지만 물리적으로 한
+    def _find_related_unscanned(df, order_key_col: str, order_keys: set, invoice_col: str, matched_invoices: set, key_fn=_clean_sno) -> list[dict]:
+        """같은 매칭 키(전화번호 등)를 가진, 아직 큐에 없는 다른 행들을 찾는다.
+
+        반품/교환이 같은 구매자에게서 여러 건 나눠 접수됐지만 물리적으로 한
         번에 도착하는 경우, 하나 스캔했을 때 나머지도 같이 추가할지 물어볼
-        수 있도록 후보를 돌려준다. ``matched_invoices``는 이미 큐에 들어간
-        항목들의 ``match`` 값 집합 - 스캔된 물리적 바코드가 아니라 실제로
-        어떤 행이 큐에 반영됐는지로 판단해야 CJ/롯데 송장 ↔ 에이블리 송장
-        간 매핑 차이에 영향을 안 받는다.
+        수 있도록 후보를 돌려준다. 주문번호는 같은 구매자가 서로 다른
+        주문건으로 나눠 신청하는 경우를 못 잡기 때문에 전화번호(BUYER_TEL)
+        기준으로 묶는다. ``matched_invoices``는 이미 큐에 들어간 항목들의
+        ``match`` 값 집합 - 스캔된 물리적 바코드가 아니라 실제로 어떤 행이
+        큐에 반영됐는지로 판단해야 CJ/롯데 송장 ↔ 에이블리 송장 간 매핑
+        차이에 영향을 안 받는다.
         """
         if df is None or df.empty or not order_keys:
             return []
         related = []
         seen = set()
         for _, r in df.iterrows():
-            key = _clean_sno(r.get(order_key_col))
+            key = key_fn(r.get(order_key_col))
             if not key or key not in order_keys:
                 continue
             inv = r.get(invoice_col, "")
@@ -571,11 +586,33 @@ def build_returns_router(
         target = username or user
         conn = get_db()
         rows = conn.execute(
-            "SELECT id, updated_at FROM return_saved_snapshots WHERE username = ? ORDER BY id DESC LIMIT 3",
+            "SELECT id, name, updated_at FROM return_saved_snapshots WHERE username = ? ORDER BY id DESC LIMIT 3",
             (target,),
         ).fetchall()
         conn.close()
-        return {"ok": True, "items": [{"id": r["id"], "updated_at": r["updated_at"]} for r in rows]}
+        return {
+            "ok": True,
+            "items": [{"id": r["id"], "name": r["name"] or "", "updated_at": r["updated_at"]} for r in rows],
+        }
+
+    @router.patch("/returns/saves/{snapshot_id}")
+    def returns_save_rename(snapshot_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
+        name = (payload.get("name") or "").strip()[:40]
+        conn = get_db()
+        row = conn.execute(
+            "SELECT id FROM return_saved_snapshots WHERE id = ?",
+            (snapshot_id,),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="임시저장 기록을 찾을 수 없습니다.")
+        conn.execute(
+            "UPDATE return_saved_snapshots SET name = ? WHERE id = ?",
+            (name, snapshot_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "id": snapshot_id, "name": name}
 
     @router.get("/returns/saves-accounts")
     def returns_saves_accounts(user: str = Depends(get_current_user)):
@@ -760,7 +797,7 @@ def build_returns_router(
                 },
             )
             res.raise_for_status()
-        token = res.json().get("token")
+        token = res.json().get("access_token") or res.json().get("token")
         if not token:
             raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
         return token
@@ -1070,6 +1107,7 @@ def build_returns_router(
                 # 원래 옵션 기준으로 해야 하므로 둘을 분리해서 각각 보관한다.
                 exchange_option_sno = (exchange_item.get("exchange_goods_option") or {}).get("sno")
                 original_option_sno = (order_item.get("original_goods_option") or {}).get("sno")
+                buyer_tel = str(order_item.get("buyer_tel") or order_item.get("receiver_tel") or "")
 
                 rows.append({
                     "F_name":              f_name,
@@ -1088,12 +1126,37 @@ def build_returns_router(
                     "REASON_IMAGES":       reason_images,
                     "GOODS_NAME":          f_name,
                     "OPTION_RAW":          option_str,
+                    "BUYER_TEL":           buyer_tel,
                 })
+
+        # 교환목록(exchange_items[].order_item)엔 buyer_tel/receiver_tel이 비어
+        # 오는 경우가 많아, 상세조회(order_items/{sno}/)로 폴백해서 채운다 -
+        # exchange_return_routes.py의 같은 패턴을 재사용.
+        async def _fetch_exchange_phone(client: httpx.AsyncClient, sno):
+            if not sno:
+                return ""
+            try:
+                res = await client.get(f"{ABLY_BASE}/seller/order_items/{sno}/", headers=headers)
+                if res.status_code != 200:
+                    return ""
+                oi = res.json().get("order_item") or {}
+                return str(oi.get("buyer_tel") or oi.get("receiver_tel") or "")
+            except Exception:
+                return ""
+
+        need_phone_idx = [i for i, row in enumerate(rows) if not row.get("BUYER_TEL")]
+        if need_phone_idx:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                phones = await asyncio.gather(
+                    *(_fetch_exchange_phone(client, rows[i]["ORDER_ITEM_SNO"]) for i in need_phone_idx)
+                )
+            for i, phone in zip(need_phone_idx, phones):
+                rows[i]["BUYER_TEL"] = phone
 
         df = pd.DataFrame(rows) if rows else pd.DataFrame(
             columns=["F_name", "G_opt", "QTY", "ITEM_TEXT", "EXCHANGE_REASON", "T_clean", "DETAIL_REASON",
                      "ORDER_SNO", "ORDER_ITEM_SNO", "EXCHANGE_OPTION_SNO", "EXCHANGE_SNO", "EXCHANGE_STATUS", "REASON_IMAGES",
-                     "GOODS_NAME", "OPTION_RAW"])
+                     "GOODS_NAME", "OPTION_RAW", "BUYER_TEL"])
         idx: dict[str, list[int]] = {}
         for i, v in enumerate(df["T_clean"].tolist()):
             if v:
@@ -1642,18 +1705,20 @@ def build_returns_router(
                 state.last_type = "혼합(" + ",".join(sorted(last_types)) + ")"
             state.scanned_barcodes.add(barcode)
 
-            # 같은 order_sno의 다른 교환건이 아직 큐에 없으면 (반품이 나눠서
-            # 접수됐지만 실제로는 한 박스로 같이 도착한 경우) 알려준다 -
-            # 자동으로 추가하지 않고 프론트에서 확인 후 추가하도록 정보만 넘김.
-            order_snos = {
-                _clean_sno(row_data.get("ORDER_SNO"))
+            # 같은 구매자 전화번호의 다른 교환건이 아직 큐에 없으면 (반품이
+            # 나눠서 접수됐지만 실제로는 한 박스로 같이 도착한 경우) 알려준다
+            # - 주문번호는 같은 구매자가 다른 주문번호로 나눠 접수하는 경우를
+            # 못 잡아서 전화번호로 판단한다. 자동으로 추가하지 않고 프론트에서
+            # 확인 후 추가하도록 정보만 넘김.
+            buyer_tels = {
+                _clean_tel(row_data.get("BUYER_TEL"))
                 for row_data in (state.exchange_df.iloc[i].to_dict() for i in exchange_row_indexes)
-                if _clean_sno(row_data.get("ORDER_SNO"))
+                if _clean_tel(row_data.get("BUYER_TEL"))
             }
             matched_invoices = {it.get("match") for it in state.all_items if it.get("match")}
             related_unscanned = [
                 {**r, "source": "exchange"}
-                for r in _find_related_unscanned(state.exchange_df, "ORDER_SNO", order_snos, "T_clean", matched_invoices)
+                for r in _find_related_unscanned(state.exchange_df, "BUYER_TEL", buyer_tels, "T_clean", matched_invoices, key_fn=_clean_tel)
             ]
 
             return {
@@ -1693,11 +1758,25 @@ def build_returns_router(
         if not row_indexes:
             msg = f"[미매칭] 스캔:{barcode} → 1번(E):{e_val} → 2번(M)에서 찾지 못함"
             state.queue_unmatched.append(
-                {"id": state.next_id, "scan": barcode, "match": e_val, "item_text": msg, "qty": "", "type": "미매칭"}
+                {
+                    "id": state.next_id,
+                    "scan": barcode,
+                    "match": e_val,
+                    "item_text": msg,
+                    "qty": "",
+                    "type": "미매칭",
+                    "special_note": special_note,
+                }
             )
             state.next_id += 1
             state.last_type = "미매칭"
-            return {"ok": True, "last_type": state.last_type, "queues": return_queue_payload(state)}
+            return {
+                "ok": True,
+                "last_type": state.last_type,
+                "special_note": special_note,
+                "special_note_invoice": e_val,
+                "queues": return_queue_payload(state),
+            }
 
         state.last_added_ids = []
         last_types = set()
@@ -1752,23 +1831,26 @@ def build_returns_router(
 
         state.scanned_barcodes.add(barcode)
 
-        # 같은 주문번호(ORDER_NO)의 다른 반품건이 아직 큐에 없으면 (반품이
-        # 나눠서 접수됐지만 실제로는 한 박스로 같이 도착한 경우) 알려준다.
-        order_nos = {
-            _clean_sno(row_data.get("ORDER_NO"))
+        # 같은 구매자 전화번호의 다른 반품건이 아직 큐에 없으면 (반품이 나눠서
+        # 접수됐지만 실제로는 한 박스로 같이 도착한 경우) 알려준다. 주문번호는
+        # 같은 구매자가 다른 주문번호로 나눠 접수하는 경우를 못 잡아서 전화번호로
+        # 판단한다.
+        buyer_tels = {
+            _clean_tel(row_data.get("BUYER_TEL"))
             for row_data in (state.df2.iloc[i].to_dict() for i in row_indexes)
-            if _clean_sno(row_data.get("ORDER_NO"))
+            if _clean_tel(row_data.get("BUYER_TEL"))
         }
         matched_invoices = {it.get("match") for it in state.all_items if it.get("match")}
         related_unscanned = [
             {**r, "source": "return"}
-            for r in _find_related_unscanned(state.df2, "ORDER_NO", order_nos, "M_clean", matched_invoices)
+            for r in _find_related_unscanned(state.df2, "BUYER_TEL", buyer_tels, "M_clean", matched_invoices, key_fn=_clean_tel)
         ]
 
         return {
             "ok": True,
             "last_type": state.last_type,
             "special_note": special_note,
+            "special_note_invoice": e_val,
             "queues": return_queue_payload(state),
             "related_unscanned": related_unscanned,
         }
@@ -1960,83 +2042,109 @@ def build_returns_router(
 
         ez = EzAdminClient(get_setting)
         ably = AblyClient()
+        zigzag = ZigzagClient()
 
         now = datetime.now(_KST)
         start_date = (now - timedelta(days=90)).strftime("%Y-%m-%d")
         end_date = now.strftime("%Y-%m-%d")
 
-        checked = 0
-        for item in items:
-            original_invoice = str(item.get("match") or "").strip()
-            if not original_invoice:
-                item["cs_error"] = "원송장번호 없음 (반품송장 매핑 실패)"
-                item["cs_products"] = []
-                item["cs_product_error"] = "원송장번호 없음"
-                checked += 1
-                continue
-            try:
-                order = await ez.find_order_by_invoice(original_invoice, start_date=start_date, end_date=end_date)
-            except EzAdminSessionExpired:
-                return {"ok": False, "need_session": True, "checked": checked, "queues": return_queue_payload(state)}
-
-            if not order:
-                item["cs_phone"] = ""
-                item["cs_ably_exists"] = None
-                item["cs_error"] = "이지어드민 미조회"
-                item["cs_products"] = []
-                item["cs_product_error"] = "이지어드민 미조회"
-                checked += 1
-                continue
-
-            phone = order.get("phone")
-            item["cs_phone"] = phone or ""
-            item.pop("cs_error", None)
-
-            try:
-                line_items = await ez.packlist_items(order["pack"])
-                product_qty: dict[str, float] = {}
-                for line in line_items:
-                    code = str(line.get("product_id") or "").strip()
-                    if not code:
-                        continue
-                    try:
-                        qty = float(line.get("qty") or 0)
-                    except (TypeError, ValueError):
-                        qty = 0
-                    product_qty[code] = product_qty.get(code, 0) + qty
-                info_map = _wonbe_product_info(list(product_qty.keys()))
-                item["cs_products"] = [
-                    {
-                        "product_id": code,
-                        "qty": qty,
-                        "name": info_map.get(code, {}).get("상품명", ""),
-                        "color": info_map.get(code, {}).get("색상", ""),
-                        "size": info_map.get(code, {}).get("사이즈", ""),
-                    }
-                    for code, qty in product_qty.items()
-                ]
-                if item["cs_products"]:
-                    item.pop("cs_product_error", None)
-                else:
-                    item["cs_product_error"] = "패킹리스트에 상품코드 없음"
-            except EzAdminSessionExpired:
-                return {"ok": False, "need_session": True, "checked": checked, "queues": return_queue_payload(state)}
-            except Exception as e:
-                item["cs_products"] = []
-                item["cs_product_error"] = f"상품코드 조회 실패: {str(e)[:200]}"
-
-            if phone:
+        try:
+            checked = 0
+            for item in items:
+                original_invoice = str(item.get("match") or "").strip()
+                if not original_invoice:
+                    item["cs_error"] = "원송장번호 없음 (반품송장 매핑 실패)"
+                    item["cs_products"] = []
+                    item["cs_product_error"] = "원송장번호 없음"
+                    checked += 1
+                    continue
                 try:
-                    count = await ably.count_contact_rooms_by_mobile(phone, start_date=start_date, end_date=end_date)
-                    item["cs_ably_exists"] = count > 0
-                except Exception as e:
-                    item["cs_ably_exists"] = None
-                    item["cs_error"] = f"에이블리 조회 실패: {str(e)[:200]}"
-            else:
-                item["cs_ably_exists"] = None
-            checked += 1
+                    order = await ez.find_order_by_invoice(original_invoice, start_date=start_date, end_date=end_date)
+                except EzAdminSessionExpired:
+                    return {"ok": False, "need_session": True, "checked": checked, "queues": return_queue_payload(state)}
 
-        return {"ok": True, "checked": checked, "queues": return_queue_payload(state)}
+                if not order:
+                    item["cs_phone"] = ""
+                    item["cs_ably_exists"] = None
+                    item["cs_zigzag_exists"] = None
+                    item["cs_error"] = "이지어드민 미조회"
+                    item["cs_products"] = []
+                    item["cs_product_error"] = "이지어드민 미조회"
+                    checked += 1
+                    continue
+
+                phone = order.get("phone")
+                item["cs_phone"] = phone or ""
+                item.pop("cs_error", None)
+
+                try:
+                    line_items = await ez.packlist_items(order["pack"])
+                    product_qty: dict[str, float] = {}
+                    for line in line_items:
+                        code = str(line.get("product_id") or "").strip()
+                        if not code:
+                            continue
+                        try:
+                            qty = float(line.get("qty") or 0)
+                        except (TypeError, ValueError):
+                            qty = 0
+                        product_qty[code] = product_qty.get(code, 0) + qty
+                    info_map = _wonbe_product_info(list(product_qty.keys()))
+                    item["cs_products"] = [
+                        {
+                            "product_id": code,
+                            "qty": qty,
+                            "name": info_map.get(code, {}).get("상품명", ""),
+                            "color": info_map.get(code, {}).get("색상", ""),
+                            "size": info_map.get(code, {}).get("사이즈", ""),
+                        }
+                        for code, qty in product_qty.items()
+                    ]
+                    if item["cs_products"]:
+                        item.pop("cs_product_error", None)
+                    else:
+                        item["cs_product_error"] = "패킹리스트에 상품코드 없음"
+                except EzAdminSessionExpired:
+                    return {"ok": False, "need_session": True, "checked": checked, "queues": return_queue_payload(state)}
+                except Exception as e:
+                    item["cs_products"] = []
+                    item["cs_product_error"] = f"상품코드 조회 실패: {str(e)[:200]}"
+
+                if phone:
+                    try:
+                        count = await ably.count_contact_rooms_by_mobile(phone, start_date=start_date, end_date=end_date)
+                        item["cs_ably_exists"] = count > 0
+                    except Exception as e:
+                        item["cs_ably_exists"] = None
+                        item["cs_error"] = f"에이블리 조회 실패: {str(e)[:200]}"
+
+                    # 에이블리에서 못 찾은 경우에만 지그재그 반품 클레임 목록에서 같은 번호를 찾는다.
+                    if item["cs_ably_exists"] is not True:
+                        try:
+                            claim = await zigzag.find_return_claim_by_phone(
+                                phone,
+                                date_requested_ymd_gte=int(start_date.replace("-", "")),
+                                date_requested_ymd_lte=int(end_date.replace("-", "")),
+                            )
+                            item["cs_zigzag_exists"] = claim is not None
+                            if claim is not None:
+                                charge_method = (claim.get("shipping_fee_additional_charge_method") or {}).get("return")
+                                item["cs_zigzag_type"] = classify_return_charge_method(charge_method)
+                            else:
+                                item.pop("cs_zigzag_type", None)
+                        except Exception as e:
+                            item["cs_zigzag_exists"] = None
+                            item["cs_zigzag_error"] = f"지그재그 조회 실패: {str(e)[:200]}"
+                    else:
+                        item["cs_zigzag_exists"] = None
+                else:
+                    item["cs_ably_exists"] = None
+                    item["cs_zigzag_exists"] = None
+                checked += 1
+
+            return {"ok": True, "checked": checked, "queues": return_queue_payload(state)}
+        finally:
+            await zigzag.close()
 
     @router.post("/returns/unmatched/receive-stock")
     async def returns_unmatched_receive_stock(payload: dict = Body(...), user: str = Depends(get_current_user)):
@@ -2985,10 +3093,10 @@ def build_returns_router(
             try:
                 option_code = str(item.get("option_code") or item.get("original_option_sno") or "").strip()
                 if not option_code:
-                    raise ValueError("option_stock_sync_code 없음")
+                    raise ValueError("옵션번호 없음")
                 product_id = option_sno_map.get(option_code)
                 if not product_id:
-                    raise ValueError(f"원가베이스유에서 옵션번호 매칭 실패 (option_code={option_code})")
+                    raise ValueError(f"옵션번호({option_code})를 원가베이스유에서 찾을 수 없음")
                 try:
                     qty = int(float(item.get("qty") or 1))
                 except (TypeError, ValueError):
@@ -3024,8 +3132,15 @@ def build_returns_router(
         results = []
         for item in items:
             option_code = str(item.get("option_code") or item.get("original_option_sno") or "").strip()
-            product_id = option_sno_map.get(option_code) if option_code else None
-            results.append({"id": item.get("id"), "product_id": product_id})
+            error = None
+            if not option_code:
+                product_id = None
+                error = "옵션번호 없음"
+            else:
+                product_id = option_sno_map.get(option_code)
+                if not product_id:
+                    error = f"옵션번호({option_code})를 원가베이스유에서 찾을 수 없음"
+            results.append({"id": item.get("id"), "product_id": product_id, "error": error})
         return {"ok": True, "results": results}
 
     @router.post("/returns/ably-refund-single")

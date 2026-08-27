@@ -1067,6 +1067,21 @@ def _init_return_saved_snapshots():
 _init_return_saved_snapshots()
 
 
+def _ensure_return_snapshot_column(column: str, ddl: str):
+    conn = _get_shared_db()
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(return_saved_snapshots)").fetchall()]
+    if column not in cols:
+        conn.execute(ddl)
+        conn.commit()
+    conn.close()
+
+
+_ensure_return_snapshot_column(
+    "name",
+    "ALTER TABLE return_saved_snapshots ADD COLUMN name TEXT NOT NULL DEFAULT ''",
+)
+
+
 def _run_return_saved_states_migration():
     conn = _get_shared_db()
     _migrate_return_saved_states_to_snapshots(conn)
@@ -1783,6 +1798,7 @@ app.include_router(build_return_automation_router(
     get_setting=_get_setting,
     set_setting=_set_setting,
     get_sms_templates=_return_automation_templates,
+    get_notes_db=_get_shared_db,
 ))
 app.include_router(
     build_misong_router(

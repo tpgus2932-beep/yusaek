@@ -146,6 +146,24 @@ def test_scan_without_registered_note_returns_empty_special_note():
     assert state.queue_seller[0]["special_note"] == ""
 
 
+def test_scan_matches_special_note_even_when_unmatched_in_excel2():
+    """원송장번호(e_val)는 CJ/롯데 매핑으로 찾았지만 2번 엑셀(반품접수 데이터)에
+    아직 매칭되는 행이 없어 미매칭 큐로 빠지는 경우에도, 이미 조회한
+    special_note는 응답과 큐 아이템에 실려야 한다."""
+    get_shared_db = _make_shared_db_with_note("999000111", "파손 이력 있음")
+    client, state = _make_client(get_shared_db)
+    state.map_d_to_e = {"111": "999000111"}
+    state.df2 = pd.DataFrame([])
+    state.df2_index = {}
+
+    res = client.post("/returns/scan", json={"barcode": "111"})
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["special_note"] == "파손 이력 있음"
+    assert state.queue_unmatched[0]["special_note"] == "파손 이력 있음"
+
+
 def test_scan_with_no_db_configured_does_not_crash():
     """get_db()가 None을 주는 기존 테스트들(get_db=lambda: None)이 계속 통과하는지 보장하는 회귀 테스트."""
     state = ReturnState(cost_base_path=Path("nonexistent.xlsx"))

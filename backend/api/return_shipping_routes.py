@@ -77,7 +77,7 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                 },
             )
             res.raise_for_status()
-        token = res.json().get("token")
+        token = res.json().get("access_token") or res.json().get("token")
         if not token:
             raise HTTPException(status_code=502, detail="에이블리 로그인 실패: 토큰 없음")
         return token
@@ -647,116 +647,13 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
         conn.close()
         return {"deleted": cur.rowcount}
 
-    @router.post("/new-return-pickup")
-    async def new_return_pickup(
-        user=Depends(get_current_user),
-    ):
-        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
-        if not phpsessid:
-            return {"ok": False, "need_session": True}
-
-        # 실행 상태를 설정에 남겨 프론트가 새로고침/탭이동 후에도 "진행 중"임을
-        # 알 수 있게 한다 - 정상/예외 종료 어느 경우든 finally에서 반드시 지운다.
-        running_key = "daily_check_new_return_pickup_running_at"
-        if set_setting:
-            set_setting(running_key, datetime.now(_KST).isoformat())
-        try:
-            data = await _run_new_return_pickup(phpsessid)
-            if set_setting and not data.get("need_session"):
-                if data.get("ok"):
-                    excluded = data.get("seller_fault_excluded") or 0
-                    note = f" (판매자 부담 {excluded}건 제외)" if excluded > 0 else ""
-                    message = f"송장 {data.get('invoice_count') or 0}건 처리{note}"
-                else:
-                    message = data.get("error") or data.get("detail") or "실패"
-                set_setting("daily_check_new_return_pickup_last_result", message)
-            return data
-        finally:
-            if set_setting:
-                set_setting(running_key, None)
-
-    async def _run_new_return_pickup(phpsessid: str):
-        end_date = datetime.now(_KST).strftime("%Y-%m-%d")
-        start_date = (datetime.now(_KST) - timedelta(days=30)).strftime("%Y-%m-%d")
-
-        try:
-            token = await _ably_login()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
-
-        ably_headers = {
-            "Authorization": f"JWT {token}",
-            "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://my.a-bly.com/",
-            "Origin": "https://my.a-bly.com",
-        }
-
-        inv_to_sno: dict[str, int] = {}
-        sms_recipients: list[dict] = []  # [{tel, name, goods_name}]
-        seller_fault_count = 0
-        page = 1
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            while True:
-                res = await client.get(
-                    f"{ABLY_BASE}/seller/order_cancels/",
-                    headers=ably_headers,
-                    params={
-                        "cancel_type": "return",
-                        "processing_sub_status[]": ["41"],
-                        "delivery_type[]": ["standard", "today", "combine", "reserved"],
-                        "order": "cancel_received_at",
-                        "date_type": "cancel_received_at",
-                        "page": page,
-                        "per_page": 30,
-                        "start_date": start_date,
-                        "end_date": end_date,
-                    },
-                )
-                res.raise_for_status()
-                data = res.json()
-                cancels = data.get("order_cancels", [])
-                if not cancels:
-                    break
-                for cancel in cancels:
-                    items = cancel.get("order_items", [])
-                    # 판매자 사유(상품 하자/오배송, 셀러 변경) 건은 회수신청/문자 대상에서 제외
-                    eligible_items = [
-                        item for item in items
-                        if item.get("cancel_reason") not in _SELLER_FAULT_CANCEL_REASONS
-                    ]
-                    seller_fault_count += len(items) - len(eligible_items)
-                    for item in eligible_items:
-                        inv = str(item.get("invoice") or "").strip()
-                        sno = item.get("sno")
-                        if inv and inv not in inv_to_sno:
-                            inv_to_sno[inv] = sno
-                    if eligible_items:
-                        first = eligible_items[0]
-                        tel_raw = (
-                            cancel.get("buyer_tel") or cancel.get("receiver_tel") or
-                            first.get("buyer_tel") or first.get("receiver_tel") or ""
-                        )
-                        tel = "".join(ch for ch in str(tel_raw) if ch.isdigit())
-                        name_raw = (
-                            cancel.get("receiver_name") or cancel.get("buyer_name") or
-                            first.get("receiver_name") or first.get("buyer_name") or ""
-                        )
-                        if tel:
-                            sms_recipients.append({
-                                "tel": tel,
-                                "name": str(name_raw).strip(),
-                                "goods_name": str(first.get("goods_name") or "").strip(),
-                            })
-                if page >= data.get("max_page_number", 1):
-                    break
-                page += 1
-
-        if not inv_to_sno:
-            note = " (전체가 판매자 부담 사유로 제외됨)" if seller_fault_count else ""
-            return {"ok": False, "error": f"처리할 송장번호가 없습니다 (sub_status=41 건 없음){note}"}
-
+    async def _register_return_invoices(phpsessid: str, inv_to_sno: dict[str, int], ably_headers: dict) -> dict:
+        """송장번호 목록을 EZAdmin DS05/DS00으로 회수접수하고, 대응하는 에이블리
+        order_item sno로 반품요청접수까지 처리한다. 신규반품 전체처리와
+        판매자 부담 건 개별처리(new-return-pickup-single)가 공유하는 핵심 로직."""
         invoices = list(inv_to_sno.keys())
+        if not invoices:
+            return {"ok": False, "error": "처리할 송장번호가 없습니다."}
 
         # XLS 생성 (BIFF .xls)
         book = xlwt.Workbook()
@@ -853,7 +750,16 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                 )
                 ably_status = ably_res.status_code
 
-        # SMS 발송 — 반품 최초 접수 템플릿
+        return {
+            "ok": True,
+            "invoice_count": len(invoices),
+            "table_name": table_name,
+            "ably_status": ably_status,
+            "sno_count": len(sno_list),
+        }
+
+    def _send_return_pickup_sms(sms_recipients: list[dict]) -> int:
+        """반품 최초 접수 템플릿으로 문자 발송. sms_recipients: [{tel, name, goods_name}]."""
         sms_queued = 0
         if enqueue_sms and get_shared_db and sms_recipients:
             sender = os.environ.get("ALIGO_SENDER", "").strip()
@@ -886,6 +792,236 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                             sms_queued += 1
                         except Exception:
                             pass
+        return sms_queued
+
+    def _ably_headers_for(token: str) -> dict:
+        return {
+            "Authorization": f"JWT {token}",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://my.a-bly.com/",
+            "Origin": "https://my.a-bly.com",
+        }
+
+    @router.get("/seller-fault-pending")
+    async def seller_fault_pending(user=Depends(get_current_user)):
+        """판매자 부담 사유(상품 하자/오배송, 셀러 변경)로 신규반품 자동처리에서
+        제외된 건을 에이블리에서 실시간으로 다시 조회해 반환한다.
+
+        스냅샷을 따로 저장하지 않는다 - sub_status=41(회수신청 전)로만
+        필터링하므로, 개별처리(new-return-pickup-single)로 한 건 처리하면
+        그 건의 sub_status가 바뀌어 다음 조회부터 자연히 목록에서 빠진다.
+        """
+        try:
+            token = await _ably_login()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        ably_headers = _ably_headers_for(token)
+        end_date = datetime.now(_KST).strftime("%Y-%m-%d")
+        start_date = (datetime.now(_KST) - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        items_out = []
+        page = 1
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while True:
+                res = await client.get(
+                    f"{ABLY_BASE}/seller/order_cancels/",
+                    headers=ably_headers,
+                    params={
+                        "cancel_type": "return",
+                        "processing_sub_status[]": ["41"],
+                        "delivery_type[]": ["standard", "today", "combine", "reserved"],
+                        "order": "cancel_received_at",
+                        "date_type": "cancel_received_at",
+                        "page": page,
+                        "per_page": 30,
+                        "start_date": start_date,
+                        "end_date": end_date,
+                    },
+                )
+                res.raise_for_status()
+                data = res.json()
+                cancels = data.get("order_cancels", [])
+                if not cancels:
+                    break
+                for cancel in cancels:
+                    for item in cancel.get("order_items", []):
+                        if item.get("cancel_reason") not in _SELLER_FAULT_CANCEL_REASONS:
+                            continue
+                        images = item.get("cancel_images") or cancel.get("cancel_images") or []
+                        tel_raw = (
+                            cancel.get("buyer_tel") or cancel.get("receiver_tel") or
+                            item.get("buyer_tel") or item.get("receiver_tel") or ""
+                        )
+                        name_raw = (
+                            cancel.get("receiver_name") or cancel.get("buyer_name") or
+                            item.get("receiver_name") or item.get("buyer_name") or ""
+                        )
+                        reason_code = item.get("cancel_reason")
+                        items_out.append({
+                            "invoice": str(item.get("invoice") or "").strip(),
+                            "sno": item.get("sno"),
+                            "goods_name": str(item.get("goods_name") or "").strip(),
+                            "reason_code": reason_code,
+                            "reason": _CANCEL_REASON.get(reason_code, str(reason_code or "")),
+                            "user_comment": str(item.get("user_comment") or "").strip(),
+                            "images": images,
+                            "buyer_tel": "".join(ch for ch in str(tel_raw) if ch.isdigit()),
+                            "buyer_name": str(name_raw).strip(),
+                        })
+                if page >= data.get("max_page_number", 1):
+                    break
+                page += 1
+
+        return {"ok": True, "items": items_out}
+
+    @router.post("/new-return-pickup-single")
+    async def new_return_pickup_single(payload: dict = Body(...), user=Depends(get_current_user)):
+        """판매자 부담 사유로 자동처리에서 제외된 건 하나를 수동으로 개별 실행처리한다.
+
+        사진/사유를 확인한 담당자가 예외적으로 진행하기로 판단한 건에 한해
+        신규반품 전체처리와 동일한 EZAdmin 회수접수 + 에이블리 반품요청 +
+        반품 최초 접수 문자발송을 그 한 건에 대해서만 수행한다.
+        """
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        invoice = str(payload.get("invoice") or "").strip()
+        if not invoice:
+            raise HTTPException(status_code=400, detail="송장번호가 필요합니다.")
+        sno = payload.get("sno")
+
+        try:
+            token = await _ably_login()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        ably_headers = _ably_headers_for(token)
+        result = await _register_return_invoices(phpsessid, {invoice: sno}, ably_headers)
+        if not result.get("ok"):
+            return result
+
+        tel = "".join(ch for ch in str(payload.get("buyer_tel") or "") if ch.isdigit())
+        sms_queued = 0
+        if tel:
+            sms_queued = _send_return_pickup_sms([{
+                "tel": tel,
+                "name": str(payload.get("buyer_name") or "").strip(),
+                "goods_name": str(payload.get("goods_name") or "").strip(),
+            }])
+
+        return {**result, "sms_queued": sms_queued}
+
+    @router.post("/new-return-pickup")
+    async def new_return_pickup(
+        user=Depends(get_current_user),
+    ):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        # 실행 상태를 설정에 남겨 프론트가 새로고침/탭이동 후에도 "진행 중"임을
+        # 알 수 있게 한다 - 정상/예외 종료 어느 경우든 finally에서 반드시 지운다.
+        running_key = "daily_check_new_return_pickup_running_at"
+        if set_setting:
+            set_setting(running_key, datetime.now(_KST).isoformat())
+        try:
+            data = await _run_new_return_pickup(phpsessid)
+            if set_setting and not data.get("need_session"):
+                if data.get("ok"):
+                    excluded = data.get("seller_fault_excluded") or 0
+                    note = f" (판매자 부담 {excluded}건 제외)" if excluded > 0 else ""
+                    message = f"송장 {data.get('invoice_count') or 0}건 처리{note}"
+                else:
+                    message = data.get("error") or data.get("detail") or "실패"
+                set_setting("daily_check_new_return_pickup_last_result", message)
+            return data
+        finally:
+            if set_setting:
+                set_setting(running_key, None)
+
+    async def _run_new_return_pickup(phpsessid: str):
+        end_date = datetime.now(_KST).strftime("%Y-%m-%d")
+        start_date = (datetime.now(_KST) - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        try:
+            token = await _ably_login()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        ably_headers = _ably_headers_for(token)
+
+        inv_to_sno: dict[str, int] = {}
+        sms_recipients: list[dict] = []  # [{tel, name, goods_name}]
+        seller_fault_count = 0
+        page = 1
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while True:
+                res = await client.get(
+                    f"{ABLY_BASE}/seller/order_cancels/",
+                    headers=ably_headers,
+                    params={
+                        "cancel_type": "return",
+                        "processing_sub_status[]": ["41"],
+                        "delivery_type[]": ["standard", "today", "combine", "reserved"],
+                        "order": "cancel_received_at",
+                        "date_type": "cancel_received_at",
+                        "page": page,
+                        "per_page": 30,
+                        "start_date": start_date,
+                        "end_date": end_date,
+                    },
+                )
+                res.raise_for_status()
+                data = res.json()
+                cancels = data.get("order_cancels", [])
+                if not cancels:
+                    break
+                for cancel in cancels:
+                    items = cancel.get("order_items", [])
+                    # 판매자 사유(상품 하자/오배송, 셀러 변경) 건은 회수신청/문자 대상에서 제외
+                    eligible_items = [
+                        item for item in items
+                        if item.get("cancel_reason") not in _SELLER_FAULT_CANCEL_REASONS
+                    ]
+                    seller_fault_count += len(items) - len(eligible_items)
+                    for item in eligible_items:
+                        inv = str(item.get("invoice") or "").strip()
+                        sno = item.get("sno")
+                        if inv and inv not in inv_to_sno:
+                            inv_to_sno[inv] = sno
+                    if eligible_items:
+                        first = eligible_items[0]
+                        tel_raw = (
+                            cancel.get("buyer_tel") or cancel.get("receiver_tel") or
+                            first.get("buyer_tel") or first.get("receiver_tel") or ""
+                        )
+                        tel = "".join(ch for ch in str(tel_raw) if ch.isdigit())
+                        name_raw = (
+                            cancel.get("receiver_name") or cancel.get("buyer_name") or
+                            first.get("receiver_name") or first.get("buyer_name") or ""
+                        )
+                        if tel:
+                            sms_recipients.append({
+                                "tel": tel,
+                                "name": str(name_raw).strip(),
+                                "goods_name": str(first.get("goods_name") or "").strip(),
+                            })
+                if page >= data.get("max_page_number", 1):
+                    break
+                page += 1
+
+        if not inv_to_sno:
+            note = " (전체가 판매자 부담 사유로 제외됨)" if seller_fault_count else ""
+            return {"ok": False, "error": f"처리할 송장번호가 없습니다 (sub_status=41 건 없음){note}"}
+
+        result = await _register_return_invoices(phpsessid, inv_to_sno, ably_headers)
+        if not result.get("ok"):
+            return result
+
+        sms_queued = _send_return_pickup_sms(sms_recipients)
 
         # 체크리스트의 "오늘 실행됨" 표시는 실제로 회수신청/문자발송까지 끝난
         # 뒤에만 남긴다 - 도중에 브라우저가 새로고침되거나 예외가 나면 이
@@ -894,11 +1030,7 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
             set_setting("daily_check_new_return_pickup", datetime.now(_KST).isoformat())
 
         return {
-            "ok": True,
-            "invoice_count": len(invoices),
-            "table_name": table_name,
-            "ably_status": ably_status,
-            "sno_count": len(sno_list) if sno_list else 0,
+            **result,
             "sms_queued": sms_queued,
             "seller_fault_excluded": seller_fault_count,
         }

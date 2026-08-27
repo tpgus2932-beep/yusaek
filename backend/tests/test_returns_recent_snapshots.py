@@ -57,7 +57,8 @@ def _make_shared_db():
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT NOT NULL,
                     payload TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    name TEXT NOT NULL DEFAULT ''
                 )"""
             )
             db_holder["conn"] = conn
@@ -188,6 +189,20 @@ def test_saves_accounts_lists_only_accounts_with_snapshots_newest_first():
     assert res.status_code == 200
     usernames = [a["username"] for a in res.json()["accounts"]]
     assert usernames == ["bob", "alice"]
+
+
+def test_rename_snapshot_updates_name_in_list():
+    client, state = _make_client(_make_shared_db())
+    state.queue_seller = [{"id": 1, "goods_name": "item-1"}]
+    client.post("/returns/save")
+    snapshot_id = client.get("/returns/saves").json()["items"][0]["id"]
+
+    res = client.patch(f"/returns/saves/{snapshot_id}", json={"name": "1차 발송분"})
+    assert res.status_code == 200
+    assert res.json()["name"] == "1차 발송분"
+
+    items = client.get("/returns/saves").json()["items"]
+    assert items[0]["name"] == "1차 발송분"
 
 
 def test_saves_with_username_param_returns_that_accounts_items():

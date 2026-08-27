@@ -56,6 +56,8 @@ const ReturnsPage = () => {
     const [activeTab, setActiveTab] = useState('all');
     const [loading, setLoading] = useState(false);
     const [ezadminSheetLoading, setEzadminSheetLoading] = useState(false);
+    const [ingoDaegiLoading, setIngoDaegiLoading] = useState(false);
+    const [realIngoLoading, setRealIngoLoading] = useState(false);
     const [lastSheetSeq, setLastSheetSeq] = useState(null);
     const [barcodePrintLoading, setBarcodePrintLoading] = useState(false);
     const [isLoadingAllApis, setIsLoadingAllApis] = useState(false);
@@ -99,6 +101,10 @@ const ReturnsPage = () => {
     const [specialNoteInvoiceInput, setSpecialNoteInvoiceInput] = useState('');
     const [specialNoteTextInput, setSpecialNoteTextInput] = useState('');
     const [specialNoteSaving, setSpecialNoteSaving] = useState(false);
+    // 스캔으로 특이사항이 걸린 송장번호들 - 해당 특이사항이 삭제되기 전까지는
+    // 다른 걸 스캔해도 계속 빨간색으로 남아있어야 해서(사용자 요청), 마지막
+    // 1건이 아니라 누적 Set으로 들고 있다가 삭제 시에만 지운다.
+    const [scannedSpecialInvoices, setScannedSpecialInvoices] = useState(() => new Set());
     const [labelPrintLoading, setLabelPrintLoading] = useState(false);
     const [singleCancelSno, setSingleCancelSno] = useState('');
     const [singleRefundLoading, setSingleRefundLoading] = useState(false);
@@ -794,7 +800,14 @@ body { background: #fff; font-family: sans-serif; }
                 body: JSON.stringify({ items: needResolve }),
             });
             const data = await res.json().catch(() => ({}));
-            (data.results || []).forEach((r) => { resolvedMap[r.id] = r.product_id; });
+            const flagsById = {};
+            (data.results || []).forEach((r) => {
+                resolvedMap[r.id] = r.product_id;
+                flagsById[r.id] = r.product_id
+                    ? { ezadmin_stockin_error: undefined }
+                    : { ezadmin_stockin_error: r.error || '상품코드 매칭 실패' };
+            });
+            if (Object.keys(flagsById).length) applyItemFlags(flagsById);
         }
         const codeMap = {};
         selectedItems.forEach((i) => {
@@ -933,19 +946,24 @@ body { background: #fff; font-family: sans-serif; }
         setMessage('');
         try {
             const codeMap = await resolveProductCodes(selectedItems);
-            const labels = selectedItems
+            const withCode = selectedItems
                 .map((i) => ({
                     title: i.goods_name || i.item_text || '',
                     option: i.option_raw ? `[${i.option_raw.replace(/\//g, '-')}]` : '',
                     code: codeMap[i.id] || '',
-                }))
-                .filter((l) => l.code);
+                }));
+            const labels = withCode.filter((l) => l.code);
+            const failedCount = withCode.length - labels.length;
             if (!labels.length) {
-                setMessage('상품코드를 찾지 못해 바코드를 출력할 수 없습니다.');
+                setMessage('상품코드를 찾지 못해 바코드를 출력할 수 없습니다. (매칭 실패 항목은 표의 "입고처리" 열에서 확인하세요)');
                 return;
             }
             printProductLabels(labels);
-            setMessage(`바코드 출력: ${labels.length}건`);
+            setMessage(
+                failedCount > 0
+                    ? `바코드 출력: ${labels.length}건 (매칭 실패 ${failedCount}건 — 표의 "입고처리" 열 확인)`
+                    : `바코드 출력: ${labels.length}건`
+            );
         } catch (err) {
             setMessage(err.message || '바코드 출력 실패');
         } finally {
@@ -1132,7 +1150,7 @@ body { background: #fff; font-family: sans-serif; }
             .map((r) => `- ${r.invoice} (${r.item_text || ''} x${r.qty || ''})`)
             .join('\n');
         const ok = window.confirm(
-            `같은 주문번호의 다른 반품/교환건이 아직 큐에 없습니다. 지금 같이 추가할까요?\n${summary}`
+            `같은 구매자(전화번호)의 다른 반품/교환건이 아직 큐에 없습니다. 지금 같이 추가할까요?\n${summary}`
         );
         if (!ok) return;
         for (const r of related) {
@@ -1158,6 +1176,15 @@ body { background: #fff; font-family: sans-serif; }
             const nextTab = tabForType(nextType);
             if (nextTab) setActiveTab(nextTab);
             const shouldPlay = nextType !== '-' && nextType !== '' && nextType !== '중복';
+            if (data.special_note && data.special_note_invoice) {
+                const invoiceNo = data.special_note_invoice;
+                setScannedSpecialInvoices((prev) => {
+                    if (prev.has(invoiceNo)) return prev;
+                    const next = new Set(prev);
+                    next.add(invoiceNo);
+                    return next;
+                });
+            }
             if (data.special_note) {
                 playSound('specialNote');
             } else if (shouldPlay) {
@@ -1287,6 +1314,59 @@ body { background: #fff; font-family: sans-serif; }
         setMessage(`바코드 출력: ${labels.length}건`);
     };
 
+    // 미매칭 항목도 원가베이스유 매칭이 안 돼 resolveProductCodes를 못 쓰므로,
+    // handleUnmatchedPrintBarcodes와 동일하게 CS 조회로 캐싱된 item.cs_products의
+    // 상품코드를 그대로 김승일에 전송하고 바로 바코드를 출력한다.
+    const handleUnmatchedSendToKimsungil = async (selectedIds) => {
+        const ids = Array.from(selectedIds);
+        if (ids.length === 0) return;
+        const items = queues.unmatched.filter((i) => ids.includes(i.id));
+        const entries = items.flatMap((item) =>
+            (item.cs_products || [])
+                .filter((p) => p.product_id)
+                .map((p) => ({ item, product: p }))
+        );
+        if (!entries.length) {
+            setMessage('상품코드를 찾지 못해 김승일보내기를 할 수 없습니다. 먼저 "CS 조회"를 실행하세요.');
+            return;
+        }
+        setKimsungilSendLoading(true);
+        setMessage('');
+        try {
+            let sent = 0;
+            const flagsById = {};
+            const labels = [];
+            for (const { item, product } of entries) {
+                const code = product.product_id;
+                const res = await fetch(`${API}/barcode/kimsungil/add`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                    body: JSON.stringify({ code }),
+                });
+                const optionRaw = [product.color, product.size].filter(Boolean).join('/');
+                if (res.ok) {
+                    sent += 1;
+                    flagsById[item.id] = { kimsungil_sent: true, kimsungil_error: undefined };
+                    labels.push({
+                        title: product.name || code,
+                        option: optionRaw ? `[${optionRaw.replace(/\//g, '-')}]` : '',
+                        code,
+                    });
+                } else {
+                    const data = await res.json().catch(() => ({}));
+                    flagsById[item.id] = { kimsungil_error: data?.detail || '전송 실패' };
+                }
+            }
+            applyItemFlags(flagsById);
+            if (labels.length) printProductLabels(labels);
+            setMessage(`김승일보내기 완료: ${sent}/${entries.length}건`);
+        } catch (err) {
+            setMessage(err.message || '김승일보내기 실패');
+        } finally {
+            setKimsungilSendLoading(false);
+        }
+    };
+
     const openCsDetail = async (phone) => {
         setCsDetailModal({ phone, loading: true, rooms: [], error: '' });
         try {
@@ -1309,6 +1389,8 @@ body { background: #fff; font-family: sans-serif; }
     const [snapshotAccounts, setSnapshotAccounts] = useState([]);
     const [snapshotAccountsLoading, setSnapshotAccountsLoading] = useState(false);
     const [activeSnapshotAccount, setActiveSnapshotAccount] = useState('');
+    const [editingSnapshotId, setEditingSnapshotId] = useState(null);
+    const [snapshotNameDraft, setSnapshotNameDraft] = useState('');
 
     const formatSnapshotTime = (iso) => {
         if (!iso) return '';
@@ -1375,6 +1457,37 @@ body { background: #fff; font-family: sans-serif; }
         setSnapshotList([]);
         setSnapshotAccounts([]);
         setActiveSnapshotAccount('');
+        setEditingSnapshotId(null);
+        setSnapshotNameDraft('');
+    };
+
+    const startEditSnapshotName = (item) => {
+        setEditingSnapshotId(item.id);
+        setSnapshotNameDraft(item.name || '');
+    };
+
+    const cancelEditSnapshotName = () => {
+        setEditingSnapshotId(null);
+        setSnapshotNameDraft('');
+    };
+
+    const saveSnapshotName = async (id) => {
+        const name = snapshotNameDraft.trim();
+        try {
+            const res = await fetch(`${API}/returns/saves/${id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ name }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '이름 변경 실패');
+            setSnapshotList((prev) => prev.map((it) => (it.id === id ? { ...it, name: data.name ?? name } : it)));
+        } catch (err) {
+            setMessage(err.message || '이름 변경 실패');
+        } finally {
+            setEditingSnapshotId(null);
+            setSnapshotNameDraft('');
+        }
     };
 
     const loadSnapshotById = async (id) => {
@@ -1475,7 +1588,7 @@ body { background: #fff; font-family: sans-serif; }
         setSpecialNoteTextInput(note.note || '');
     };
 
-    const handleDeleteSpecialNote = async (id) => {
+    const handleDeleteSpecialNote = async (id, invoiceNo) => {
         try {
             const res = await fetch(`${API}/return-special-notes/${id}`, {
                 method: 'DELETE',
@@ -1484,6 +1597,14 @@ body { background: #fff; font-family: sans-serif; }
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data?.detail || '삭제 실패');
             setSpecialNoteList((prev) => prev.filter((n) => n.id !== id));
+            if (invoiceNo) {
+                setScannedSpecialInvoices((prev) => {
+                    if (!prev.has(invoiceNo)) return prev;
+                    const next = new Set(prev);
+                    next.delete(invoiceNo);
+                    return next;
+                });
+            }
         } catch (err) {
             setMessage(err.message || '삭제 실패');
         }
@@ -1545,6 +1666,56 @@ body { background: #fff; font-family: sans-serif; }
             setMessage(err.message || '전표 생성 실패');
         } finally {
             setEzadminSheetLoading(false);
+        }
+    };
+
+    const handleIngoDaegi = async () => {
+        try {
+            setIngoDaegiLoading(true);
+            setMessage('');
+            const res = await fetch(`${API}/returns/onebe/ingo-daegi`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({}),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.need_session) {
+                openEzadminModal(handleIngoDaegi);
+                return;
+            }
+            if (!res.ok || !data?.ok) {
+                throw new Error(data?.detail || data?.error || '입고대기 처리 실패');
+            }
+            setMessage(`입고대기 처리 완료 (${data.count ?? 0}건)`);
+        } catch (err) {
+            setMessage(err.message || '입고대기 처리 실패');
+        } finally {
+            setIngoDaegiLoading(false);
+        }
+    };
+
+    const handleRealIngo = async () => {
+        try {
+            setRealIngoLoading(true);
+            setMessage('');
+            const res = await fetch(`${API}/returns/onebe/real-ingo`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({}),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.need_session) {
+                openEzadminModal(handleRealIngo);
+                return;
+            }
+            if (!res.ok || !data?.ok) {
+                throw new Error(data?.detail || data?.error || '실입고 처리 실패');
+            }
+            setMessage(`실입고 처리 완료 (${data.count ?? 0}건)`);
+        } catch (err) {
+            setMessage(err.message || '실입고 처리 실패');
+        } finally {
+            setRealIngoLoading(false);
         }
     };
 
@@ -1673,7 +1844,7 @@ body { background: #fff; font-family: sans-serif; }
         );
         const hasCsLookup = items.some((item) =>
             item.cs_phone !== undefined || item.cs_ably_exists !== undefined || item.cs_error
-            || item.cs_products !== undefined || item.cs_product_error
+            || item.cs_products !== undefined || item.cs_product_error || item.cs_zigzag_exists !== undefined
         );
         const allChecked = items.length > 0 && items.every((item) => selectedIds.has(item.id));
         return (
@@ -1705,7 +1876,7 @@ body { background: #fff; font-family: sans-serif; }
                             {hasEzadminInfo && <th>상태</th>}
                             {hasCsLookup && <th>구매자전화번호</th>}
                             {hasCsLookup && <th>상품코드</th>}
-                            {hasCsLookup && <th>에이블리CS</th>}
+                            {hasCsLookup && <th>CS확인</th>}
                             {showSmsAction && <th>문자</th>}
                         </tr>
                     </thead>
@@ -1724,7 +1895,7 @@ body { background: #fff; font-family: sans-serif; }
                                         onChange={() => onToggleOne(item.id)}
                                     />
                                 </td>
-                                <td>{item.scan}</td>
+                                <td style={item.special_note ? { color: '#dc2626', fontWeight: 600 } : undefined}>{item.scan}</td>
                                 <td>{item.match}</td>
                                 <td>{item.item_text}</td>
                                 <td>{item.qty}</td>
@@ -1798,16 +1969,21 @@ body { background: #fff; font-family: sans-serif; }
                                     </td>
                                 )}
                                 {hasCsLookup && (
-                                    <td style={{ color: item.cs_error ? '#dc2626' : (item.cs_ably_exists ? '#22c55e' : undefined) }}>
+                                    <td style={{ color: (item.cs_error || item.cs_zigzag_error) ? '#dc2626' : (item.cs_ably_exists || item.cs_zigzag_exists ? '#22c55e' : undefined) }}>
                                         {item.cs_error ? item.cs_error : item.cs_ably_exists === true ? (
                                             <button
                                                 type="button"
                                                 onClick={() => openCsDetail(item.cs_phone)}
                                                 style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}
                                             >
-                                                있음
+                                                에이블리 있음
                                             </button>
-                                        ) : item.cs_ably_exists === false ? '없음' : ''}
+                                        ) : item.cs_zigzag_exists === true ? (
+                                            <span style={{ color: '#eab308', fontWeight: 600 }}>
+                                                지그재그 있음{item.cs_zigzag_type ? ` (${item.cs_zigzag_type})` : ''}
+                                            </span>
+                                        ) : item.cs_zigzag_error ? item.cs_zigzag_error
+                                        : item.cs_ably_exists === false ? '없음' : ''}
                                     </td>
                                 )}
                                 {showSmsAction && (
@@ -1950,8 +2126,22 @@ body { background: #fff; font-family: sans-serif; }
                         <button className={pageStyles.secondaryBtn} onClick={handleReset}>
                             초기화
                         </button>
-                        <button type="button" className={pageStyles.secondaryBtn} onClick={openSpecialNoteModal}>
+                        <button
+                            type="button"
+                            className={pageStyles.secondaryBtn}
+                            onClick={openSpecialNoteModal}
+                            title={scannedSpecialInvoices.size > 0 ? '스캔된 특이사항 송장이 있습니다 (해당 항목을 삭제하기 전까지 계속 표시됩니다)' : undefined}
+                        >
                             특이사항
+                            <span style={{
+                                display: 'inline-block',
+                                width: 8,
+                                height: 8,
+                                borderRadius: '50%',
+                                marginLeft: 6,
+                                verticalAlign: 'middle',
+                                background: scannedSpecialInvoices.size > 0 ? '#dc2626' : '#d1d5db',
+                            }} />
                         </button>
                     </div>
                     {savedAt && <div className={pageStyles.metaLabel}>마지막 임시저장: {savedAt}</div>}
@@ -2053,7 +2243,7 @@ body { background: #fff; font-family: sans-serif; }
                                     <button
                                         type="button"
                                         className={pageStyles.primaryBtn}
-                                        onClick={() => handleEzadminReceiveStock(queues.seller.filter((i) => selectedSeller.has(i.id)))}
+                                        onClick={() => handleEzadminReceiveStock(queues.seller.filter((i) => selectedSeller.has(i.id)), 'seller')}
                                         disabled={stockinLoading || selectedSeller.size === 0}
                                     >
                                         {stockinLoading ? '처리 중...' : `이지어드민 입고처리 (${selectedSeller.size}건 선택)`}
@@ -2384,6 +2574,14 @@ body { background: #fff; font-family: sans-serif; }
                                     <button
                                         type="button"
                                         className={pageStyles.secondaryBtn}
+                                        onClick={() => handleUnmatchedSendToKimsungil(selectedUnmatched)}
+                                        disabled={kimsungilSendLoading || selectedUnmatched.size === 0}
+                                    >
+                                        {kimsungilSendLoading ? '처리 중...' : `김승일보내기 (${selectedUnmatched.size})`}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={pageStyles.secondaryBtn}
                                         onClick={() => handleUnmatchedPrintBarcodes(selectedUnmatched)}
                                         disabled={selectedUnmatched.size === 0}
                                     >
@@ -2414,6 +2612,21 @@ body { background: #fff; font-family: sans-serif; }
                                     title={lastSheetSeq ? `전표 ${lastSheetSeq} 바코드 출력` : '전표 생성 후 활성화'}
                                 >
                                     {barcodePrintLoading ? '출력 중...' : `바코드 출력${lastSheetSeq ? ` (${lastSheetSeq})` : ''}`}
+                                </button>
+                                <button
+                                    className={pageStyles.secondaryBtn}
+                                    onClick={handleIngoDaegi}
+                                    disabled={ingoDaegiLoading || !onebeRows.length}
+                                >
+                                    {ingoDaegiLoading ? '입고처리 중...' : '입고대기'}
+                                </button>
+                                <button
+                                    className={pageStyles.secondaryBtn}
+                                    onClick={handleRealIngo}
+                                    disabled={realIngoLoading || !onebeRows.length}
+                                    title="예약재고(입고대기)가 아닌 실제 재고로 즉시 입고 처리"
+                                >
+                                    {realIngoLoading ? '입고처리 중...' : '실입고'}
                                 </button>
                                 <button
                                     className={pageStyles.secondaryBtn}
@@ -2912,10 +3125,14 @@ body { background: #fff; font-family: sans-serif; }
                                 {!specialNoteListLoading && specialNoteList.length === 0 && (
                                     <div style={{ color: 'var(--text-secondary, #6b7280)' }}>등록된 특이사항이 없습니다.</div>
                                 )}
-                                {!specialNoteListLoading && specialNoteList.map((n) => (
+                                {!specialNoteListLoading && specialNoteList.map((n) => {
+                                    const isJustScanned = scannedSpecialInvoices.has(n.invoiceNo);
+                                    return (
                                     <div key={n.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--border-color, #e5e7eb)' }}>
                                         <div>
-                                            <div style={{ fontWeight: 600 }}>{n.invoiceNo}</div>
+                                            <div style={{ fontWeight: 600, color: isJustScanned ? '#dc2626' : undefined }}>
+                                                {isJustScanned ? '⚠ ' : ''}{n.invoiceNo}
+                                            </div>
                                             <div style={{ whiteSpace: 'pre-wrap' }}>{n.note}</div>
                                             <div style={{ fontSize: 12, color: 'var(--text-secondary, #6b7280)' }}>
                                                 {n.createdBy} · {n.createdAt}
@@ -2932,13 +3149,14 @@ body { background: #fff; font-family: sans-serif; }
                                             <button
                                                 type="button"
                                                 className={pageStyles.secondaryBtn}
-                                                onClick={() => handleDeleteSpecialNote(n.id)}
+                                                onClick={() => handleDeleteSpecialNote(n.id, n.invoiceNo)}
                                             >
                                                 삭제
                                             </button>
                                         </div>
                                     </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </div>
                     </div>
@@ -3129,14 +3347,50 @@ body { background: #fff; font-family: sans-serif; }
                                 <div>임시저장된 기록이 없습니다.</div>
                             ) : (
                                 snapshotList.map((item) => (
-                                    <button
-                                        key={item.id}
-                                        type="button"
-                                        className={pageStyles.secondaryBtn}
-                                        onClick={() => loadSnapshotById(item.id)}
-                                    >
-                                        {formatSnapshotTime(item.updated_at)}
-                                    </button>
+                                    <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                        {editingSnapshotId === item.id ? (
+                                            <>
+                                                <input
+                                                    type="text"
+                                                    autoFocus
+                                                    value={snapshotNameDraft}
+                                                    onChange={(e) => setSnapshotNameDraft(e.target.value)}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === 'Enter') saveSnapshotName(item.id);
+                                                        if (e.key === 'Escape') cancelEditSnapshotName();
+                                                    }}
+                                                    placeholder={formatSnapshotTime(item.updated_at)}
+                                                    maxLength={40}
+                                                    style={{ flex: 1, minWidth: 0 }}
+                                                />
+                                                <button type="button" className={pageStyles.secondaryBtn} onClick={() => saveSnapshotName(item.id)}>
+                                                    저장
+                                                </button>
+                                                <button type="button" className={pageStyles.secondaryBtn} onClick={cancelEditSnapshotName}>
+                                                    취소
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <button
+                                                    type="button"
+                                                    className={pageStyles.secondaryBtn}
+                                                    onClick={() => loadSnapshotById(item.id)}
+                                                    style={{ flex: 1, textAlign: 'left' }}
+                                                >
+                                                    {item.name || formatSnapshotTime(item.updated_at)}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className={pageStyles.secondaryBtn}
+                                                    onClick={() => startEditSnapshotName(item)}
+                                                    title="이름 변경"
+                                                >
+                                                    이름변경
+                                                </button>
+                                            </>
+                                        )}
+                                    </div>
                                 ))
                             )}
                         </div>

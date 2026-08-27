@@ -6,6 +6,7 @@ import io
 import json
 import re
 import httpx
+import xlwt
 from . import config
 
 _WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -91,6 +92,24 @@ def normalize_sms_row(row: dict) -> dict:
     }
 
 
+def _build_i200_stock_xls(items: list[dict]) -> bytes:
+    """I200(재고조정) 일괄 입고/출고 업로드용 엑셀 생성 (헤더: 상품코드/작업수량/메모).
+
+    실캡처(브라우저에서 상품 일괄 입고/출고 실행) 기준 업로드 파일 포맷 -
+    다른 화면들(barcode_routes/returns_routes 등)의 I200 업로드 엑셀과 동일한 헤더."""
+    book = xlwt.Workbook()
+    sheet = book.add_sheet("stock")
+    for col, header in enumerate(("상품코드", "작업수량", "메모")):
+        sheet.write(0, col, header)
+    for row_idx, item in enumerate(items, start=1):
+        sheet.write(row_idx, 0, str(item.get("product_id") or "").strip())
+        sheet.write(row_idx, 1, int(item.get("qty") or 0))
+        sheet.write(row_idx, 2, str(item.get("memo") or ""))
+    buf = io.BytesIO()
+    book.save(buf)
+    return buf.getvalue()
+
+
 class EzAdminSessionExpired(Exception):
     pass
 
@@ -140,7 +159,28 @@ class EzAdminClient:
         lowered = (body or "").lower()
         return bool((response.url and "login" in str(response.url).lower()) or "<html" in lowered or "<!doctype html" in lowered or any(t in lowered for t in ("login", "phpsessid", "session", "로그인")))
 
-    async def post(self, template: str, action: str, *, data: dict[str, Any] | None = None, par: str | None = None, files=None, time_flag: str | None = "browser", extra_headers: dict[str, str] | None = None) -> dict:
+    @staticmethod
+    def _looks_like_login_page(response: httpx.Response, body: str) -> bool:
+        """upload_new 전용 - looks_like_session_error보다 좁은 판별.
+
+        I200 upload_new는 정상 성공 시에도 JSON이 아닌 응답을 돌려준다(실캡처로
+        확인 안 됨 - 다른 I200 화면들의 raw httpx 구현이 전부 이 좁은 체크만
+        쓰는 것으로 미루어 짐작). looks_like_session_error를 그대로 쓰면 정상
+        응답의 흔한 단어(session/login 등 포함 가능성)를 세션 만료로 오판해
+        PHPSESSID가 멀쩡한데도 계속 재입력을 요구하게 된다."""
+        lowered = (body or "").lower()
+        if response.url and "login" in str(response.url).lower():
+            return True
+        return "login.htm" in lowered or "login_form" in lowered
+
+    async def post(self, template: str, action: str, *, data: dict[str, Any] | None = None, par: str | None = None, files=None, time_flag: str | None = "browser", extra_headers: dict[str, str] | None = None, require_json: bool = True) -> dict:
+        """``require_json=False``: 성공해도 JSON을 안 돌려주는 액션용(예: I200 upload_new).
+
+        기본 동작(``require_json=True``)은 "JSON이 아니면 세션 만료"로 간주하는데,
+        이 가정이 깨지는 액션마다 그동안 register_return_pickup/_ezdesk_post처럼
+        raw httpx를 새로 복붙해왔다 - 매번 같은 실수(정상 응답을 세션 만료로
+        오판)가 반복되는 근본 원인. ``require_json=False``면 좁은 로그인 페이지
+        판별(``_looks_like_login_page``)만 쓰고 상태코드/본문을 그대로 반환한다."""
         form: dict[str, Any] = {"template": template, "action": action, **(data or {})}
         if par is not None: form["par"] = par
         if time_flag: form.setdefault("timeFlag", self.time_flag(time_flag))
@@ -148,6 +188,12 @@ class EzAdminClient:
         async with httpx.AsyncClient(timeout=self._timeout, verify=False, follow_redirects=True) as client:
             response = await client.post(f"{config.EZADMIN_BASE}/function.htm", data=form, files=files, cookies={"PHPSESSID": self._phpsessid()}, headers=headers)
         body = (response.text or "").strip()
+        if not require_json:
+            if self._looks_like_login_page(response, body):
+                raise EzAdminSessionExpired(f"{template}/{action}: session expired or invalid")
+            if not (200 <= response.status_code < 300):
+                raise RuntimeError(f"{template}/{action}: HTTP {response.status_code}")
+            return {"status": response.status_code, "text": body}
         if self.looks_like_session_error(response, body): raise EzAdminSessionExpired(f"{template}/{action}: session expired or invalid")
         try: return response.json()
         except Exception as exc: raise EzAdminSessionExpired(f"{template}/{action}: non-JSON response") from exc
@@ -344,6 +390,71 @@ class EzAdminClient:
         처음 쓸 때는 결과를 확인해보는 게 좋다."""
         return await self.post("I100", "set_stock_data", data={"product_id": product_id, "bad": "0", "type": "in", "stock_label": "", "move_warehouse": "0", "stock_unit": "stock_unit_ea", "qty": str(qty), "memo": memo}, time_flag="browser")
 
+    # I200(재고조정) 일괄 입고/출고 - receive_stock/set_stock_data(I100, 상품 1건씩)와
+    # 달리 엑셀 한 장으로 여러 상품코드를 한 번에 처리한다. 실캡처(입고/출고 각각)로
+    # 확인된 3단계 흐름: upload_new(엑셀 업로드로 서버에 스테이징) ->
+    # load_template_data_new(스테이징된 목록 미리보기) -> apply_new(type="in"/"out"으로 확정).
+    # 이 템플릿의 요청들은 Referer가 popup25.htm이 아니라 template40.htm?template=I210으로
+    # 와야 정상 응답한다(실캡처로 확인됨) - 다른 I200 화면들도 전부 이 Referer를 쓴다.
+    _I200_REFERER = {"Referer": f"{config.EZADMIN_BASE}/template40.htm?template=I210"}
+
+    async def bulk_stock_upload(self, items: list[dict]) -> dict:
+        """I200 일괄 입고/출고 1단계: {"product_id", "qty", "memo"} 목록을 엑셀로 업로드해 서버에 스테이징.
+
+        업로드만으로는 재고에 반영되지 않는다 - bulk_stock_apply까지 호출해야 확정된다.
+        보통은 bulk_receive_stock/bulk_ship_stock으로 3단계를 한 번에 실행하는 편이 낫다.
+        """
+        if not items:
+            raise ValueError("items is required")
+        xls_bytes = _build_i200_stock_xls(items)
+        ts_ms = str(int(datetime.now().timestamp() * 1000))
+        return await self.post(
+            "I200", "upload_new",
+            files={"_file": (f"stock_{ts_ms}.xls", xls_bytes, "application/vnd.ms-excel")},
+            time_flag=None,
+            extra_headers=self._I200_REFERER,
+            require_json=False,
+        )
+
+    async def bulk_stock_preview(self, *, rows: int = 99999) -> dict:
+        """I200 일괄 입고/출고 2단계: 현재 스테이징된 상품 목록 미리보기 (apply_new 확정 전 확인용)."""
+        ts_ms = str(int(datetime.now().timestamp() * 1000))
+        return await self.post(
+            "I200", "load_template_data_new",
+            data={"_search": "false", "nd": ts_ms, "rows": str(rows), "page": "1", "sidx": "", "sord": "asc"},
+            time_flag=None,
+            extra_headers=self._I200_REFERER,
+        )
+
+    async def bulk_stock_apply(self, type_: str, *, bad: str = "0", move_warehouse: str = "0", save_stock: str = "0", stock_tag: str = "") -> dict:
+        """I200 일괄 입고/출고 3단계: 스테이징된 상품 목록을 type_="in"(입고)/"out"(출고)으로 확정.
+
+        성공 시 ``{"msg": "완료", "error": 0}`` 형태로 응답 - 호출부에서 ``error`` 값을 확인해야 함.
+        """
+        return await self.post(
+            "I200", "apply_new",
+            data={"bad": bad, "type": type_, "move_warehouse": move_warehouse, "save_stock": save_stock, "stock_tag": stock_tag},
+            extra_headers=self._I200_REFERER,
+        )
+
+    async def bulk_receive_stock(self, items: list[dict]) -> dict:
+        """상품코드/수량 목록으로 EZAdmin I200 일괄 입고처리 (업로드->미리보기->확정 3단계 자동 실행).
+
+        ``items``: ``[{"product_id": "S12345", "qty": 3, "memo": "..."}, ...]``
+        """
+        await self.bulk_stock_upload(items)
+        await self.bulk_stock_preview()
+        return await self.bulk_stock_apply("in")
+
+    async def bulk_ship_stock(self, items: list[dict]) -> dict:
+        """상품코드/수량 목록으로 EZAdmin I200 일괄 출고처리 (업로드->미리보기->확정 3단계 자동 실행).
+
+        ``items``: ``[{"product_id": "S12345", "qty": 3, "memo": "..."}, ...]``
+        """
+        await self.bulk_stock_upload(items)
+        await self.bulk_stock_preview()
+        return await self.bulk_stock_apply("out")
+
     async def get_pending_order_count(self, product_id: str) -> int:
         """I100(현재고조회)에서 상품코드로 검색해 '접수'(출고 전 대기 주문) 수량을 가져온다.
 
@@ -408,6 +519,46 @@ class EzAdminClient:
         match = re.search(r">(\d+)</a>", before_trans_html)
         pending = int(match.group(1)) if match else 0
         return {"stock": stock, "pending": pending}
+
+    async def get_stock_for_codes(self, product_ids: list[str]) -> dict[str, int]:
+        """I100(현재고조회)에서 여러 상품코드를 한 번에 검색해 코드별 재고(stock_normal)를 가져온다.
+
+        query_str에 상품코드를 ", "로 이어붙이면 이지어드민이 동시 검색을 지원한다
+        (실제 브라우저 요청 캡처로 확인). 응답 rows의 cell.key가 상품코드다
+        (wonbe_routes.py의 동일 I100/search 호출로 이미 확인된 필드).
+        """
+        codes = [str(c).strip() for c in product_ids if str(c).strip()]
+        if not codes:
+            return {}
+        today = datetime.now().strftime("%Y-%m-%d")
+        query_str = ", ".join(codes)
+        par = (
+            "auto_search=&search_all_product=&multi_supply_group=&multi_supply=&str_supply_code=0"
+            "&tags_string=&product_tag_include_type=1"
+            f"&query_type=product_id&query_str={query_str}"
+            "&stock_type=0&stock_start=&stock_end=&notrans_day=&notrans_cnt=&notrans_status=0&stock_status=0"
+            f"&start_date={today}&start_hour=00:00:00&end_date={today}&end_hour=23:59:59"
+            "&date_period_sel=1&work_type=stockin&work_start=&work_end=&inout_type=0&product_date="
+            f"&start_date2={today}&end_date2={today}&date_period_sel2=1"
+            "&products_sort=1&category=0&except_soldout=0&temp_soldout=0&location=0"
+        )
+        rows_count = max(200, len(codes) * 2)
+        data = await self.post(
+            "I100", "search",
+            data={"_search": "false", "rows": str(rows_count), "page": "1", "sidx": "", "sord": "asc", "page_code": "I100"},
+            par=par, time_flag=None,
+        )
+        result: dict[str, int] = {}
+        for row in data.get("rows") or []:
+            cell = (row or {}).get("cell") or {}
+            code = str(cell.get("key") or "").strip()
+            if not code:
+                continue
+            try:
+                result[code] = int(float(cell.get("stock_normal") or 0))
+            except (TypeError, ValueError):
+                result[code] = 0
+        return result
 
     async def sms_chat_detail(
         self,

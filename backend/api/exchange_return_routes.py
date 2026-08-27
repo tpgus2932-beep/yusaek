@@ -73,7 +73,7 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                 },
             )
             res.raise_for_status()
-        token = res.json().get("token")
+        token = res.json().get("access_token") or res.json().get("token")
         if not token:
             raise HTTPException(status_code=502, detail="에이블리 로그인 실패")
         return token
@@ -650,6 +650,285 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
             "failed": failed,
         }
 
+    async def _register_exchange_ezadmin(phpsessid: str, invoices: list[str]) -> dict:
+        """송장번호 목록을 EZAdmin DS05/DS00으로 회수등록한다 (교환회수 전체처리와
+        판매자 부담 건 개별처리가 공유). 에이블리 교환승인은 별도(_approve_exchanges_ably)."""
+        if not invoices:
+            return {"ok": False, "error": "처리할 송장번호가 없습니다."}
+
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("Sheet1")
+        sheet.write(0, 0, "송장번호")
+        for i, inv in enumerate(invoices, start=1):
+            sheet.write(i, 0, inv)
+        buf = io.BytesIO()
+        book.save(buf)
+        xls_bytes = buf.getvalue()
+
+        ez_headers_base = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": f"{_EZADMIN_BASE}/popup35.htm?template=DS05&set_batch_cs=1",
+        }
+        async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as ez_client:
+            upload_res = await ez_client.post(
+                f"{_EZADMIN_BASE}/popup35.htm",
+                data={"template": "DS05", "action": "update_batch_cs", "set_batch_cs": "1", "set_order_label": ""},
+                files={"_file": ("exchange_invoice.xls", xls_bytes, "application/vnd.ms-excel")},
+                cookies={"PHPSESSID": phpsessid},
+                headers=ez_headers_base,
+            )
+            upload_body = (upload_res.text or "").strip()
+            m = re.search(r"batch_cs_\w+", upload_body)
+            if not m:
+                if _looks_like_ezadmin_session_error(upload_res, upload_body):
+                    return {"ok": False, "need_session": True}
+                return {"ok": False, "error": f"EZAdmin 업로드 실패: {upload_body[:200]}"}
+            table_name = m.group(0)
+
+            now_kst = datetime.now(_KST)
+            set_res = await ez_client.post(
+                f"{_EZADMIN_BASE}/function.htm",
+                data={
+                    "template": "DS00", "action": "set_batch_cs", "work": "takeback",
+                    "table_name": table_name, "cs_reason": "일반", "arr_product": "[]",
+                    "receiver_seq": "8", "receiver_name": "유색",
+                    "receiver_tel1": "010", "receiver_tel2": "25466058",
+                    "receiver_mobile1": "010", "receiver_mobile2": "25466058",
+                    "receiver_zip1": "122", "receiver_zip2": "47",
+                    "receiver_address": "경기 남양주시 진건읍 진관로303번길 9-1 (배양리) JH대리점",
+                    "trans_who": "04", "trans_due_date": now_kst.strftime("%Y-%m-%d"),
+                    "timeFlag": _browser_time_flag(now_kst),
+                    "cs_content": "", "seq": "", "cancel_pack": "0", "recover_pack": "0",
+                    "delete_pack": "0", "priority": "0", "auto_restockin_all": "0",
+                    "auto_restockin_all_bad": "0", "restockin_ex": "0",
+                    "update_unhold": "0", "unhold": "0", "set_cs_top_fix": "0",
+                },
+                cookies={"PHPSESSID": phpsessid},
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "Referer": f"{_EZADMIN_BASE}/popup35.htm?template=DS05",
+                },
+            )
+            set_body = (set_res.text or "").strip()
+            if _looks_like_ezadmin_session_error(set_res, set_body):
+                return {"ok": False, "need_session": True}
+
+        return {"ok": True, "invoice_count": len(invoices)}
+
+    def _map_exchange_item(item: dict) -> dict:
+        return {
+            "exchange_item_sno":        item.get("exchange_item_sno") or item.get("sno"),
+            "exchange_goods_option_sno": (
+                item.get("exchange_goods_option_sno")
+                or (item.get("exchange_goods_option") or {}).get("sno")
+            ),
+        }
+
+    async def _approve_exchanges_ably(token: str, pickup_exchanges: list[dict]) -> int:
+        approve_body = {"exchanges": [
+            {
+                "sno": ex["exchange_sno"],
+                "reason_code": ex["reason_code"],
+                "exchange_items": [_map_exchange_item(i) for i in ex["exchange_items"]],
+                "return_delivery": ex["return_delivery"],
+                "exchange_delivery": ex["exchange_delivery"],
+            }
+            for ex in pickup_exchanges
+        ]}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            approve_res = await client.post(
+                f"{ABLY_BASE}/seller/exchanges/approve/",
+                headers=_ably_headers(token),
+                json=approve_body,
+            )
+        return approve_res.status_code
+
+    def _send_exchange_pickup_sms(sms_recipients: list[dict]) -> int:
+        """반품 최초 접수 템플릿 재사용으로 문자 발송. sms_recipients: [{tel, name, goods_name}]."""
+        sms_queued = 0
+        if enqueue_sms and sms_recipients and get_db:
+            import os
+            sender = os.environ.get("ALIGO_SENDER", "").strip()
+            if sender:
+                conn = get_db()
+                try:
+                    tmpl = conn.execute(
+                        "SELECT msg, title, msg_type FROM sms_templates WHERE name = ?",
+                        ("반품 최초 접수",),
+                    ).fetchone()
+                finally:
+                    conn.close()
+                if tmpl and tmpl["msg"]:
+                    for r in sms_recipients:
+                        msg = tmpl["msg"]
+                        msg = msg.replace("{이름}", r["name"])
+                        msg = msg.replace("{수령인}", r["name"])
+                        msg = msg.replace("{상품명}", r["goods_name"])
+                        try:
+                            enqueue_sms(
+                                {
+                                    "receiver": r["tel"],
+                                    "msg": msg,
+                                    "msg_type": tmpl["msg_type"] or "LMS",
+                                    "title": tmpl["title"] or "",
+                                    "sender": sender,
+                                },
+                                "auto-exchange-pickup",
+                            )
+                            sms_queued += 1
+                        except Exception:
+                            pass
+        return sms_queued
+
+    @router.get("/seller-fault-pending")
+    async def exchange_seller_fault_pending(user=Depends(get_current_user)):
+        """판매자 부담(reason_code=2, 상품 하자)으로 교환회수 자동처리에서 제외된
+        건을 에이블리에서 실시간으로 다시 조회해 반환한다.
+
+        return_shipping_routes.py의 seller-fault-pending과 같은 취지 - 스냅샷을
+        따로 두지 않는다. status[]=2(교환요청)로만 필터링하므로, 개별처리
+        (process-exchange-pickup-single)로 승인하면 status가 바뀌어 다음
+        조회부터 자연히 목록에서 빠진다.
+        """
+        try:
+            token = await _ably_login()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        end_date = datetime.today().strftime("%Y-%m-%d")
+        start_date = (datetime.today() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        seller_fault_exchanges = []
+        page = 1
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while True:
+                res = await client.get(
+                    f"{ABLY_BASE}/seller/exchanges/",
+                    headers=_ably_headers(token),
+                    params={
+                        "page": page,
+                        "per_page": 30,
+                        "requested_at_start": f"{start_date} 00:00:00",
+                        "requested_at_end": f"{end_date} 23:59:59",
+                        "status[]": 2,
+                    },
+                )
+                res.raise_for_status()
+                data = res.json()
+                for ex in data.get("exchanges", []):
+                    if ex.get("reason_code") != 2:
+                        continue
+                    items_list = ex.get("exchange_items") or []
+                    if not items_list:
+                        continue
+                    first = items_list[0]
+                    order_item = first.get("order_item") or {}
+                    seller_fault_exchanges.append({
+                        "exchange_sno": ex.get("exchange_sno") or ex.get("sno"),
+                        "reason_code": ex.get("reason_code"),
+                        "detail_reason": ex.get("detail_reason") or "",
+                        "images": ex.get("exchange_reason_image_urls") or [],
+                        "order_item_sno": first.get("order_item_sno"),
+                        "exchange_items": items_list,
+                        "return_delivery": ex.get("return_delivery") or {},
+                        "exchange_delivery": ex.get("exchange_delivery") or {},
+                        "goods_name": order_item.get("goods_name") or first.get("goods_name") or "",
+                    })
+                if page >= data.get("max_page_number", 1):
+                    break
+                page += 1
+
+        if not seller_fault_exchanges:
+            return {"ok": True, "items": []}
+
+        async def _fetch_detail(client: httpx.AsyncClient, sno):
+            if not sno:
+                return {}
+            try:
+                r = await client.get(f"{ABLY_BASE}/seller/order_items/{sno}/", headers=_ably_headers(token))
+                if r.status_code != 200:
+                    return {}
+                item = r.json().get("order_item") or {}
+                tel_raw = item.get("buyer_tel") or item.get("receiver_tel") or ""
+                return {
+                    "invoice": str(item.get("invoice") or "").strip(),
+                    "buyer_tel": "".join(ch for ch in str(tel_raw) if ch.isdigit()),
+                    "buyer_name": str(item.get("receiver_name") or item.get("buyer_name") or "").strip(),
+                }
+            except Exception:
+                return {}
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            details = await asyncio.gather(
+                *(_fetch_detail(client, ex["order_item_sno"]) for ex in seller_fault_exchanges)
+            )
+
+        items_out = [
+            {
+                "exchange_sno": ex["exchange_sno"],
+                "reason_code": ex["reason_code"],
+                "reason": "상품 하자/오배송",
+                "detail_reason": ex["detail_reason"],
+                "images": ex["images"],
+                "goods_name": ex["goods_name"],
+                "invoice": detail.get("invoice", ""),
+                "buyer_tel": detail.get("buyer_tel", ""),
+                "buyer_name": detail.get("buyer_name", ""),
+                "order_item_sno": ex["order_item_sno"],
+                "exchange_items": ex["exchange_items"],
+                "return_delivery": ex["return_delivery"],
+                "exchange_delivery": ex["exchange_delivery"],
+            }
+            for ex, detail in zip(seller_fault_exchanges, details)
+        ]
+        return {"ok": True, "items": items_out}
+
+    @router.post("/process-exchange-pickup-single")
+    async def process_exchange_pickup_single(payload: dict = Body(...), user=Depends(get_current_user)):
+        """판매자 부담(reason_code=2)으로 자동처리에서 제외된 교환건 하나를 수동으로
+        개별 실행처리한다. 사진/사유를 확인한 담당자가 예외적으로 진행하기로
+        판단한 건에 한해 전체처리와 동일한 EZAdmin 회수등록 + 에이블리 교환승인 +
+        반품 최초 접수 문자발송을 그 한 건에 대해서만 수행한다.
+        """
+        phpsessid = get_setting(_EZADMIN_SESSION_KEY)
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        invoice = str(payload.get("invoice") or "").strip()
+        if not invoice:
+            raise HTTPException(status_code=400, detail="송장번호가 필요합니다.")
+
+        try:
+            token = await _ably_login()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        ez_result = await _register_exchange_ezadmin(phpsessid, [invoice])
+        if not ez_result.get("ok"):
+            return ez_result
+
+        ex = {
+            "exchange_sno": payload.get("exchange_sno"),
+            "reason_code": payload.get("reason_code"),
+            "exchange_items": payload.get("exchange_items") or [],
+            "return_delivery": payload.get("return_delivery") or {},
+            "exchange_delivery": payload.get("exchange_delivery") or {},
+        }
+        approve_status = await _approve_exchanges_ably(token, [ex])
+
+        tel = "".join(ch for ch in str(payload.get("buyer_tel") or "") if ch.isdigit())
+        sms_queued = 0
+        if tel:
+            sms_queued = _send_exchange_pickup_sms([{
+                "tel": tel,
+                "name": str(payload.get("buyer_name") or "").strip(),
+                "goods_name": str(payload.get("goods_name") or "").strip(),
+            }])
+
+        return {"ok": True, "invoice_count": 1, "approve_status": approve_status, "sms_queued": sms_queued}
+
     @router.post("/process-exchange-pickup")
     async def process_exchange_pickup(user=Depends(get_current_user)):
         phpsessid = get_setting(_EZADMIN_SESSION_KEY)
@@ -764,130 +1043,12 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         if not invoices:
             return {"ok": False, "error": "유효한 송장번호가 없습니다"}
 
-        # EZAdmin 회수등록
-        book = xlwt.Workbook()
-        sheet = book.add_sheet("Sheet1")
-        sheet.write(0, 0, "송장번호")
-        for i, inv in enumerate(invoices, start=1):
-            sheet.write(i, 0, inv)
-        buf = io.BytesIO()
-        book.save(buf)
-        xls_bytes = buf.getvalue()
+        ez_result = await _register_exchange_ezadmin(phpsessid, invoices)
+        if not ez_result.get("ok"):
+            return ez_result
 
-        ez_headers_base = {
-            "User-Agent": "Mozilla/5.0",
-            "Referer": f"{_EZADMIN_BASE}/popup35.htm?template=DS05&set_batch_cs=1",
-        }
-        ezadmin_ok = False
-        async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as ez_client:
-            upload_res = await ez_client.post(
-                f"{_EZADMIN_BASE}/popup35.htm",
-                data={"template": "DS05", "action": "update_batch_cs", "set_batch_cs": "1", "set_order_label": ""},
-                files={"_file": ("exchange_invoice.xls", xls_bytes, "application/vnd.ms-excel")},
-                cookies={"PHPSESSID": phpsessid},
-                headers=ez_headers_base,
-            )
-            upload_body = (upload_res.text or "").strip()
-            m = re.search(r"batch_cs_\w+", upload_body)
-            if not m:
-                if _looks_like_ezadmin_session_error(upload_res, upload_body):
-                    return {"ok": False, "need_session": True}
-                return {"ok": False, "error": f"EZAdmin 업로드 실패: {upload_body[:200]}"}
-            table_name = m.group(0)
-
-            now_kst = datetime.now(_KST)
-            set_res = await ez_client.post(
-                f"{_EZADMIN_BASE}/function.htm",
-                data={
-                    "template": "DS00", "action": "set_batch_cs", "work": "takeback",
-                    "table_name": table_name, "cs_reason": "일반", "arr_product": "[]",
-                    "receiver_seq": "8", "receiver_name": "유색",
-                    "receiver_tel1": "010", "receiver_tel2": "25466058",
-                    "receiver_mobile1": "010", "receiver_mobile2": "25466058",
-                    "receiver_zip1": "120", "receiver_zip2": "10",
-                    "receiver_address": "경기 남양주시 진접읍 장현리 51-1 롯데오성대리점 (유색)",
-                    "trans_who": "04", "trans_due_date": now_kst.strftime("%Y-%m-%d"),
-                    "timeFlag": _browser_time_flag(now_kst),
-                    "cs_content": "", "seq": "", "cancel_pack": "0", "recover_pack": "0",
-                    "delete_pack": "0", "priority": "0", "auto_restockin_all": "0",
-                    "auto_restockin_all_bad": "0", "restockin_ex": "0",
-                    "update_unhold": "0", "unhold": "0", "set_cs_top_fix": "0",
-                },
-                cookies={"PHPSESSID": phpsessid},
-                headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "X-Requested-With": "XMLHttpRequest",
-                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                    "Referer": f"{_EZADMIN_BASE}/popup35.htm?template=DS05",
-                },
-            )
-            set_body = (set_res.text or "").strip()
-            if _looks_like_ezadmin_session_error(set_res, set_body):
-                return {"ok": False, "need_session": True}
-            ezadmin_ok = True
-
-        # 에이블리 교환접수 승인
-        def _map_exchange_item(item: dict) -> dict:
-            return {
-                "exchange_item_sno":        item.get("exchange_item_sno") or item.get("sno"),
-                "exchange_goods_option_sno": (
-                    item.get("exchange_goods_option_sno")
-                    or (item.get("exchange_goods_option") or {}).get("sno")
-                ),
-            }
-
-        approve_body = {"exchanges": [
-            {
-                "sno": ex["exchange_sno"],
-                "reason_code": ex["reason_code"],
-                "exchange_items": [_map_exchange_item(i) for i in ex["exchange_items"]],
-                "return_delivery": ex["return_delivery"],
-                "exchange_delivery": ex["exchange_delivery"],
-            }
-            for ex in pickup_exchanges
-        ]}
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            approve_res = await client.post(
-                f"{ABLY_BASE}/seller/exchanges/approve/",
-                headers=_ably_headers(token),
-                json=approve_body,
-            )
-        approve_status = approve_res.status_code
-
-        # SMS 발송 — 반품 최초 접수 템플릿 재사용
-        sms_queued = 0
-        if enqueue_sms and sms_recipients and get_db:
-            import os
-            sender = os.environ.get("ALIGO_SENDER", "").strip()
-            if sender:
-                conn = get_db()
-                try:
-                    tmpl = conn.execute(
-                        "SELECT msg, title, msg_type FROM sms_templates WHERE name = ?",
-                        ("반품 최초 접수",),
-                    ).fetchone()
-                finally:
-                    conn.close()
-                if tmpl and tmpl["msg"]:
-                    for r in sms_recipients:
-                        msg = tmpl["msg"]
-                        msg = msg.replace("{이름}", r["name"])
-                        msg = msg.replace("{수령인}", r["name"])
-                        msg = msg.replace("{상품명}", r["goods_name"])
-                        try:
-                            enqueue_sms(
-                                {
-                                    "receiver": r["tel"],
-                                    "msg": msg,
-                                    "msg_type": tmpl["msg_type"] or "LMS",
-                                    "title": tmpl["title"] or "",
-                                    "sender": sender,
-                                },
-                                "auto-exchange-pickup",
-                            )
-                            sms_queued += 1
-                        except Exception:
-                            pass
+        approve_status = await _approve_exchanges_ably(token, pickup_exchanges)
+        sms_queued = _send_exchange_pickup_sms(sms_recipients)
 
         # 체크리스트 "오늘 실행됨" 표시는 회수신청/에이블리 승인까지 끝난
         # 뒤에만 기록한다 - 도중에 새로고침/예외가 나면 done_today가 false로 남는다.
@@ -899,7 +1060,7 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
             "exchange_count": len(exchanges),
             "seller_fault_excluded": seller_fault_count,
             "invoice_count": len(invoices),
-            "ezadmin_ok": ezadmin_ok,
+            "ezadmin_ok": True,
             "approve_status": approve_status,
             "sms_queued": sms_queued,
         }

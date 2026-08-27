@@ -117,6 +117,78 @@
   user-select: none;
 }
 
+/* ── Sub-tab bar (자동 스캔 / 개별 추가 현황) ── */
+.subTabBar {
+  display: flex;
+  gap: 0.4rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.subTabBtn {
+  padding: 0.55rem 0.9rem;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-muted);
+  font-weight: 700;
+  font-size: 0.85rem;
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+
+.subTabBtn:hover {
+  color: var(--text-primary);
+}
+
+.subTabActive {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-black);
+}
+
+[data-theme='dark'] .subTabActive {
+  border-bottom-color: var(--accent-white);
+}
+
+/* ── Manual invoices tab ── */
+.manualTabContent {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.manualAddRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.manualInput {
+  min-height: 40px;
+  padding: 0 0.65rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.85rem;
+  width: 180px;
+}
+
+.manualReasonInput {
+  min-height: 40px;
+  padding: 0 0.65rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.85rem;
+  width: 260px;
+  flex: 1;
+  min-width: 160px;
+}
+
 .selectAllLabel {
   display: inline-flex;
   align-items: center;

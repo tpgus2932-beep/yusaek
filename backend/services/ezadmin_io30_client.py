@@ -32,19 +32,24 @@ def to_int(value, default: int = 0) -> int:
 
 
 def _io30_par(shop_par_fragment: str, start_date: str, end_date: str) -> str:
+    # 실제 브라우저(출고.har)에서 캡처한 IO30 조회 요청과 동일한 파라미터.
+    # 샵 필터만 shop_par_fragment로 에이블리(10028) 등으로 좁혀서 쓴다 — 나머지
+    # (stock_option/nostock_option/include_trans/sel_lack_qty/sel_req_qty 등)는
+    # 브라우저가 실제로 보내는 값과 다르면 EZAdmin이 다른 결과를 줄 수 있어서
+    # 그대로 맞춘다.
     return (
         "template=IO30&action=&page_code=IO00&search=1&now_page=&is_sort=&"
-        "_sort=supply_options&sort_order=1&product_qty_list=&bill_seq=&"
+        "_sort=undefined&sort_order=0&product_qty_list=&bill_seq=&"
         "offset_top=&work_no=&location_str=&date_type=collect_date&"
         f"start_date={start_date}&start_hour=00%3A00%3A00&"
         f"end_date={end_date}&end_hour=23%3A59%3A59&"
-        f"date_period_sel=9&{shop_par_fragment}&"
+        f"date_period_sel=0&{shop_par_fragment}&"
         "multi_supply_group=&multi_supply=&str_supply_code=0&"
         "supply_name_search=&brand=&supply_options=&tags_string=&"
         "product_tag_include_type=1&product_id=&name=&options=&"
         "search_keyword_type=origin&search_keyword=&enable_stock_type=2&"
-        "order_status=3&except_soldout=1&sel_reserve_qty=none&"
-        "sel_return_qty=none&sel_lack_qty=none&sel_req_qty=none&category=0"
+        "order_status=3&stock_option=1&nostock_option=1&except_soldout=1&include_trans=1&"
+        "sel_reserve_qty=none&sel_return_qty=none&sel_lack_qty=delete&sel_req_qty=delete&category=0"
     )
 
 

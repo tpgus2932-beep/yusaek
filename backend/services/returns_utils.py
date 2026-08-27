@@ -275,6 +275,20 @@ def _return_queue_payload(state: ReturnState) -> dict:
     legacy_exchange = list(state.queue_exchange)
     if legacy_exchange:
         exchange_customer.extend(legacy_exchange)
+
+    # 같은 스캔송장이 미매칭 큐에 여러 번 쌓였을 수 있으므로(세션 복원 등으로
+    # scanned_barcodes 체크를 우회하는 경로가 있음) 응답을 만들 때마다 정리해서
+    # 스캔송장당 한 개만 남긴다.
+    seen_scans = set()
+    deduped_unmatched = []
+    for item in state.queue_unmatched:
+        scan = item.get("scan")
+        if scan in seen_scans:
+            continue
+        seen_scans.add(scan)
+        deduped_unmatched.append(item)
+    state.queue_unmatched = deduped_unmatched
+
     return {
         "seller": state.queue_seller,
         "customer": state.queue_customer,

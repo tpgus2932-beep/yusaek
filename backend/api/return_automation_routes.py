@@ -52,7 +52,7 @@ def business_days_since(value: str | None, today: date | None = None) -> int | N
         count += int(_workday(cur)); cur += timedelta(days=1)
     return count
 
-def build_return_automation_router(*, get_current_user, get_shared_db, get_setting, set_setting, get_sms_templates):
+def build_return_automation_router(*, get_current_user, get_shared_db, get_setting, set_setting, get_sms_templates, get_notes_db):
     router = APIRouter(prefix="/return-automation")
 
     @router.get("/ezdesk-session")
@@ -73,7 +73,180 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
         total_count INTEGER NOT NULL DEFAULT 0, target_count INTEGER NOT NULL DEFAULT 0, success_count INTEGER NOT NULL DEFAULT 0, failure_count INTEGER NOT NULL DEFAULT 0)"""); conn.execute("""CREATE TABLE IF NOT EXISTS return_automation_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, order_no TEXT, invoice_no TEXT, return_invoice_no TEXT,
         return_date TEXT, logis_json TEXT, input_time TEXT, elapsed_status TEXT, last_direction TEXT, received_content TEXT,
-        selected_template TEXT, sms_result TEXT, pickup_result TEXT, error TEXT, processed_at TEXT)"""); conn.commit(); conn.close()
+        selected_template TEXT, sms_result TEXT, pickup_result TEXT, error TEXT, processed_at TEXT)"""); conn.execute("""CREATE TABLE IF NOT EXISTS return_automation_manual_invoices (
+        invoice_no TEXT PRIMARY KEY, reason TEXT NOT NULL DEFAULT '', added_at TEXT NOT NULL, added_by TEXT NOT NULL)""")
+    # return_automation_manual_invoices가 reason 컬럼 도입 이전에 이미 생성돼 있던
+    # 환경(로컬 app.db 등)에서는 CREATE TABLE IF NOT EXISTS가 no-op이라 컬럼이 영영
+    # 추가되지 않는다 - PRAGMA로 확인 후 없으면 ALTER TABLE로 보강한다.
+    manual_invoices_cols = [r["name"] for r in conn.execute("PRAGMA table_info(return_automation_manual_invoices)").fetchall()]
+    if "reason" not in manual_invoices_cols:
+        conn.execute("ALTER TABLE return_automation_manual_invoices ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
+    conn.commit(); conn.close()
+
+    # 30일 자동스캔에 걸리지 않는 건(기간 초과, 에이블리 누락 등)을 사용자가
+    # 송장번호+사유로 직접 추적 목록에 얹을 수 있게 한다. 실제 상태 조회는
+    # _process_manual_invoice가 자동스캔과 같은 파이프라인(LOGIS + EZAdmin CS)으로
+    # 매번 다시 한다 - 여기 테이블은 "추적할 송장번호 목록"만 들고 있는다.
+    @router.get("/manual-invoices")
+    async def list_manual_invoices(user=Depends(get_current_user)):
+        conn = get_shared_db()
+        rows = [dict(x) for x in conn.execute("SELECT * FROM return_automation_manual_invoices ORDER BY added_at DESC")]
+        conn.close()
+        return {"ok": True, "invoices": rows}
+
+    @router.post("/manual-invoices")
+    async def add_manual_invoice(payload: dict = Body(...), user=Depends(get_current_user)):
+        invoice_no = str(payload.get("invoice_no") or "").strip()
+        reason = str(payload.get("reason") or "").strip()
+        if not invoice_no:
+            raise HTTPException(status_code=400, detail="송장번호를 입력하세요.")
+        conn = get_shared_db()
+        conn.execute(
+            "INSERT INTO return_automation_manual_invoices (invoice_no, reason, added_at, added_by) VALUES (?,?,?,?) "
+            "ON CONFLICT(invoice_no) DO UPDATE SET reason=excluded.reason",
+            (invoice_no, reason, datetime.now(KST).isoformat(), user),
+        )
+        conn.commit(); conn.close()
+        return {"ok": True}
+
+    @router.delete("/manual-invoices/{invoice_no}")
+    async def remove_manual_invoice(invoice_no: str, user=Depends(get_current_user)):
+        conn = get_shared_db()
+        conn.execute("DELETE FROM return_automation_manual_invoices WHERE invoice_no=?", (invoice_no,))
+        conn.commit(); conn.close()
+        return {"ok": True}
+
+    # 반품 특이사항(return_special_notes)에 등록된 송장번호+내용을 개별 추가
+    # 현황 목록으로 가져온다 - 반품 특이사항에 먼저 등록해둔 건을 이 대시보드의
+    # 자동추적 파이프라인(LOGIS 반송장 조회 + EZAdmin CS 이력)으로도 상태를
+    # 확인하고 싶을 때 쓴다. 이미 개별 추가된 송장이면 사유만 최신 내용으로
+    # 갱신한다(add_manual_invoice와 같은 ON CONFLICT 규칙).
+    @router.post("/manual-invoices/sync-special-notes")
+    async def sync_manual_invoices_special_notes(user=Depends(get_current_user)):
+        notes_conn = get_notes_db()
+        try:
+            notes = [
+                dict(x) for x in notes_conn.execute(
+                    "SELECT invoice_no, note FROM return_special_notes WHERE TRIM(invoice_no) != ''"
+                )
+            ]
+        finally:
+            notes_conn.close()
+        if not notes:
+            return {"ok": True, "synced_count": 0}
+        now = datetime.now(KST).isoformat()
+        conn = get_shared_db()
+        try:
+            for n in notes:
+                conn.execute(
+                    "INSERT INTO return_automation_manual_invoices (invoice_no, reason, added_at, added_by) VALUES (?,?,?,?) "
+                    "ON CONFLICT(invoice_no) DO UPDATE SET reason=excluded.reason",
+                    (n["invoice_no"], n["note"], now, user),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "synced_count": len(notes)}
+
+    # preview()의 자동스캔 결과와 개별추가 탭의 단독 상태조회가 모두 이 헬퍼를
+    # 공유한다 - 자동스캔 items에 합칠 때와, 개별추가 탭에서 30일 스캔 없이
+    # 상태만 확인할 때 둘 다 같은 판정 로직(LOGIS 반송장 유무 → EZAdmin CS 이력
+    # → PASS/WAIT/... )을 타야 하기 때문이다.
+    async def _process_manual_invoice(inv: str, *, logis: LLogisClient, ez: EzAdminClient, now: datetime, end: str):
+        stage = "LLOGIS_RETURN_STATUS"
+        try:
+            logis_data = await logis.query_return_status(inv)
+            return_invoice = str(logis_data.get("llogis_return_invoice_no") or "").strip()
+            if return_invoice:
+                return None  # 이미 반송장 등록됨 - 해결된 건이므로 추적 목록에서 내린다
+            item = {
+                "manual": True, "order_no": "", "cancel_sno": "", "invoice_no": inv,
+                "return_invoice_no": "", "return_date": None,
+                "logis": logis_data, "logis_found": bool(logis_data.get("llogis_status") not in (None, "", "-")),
+                "has_return_invoice": False, "elapsed_status": "NO_RETURN_INVOICE",
+                "last_direction": "", "received_content": "", "messages": [], "input_time": None,
+                "phone": "", "sms_sent_count": 0, "sms_sent_history": [],
+            }
+            stage = "EZADMIN_ORDER_SEARCH"
+            search_start = (now - timedelta(days=365)).strftime("%Y-%m-%d")
+            found = await ez.find_order_by_invoice(inv, start_date=search_start, end_date=end)
+            seq = (found or {}).get("pack")
+            item["phone"] = (found or {}).get("phone") or ""
+            if seq:
+                stage = "EZADMIN_CS_HISTORY"
+                history = await ez.get_cs_history(seq)
+                cs_msgs = sorted((_message(x) for x in _messages(history)), key=lambda x: str(x.get("input_time") or ""))
+                sms_msgs = []
+                if item["phone"]:
+                    try:
+                        sms = await ez.sms_chat_detail(item["phone"], config.EZDESK_SMS_SENDER)
+                        sms_msgs = sorted((_message(x) for x in _messages(sms)), key=lambda x: str(x.get("input_time") or ""))
+                    except Exception as sms_exc:
+                        item["sms_error"] = str(sms_exc)
+                item["messages"] = sms_msgs
+                sent_msgs = [x for x in sms_msgs if x["direction"] == "sent"]
+                item["sms_sent_count"] = len(sent_msgs)
+                item["sms_sent_history"] = sent_msgs
+                if cs_msgs:
+                    cs_last = cs_msgs[-1]
+                    sms_last = sms_msgs[-1] if sms_msgs else {}
+                    item.update(input_time=cs_last["input_time"], last_direction=sms_last.get("direction", ""), received_content="\n".join(x["content"] for x in sms_msgs if x["direction"] == "received"), elapsed_status="PASS" if (business_days_since(cs_last["input_time"]) or 0) >= 2 else "WAIT")
+                else:
+                    item["elapsed_status"] = "CS_EMPTY"
+            else:
+                item["elapsed_status"] = "CS_SEQ_MISSING"
+            item["eligible"] = item.get("elapsed_status") == "PASS"
+            return item
+        except EzAdminSessionExpired:
+            raise
+        except Exception as item_exc:
+            return {
+                "manual": True, "order_no": "", "cancel_sno": "", "invoice_no": inv,
+                "return_invoice_no": "", "return_date": None,
+                "logis": {}, "logis_found": False, "has_return_invoice": False,
+                "elapsed_status": "ERROR", "last_direction": "", "received_content": "",
+                "messages": [], "eligible": False, "input_time": None,
+                "error": str(item_exc), "error_stage": stage, "phone": "",
+                "sms_sent_count": 0, "sms_sent_history": [],
+            }
+
+    @router.post("/manual-invoices/status")
+    async def manual_invoices_status(user=Depends(get_current_user)):
+        """개별추가 탭 전용 - 30일 에이블리 스캔 없이 개별추가된 송장번호만 빠르게 상태 확인."""
+        now = datetime.now(KST); end = now.strftime("%Y-%m-%d")
+        conn = get_shared_db()
+        manual_rows = [dict(x) for x in conn.execute("SELECT * FROM return_automation_manual_invoices ORDER BY added_at DESC")]
+        conn.close()
+        if not manual_rows:
+            return {"ok": True, "items": []}
+        try:
+            logis = LLogisClient(); ez = EzAdminClient(get_setting)
+            results = await asyncio.gather(
+                *(_process_manual_invoice(str(r["invoice_no"]), logis=logis, ez=ez, now=now, end=end) for r in manual_rows)
+            )
+        except EzAdminSessionExpired as exc:
+            raise HTTPException(status_code=401, detail=f"EZAdmin 세션이 만료되었습니다: {exc}")
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+        resolved_invoices = []
+        items = []
+        for row, result in zip(manual_rows, results):
+            inv = str(row["invoice_no"])
+            if result is None:
+                resolved_invoices.append(inv)
+                continue
+            result["reason"] = row.get("reason") or ""
+            result["added_at"] = row.get("added_at")
+            result["added_by"] = row.get("added_by")
+            items.append(result)
+        if resolved_invoices:
+            resolved_conn = get_shared_db()
+            resolved_conn.executemany(
+                "DELETE FROM return_automation_manual_invoices WHERE invoice_no=?",
+                [(inv,) for inv in resolved_invoices],
+            )
+            resolved_conn.commit(); resolved_conn.close()
+        return {"ok": True, "items": items, "resolved_invoices": resolved_invoices}
 
     @router.post("/preview")
     async def preview(user=Depends(get_current_user)):
@@ -365,6 +538,37 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
                 for result in exchange_results:
                     if result is not None:
                         items.append(result)
+
+            # 개별로 추가한 송장번호(자동스캔이 못 잡는 30일 초과/누락 건)도 매
+            # 조회마다 같은 파이프라인(LOGIS 반송장 조회 → EZAdmin 주문검색 → CS
+            # 이력)으로 상태를 다시 확인해 items에 합친다. 이미 자동스캔에 잡힌
+            # 송장이면 중복 처리하지 않는다.
+            manual_conn = get_shared_db()
+            manual_rows_all = [dict(x) for x in manual_conn.execute("SELECT * FROM return_automation_manual_invoices")]
+            manual_conn.close()
+            manual_rows = [r for r in manual_rows_all if str(r["invoice_no"]) not in seen_invoices]
+            manual_invoices = [str(r["invoice_no"]) for r in manual_rows]
+
+            if manual_invoices:
+                manual_results = await asyncio.gather(
+                    *(_process_manual_invoice(inv, logis=logis, ez=ez, now=now, end=end) for inv in manual_invoices)
+                )
+                resolved_invoices = []
+                for row, result in zip(manual_rows, manual_results):
+                    inv = str(row["invoice_no"])
+                    if result is None:
+                        resolved_invoices.append(inv)
+                        continue
+                    result["reason"] = row.get("reason") or ""
+                    source_item_count += 1
+                    items.append(result)
+                if resolved_invoices:
+                    resolved_conn = get_shared_db()
+                    resolved_conn.executemany(
+                        "DELETE FROM return_automation_manual_invoices WHERE invoice_no=?",
+                        [(inv,) for inv in resolved_invoices],
+                    )
+                    resolved_conn.commit(); resolved_conn.close()
 
             conn = get_shared_db(); conn.execute("INSERT INTO return_automation_runs VALUES (?,?,?,?,?,?,?,?,?)", (run_id, now.isoformat(), user, start, end, len(items), sum(x["elapsed_status"] == "PASS" for x in items), 0, 0))
             for x in items: conn.execute("INSERT INTO return_automation_items (run_id,order_no,invoice_no,return_invoice_no,return_date,logis_json,input_time,elapsed_status,last_direction,received_content) VALUES (?,?,?,?,?,?,?,?,?,?)", (run_id,x.get("order_no"),x.get("invoice_no"),x.get("return_invoice_no"),x.get("return_date"),json.dumps(x.get("logis"),ensure_ascii=False),x.get("input_time"),x.get("elapsed_status"),x.get("last_direction"),x.get("received_content")))

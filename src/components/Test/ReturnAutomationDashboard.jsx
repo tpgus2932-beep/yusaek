@@ -129,7 +129,17 @@ function limitLineBreaks(text) {
 export default function ReturnAutomationDashboard() {
   const [run, setRun] = useState(() => loadStored(RUN_STORAGE_KEY, null));
   const [selected, setSelected] = useState(() => loadStored(SELECTED_STORAGE_KEY, {}));
-  const [template, setTemplate] = useState(() => loadStored(TEMPLATE_STORAGE_KEY, null));
+  // 마지막으로 선택했던 템플릿(TEMPLATE_STORAGE_KEY)이 아니라, 사용자가 저장해둔
+  // 기본 템플릿(DEFAULT_TEMPLATE_ID_STORAGE_KEY)이 있으면 메뉴에 들어올 때마다
+  // 그것이 먼저 선택되어 있어야 한다.
+  const [template, setTemplate] = useState(() => {
+    const storedDefaultId = loadStored(DEFAULT_TEMPLATE_ID_STORAGE_KEY, null);
+    const storedRun = loadStored(RUN_STORAGE_KEY, null);
+    const preferredTemplate = storedDefaultId != null
+      ? (storedRun?.templates || []).find((x) => String(x.id) === String(storedDefaultId))
+      : null;
+    return preferredTemplate || loadStored(TEMPLATE_STORAGE_KEY, null);
+  });
   // 조회할 때마다 템플릿 선택이 첫 번째 항목으로 초기화되지 않도록, 사용자가
   // 지정한 기본 템플릿의 id를 별도로 기억해뒀다가 새 조회 결과에 다시 적용한다.
   const [defaultTemplateId, setDefaultTemplateId] = useState(() => loadStored(DEFAULT_TEMPLATE_ID_STORAGE_KEY, null));
@@ -150,6 +160,16 @@ export default function ReturnAutomationDashboard() {
   const [replySending, setReplySending] = useState({});
   const [csChecking, setCsChecking] = useState(false);
   const [rejecting, setRejecting] = useState(false);
+  const [subTab, setSubTab] = useState("scan"); // "scan" | "manual"
+  const [manualInvoices, setManualInvoices] = useState([]);
+  const [manualInvoiceInput, setManualInvoiceInput] = useState("");
+  const [manualReasonInput, setManualReasonInput] = useState("");
+  const [manualBusy, setManualBusy] = useState(false);
+  const [manualStatusItems, setManualStatusItems] = useState(null);
+  const [manualStatusLoading, setManualStatusLoading] = useState(false);
+  const [manualStatusMessage, setManualStatusMessage] = useState("");
+  const [manualStatusMessageIsError, setManualStatusMessageIsError] = useState(false);
+  const [specialNoteSyncing, setSpecialNoteSyncing] = useState(false);
   const ezdeskRetryRef = useRef(null);
   const { openModal: openEzadminModal } = useEzadminSession();
 
@@ -291,6 +311,104 @@ export default function ReturnAutomationDashboard() {
       }
     })();
   }, []);
+
+  const loadManualInvoices = () => {
+    fetch(`${API}/return-automation/manual-invoices`, { headers: getAuthHeaders() })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => setManualInvoices(data?.invoices || []))
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    loadManualInvoices();
+  }, []);
+
+  const addManualInvoice = async () => {
+    const invoiceNo = manualInvoiceInput.trim();
+    if (!invoiceNo) return;
+    const reason = manualReasonInput.trim();
+    setManualBusy(true);
+    try {
+      const res = await fetch(`${API}/return-automation/manual-invoices`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ invoice_no: invoiceNo, reason }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.detail || "추가 실패");
+      setManualInvoiceInput("");
+      setManualReasonInput("");
+      loadManualInvoices();
+      setManualStatusMessageIsError(false);
+      setManualStatusMessage(`${invoiceNo}: 개별 추가되었습니다. "상태 조회"를 누르면 진행 상황이 반영됩니다.`);
+    } catch (err) {
+      setManualStatusMessageIsError(true);
+      setManualStatusMessage(err.message);
+    } finally {
+      setManualBusy(false);
+    }
+  };
+
+  const removeManualInvoice = async (invoiceNo) => {
+    setManualInvoices((prev) => prev.filter((x) => x.invoice_no !== invoiceNo));
+    setManualStatusItems((prev) => (prev ? prev.filter((x) => x.invoice_no !== invoiceNo) : prev));
+    try {
+      await fetch(`${API}/return-automation/manual-invoices/${encodeURIComponent(invoiceNo)}`, {
+        method: "DELETE",
+        headers: getAuthHeaders(),
+      });
+    } catch {
+      // ignore - loadManualInvoices() on next visit will resync if this failed silently
+    }
+  };
+
+  const loadManualStatus = async () => {
+    setManualStatusLoading(true);
+    setManualStatusMessageIsError(false);
+    setManualStatusMessage("개별 추가 건 상태 조회 중...");
+    try {
+      const res = await fetch(`${API}/return-automation/manual-invoices/status`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.detail || "조회 실패");
+      setManualStatusItems(data.items || []);
+      if (data.resolved_invoices?.length) loadManualInvoices();
+      const resolvedNote = data.resolved_invoices?.length ? ` · 반송장 확인되어 ${data.resolved_invoices.length}건 목록에서 제외됨` : "";
+      setManualStatusMessage(`${data.items?.length || 0}건 조회 완료${resolvedNote}`);
+    } catch (err) {
+      setManualStatusMessageIsError(true);
+      setManualStatusMessage(err.message);
+    } finally {
+      setManualStatusLoading(false);
+    }
+  };
+
+  // 반품 특이사항(송장번호+내용)을 개별 추가 현황 목록으로 가져온다 - 반품
+  // 특이사항에 먼저 등록해둔 건을 여기서도 자동추적하고 싶을 때 쓴다.
+  const syncSpecialNotes = async () => {
+    setSpecialNoteSyncing(true);
+    try {
+      const res = await fetch(`${API}/return-automation/manual-invoices/sync-special-notes`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.detail || "동기화 실패");
+      loadManualInvoices();
+      setManualStatusMessageIsError(false);
+      setManualStatusMessage(`반품 특이사항에서 ${data.synced_count}건을 가져왔습니다.`);
+    } catch (err) {
+      setManualStatusMessageIsError(true);
+      setManualStatusMessage(err.message);
+    } finally {
+      setSpecialNoteSyncing(false);
+    }
+  };
 
   const applyPreviewResult = (result) => {
     setBusy(false);
@@ -654,6 +772,25 @@ export default function ReturnAutomationDashboard() {
         </p>
       </div>
 
+      <div className={styles.subTabBar}>
+        <button
+          type="button"
+          className={`${styles.subTabBtn} ${subTab === "scan" ? styles.subTabActive : ""}`}
+          onClick={() => setSubTab("scan")}
+        >
+          자동 스캔
+        </button>
+        <button
+          type="button"
+          className={`${styles.subTabBtn} ${subTab === "manual" ? styles.subTabActive : ""}`}
+          onClick={() => setSubTab("manual")}
+        >
+          개별 추가 현황{manualInvoices.length > 0 ? ` (${manualInvoices.length})` : ""}
+        </button>
+      </div>
+
+      {subTab === "scan" && (
+      <>
       <div className={styles.toolbar}>
         <button type="button" className={styles.btn} onClick={preview} disabled={busy}>
           {busy ? "처리 중…" : "최근 30일 조회"}
@@ -842,6 +979,9 @@ export default function ReturnAutomationDashboard() {
                         {item.kind === "exchange" && (
                           <span className={`${styles.badge} ${styles.badgeNeutral}`} title="교환반품(교환수거중) - 반품과 동일하게 문자발송+회수신청을 실행합니다. 에이블리 반품송장 등록은 교환반품 테스트 탭에서 처리합니다" style={{ marginRight: "0.3rem" }}>교환</span>
                         )}
+                        {item.manual && (
+                          <span className={`${styles.badge} ${styles.badgeNeutral}`} title="개별 추가한 송장번호입니다 - 반품거부는 지원되지 않습니다" style={{ marginRight: "0.3rem" }}>개별추가</span>
+                        )}
                         {item.cancel_sno || item.order_no}
                         {groupSize > 1 && <span className={styles.groupHint} title="같은 주문번호 - 체크박스가 함께 작동하고 문자/회수접수도 한 번만 실행됩니다">동일주문 {groupSize}건</span>}
                         <br />
@@ -1002,6 +1142,104 @@ export default function ReturnAutomationDashboard() {
             </table>
           </div>
         </>
+      )}
+      </>
+      )}
+
+      {subTab === "manual" && (
+        <div className={styles.manualTabContent}>
+          <div className={styles.manualAddRow}>
+            <input
+              type="text"
+              className={styles.manualInput}
+              value={manualInvoiceInput}
+              onChange={(e) => setManualInvoiceInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") addManualInvoice(); }}
+              placeholder="송장번호"
+            />
+            <input
+              type="text"
+              className={styles.manualReasonInput}
+              value={manualReasonInput}
+              onChange={(e) => setManualReasonInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") addManualInvoice(); }}
+              placeholder="사유 (선택)"
+            />
+            <button type="button" className={styles.btn} onClick={addManualInvoice} disabled={manualBusy || !manualInvoiceInput.trim()}>
+              추가
+            </button>
+            <button type="button" className={`${styles.btn} ${styles.primaryBtn}`} onClick={loadManualStatus} disabled={manualStatusLoading || manualInvoices.length === 0}>
+              {manualStatusLoading ? "조회 중…" : "상태 조회"}
+            </button>
+            <button
+              type="button"
+              className={styles.btn}
+              onClick={syncSpecialNotes}
+              disabled={specialNoteSyncing}
+              title="반품 특이사항에 등록된 송장번호+내용을 이 목록으로 가져옵니다"
+            >
+              {specialNoteSyncing ? "동기화 중…" : "특이사항 동기화"}
+            </button>
+          </div>
+
+          {manualStatusMessage && (
+            <p className={`${styles.message} ${manualStatusMessageIsError ? styles.messageError : ""}`}>{manualStatusMessage}</p>
+          )}
+
+          {manualInvoices.length === 0 ? (
+            <p className={styles.empty}>개별 추가된 주문이 없습니다.</p>
+          ) : (
+            <div className={styles.preview}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>송장번호</th>
+                    <th>사유</th>
+                    <th>추가일시</th>
+                    <th>전화번호</th>
+                    <th>반송장</th>
+                    <th>CS 등록일시</th>
+                    <th>상태</th>
+                    <th>수신 내용 / 오류</th>
+                    <th>문자 발송</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {manualInvoices.map((row) => {
+                    const statusItem = manualStatusItems?.find((x) => x.invoice_no === row.invoice_no);
+                    return (
+                      <tr key={row.invoice_no}>
+                        <td>{row.invoice_no}</td>
+                        <td className={styles.content}>{row.reason || "-"}</td>
+                        <td>{formatShortDate(row.added_at) || "-"}</td>
+                        <td>{statusItem?.phone || "-"}</td>
+                        <td>{statusItem ? (statusItem.return_invoice_no || "없음") : "-"}</td>
+                        <td>{statusItem?.input_time || "-"}</td>
+                        <td>
+                          {statusItem ? (
+                            <StatusBadge status={statusItem.elapsed_status} stage={statusItem.error_stage} />
+                          ) : (
+                            <span className={`${styles.badge} ${styles.badgeNeutral}`}>미조회</span>
+                          )}
+                        </td>
+                        <td className={statusItem?.error ? styles.errorText : styles.content}>
+                          {statusItem ? (limitLineBreaks(statusItem.error || statusItem.received_content) || "-") : "-"}
+                        </td>
+                        <td>{statusItem?.sms_sent_count > 0 ? `총 ${statusItem.sms_sent_count}회` : "-"}</td>
+                        <td>
+                          <button type="button" className={styles.smsIndexBtn} onClick={() => removeManualInvoice(row.invoice_no)}>
+                            삭제
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       )}
 
       {showEzdeskSettings && (
