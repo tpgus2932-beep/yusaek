@@ -512,3 +512,30 @@ def test_close_ably_confirm_failure_returns_502_and_stays_open():
         "SELECT closed_at FROM post_shipment_cancel_stock_review WHERE cancel_sno = '1001'"
     ).fetchone()
     assert row["closed_at"] == ""
+
+
+def test_delete_removes_row():
+    client, _get_db, keep_alive = _make_client()
+    keep_alive.execute(
+        "INSERT INTO post_shipment_cancel_stock_review "
+        "(created_at, username, cancel_sno, order_sno, buyer_tel, product_names, action) "
+        "VALUES ('2026-08-01T10:00:00', 'tester', '1001', '5001', '010-1111-2222', '[\"A\"]', 'sms_sent')"
+    )
+    keep_alive.commit()
+
+    res = client.post("/post-shipment-cancel-stock-sms/delete", json={"cancel_sno": "1001"})
+
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "cancel_sno": "1001"}
+    row = keep_alive.execute(
+        "SELECT * FROM post_shipment_cancel_stock_review WHERE cancel_sno = '1001'"
+    ).fetchone()
+    assert row is None
+
+
+def test_delete_missing_cancel_sno_returns_400():
+    client, _get_db, _keep_alive = _make_client()
+
+    res = client.post("/post-shipment-cancel-stock-sms/delete", json={})
+
+    assert res.status_code == 400

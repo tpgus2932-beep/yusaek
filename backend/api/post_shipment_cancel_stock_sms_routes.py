@@ -355,4 +355,19 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
             conn.close()
         return {"ok": True, "cancel_sno": cancel_sno}
 
+    @router.post("/delete")
+    def delete(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """승인할 주문상품 정보가 없어 자동 완료가 불가능한 건을, 에이블리에서 직접 처리한 뒤
+        발송내역 목록에서만 지운다 (실제 에이블리 취소 승인은 하지 않음)."""
+        cancel_sno = str(payload.get("cancel_sno") or "").strip()
+        if not cancel_sno:
+            raise HTTPException(status_code=400, detail="cancel_sno is required")
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM post_shipment_cancel_stock_review WHERE cancel_sno = ?", (cancel_sno,))
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "cancel_sno": cancel_sno}
+
     return router

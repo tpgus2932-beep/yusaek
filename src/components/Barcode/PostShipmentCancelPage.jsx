@@ -90,6 +90,8 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
   const [repliesChecking, setRepliesChecking] = useState(false);
   const [repliesMessage, setRepliesMessage] = useState("");
   const [closingSno, setClosingSno] = useState(null);
+  const [closeErrors, setCloseErrors] = useState({});
+  const [deletingSno, setDeletingSno] = useState(null);
 
   useEffect(() => {
     const pool = Array.from({ length: 3 }, () => new Audio("/sounds/ice.wav"));
@@ -414,6 +416,11 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
     if (!window.confirm("에이블리에서 이 주문의 취소를 승인 처리합니다. 되돌리기 어려운 작업입니다.\n\n진행하시겠습니까?")) return;
     setClosingSno(cancelSno);
     setRepliesMessage("");
+    setCloseErrors((prev) => {
+      const next = { ...prev };
+      delete next[cancelSno];
+      return next;
+    });
     try {
       const res = await fetch(`${API}/post-shipment-cancel-stock-sms/close`, {
         method: "POST",
@@ -425,9 +432,39 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
       if (!res.ok || !data.ok) throw new Error(data?.detail || "완료 처리 실패");
       setStockSmsLogs((prev) => prev.filter((row) => row.cancel_sno !== cancelSno));
     } catch (err) {
-      setRepliesMessage(err.message || "완료 처리 실패");
+      const msg = err.message || "완료 처리 실패";
+      setRepliesMessage(msg);
+      setCloseErrors((prev) => ({ ...prev, [cancelSno]: msg }));
     } finally {
       setClosingSno(null);
+    }
+  }, []);
+
+  // 승인할 주문상품 정보가 없어 자동 완료가 불가능한 건을, 에이블리에서 직접 처리했다는 전제로
+  // 발송내역 목록에서만 지운다 (에이블리 취소 승인 자체는 여기서 실행하지 않음).
+  const handleDeleteSentSms = useCallback(async (cancelSno) => {
+    if (!window.confirm("이 발송내역을 목록에서 삭제할까요? (에이블리 취소 승인은 직접 처리했다는 전제입니다)")) return;
+    setDeletingSno(cancelSno);
+    setRepliesMessage("");
+    try {
+      const res = await fetch(`${API}/post-shipment-cancel-stock-sms/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ cancel_sno: cancelSno }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "삭제 실패");
+      setStockSmsLogs((prev) => prev.filter((row) => row.cancel_sno !== cancelSno));
+      setCloseErrors((prev) => {
+        const next = { ...prev };
+        delete next[cancelSno];
+        return next;
+      });
+    } catch (err) {
+      setRepliesMessage(err.message || "삭제 실패");
+    } finally {
+      setDeletingSno(null);
     }
   }, []);
 
@@ -902,13 +939,30 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                     <td style={{ whiteSpace: "pre-wrap" }}>{row.reply_content || "-"}</td>
                     <td>{row.reply_at || "-"}</td>
                     <td>
-                      <button
-                        className={pageStyles.secondaryBtn}
-                        onClick={() => handleCloseSentSms(row.cancel_sno)}
-                        disabled={closingSno === row.cancel_sno}
-                      >
-                        {closingSno === row.cancel_sno ? "처리 중..." : "완료"}
-                      </button>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem", alignItems: "flex-start" }}>
+                        <button
+                          className={pageStyles.secondaryBtn}
+                          onClick={() => handleCloseSentSms(row.cancel_sno)}
+                          disabled={closingSno === row.cancel_sno}
+                        >
+                          {closingSno === row.cancel_sno ? "처리 중..." : "완료"}
+                        </button>
+                        {closeErrors[row.cancel_sno]?.includes("승인할 주문상품 정보가 없습니다") && (
+                          <>
+                            <span style={{ fontSize: "0.78rem", color: "rgba(220,53,69,0.85)" }}>
+                              {closeErrors[row.cancel_sno]}
+                            </span>
+                            <button
+                              className={pageStyles.secondaryBtn}
+                              style={{ borderColor: "rgba(220,53,69,0.4)", color: "rgba(220,53,69,0.9)" }}
+                              onClick={() => handleDeleteSentSms(row.cancel_sno)}
+                              disabled={deletingSno === row.cancel_sno}
+                            >
+                              {deletingSno === row.cancel_sno ? "삭제 중..." : "삭제"}
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
