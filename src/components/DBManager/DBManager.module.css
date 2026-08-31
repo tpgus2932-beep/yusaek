@@ -244,6 +244,10 @@
   transition: background 0.3s;
 }
 
+.rowSelected td {
+  background: #dbeafe !important;
+}
+
 .editableCell {
   cursor: pointer;
 }

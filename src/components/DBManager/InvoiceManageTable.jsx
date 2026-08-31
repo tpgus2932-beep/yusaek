@@ -141,6 +141,7 @@ export default function InvoiceManageTable() {
   const [searchedQuery, setSearchedQuery] = useState("");
   const [matchIndex, setMatchIndex] = useState(0);
   const [presetCol, setPresetCol] = useState(FLAG_COLS[0].key);
+  const [selectedRowId, setSelectedRowId] = useState(null);
   const searchInputRef = useRef(null);
 
   const fetchMonths = useCallback(async () => {
@@ -288,6 +289,25 @@ export default function InvoiceManageTable() {
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
   }, []);
+
+  // ── 행 선택 후 Ctrl+C: 부가세 안내 문구를 클립보드에 복사 ──
+  useEffect(() => {
+    const handleCopy = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "c") return;
+      if (!selectedRowId) return;
+      if (window.getSelection && window.getSelection().toString()) return; // 일반 텍스트 선택 복사는 그대로 둔다
+      const row = rows.find((r) => r.id === selectedRowId);
+      if (!row) return;
+      e.preventDefault();
+      const monthNum = parseInt(String(month).split("-")[1], 10);
+      const monthLabel = Number.isFinite(monthNum) ? `${monthNum}월` : month;
+      const amount = (Number(row.입금액) || 0).toLocaleString();
+      const text = `안녕하세요 사장님! 부가세 보내드리려 하는데 ${monthLabel} 입금액 ${amount}원 맞을까요?`;
+      navigator.clipboard?.writeText(text).catch(() => {});
+    };
+    window.addEventListener("keydown", handleCopy);
+    return () => window.removeEventListener("keydown", handleCopy);
+  }, [selectedRowId, rows, month]);
 
   const handleSearchKeyDown = (e) => {
     if (e.key === "Enter") {
@@ -444,7 +464,15 @@ export default function InvoiceManageTable() {
               <tr
                 key={row.id}
                 id={`invoice-row-${row.id}`}
-                className={currentMatch?.id === row.id ? styles.rowHighlight : undefined}
+                onClick={() => setSelectedRowId(row.id)}
+                style={{ cursor: "pointer" }}
+                className={
+                  currentMatch?.id === row.id
+                    ? styles.rowHighlight
+                    : selectedRowId === row.id
+                      ? styles.rowSelected
+                      : undefined
+                }
               >
                 <td>{row.거래처명}</td>
                 <td>{(Number(row.입금액) || 0).toLocaleString()}원</td>
