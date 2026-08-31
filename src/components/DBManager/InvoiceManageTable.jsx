@@ -302,12 +302,37 @@ export default function InvoiceManageTable() {
       const monthNum = parseInt(String(month).split("-")[1], 10);
       const monthLabel = Number.isFinite(monthNum) ? `${monthNum}월` : month;
       const amount = (Number(row.입금액) || 0).toLocaleString();
-      const text = `안녕하세요 사장님! 부가세 보내드리려 하는데 ${monthLabel} 입금액 ${amount}원 맞을까요?`;
+      const text = `안녕하세요 사장님! 부가세 보내드리려 하는데\n${monthLabel} 입금액 ${amount}원 맞을까요?`;
       navigator.clipboard?.writeText(text).catch(() => {});
     };
     window.addEventListener("keydown", handleCopy);
     return () => window.removeEventListener("keydown", handleCopy);
   }, [selectedRowId, rows, month]);
+
+  // ── 행 선택 후 위/아래 화살표로 다음/이전 행 선택 ──
+  useEffect(() => {
+    const handleArrowNav = (e) => {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      const tag = document.activeElement?.tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return; // 검색창 등 입력 중엔 무시
+      if (!filteredRows.length) return;
+      e.preventDefault();
+      const currentIndex = filteredRows.findIndex((r) => r.id === selectedRowId);
+      let nextIndex;
+      if (currentIndex === -1) {
+        nextIndex = 0;
+      } else if (e.key === "ArrowDown") {
+        nextIndex = Math.min(currentIndex + 1, filteredRows.length - 1);
+      } else {
+        nextIndex = Math.max(currentIndex - 1, 0);
+      }
+      const nextRow = filteredRows[nextIndex];
+      setSelectedRowId(nextRow.id);
+      document.getElementById(`invoice-row-${nextRow.id}`)?.scrollIntoView({ block: "nearest" });
+    };
+    window.addEventListener("keydown", handleArrowNav);
+    return () => window.removeEventListener("keydown", handleArrowNav);
+  }, [selectedRowId, filteredRows]);
 
   const handleSearchKeyDown = (e) => {
     if (e.key === "Enter") {
