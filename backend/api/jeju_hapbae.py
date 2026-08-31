@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import os
@@ -25,6 +26,7 @@ from api.wonbe_routes import WONBE_DB_PATH
 from services.pastelco_utils import pastelco_login
 
 _ABLY_ORDER_ITEMS_URL = "https://api.a-bly.com/seller/order_items/"
+_ABLY_ORDER_DETAIL_URL = "https://api.a-bly.com/seller/orders"
 _EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
 _JEJU_ABLY_PREVIEW_KEY = "jeju_hapbae_ably_preview"
@@ -419,8 +421,8 @@ async def _jeju_fetch_all_ably_items(token: str) -> tuple[list, dict]:
     }
     all_items: list = []
     page = 1
-    max_page = None
     per_page = 100
+    prev_first_sno = None
     async with httpx.AsyncClient(timeout=30.0) as client:
         while True:
             res = await client.get(
@@ -444,36 +446,86 @@ async def _jeju_fetch_all_ably_items(token: str) -> tuple[list, dict]:
             items = data.get("order_items", [])
             if not items:
                 break
-            all_items.extend(items)
-            max_page = data.get("max_page_number") or data.get("total_page") or data.get("total_pages")
-            if max_page is not None and page >= int(max_page):
+            # 이 API는 마지막 페이지를 넘어가도 빈 배열이 아니라 마지막 페이지를
+            # 그대로 반복 응답한다 (실제 캡처로 확인). 응답에 신뢰 가능한
+            # 총 페이지 수 필드도 없으므로, 이전 페이지와 첫 항목 sno가 같으면
+            # 반복 응답으로 보고 중복 추가 없이 종료한다.
+            first_sno = items[0].get("sno")
+            if prev_first_sno is not None and first_sno == prev_first_sno:
                 break
-            if max_page is None and len(items) < per_page:
+            all_items.extend(items)
+            prev_first_sno = first_sno
+            if len(items) < per_page:
                 break
             page += 1
     return all_items, {
         "pages": page,
-        "max_page": max_page or page,
         "total_items": len(all_items),
     }
 
 
-def _jeju_process_from_ably(items: list) -> tuple[list[tuple[str, str]], dict]:
+async def _jeju_fetch_duplicate_order_addrs(token: str, order_snos: list[str]) -> dict[str, str]:
+    """중복 주문(합배송 후보) order_sno들의 배송지 주소를 상세 API로 조회.
+
+    /seller/order_items/ 목록 응답에는 receiver_addr 필드가 아예 없어서
+    (실제 캡처로 확인), 제주 여부 판별을 위해 /seller/orders/{sno}/items/
+    상세 API를 대상 주문에 한해서만 추가 조회한다.
+    """
+    if not order_snos:
+        return {}
+    headers = {
+        "Authorization": f"JWT {token}",
+        "Accept": "application/json",
+        "Origin": "https://my.a-bly.com",
+        "Referer": "https://my.a-bly.com/",
+        "User-Agent": "Mozilla/5.0",
+    }
+    addrs: dict[str, str] = {}
+    sem = asyncio.Semaphore(8)
+
+    async def fetch_one(client: httpx.AsyncClient, sno: str):
+        async with sem:
+            try:
+                res = await client.get(
+                    f"{_ABLY_ORDER_DETAIL_URL}/{sno}/items/",
+                    headers=headers,
+                    params={"processing_status[]": [1, 2], "processing_sub_status[]": 0},
+                )
+                if res.status_code != 200:
+                    return
+                data = res.json()
+            except Exception:
+                return
+            for it in data.get("order_items") or []:
+                addr = it.get("receiver_addr")
+                if addr:
+                    addrs[sno] = str(addr)
+                    return
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        await asyncio.gather(*(fetch_one(client, sno) for sno in order_snos))
+    return addrs
+
+
+async def _jeju_process_from_ably(token: str, items: list) -> tuple[list[tuple[str, str]], dict]:
     order_counts: dict[str, int] = defaultdict(int)
     for item in items:
         sno = str(item.get("order_sno") or "").strip()
         if sno:
             order_counts[sno] += 1
 
+    duplicate_snos = [sno for sno, count in order_counts.items() if count >= 2]
+    addr_map = await _jeju_fetch_duplicate_order_addrs(token, duplicate_snos)
+
     rows: list[tuple[str, str]] = []
     selected_order_snos: set[str] = set()
     duplicate_item_count = 0
     for item in items:
         sno = str(item.get("order_sno") or "").strip()
-        addr = str(item.get("receiver_addr") or "")
         is_duplicate_order = order_counts.get(sno, 0) >= 2
         if is_duplicate_order:
             duplicate_item_count += 1
+        addr = addr_map.get(sno, "")
         if not is_duplicate_order or "제주" not in addr:
             continue
         g_clean = _jeju_clean_product_name(item.get("goods_name") or "")
@@ -486,7 +538,7 @@ def _jeju_process_from_ably(items: list) -> tuple[list[tuple[str, str]], dict]:
                 selected_order_snos.add(sno)
 
     stats = {
-        "duplicate_order_count": sum(1 for count in order_counts.values() if count >= 2),
+        "duplicate_order_count": len(duplicate_snos),
         "duplicate_item_count": duplicate_item_count,
         "jeju_duplicate_order_count": len(selected_order_snos),
         "jeju_duplicate_item_count": len(rows),
@@ -525,7 +577,7 @@ async def jeju_hapbae_export_from_ably(payload: dict = Body(default={})):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"에이블리 주문 조회 실패: {e}")
 
-    rows, process_stats = _jeju_process_from_ably(items)
+    rows, process_stats = await _jeju_process_from_ably(token, items)
     if not rows:
         raise HTTPException(status_code=400, detail="합배송 건 중 제주 주소가 없습니다.")
 

@@ -391,7 +391,7 @@ export default function JejuHapbaePage({ headerExtra = null }) {
                 {[
                   ["저장 시각", ablySavedAt || "-"],
                   ["API 전체", `${ablyStats.total_items ?? 0}건`],
-                  ["조회 페이지", `${ablyStats.pages ?? 0}/${ablyStats.max_page ?? 0}`],
+                  ["조회 페이지", `${ablyStats.pages ?? 0}`],
                   ["합배송 후보", `${ablyStats.duplicate_item_count ?? 0}건`],
                   ["제주 원본", `${ablyStats.jeju_duplicate_item_count ?? 0}건`],
                   ["제주 원본 수량", `${ablyStats.jeju_duplicate_qty_total ?? 0}`],
