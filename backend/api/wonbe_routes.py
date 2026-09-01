@@ -209,6 +209,16 @@ def _normalize_cost_base_key(value) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
 
 
+def _strip_marketplace_name_tags(raw_name) -> str:
+    """마켓플레이스 상품명에서 매칭에 방해되는 표기를 제거.
+    - 맨 앞 [...] 태그(이벤트/설명 문구)
+    - 끝에 붙는 (N color) / (N colors) 같은 컬러 개수 표기"""
+    name = str(raw_name or "")
+    name = re.sub(r"^(\[[^\]]*\]\s*)+", "", name)
+    name = re.sub(r"(?:\s*\(\s*\d+\s*colors?\s*\))+\s*$", "", name, flags=re.IGNORECASE)
+    return name.strip()
+
+
 def _parse_price(value) -> float | None:
     """가격 문자열을 float로 파싱. 콤마/원/공백 제거 후 파싱 실패 시 None (빈칸과 0을 구분하기 위함)."""
     s = str(value or "").strip()
@@ -2443,7 +2453,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                         fetched_goods += 1
                         sno = g.get("sno")
                         raw_name = str(g.get("name") or "")
-                        stripped = re.sub(r"^(\[[^\]]*\]\s*)+", "", raw_name).strip()
+                        stripped = _strip_marketplace_name_tags(raw_name)
                         key = _normalize_cost_base_key(stripped)
                         if key and sno:
                             name_to_sno[key] = sno
@@ -2466,7 +2476,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             updates = []
             unmatched = 0
             for r in rows:
-                key = _normalize_cost_base_key(r["상품명"])
+                key = _normalize_cost_base_key(_strip_marketplace_name_tags(r["상품명"]))
                 sno = name_to_sno.get(key)
                 if sno:
                     updates.append((str(sno), r["상품코드"]))
@@ -2511,7 +2521,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         name_to_id: dict[str, str] = {}
         for p in products:
             raw_name = str(p.get("name") or "")
-            stripped = re.sub(r"^(\[[^\]]*\]\s*)+", "", raw_name).strip()
+            stripped = _strip_marketplace_name_tags(raw_name)
             key = _normalize_cost_base_key(stripped)
             if key and p.get("id"):
                 name_to_id[key] = str(p["id"])
@@ -2529,7 +2539,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             updates = []
             unmatched = 0
             for r in rows:
-                key = _normalize_cost_base_key(r["상품명"])
+                key = _normalize_cost_base_key(_strip_marketplace_name_tags(r["상품명"]))
                 zid = name_to_id.get(key)
                 if zid:
                     updates.append((zid, r["상품코드"]))
