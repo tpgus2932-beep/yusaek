@@ -152,7 +152,9 @@ export default function InvoiceManageTable() {
   const [matchIndex, setMatchIndex] = useState(0);
   const [presetCol, setPresetCol] = useState(FLAG_COLS[0].key);
   const [selectedRowId, setSelectedRowId] = useState(null);
+  const [editingMemo, setEditingMemo] = useState(null); // { id, value }
   const searchInputRef = useRef(null);
+  const memoInputRef = useRef(null);
 
   const fetchMonths = useCallback(async () => {
     try {
@@ -265,6 +267,37 @@ export default function InvoiceManageTable() {
     }
   };
 
+  const startEditMemo = (id, value) => {
+    setEditingMemo({ id, value: value ?? "" });
+    setTimeout(() => memoInputRef.current?.focus(), 0);
+  };
+
+  const commitMemo = async () => {
+    if (!editingMemo) return;
+    const { id, value } = editingMemo;
+    const original = rows.find((r) => r.id === id)?.메모 ?? "";
+    setEditingMemo(null);
+    if (value === String(original ?? "")) return;
+    try {
+      const res = await fetch(`${API}/wonbe/invoice-manage/row`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ id, col: "메모", value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "수정 실패");
+      setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...data.row } : r)));
+    } catch (err) {
+      setMessage(err.message);
+      fetchRows(month);
+    }
+  };
+
+  const handleMemoKeyDown = (e) => {
+    if (e.key === "Enter") commitMemo();
+    if (e.key === "Escape") setEditingMemo(null);
+  };
+
   // 컬럼별 옵션 목록은 "다른 컬럼에 걸린 필터"만 통과한 행 기준으로 계산해 이중(다중) 필터를 지원한다.
   const rowsForColumn = useCallback(
     (excludeKey) =>
@@ -330,6 +363,8 @@ export default function InvoiceManageTable() {
   useEffect(() => {
     const handleCopy = (e) => {
       if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "c") return;
+      const tag = document.activeElement?.tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return; // 메모/검색창 등 입력 중엔 원래 복사 동작 유지
       if (!selectedRowId) return;
       if (window.getSelection && window.getSelection().toString()) return; // 일반 텍스트 선택 복사는 그대로 둔다
       const row = rows.find((r) => r.id === selectedRowId);
@@ -520,6 +555,7 @@ export default function InvoiceManageTable() {
                   />
                 </th>
               ))}
+              <th>메모</th>
               <th>수정일시</th>
             </tr>
           </thead>
@@ -556,6 +592,26 @@ export default function InvoiceManageTable() {
                     />
                   </td>
                 ))}
+                {editingMemo?.id === row.id ? (
+                  <td onClick={(e) => e.stopPropagation()}>
+                    <input
+                      ref={memoInputRef}
+                      className={styles.inlineInput}
+                      value={editingMemo.value}
+                      onChange={(e) => setEditingMemo((p) => ({ ...p, value: e.target.value }))}
+                      onBlur={commitMemo}
+                      onKeyDown={handleMemoKeyDown}
+                    />
+                  </td>
+                ) : (
+                  <td
+                    className={styles.editableCell}
+                    onClick={(e) => { e.stopPropagation(); startEditMemo(row.id, row.메모); }}
+                    title="클릭하여 메모 수정"
+                  >
+                    {row.메모 || ""}
+                  </td>
+                )}
                 <td style={{ color: "var(--text-muted)", fontSize: "0.76rem" }}>{row.수정일시 || ""}</td>
               </tr>
             ))}
