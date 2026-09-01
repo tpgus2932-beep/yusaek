@@ -740,7 +740,7 @@ def _init_ichae_table(conn: sqlite3.Connection):
 # (backend/api/noye_kimsungil_routes.py의 VAT_VENDORS_KEY와 반드시 일치해야 함)
 INVOICE_MANAGE_VAT_VENDORS_SETTING_KEY = "noye_kimsungil_vat_vendors"
 
-INVOICE_MANAGE_EDITABLE_COLS = {"입금완료", "계산서발행완료", "이월발행"}
+INVOICE_MANAGE_EDITABLE_COLS = {"입금완료", "계산서발행완료", "이월발행", "금액체크"}
 
 
 def _load_vat_vendor_set(get_setting) -> set[str]:
@@ -765,11 +765,15 @@ def _init_invoice_manage_table(conn: sqlite3.Connection):
             입금완료 INTEGER NOT NULL DEFAULT 0,
             계산서발행완료 INTEGER NOT NULL DEFAULT 0,
             이월발행 INTEGER NOT NULL DEFAULT 0,
+            금액체크 INTEGER NOT NULL DEFAULT 0,
             수정일시 TEXT NOT NULL DEFAULT '',
             UNIQUE(월, 거래처명)
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_invoice_manage_월 ON 계산서관리(월)")
+    invoice_manage_cols = {row["name"] for row in conn.execute("PRAGMA table_info(계산서관리)").fetchall()}
+    if "금액체크" not in invoice_manage_cols:
+        conn.execute("ALTER TABLE 계산서관리 ADD COLUMN 금액체크 INTEGER NOT NULL DEFAULT 0")
     conn.commit()
 
 
@@ -3482,7 +3486,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         if row_id is None or col not in INVOICE_MANAGE_EDITABLE_COLS:
             raise HTTPException(
                 status_code=400,
-                detail="id와 입금완료/계산서발행완료/이월발행 컬럼만 수정 가능합니다.",
+                detail="id와 입금완료/계산서발행완료/이월발행/금액체크 컬럼만 수정 가능합니다.",
             )
         flag = 1 if payload.get("value") else 0
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

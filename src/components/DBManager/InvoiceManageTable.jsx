@@ -5,6 +5,7 @@ import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
 const FLAG_COLS = [
   { key: "입금완료", label: "입금완료" },
+  { key: "금액체크", label: "금액체크" },
   { key: "계산서발행완료", label: "계산서 발행완료" },
   { key: "이월발행", label: "이월발행" },
 ];
@@ -25,7 +26,7 @@ function currentMonth() {
 
 // 헤더 클릭 시 뜨는 엑셀 스타일 체크리스트 필터. 여러 컬럼에 동시에 걸어도(이중필터)
 // AND 조건으로 결합되도록, 옵션 목록은 "다른 컬럼에 이미 걸린 필터"를 통과한 행 기준으로 계산한다.
-function ColumnFilterHeader({ col, center, filters, rowsForOptions, onApply, onClear }) {
+function ColumnFilterHeader({ col, center, filters, rowsForOptions, onApply, onClear, selectAllChecked, onToggleAll }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const [search, setSearch] = useState("");
@@ -78,6 +79,15 @@ function ColumnFilterHeader({ col, center, filters, rowsForOptions, onApply, onC
 
   return (
     <div className={`${styles.thFilterWrap} ${center ? styles.thFilterCenter : ""}`}>
+      {onToggleAll && (
+        <input
+          type="checkbox"
+          checked={selectAllChecked}
+          onChange={onToggleAll}
+          onClick={(e) => e.stopPropagation()}
+          title={`${col.label} 전체 체크/해제`}
+        />
+      )}
       <span>{col.label}</span>
       <button
         type="button"
@@ -223,6 +233,32 @@ export default function InvoiceManageTable() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "수정 실패");
       setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, ...data.row } : r)));
+    } catch (err) {
+      setMessage(err.message);
+      fetchRows(month);
+    }
+  };
+
+  // 헤더 체크박스: 현재 필터로 보이는 행 전체를 한 번에 체크/해제 (전부 체크된 상태면 전체 해제, 아니면 전체 체크)
+  const toggleAllFlag = async (col, targetRows) => {
+    const allChecked = targetRows.length > 0 && targetRows.every((r) => Number(r[col]) === 1);
+    const nextValue = !allChecked;
+    const idsToUpdate = targetRows.filter((r) => Boolean(Number(r[col])) !== nextValue).map((r) => r.id);
+    if (!idsToUpdate.length) return;
+    const idSet = new Set(idsToUpdate);
+    setRows((prev) => prev.map((r) => (idSet.has(r.id) ? { ...r, [col]: nextValue ? 1 : 0 } : r)));
+    try {
+      await Promise.all(
+        idsToUpdate.map(async (id) => {
+          const res = await fetch(`${API}/wonbe/invoice-manage/row`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+            body: JSON.stringify({ id, col, value: nextValue }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) throw new Error(data?.detail || "수정 실패");
+        })
+      );
     } catch (err) {
       setMessage(err.message);
       fetchRows(month);
@@ -406,6 +442,7 @@ export default function InvoiceManageTable() {
         {rows.length > 0 && (
           <span style={{ marginLeft: "auto", fontSize: "0.78rem", color: "var(--text-muted)" }}>
             합계: {totalAmount.toLocaleString()}원 · 입금완료 {doneCount("입금완료")}/{filteredRows.length}
+            · 금액체크 {doneCount("금액체크")}/{filteredRows.length}
             · 계산서 발행완료 {doneCount("계산서발행완료")}/{filteredRows.length}
             · 이월발행 {doneCount("이월발행")}/{filteredRows.length}
           </span>
@@ -478,6 +515,8 @@ export default function InvoiceManageTable() {
                     rowsForOptions={rowsForColumn(f.key)}
                     onApply={applyFilter}
                     onClear={clearFilter}
+                    selectAllChecked={filteredRows.length > 0 && filteredRows.every((r) => Number(r[f.key]) === 1)}
+                    onToggleAll={() => toggleAllFlag(f.key, filteredRows)}
                   />
                 </th>
               ))}
