@@ -3335,9 +3335,9 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
     def ichae_update_row(payload: dict = Body(...), user: str = Depends(get_current_user)):
         row_id = payload.get("id")
         col = str(payload.get("col") or "").strip().upper()
-        value = str(payload.get("value") or "")
-        if row_id is None or col not in ("E", "F"):
-            raise HTTPException(status_code=400, detail="id와 E 또는 F 컬럼만 수정 가능합니다.")
+        if row_id is None or col not in ("C", "E", "F"):
+            raise HTTPException(status_code=400, detail="id와 C, E 또는 F 컬럼만 수정 가능합니다.")
+        value = _parse_amount_janggi(payload.get("value")) if col == "C" else str(payload.get("value") or "")
         conn = _get_janggi_db()
         try:
             _init_ichae_table(conn)

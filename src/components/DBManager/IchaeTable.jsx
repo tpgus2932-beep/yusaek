@@ -14,7 +14,7 @@ const COL_LABELS = {
   F: "우리가 보는 메모",
   상태: "상태",
 };
-const EDITABLE = new Set(["E", "F"]);
+const EDITABLE = new Set(["C", "E", "F"]);
 
 export default function IchaeTable() {
   const [rows, setRows]           = useState([]);
@@ -171,7 +171,7 @@ export default function IchaeTable() {
         <div>
           <div className={styles.title}>이체파일</div>
           <div className={styles.subtitle}>
-            거래처별 합산 이체 데이터 | A=은행코드 · B=계좌번호 · C=입금금액 · D=거래처명 · E·F 클릭 수정
+            거래처별 합산 이체 데이터 | A=은행코드 · B=계좌번호 · C=입금금액 · D=거래처명 · C·E·F 클릭 수정
           </div>
         </div>
         <span className={styles.pill}>{total}행</span>
@@ -274,17 +274,13 @@ export default function IchaeTable() {
                         onClick={() => startEdit(row.id, col, row[col] ?? "")}
                         title="클릭하여 수정"
                       >
-                        {row[col] ?? ""}
+                        {col === "C"
+                          ? (typeof row[col] === "number" ? row[col].toLocaleString() : row[col])
+                          : (row[col] ?? "")}
                       </td>
                     );
                   }
-                  return (
-                    <td key={col}>
-                      {col === "C"
-                        ? (typeof row[col] === "number" ? row[col].toLocaleString() : row[col])
-                        : (row[col] ?? "")}
-                    </td>
-                  );
+                  return <td key={col}>{row[col] ?? ""}</td>;
                 })}
               </tr>
             ))}
