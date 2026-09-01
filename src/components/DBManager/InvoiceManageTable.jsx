@@ -4,8 +4,8 @@ import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
 const FLAG_COLS = [
-  { key: "입금완료", label: "입금완료" },
   { key: "금액체크", label: "금액체크" },
+  { key: "입금완료", label: "입금완료" },
   { key: "계산서발행완료", label: "계산서 발행완료" },
   { key: "이월발행", label: "이월발행" },
 ];
@@ -441,8 +441,8 @@ export default function InvoiceManageTable() {
         )}
         {rows.length > 0 && (
           <span style={{ marginLeft: "auto", fontSize: "0.78rem", color: "var(--text-muted)" }}>
-            합계: {totalAmount.toLocaleString()}원 · 입금완료 {doneCount("입금완료")}/{filteredRows.length}
-            · 금액체크 {doneCount("금액체크")}/{filteredRows.length}
+            합계: {totalAmount.toLocaleString()}원 · 금액체크 {doneCount("금액체크")}/{filteredRows.length}
+            · 입금완료 {doneCount("입금완료")}/{filteredRows.length}
             · 계산서 발행완료 {doneCount("계산서발행완료")}/{filteredRows.length}
             · 이월발행 {doneCount("이월발행")}/{filteredRows.length}
           </span>
