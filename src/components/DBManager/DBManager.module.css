@@ -362,6 +362,14 @@
   color: var(--text-muted);
   border: 1px solid var(--border-color);
 }
+.badgeNew {
+  background: #dcfce7;
+  color: #166534;
+}
+.badgeUpdated {
+  background: #dbeafe;
+  color: #1e40af;
+}
 
 /* ── 체크박스 셀 ── */
 .checkboxCell {

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FileText, Filter, RefreshCw, Search } from "lucide-react";
+import { Copy, Download, FileText, Filter, RefreshCw, Search } from "lucide-react";
 import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
@@ -26,7 +26,7 @@ function currentMonth() {
 
 // 헤더 클릭 시 뜨는 엑셀 스타일 체크리스트 필터. 여러 컬럼에 동시에 걸어도(이중필터)
 // AND 조건으로 결합되도록, 옵션 목록은 "다른 컬럼에 이미 걸린 필터"를 통과한 행 기준으로 계산한다.
-function ColumnFilterHeader({ col, center, filters, rowsForOptions, onApply, onClear, selectAllChecked, onToggleAll }) {
+function ColumnFilterHeader({ col, center, filters, rowsForOptions, onApply, onClear }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const [search, setSearch] = useState("");
@@ -79,15 +79,6 @@ function ColumnFilterHeader({ col, center, filters, rowsForOptions, onApply, onC
 
   return (
     <div className={`${styles.thFilterWrap} ${center ? styles.thFilterCenter : ""}`}>
-      {onToggleAll && (
-        <input
-          type="checkbox"
-          checked={selectAllChecked}
-          onChange={onToggleAll}
-          onClick={(e) => e.stopPropagation()}
-          title={`${col.label} 전체 체크/해제`}
-        />
-      )}
       <span>{col.label}</span>
       <button
         type="button"
@@ -153,6 +144,8 @@ export default function InvoiceManageTable() {
   const [presetCol, setPresetCol] = useState(FLAG_COLS[0].key);
   const [selectedRowId, setSelectedRowId] = useState(null);
   const [editingMemo, setEditingMemo] = useState(null); // { id, value }
+  const [loadDiff, setLoadDiff] = useState(null); // { new: Set<거래처명>, updated: Set<거래처명> }
+  const [accountMap, setAccountMap] = useState({}); // { 거래처명: { B: 은행코드, C: 계좌번호 } }
   const searchInputRef = useRef(null);
   const memoInputRef = useRef(null);
 
@@ -187,15 +180,31 @@ export default function InvoiceManageTable() {
     }
   }, []);
 
+  const fetchAccountMap = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/wonbe/account/rows`, { headers: getAuthHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) return;
+      const map = {};
+      for (const r of data.rows || []) {
+        const key = String(r.A || "").trim();
+        if (key && !map[key]) map[key] = r;
+      }
+      setAccountMap(map);
+    } catch { /* ignore */ }
+  }, []);
+
   useEffect(() => {
     fetchMonths();
-  }, [fetchMonths]);
+    fetchAccountMap();
+  }, [fetchMonths, fetchAccountMap]);
 
   useEffect(() => {
     setFilters({});
     setSearch("");
     setSearchedQuery("");
     setMatchIndex(0);
+    setLoadDiff(null);
     fetchRows(month);
   }, [month, fetchRows]);
 
@@ -214,13 +223,35 @@ export default function InvoiceManageTable() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "불러오기 실패");
       setRows(data.rows || []);
-      setMessage(`${month} 이체파일에서 거래처 ${data.loaded}건을 불러왔습니다.`);
+      const newVendors = data.new_vendors || [];
+      const updatedVendors = data.updated_vendors || [];
+      setLoadDiff({ new: new Set(newVendors), updated: new Set(updatedVendors) });
+      setMessage(
+        `${month} 이체파일에서 거래처 ${data.loaded}건을 불러왔습니다. `
+        + `(신규 ${newVendors.length}건 · 금액갱신 ${updatedVendors.length}건 · 변동없음 ${data.loaded - newVendors.length - updatedVendors.length}건)`
+      );
       fetchMonths();
     } catch (err) {
       setMessage(err.message);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleExport = () => {
+    if (!month) return;
+    fetch(`${API}/wonbe/invoice-manage/export?month=${encodeURIComponent(month)}`, { headers: getAuthHeaders() })
+      .then((r) => r.blob())
+      .then((blob) => {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `계산서관리_${month}.xls`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(a.href);
+      })
+      .catch(() => setMessage("다운로드 실패"));
   };
 
   const toggleFlag = async (row, col) => {
@@ -235,32 +266,6 @@ export default function InvoiceManageTable() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "수정 실패");
       setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, ...data.row } : r)));
-    } catch (err) {
-      setMessage(err.message);
-      fetchRows(month);
-    }
-  };
-
-  // 헤더 체크박스: 현재 필터로 보이는 행 전체를 한 번에 체크/해제 (전부 체크된 상태면 전체 해제, 아니면 전체 체크)
-  const toggleAllFlag = async (col, targetRows) => {
-    const allChecked = targetRows.length > 0 && targetRows.every((r) => Number(r[col]) === 1);
-    const nextValue = !allChecked;
-    const idsToUpdate = targetRows.filter((r) => Boolean(Number(r[col])) !== nextValue).map((r) => r.id);
-    if (!idsToUpdate.length) return;
-    const idSet = new Set(idsToUpdate);
-    setRows((prev) => prev.map((r) => (idSet.has(r.id) ? { ...r, [col]: nextValue ? 1 : 0 } : r)));
-    try {
-      await Promise.all(
-        idsToUpdate.map(async (id) => {
-          const res = await fetch(`${API}/wonbe/invoice-manage/row`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-            body: JSON.stringify({ id, col, value: nextValue }),
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok || !data.ok) throw new Error(data?.detail || "수정 실패");
-        })
-      );
     } catch (err) {
       setMessage(err.message);
       fetchRows(month);
@@ -327,10 +332,41 @@ export default function InvoiceManageTable() {
   const applyFilter = (key, valueSet) => setFilters((prev) => ({ ...prev, [key]: valueSet }));
   const clearFilter = (key) => setFilters((prev) => { const next = { ...prev }; delete next[key]; return next; });
   const clearAllFilters = () => setFilters({});
+
+  // ── 일괄복사: 현재 필터로 보이는 행들을 거래처계좌데이터와 매칭해 이체 붙여넣기용 탭/줄 구분 텍스트로 클립보드에 복사 ──
+  const handleBulkCopy = async () => {
+    if (!filteredRows.length) return;
+    const monthNum = parseInt(String(month).split("-")[1], 10);
+    const monthLabel = Number.isFinite(monthNum) ? `유색${monthNum}월세액` : "유색세액";
+    let unmatched = 0;
+    const lines = filteredRows.map((row) => {
+      const vendor = String(row.거래처명 || "").trim();
+      const acc = accountMap[vendor];
+      if (!acc) unmatched += 1;
+      const vatAmount = Math.round((Number(row.입금액) || 0) * 0.1);
+      return [acc?.B || "", acc?.C || "", vatAmount, vendor, monthLabel].join("\t");
+    });
+    try {
+      await navigator.clipboard.writeText(lines.join("\n"));
+      setMessage(
+        unmatched
+          ? `${filteredRows.length}건 일괄복사 완료 (계좌 정보 없는 거래처 ${unmatched}건 포함)`
+          : `${filteredRows.length}건 일괄복사 완료`
+      );
+    } catch {
+      setMessage("복사 실패");
+    }
+  };
   const activeFilterCount = Object.keys(filters).length;
 
   const totalAmount = filteredRows.reduce((sum, r) => sum + (Number(r.입금액) || 0), 0);
   const doneCount = (col) => filteredRows.filter((r) => Number(r[col]) === 1).length;
+  const completedRows = filteredRows.filter((r) => Number(r.입금완료) === 1);
+  const remainingRows = filteredRows.filter((r) => Number(r.입금완료) !== 1);
+  const completedAmount = completedRows.reduce((sum, r) => sum + (Number(r.입금액) || 0), 0);
+  const remainingAmount = remainingRows.reduce((sum, r) => sum + (Number(r.입금액) || 0), 0);
+  const completedCount = completedRows.length;
+  const remainingCount = remainingRows.length;
 
   // ── 거래처명 검색 (Ctrl+F 포커스 이동, Enter로 다음 결과로 스크롤, Space로 사전 설정한 열 체크) ──
   const matches = useMemo(() => {
@@ -438,6 +474,17 @@ export default function InvoiceManageTable() {
         <span className={styles.pill}>{filteredRows.length}/{rows.length}개 거래처</span>
       </div>
 
+      {rows.length > 0 && (
+        <div style={{ display: "flex", gap: "0.6rem", marginBottom: "0.6rem" }}>
+          <span className={`${styles.badge} ${styles.badgeNew}`} style={{ fontSize: "0.82rem", padding: "0.35rem 0.7rem" }}>
+            완료금액 {completedAmount.toLocaleString()}원 ({completedCount}개 거래처)
+          </span>
+          <span className={`${styles.badge} ${styles.badgeUpdated}`} style={{ fontSize: "0.82rem", padding: "0.35rem 0.7rem", background: "#fee2e2", color: "#991b1b" }}>
+            남은금액 {remainingAmount.toLocaleString()}원 ({remainingCount}개 거래처)
+          </span>
+        </div>
+      )}
+
       <div className={styles.controls}>
         {months.length > 0 ? (
           <select className={styles.dateInput} value={month} onChange={handleMonthChange} style={{ minWidth: "9rem" }}>
@@ -464,10 +511,26 @@ export default function InvoiceManageTable() {
         </button>
         <button
           className={`${styles.btn} ${styles.btnSecondary}`}
-          onClick={() => fetchRows(month)}
+          onClick={() => { setLoadDiff(null); fetchRows(month); }}
           disabled={!month || loading}
         >
           <RefreshCw size={13} />새로고침
+        </button>
+        <button
+          className={`${styles.btn} ${styles.btnSecondary}`}
+          onClick={handleExport}
+          disabled={!month || loading || !rows.length}
+          title="현재 월의 계산서 관리 데이터를 엑셀로 다운로드"
+        >
+          <Download size={13} />엑셀 다운로드
+        </button>
+        <button
+          className={`${styles.btn} ${styles.btnSecondary}`}
+          onClick={handleBulkCopy}
+          disabled={!filteredRows.length}
+          title="현재 필터로 보이는 거래처들의 은행코드/계좌번호/입금액의 10%(부가세)/거래처명/해당월세액을 거래처계좌데이터와 매칭해 줄바꿈으로 구분된 텍스트로 복사"
+        >
+          <Copy size={13} />이체 일괄복사
         </button>
         {activeFilterCount > 0 && (
           <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={clearAllFilters}>
@@ -550,8 +613,6 @@ export default function InvoiceManageTable() {
                     rowsForOptions={rowsForColumn(f.key)}
                     onApply={applyFilter}
                     onClear={clearFilter}
-                    selectAllChecked={filteredRows.length > 0 && filteredRows.every((r) => Number(r[f.key]) === 1)}
-                    onToggleAll={() => toggleAllFlag(f.key, filteredRows)}
                   />
                 </th>
               ))}
@@ -574,7 +635,15 @@ export default function InvoiceManageTable() {
                       : undefined
                 }
               >
-                <td>{row.거래처명}</td>
+                <td>
+                  {row.거래처명}
+                  {loadDiff?.new.has(row.거래처명) && (
+                    <span className={`${styles.badge} ${styles.badgeNew}`} style={{ marginLeft: "0.4rem" }}>신규</span>
+                  )}
+                  {loadDiff?.updated.has(row.거래처명) && (
+                    <span className={`${styles.badge} ${styles.badgeUpdated}`} style={{ marginLeft: "0.4rem" }}>금액갱신</span>
+                  )}
+                </td>
                 <td>{(Number(row.입금액) || 0).toLocaleString()}원</td>
                 <td>
                   {Number(row.부가세거래처) === 1 ? (
