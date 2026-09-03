@@ -940,27 +940,27 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                     <td>{row.reply_at || "-"}</td>
                     <td>
                       <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem", alignItems: "flex-start" }}>
-                        <button
-                          className={pageStyles.secondaryBtn}
-                          onClick={() => handleCloseSentSms(row.cancel_sno)}
-                          disabled={closingSno === row.cancel_sno}
-                        >
-                          {closingSno === row.cancel_sno ? "처리 중..." : "완료"}
-                        </button>
-                        {closeErrors[row.cancel_sno]?.includes("승인할 주문상품 정보가 없습니다") && (
-                          <>
-                            <span style={{ fontSize: "0.78rem", color: "rgba(220,53,69,0.85)" }}>
-                              {closeErrors[row.cancel_sno]}
-                            </span>
-                            <button
-                              className={pageStyles.secondaryBtn}
-                              style={{ borderColor: "rgba(220,53,69,0.4)", color: "rgba(220,53,69,0.9)" }}
-                              onClick={() => handleDeleteSentSms(row.cancel_sno)}
-                              disabled={deletingSno === row.cancel_sno}
-                            >
-                              {deletingSno === row.cancel_sno ? "삭제 중..." : "삭제"}
-                            </button>
-                          </>
+                        <div style={{ display: "flex", gap: "0.3rem" }}>
+                          <button
+                            className={pageStyles.secondaryBtn}
+                            onClick={() => handleCloseSentSms(row.cancel_sno)}
+                            disabled={closingSno === row.cancel_sno || deletingSno === row.cancel_sno}
+                          >
+                            {closingSno === row.cancel_sno ? "처리 중..." : "완료"}
+                          </button>
+                          <button
+                            className={pageStyles.secondaryBtn}
+                            style={{ borderColor: "rgba(220,53,69,0.4)", color: "rgba(220,53,69,0.9)" }}
+                            onClick={() => handleDeleteSentSms(row.cancel_sno)}
+                            disabled={deletingSno === row.cancel_sno || closingSno === row.cancel_sno}
+                          >
+                            {deletingSno === row.cancel_sno ? "삭제 중..." : "삭제"}
+                          </button>
+                        </div>
+                        {closeErrors[row.cancel_sno] && (
+                          <span style={{ fontSize: "0.78rem", color: "rgba(220,53,69,0.85)" }}>
+                            {closeErrors[row.cancel_sno]}
+                          </span>
                         )}
                       </div>
                     </td>
