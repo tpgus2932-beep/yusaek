@@ -60,11 +60,15 @@ def search_cost_base_products(path: Path, q: str, limit: int = 20) -> list[dict]
     return [{"name": name, "options": groups[name]} for name in order[:limit]]
 
 
-def filter_matching_order_items(order_items: list[dict], option_codes: set[str]) -> list[dict]:
-    """order_items 중 option_stock_sync_code가 option_codes에 속하는 것만 남긴다."""
+def filter_matching_order_items(order_items: list[dict], product_ids: set[str]) -> list[dict]:
+    """order_items 중 option_stock_sync_code가 product_ids에 속하는 것만 남긴다.
+
+    에이블리가 주문상품의 option_stock_sync_code로 옵션 sno가 아니라 상품코드
+    (원가베이스유 상품코드, 예: S18263)를 그대로 내려주므로, 여기 넘기는 집합은
+    옵션번호가 아니라 상품코드 집합이어야 한다."""
     return [
         item for item in order_items
-        if str(item.get("option_stock_sync_code") or "") in option_codes
+        if str(item.get("option_stock_sync_code") or "") in product_ids
     ]
 
 

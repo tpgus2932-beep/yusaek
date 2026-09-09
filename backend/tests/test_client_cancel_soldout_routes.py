@@ -222,7 +222,7 @@ def test_run_cancels_matching_order_sends_sms_and_reports_pending_count(tmp_path
 
     search_result = [{
         "sno": 636699893, "order_sno": 1784397062398,
-        "option_stock_sync_code": "175252569", "goods_name": "빈티지 흑청 스커트",
+        "option_stock_sync_code": "S10456", "goods_name": "빈티지 흑청 스커트",
         "option_info": "흑청/S", "ea": 1,
     }]
     refund_info = {
@@ -325,7 +325,7 @@ def test_run_records_ezdesk_session_expired_but_keeps_cancel_result(tmp_path):
 
     search_result = [{
         "sno": 636699893, "order_sno": 1784397062398,
-        "option_stock_sync_code": "175252569", "goods_name": "빈티지 흑청 스커트",
+        "option_stock_sync_code": "S10456", "goods_name": "빈티지 흑청 스커트",
     }]
     refund_info = {
         "refund_bank_sno": 23, "refund_bank_account_holder": "김도희",
@@ -366,7 +366,7 @@ def test_run_records_cancel_failure_and_continues(tmp_path):
 
     search_result = [{
         "sno": 636699893, "order_sno": 1784397062398,
-        "option_stock_sync_code": "175252569", "goods_name": "빈티지 흑청 스커트",
+        "option_stock_sync_code": "S10456", "goods_name": "빈티지 흑청 스커트",
     }]
     refund_info = {
         "refund_bank_sno": 23, "refund_bank_account_holder": "김도희",
@@ -405,7 +405,7 @@ def test_run_pending_count_ezadmin_session_expired_is_reported(tmp_path):
 
     search_result = [{
         "sno": 636699893, "order_sno": 1784397062398,
-        "option_stock_sync_code": "175252569", "goods_name": "빈티지 흑청 스커트",
+        "option_stock_sync_code": "S10456", "goods_name": "빈티지 흑청 스커트",
     }]
     refund_info = {
         "refund_bank_sno": 23, "refund_bank_account_holder": "김도희",

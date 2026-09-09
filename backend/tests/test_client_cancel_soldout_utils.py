@@ -87,14 +87,14 @@ def test_search_cost_base_products_respects_limit(tmp_path):
     assert len(results) == 1
 
 
-def test_filter_matching_order_items_keeps_only_matching_option_codes():
+def test_filter_matching_order_items_keeps_only_matching_product_ids():
     items = [
-        {"sno": 1, "option_stock_sync_code": "175252569"},
-        {"sno": 2, "option_stock_sync_code": "999999999"},
-        {"sno": 3, "option_stock_sync_code": "175252570"},
+        {"sno": 1, "option_stock_sync_code": "S10456"},
+        {"sno": 2, "option_stock_sync_code": "S99999"},
+        {"sno": 3, "option_stock_sync_code": "S10457"},
     ]
 
-    matched = filter_matching_order_items(items, {"175252569", "175252570"})
+    matched = filter_matching_order_items(items, {"S10456", "S10457"})
 
     assert [item["sno"] for item in matched] == [1, 3]
 
@@ -102,7 +102,7 @@ def test_filter_matching_order_items_keeps_only_matching_option_codes():
 def test_filter_matching_order_items_ignores_missing_code():
     items = [{"sno": 1}]
 
-    assert filter_matching_order_items(items, {"175252569"}) == []
+    assert filter_matching_order_items(items, {"S10456"}) == []
 
 
 def test_group_items_by_order_sno_groups_correctly():

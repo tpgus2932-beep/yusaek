@@ -19,27 +19,48 @@ from services.client_cancel_soldout_utils import (
 _SOLDOUT_TEMPLATE_NAME = "품절 문자"
 
 
-def _parse_products(products: list[dict]) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+def _parse_products(
+    products: list[dict],
+) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
     """products: [{name, options: [{code, product_id, label}]}] →
-    (code→name, code→product_id, code→label)."""
+    (옵션번호→name, 옵션번호→상품코드, 옵션번호→label, 상품코드→name, 상품코드→label).
+
+    옵션번호(code)는 미진열 처리(stop_selling)에 필요한 실제 에이블리 옵션 sno로
+    그대로 쓴다. 반면 주문 검색 매칭은 상품코드(product_id)로 해야 한다 — 에이블리가
+    주문상품의 option_stock_sync_code로 옵션 sno가 아니라 상품코드를 그대로
+    내려주도록 바뀌었기 때문 (반품 쪽 load_wonbe_product_codes/returns_routes.py와
+    동일한 전제, 실제 검증됨).
+    """
     option_code_to_name: dict[str, str] = {}
     option_code_to_product_id: dict[str, str] = {}
     option_code_to_label: dict[str, str] = {}
+    product_id_to_name: dict[str, str] = {}
+    product_id_to_label: dict[str, str] = {}
     for product in products:
         name = str(product.get("name") or "").strip()
         for option in product.get("options") or []:
             code = str(option.get("code") or "").strip()
-            if not code:
-                continue
-            if name:
-                option_code_to_name[code] = name
             product_id = str(option.get("product_id") or "").strip()
-            if product_id:
-                option_code_to_product_id[code] = product_id
             label = str(option.get("label") or "").strip()
-            if label:
-                option_code_to_label[code] = label
-    return option_code_to_name, option_code_to_product_id, option_code_to_label
+            if code:
+                if name:
+                    option_code_to_name[code] = name
+                if product_id:
+                    option_code_to_product_id[code] = product_id
+                if label:
+                    option_code_to_label[code] = label
+            if product_id:
+                if name:
+                    product_id_to_name[product_id] = name
+                if label:
+                    product_id_to_label[product_id] = label
+    return (
+        option_code_to_name,
+        option_code_to_product_id,
+        option_code_to_label,
+        product_id_to_name,
+        product_id_to_label,
+    )
 
 
 def _product_summaries(products: list[dict], option_code_to_label: dict[str, str]) -> list[dict]:
@@ -117,7 +138,7 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
         되므로, 대상 주문을 찾을 필요 없이 옵션 코드만으로 바로 처리한다.
         """
         products = payload.get("products") or []
-        option_code_to_name, _, option_code_to_label = _parse_products(products)
+        option_code_to_name, _, option_code_to_label, _, _ = _parse_products(products)
         if not option_code_to_name:
             raise HTTPException(status_code=400, detail="미진열 처리할 옵션이 없습니다.")
 
@@ -144,8 +165,14 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
     @router.post("/run")
     async def run(payload: dict = Body(...), user: str = Depends(get_current_user)):
         products = payload.get("products") or []
-        option_code_to_name, option_code_to_product_id, option_code_to_label = _parse_products(products)
-        if not option_code_to_name:
+        (
+            option_code_to_name,
+            option_code_to_product_id,
+            option_code_to_label,
+            product_id_to_name,
+            product_id_to_label,
+        ) = _parse_products(products)
+        if not option_code_to_name or not product_id_to_name:
             raise HTTPException(status_code=400, detail="취소할 상품/옵션이 없습니다.")
 
         template_msg = _load_soldout_template_msg()
@@ -166,7 +193,7 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
             except Exception as exc:
                 failed.append({"order_sno": None, "product_name": name, "stage": "search", "reason": str(exc)})
                 continue
-            matched_items.extend(filter_matching_order_items(items, set(option_code_to_name)))
+            matched_items.extend(filter_matching_order_items(items, set(product_id_to_name)))
 
         order_items_by_sno = group_items_by_order_sno(matched_items)
 
@@ -203,12 +230,12 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
                     soldout_snos.add(sno)
 
             names = [
-                option_code_to_name.get(str(item.get("option_stock_sync_code") or ""), item.get("goods_name", ""))
+                product_id_to_name.get(str(item.get("option_stock_sync_code") or ""), item.get("goods_name", ""))
                 for item in items
             ]
             item_details = [
                 {
-                    "name": option_code_to_name.get(str(item.get("option_stock_sync_code") or ""), item.get("goods_name", "")),
+                    "name": product_id_to_name.get(str(item.get("option_stock_sync_code") or ""), item.get("goods_name", "")),
                     "option_info": item.get("option_info", ""),
                     "ea": item.get("ea"),
                 }
