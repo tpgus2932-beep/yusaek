@@ -81,7 +81,7 @@ JANGGI_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\날짜별장끼�
 INGODAEGI_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\입고대기.xlsx")
 ZIGZAG_PRICE_TEMPLATE_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\지그재그_판매가수정_템플릿.xlsx")
 
-COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가", "지그재그상품번호"]
+COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가", "지그재그상품번호", "아이디"]
 
 
 def _qcol(col: str) -> str:
@@ -190,6 +190,8 @@ def _init_wonbe_table(conn: sqlite3.Connection):
         conn.execute('ALTER TABLE wonbe ADD COLUMN 판매가 TEXT')
     if "지그재그상품번호" not in wonbe_cols:
         conn.execute("ALTER TABLE wonbe ADD COLUMN 지그재그상품번호 TEXT")
+    if "아이디" not in wonbe_cols:
+        conn.execute("ALTER TABLE wonbe ADD COLUMN 아이디 TEXT")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS wonbe_meta (
             key   TEXT PRIMARY KEY,
@@ -2138,9 +2140,10 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             supplier = brand_parts[0] if brand_parts else ""
             supplier_product = brand_parts[1] if len(brand_parts) > 1 else ""
             option_no = str(c.get("option_extra_column1") or "").strip()
+            ezadmin_id = str(c.get("product_id") or "").strip()
             supplier_combined = " ".join(p for p in [supplier_product, color, size] if p)
             name_combined = " ".join(p for p in [product_name, color, size] if p)
-            data_rows.append((code, product_name, color, size, org_price, supplier, supplier_product, supplier_combined, name_combined, option_no))
+            data_rows.append((code, product_name, color, size, org_price, supplier, supplier_product, supplier_combined, name_combined, option_no, ezadmin_id))
 
         conn = _get_wonbe_db()
         try:
@@ -2154,19 +2157,35 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
 
             # 거래처주소 채운 최종 튜플
             final_rows = [
-                (code, pname, color, size, price, sup, sup_prod, sup_comb, name_comb, addr_map.get(sup, ""), opt)
-                for code, pname, color, size, price, sup, sup_prod, sup_comb, name_comb, opt in data_rows
+                (code, pname, color, size, price, sup, sup_prod, sup_comb, name_comb, addr_map.get(sup, ""), opt, eid)
+                for code, pname, color, size, price, sup, sup_prod, sup_comb, name_comb, opt, eid in data_rows
             ]
 
             before = conn.execute("SELECT COUNT(*) FROM wonbe").fetchone()[0]
             conn.executemany(
                 """INSERT OR IGNORE INTO wonbe
-                   (상품코드, 상품명, 색상, 사이즈, 원가, 거래처, 거래처상품명, 거래처합, 상품명합, 거래처주소, 옵션번호)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (상품코드, 상품명, 색상, 사이즈, 원가, 거래처, 거래처상품명, 거래처합, 상품명합, 거래처주소, 옵션번호, 아이디)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 final_rows,
             )
             after = conn.execute("SELECT COUNT(*) FROM wonbe").fetchone()[0]
             inserted = after - before
+
+            # 이미 있던 상품코드인데 아이디가 비어있는 경우(신규 삽입 전에 추가돼 있던 행) 채워준다.
+            id_backfill = [(eid, row[0]) for row in final_rows if (eid := row[11])]
+            backfilled = 0
+            if id_backfill:
+                backfill_codes = [code for _, code in id_backfill]
+                placeholders = ",".join(["?"] * len(backfill_codes))
+                backfilled = conn.execute(
+                    f"""SELECT COUNT(*) FROM wonbe
+                        WHERE 상품코드 IN ({placeholders}) AND (아이디 IS NULL OR 아이디 = '')""",
+                    backfill_codes,
+                ).fetchone()[0]
+                conn.executemany(
+                    "UPDATE wonbe SET 아이디 = ? WHERE 상품코드 = ? AND (아이디 IS NULL OR 아이디 = '')",
+                    id_backfill,
+                )
 
             # 거래처가 케이디지인 행을 케이디지원가베이스 테이블에도 추가
             _init_kdg_table(conn)
@@ -2194,7 +2213,13 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 (str(len(data_rows)),),
             )
             conn.commit()
-            return {"ok": True, "fetched": len(data_rows), "inserted": inserted, "synced_at": synced_at}
+            return {
+                "ok": True,
+                "fetched": len(data_rows),
+                "inserted": inserted,
+                "backfilled": backfilled,
+                "synced_at": synced_at,
+            }
         finally:
             conn.close()
 

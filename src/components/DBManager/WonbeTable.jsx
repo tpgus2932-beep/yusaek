@@ -5,7 +5,7 @@ import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
 const PAGE_SIZE = 50;
 const EDITABLE_COLS = ["상품명합", "거래처합", "거래처", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"];
-const ALL_COLS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가", "지그재그상품번호"];
+const ALL_COLS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가", "지그재그상품번호", "아이디"];
 const VISIBLE_COLS_STORAGE_KEY = "wonbe_visible_cols";
 
 export default function WonbeTable() {
@@ -613,7 +613,10 @@ export default function WonbeTable() {
         throw new Error(data?.detail || "동기화 실패");
       }
       setLastSync({ at: data.synced_at, count: String(data.inserted), fetched: String(data.fetched) });
-      setMessage(`동기화 완료: ${data.fetched}개 조회 → ${data.inserted}개 신규 등록`);
+      setMessage(
+        `동기화 완료: ${data.fetched}개 조회 → ${data.inserted}개 신규 등록` +
+        (data.backfilled ? ` · 기존 상품 아이디 ${data.backfilled}건 채움` : "")
+      );
       setOffset(0);
       setQuery("");
       setInputQuery("");
