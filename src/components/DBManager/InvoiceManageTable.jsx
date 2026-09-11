@@ -368,11 +368,20 @@ export default function InvoiceManageTable() {
   const completedCount = completedRows.length;
   const remainingCount = remainingRows.length;
 
-  // ── 거래처명 검색 (Ctrl+F 포커스 이동, Enter로 다음 결과로 스크롤, Space로 사전 설정한 열 체크) ──
+  // ── 거래처명/입금액 검색 (Ctrl+F 포커스 이동, Enter로 다음 결과로 스크롤, Space로 사전 설정한 열 체크) ──
+  // 입금액은 "95000"과 "95,000" 둘 다로 검색되도록 쉼표를 제거한 숫자 문자열끼리 비교한다.
   const matches = useMemo(() => {
-    const q = searchedQuery.trim().toLowerCase();
-    if (!q) return [];
-    return filteredRows.filter((r) => String(r.거래처명 || "").toLowerCase().includes(q));
+    const raw = searchedQuery.trim();
+    if (!raw) return [];
+    const q = raw.toLowerCase();
+    const qDigits = raw.replace(/,/g, "");
+    return filteredRows.filter((r) => {
+      if (String(r.거래처명 || "").toLowerCase().includes(q)) return true;
+      if (qDigits && /^\d+$/.test(qDigits)) {
+        return String(Number(r.입금액) || 0).includes(qDigits);
+      }
+      return false;
+    });
   }, [filteredRows, searchedQuery]);
 
   const currentMatch = matches.length ? matches[Math.min(matchIndex, matches.length - 1)] : null;
@@ -553,11 +562,11 @@ export default function InvoiceManageTable() {
           <input
             ref={searchInputRef}
             className={styles.searchInput}
-            placeholder="거래처명 검색 (Ctrl+F, Enter로 다음 결과)"
+            placeholder="거래처명/입금액 검색 (Ctrl+F, Enter로 다음 결과)"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={handleSearchKeyDown}
-            aria-label="계산서 관리 거래처명 검색"
+            aria-label="계산서 관리 거래처명/입금액 검색"
           />
         </div>
         {searchedQuery && (
@@ -595,6 +604,7 @@ export default function InvoiceManageTable() {
                 />
               </th>
               <th>입금액</th>
+              <th>예금주</th>
               <th>
                 <ColumnFilterHeader
                   col={FILTERABLE_COLS[1]}
@@ -645,6 +655,7 @@ export default function InvoiceManageTable() {
                   )}
                 </td>
                 <td>{(Number(row.입금액) || 0).toLocaleString()}원</td>
+                <td>{accountMap[String(row.거래처명 || "").trim()]?.E || "-"}</td>
                 <td>
                   {Number(row.부가세거래처) === 1 ? (
                     <span className={`${styles.badge} ${styles.badgeVat}`}>부가세 거래처</span>
