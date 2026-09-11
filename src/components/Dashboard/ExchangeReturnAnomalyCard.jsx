@@ -188,6 +188,21 @@ export default function ExchangeReturnAnomalyCard() {
             <div className={styles.anomalyList}>
                 {items.map((item) => (
                     <div key={item.id} className={styles.anomalyRow}>
+                        <span
+                            style={{
+                                display: 'inline-block',
+                                marginBottom: '0.5rem',
+                                fontSize: '0.62rem',
+                                fontWeight: 700,
+                                padding: '0.16rem 0.48rem',
+                                borderRadius: '999px',
+                                background: item.kind === 'redelivery' ? 'var(--d-indigo-light)' : 'var(--d-amber-light)',
+                                color: item.kind === 'redelivery' ? 'var(--d-indigo)' : 'var(--d-amber)',
+                                border: `1px solid ${item.kind === 'redelivery' ? 'var(--d-indigo-mid)' : 'var(--d-amber-mid)'}`,
+                            }}
+                        >
+                            {item.kind === 'redelivery' ? '재배송' : '반품'}
+                        </span>
                         <div className={styles.anomalyGrid}>
                             <div className={styles.anomalyField}>
                                 <span className={styles.anomalyFieldLabel}>주문번호</span>
