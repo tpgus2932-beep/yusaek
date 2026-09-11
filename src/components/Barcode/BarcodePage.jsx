@@ -1528,7 +1528,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 >
                   {kimsungilSummonLoading ? "소환 중..." : "김승일 소환술"}
                 </button>
-                <button className={styles.secondaryBtn} onClick={handleDefectExportAndOchuul} disabled={defectEzadminLoading || ochuulLoading || defectList.length === 0}>
+                <button className={styles.secondaryBtn} onClick={() => handleDefectExportAndOchuul()} disabled={defectEzadminLoading || ochuulLoading || defectList.length === 0}>
                   {defectEzadminLoading ? "출고 중..." : ochuulLoading ? "오출 중..." : "출고+오출"}
                 </button>
                 <button className={styles.secondaryBtn} onClick={() => { setShowDefectList(false); setOchuulResult(null); }}>닫기</button>
