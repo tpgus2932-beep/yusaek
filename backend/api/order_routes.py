@@ -1,5 +1,5 @@
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 import json
 import tempfile
@@ -24,6 +24,7 @@ from api.wonbe_routes import (
     load_wonbe_option_sno_map,
     load_wonbe_client_info_by_code,
     load_wonbe_product_name_map,
+    load_wonbe_pure_product_name_map,
 )
 from services.misong_lookup import load_misong_qty_by_code
 
@@ -31,6 +32,10 @@ _EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
 _JINMONEY_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "assets" / "jinmoney_order_template.xlsx"
 _JINMONEY_RECEIPT_RE = re.compile(r"org_value=['\"]([^'\"]*)['\"]", re.IGNORECASE)
+_KST = timezone(timedelta(hours=9))
+_BROWSER_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_BROWSER_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+_SIMPLE_RECEIVING_SHEET_TITLE = "세현1"
 
 
 def build_order_router(
@@ -82,6 +87,110 @@ def build_order_router(
         ascii_name = "".join(ch if ord(ch) < 128 else "_" for ch in safe_name)
         quoted = urllib.parse.quote(safe_name)
         return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
+
+    # ── 간단입고: 이지어드민 IM00 전표생성 + IM25 상품일괄추가 (returns_routes.py의
+    # "전표생성+상품일괄추가"와 동일한 흐름) ────────────────────────────────────
+    def _browser_time_flag(now: datetime) -> str:
+        return (
+            f"{_BROWSER_WEEKDAYS[now.weekday()]} "
+            f"{_BROWSER_MONTHS[now.month - 1]} "
+            f"{now.day:02d} {now.year} "
+            f"{now:%H:%M:%S} GMT+0900 (한국 표준시)"
+        )
+
+    def _looks_like_ezadmin_session_error(response: httpx.Response, body: str) -> bool:
+        lowered = (body or "").lower()
+        if response.url and "login" in str(response.url).lower():
+            return True
+        if "<html" in lowered or "<!doctype html" in lowered:
+            return True
+        return any(token in lowered for token in ("login", "phpsessid", "session", "로그인"))
+
+    def _looks_like_ezadmin_login_page(response: httpx.Response, body: str) -> bool:
+        lowered = (body or "").lower()
+        if response.url and "login" in str(response.url).lower():
+            return True
+        return "login.htm" in lowered or "login_form" in lowered
+
+    async def _find_ezadmin_sheet_seq(
+        client: httpx.AsyncClient,
+        *,
+        phpsessid: str,
+        start_date: str,
+        sheet_title: str,
+    ) -> str | None:
+        response = await client.post(
+            f"{_EZADMIN_BASE}/function.htm",
+            data={
+                "_search": "false",
+                "nd": str(int(datetime.now(_KST).timestamp() * 1000)),
+                "rows": "9999",
+                "page": "1",
+                "sidx": "",
+                "sord": "asc",
+                "template": "IM00",
+                "action": "get_IM00_grid",
+                "par": (
+                    "template=IM00&action=&page_code=IM00&search=1"
+                    "&_sort=&sort_order=&date_type=crdate"
+                    f"&start_date={start_date}&end_date={start_date}"
+                    "&date_period_sel=0&query_option=title&query_str=&req_status=0"
+                ),
+            },
+            cookies={"PHPSESSID": phpsessid},
+            headers={"User-Agent": "Mozilla/5.0", "X-Requested-With": "XMLHttpRequest"},
+        )
+        body = response.text or ""
+        if _looks_like_ezadmin_session_error(response, body):
+            return None
+        try:
+            obj = response.json()
+        except Exception:
+            return None
+
+        html_tag = re.compile(r"<[^>]+>")
+        matches: list[str] = []
+        for row in obj.get("rows", []):
+            cell = row.get("cell", {}) or {}
+            clean = {
+                key: html_tag.sub("", str(value)).strip() if isinstance(value, str) else value
+                for key, value in cell.items()
+            }
+            title = str(clean.get("title") or clean.get("sheet_title") or "").strip()
+            if title and title != sheet_title:
+                continue
+            sheet_no = str(cell.get("sheet") or clean.get("sheet") or "").strip()
+            for value in cell.values():
+                if sheet_no:
+                    break
+                if isinstance(value, str):
+                    match = re.search(r"sheet=['\"]?(\w+)['\"]?", value, re.IGNORECASE)
+                    if match:
+                        sheet_no = match.group(1)
+            if sheet_no:
+                matches.append(sheet_no)
+
+        def sort_key(value: str):
+            try:
+                return int(value)
+            except Exception:
+                return 0
+
+        return sorted(matches, key=sort_key)[-1] if matches else None
+
+    def _build_simple_receiving_xls_bytes(items: list[dict]) -> bytes:
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("상품일괄추가")
+        for col_idx, header in enumerate(["상품코드", "요청수량", "입고수량", "요청메모"]):
+            sheet.write(0, col_idx, header)
+        for row_idx, item in enumerate(items, start=1):
+            sheet.write(row_idx, 0, item["code"])
+            sheet.write(row_idx, 1, item["request_qty"])
+            sheet.write(row_idx, 2, item["qty"])
+            sheet.write(row_idx, 3, item.get("memo") or "")
+        buf = io.BytesIO()
+        book.save(buf)
+        return buf.getvalue()
 
     def _jinmoney_receipt_qty(value) -> int:
         raw = str(value or "")
@@ -1188,15 +1297,20 @@ def build_order_router(
 
         return {"ok": True, **result}
 
-    # ── 발주내역 (TSV 복사 / 발주 실행 기록) ──────────────────────────────────
+    # ── 발주내역 (TSV 복사 / 엑셀 발주 다운로드 / 발주 실행 기록) ──────────────────
+    RECORDABLE_ACTION_TYPES = {"tsv_copy", "excel_order"}
+
     @router.post("/order/main-order/record-tsv-copy")
     async def main_order_record_tsv_copy(payload: dict = Body(...), admin: str = Depends(require_admin)):
         items = payload.get("items") or []
+        action_type = str(payload.get("action_type") or "tsv_copy")
+        if action_type not in RECORDABLE_ACTION_TYPES:
+            action_type = "tsv_copy"
         record_order_history(
             get_db,
             execution_id=str(uuid.uuid4()),
             recorded_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            action_type="tsv_copy",
+            action_type=action_type,
             items=items,
             username=admin,
             display_name=get_user_display(admin),
@@ -1229,10 +1343,11 @@ def build_order_router(
         if q.strip():
             like = f"%{q.strip()}%"
             clauses.append(
-                "(product_code LIKE ? OR product_name LIKE ? OR store_name LIKE ? "
+                "(product_code LIKE ? OR product_name LIKE ? OR client_product_name LIKE ? "
+                "OR store_name LIKE ? OR options LIKE ? "
                 "OR recorded_by_username LIKE ? OR recorded_by_display_name LIKE ?)"
             )
-            params.extend([like, like, like, like, like])
+            params.extend([like, like, like, like, like, like, like])
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         init_order_history_table(get_db)
         conn = get_db()
@@ -1260,5 +1375,161 @@ def build_order_router(
             return {"ok": True, "deleted": cur.rowcount}
         finally:
             conn.close()
+
+    async def _create_simple_receiving_voucher(items: list[dict], phpsessid: str, sheet_title: str) -> dict:
+        """items 배치 하나로 IM00 전표생성 + IM25 상품일괄추가를 실행한다.
+        배치 안에서는 상품코드가 중복되면 안 된다 - EZAdmin이 한 전표에 같은 상품코드를
+        두 번 올리는 걸 받아주지 않는다(호출부에서 배치를 미리 나눠서 보장)."""
+        upload_xls = _build_simple_receiving_xls_bytes(items)
+        now = datetime.now(_KST)
+        start_date = now.strftime("%Y-%m-%d")
+        create_headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": f"{_EZADMIN_BASE}/template40.htm?template=IM00",
+            "X-Requested-With": "XMLHttpRequest",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        }
+        create_payload = {
+            "template": "IM00",
+            "action": "new_sheet_each",
+            "start_date": start_date,
+            "sheet_title": sheet_title,
+            "timeFlag": _browser_time_flag(now),
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+                response = await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data=create_payload,
+                    cookies={"PHPSESSID": phpsessid},
+                    headers=create_headers,
+                )
+                body = (response.text or "").strip()
+                if _looks_like_ezadmin_session_error(response, body):
+                    return {"ok": False, "need_session": True}
+                if not (200 <= response.status_code < 300):
+                    return {"ok": False, "error": f"EZAdmin 전표 생성 실패 (HTTP {response.status_code})"}
+                if body:
+                    return {"ok": False, "error": f"EZAdmin 전표 생성 응답을 확인할 수 없습니다: {body[:300]}"}
+
+                sheet_seq = None
+                for _ in range(5):
+                    await asyncio.sleep(0.5)
+                    sheet_seq = await _find_ezadmin_sheet_seq(
+                        client, phpsessid=phpsessid, start_date=start_date, sheet_title=sheet_title,
+                    )
+                    if sheet_seq:
+                        break
+                if not sheet_seq:
+                    return {
+                        "ok": False,
+                        "error": "전표는 생성됐지만 전표번호를 찾지 못해 상품 일괄추가를 진행하지 못했습니다.",
+                    }
+
+                upload_response = await client.post(
+                    f"{_EZADMIN_BASE}/popup_utf8.htm",
+                    data={"template": "IM25", "action": "upload", "seq": sheet_seq},
+                    files={
+                        "_file": (
+                            "simple_receiving_products.xls",
+                            upload_xls,
+                            "application/vnd.ms-excel",
+                        )
+                    },
+                    cookies={"PHPSESSID": phpsessid},
+                    headers={
+                        "User-Agent": "Mozilla/5.0",
+                        "Referer": f"{_EZADMIN_BASE}/popup35.htm?template=IM25&seq={sheet_seq}",
+                    },
+                )
+        except httpx.HTTPError as exc:
+            return {"ok": False, "error": f"EZAdmin 요청 실패: {exc}"}
+
+        upload_body = (upload_response.text or "").strip()
+        if _looks_like_ezadmin_login_page(upload_response, upload_body):
+            return {"ok": False, "need_session": True}
+        if not (200 <= upload_response.status_code < 300):
+            return {"ok": False, "error": f"상품 일괄추가 실패 (HTTP {upload_response.status_code})"}
+
+        return {
+            "ok": True,
+            "count": len(items),
+            "sheet_title": sheet_title,
+            "start_date": start_date,
+            "sheet_seq": sheet_seq,
+        }
+
+    # ── 간단입고 (발주내역 상품을 골라 EZAdmin에 입고전표 생성 + 상품 일괄추가) ──
+    @router.post("/order/simple-receiving/apply")
+    async def simple_receiving_apply(payload: dict = Body(...), admin: str = Depends(require_admin)):
+        raw_items = payload.get("items") or []
+        sheet_title = str(payload.get("sheetTitle") or "").strip() or _SIMPLE_RECEIVING_SHEET_TITLE
+        misong_qty_by_code = load_misong_qty_by_code(get_shared_db)
+        items = []
+        for item in raw_items:
+            code = str(item.get("code") or "").strip()
+            if not code:
+                continue
+            try:
+                qty = int(item.get("qty") or 0)
+            except (TypeError, ValueError):
+                qty = 0
+            try:
+                misong_qty = int(item.get("misongQty") or 0)
+            except (TypeError, ValueError):
+                misong_qty = 0
+            if qty <= 0 and misong_qty <= 0:
+                continue
+            normalized_code = " ".join(code.split())
+            # 프론트에서 미송픽업 검색 결과로 담은 줄은 명시적으로 표시해서 넘긴다 - 같은 상품코드라도
+            # 일반주문 줄과 절대 합쳐지지 않고 따로 요청메모에 남아야 하기 때문.
+            is_misong_pickup = bool(item.get("isMisongPickup")) or misong_qty_by_code.get(normalized_code, 0) > 0
+            # 프론트에서 직접 입력한 요청메모가 있으면 그걸 쓰고, 없으면 기존처럼 미송픽업 여부로 자동 채운다.
+            custom_memo = str(item.get("memo") or "").strip()
+            items.append({
+                "code": code,
+                "qty": qty,
+                # 요청수량에는 미송으로 담은 수량만 들어간다 - 그냥 담은 수량(qty)은 입고수량에만 반영.
+                "request_qty": misong_qty,
+                "memo": custom_memo or ("미송픽업" if is_misong_pickup else ""),
+            })
+        if not items:
+            return {"ok": False, "error": "입고할 상품(담을 수량 또는 미송 수량 1 이상)이 없습니다."}
+
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        # 같은 상품코드가 여러 줄(예: 일반주문 + 미송픽업)로 겹치면 한 전표에 같이 못 올리므로,
+        # 겹치는 순번별로 배치를 나눠 각각 별도 전표로 생성한다.
+        batches: list[list[dict]] = []
+        seen_counts: dict[str, int] = {}
+        for it in items:
+            n = seen_counts.get(it["code"], 0)
+            if n >= len(batches):
+                batches.append([])
+            batches[n].append(it)
+            seen_counts[it["code"]] = n + 1
+
+        vouchers = []
+        for batch in batches:
+            result = await _create_simple_receiving_voucher(batch, phpsessid, sheet_title)
+            if not result.get("ok"):
+                return {**result, "vouchers": vouchers}
+            vouchers.append(result)
+
+        return {"ok": True, "count": len(items), "vouchers": vouchers}
+
+    # ── 간단입고 바코드 출력용 상품명 조회 (원가베이스유 상품코드 → 순수 상품명) ──
+    # 미송픽업 검색결과는 발주내역의 product_name/client_product_name이 실제 상품명이 아니라
+    # 미송관리 쪽 표시용 값이라 코드로 원가베이스유를 찾아야 정확한 상품명이 나온다.
+    @router.post("/order/simple-receiving/resolve-product-names")
+    def simple_receiving_resolve_product_names(payload: dict = Body(...), admin: str = Depends(require_admin)):
+        codes = {str(c or "").strip() for c in (payload.get("codes") or []) if str(c or "").strip()}
+        if not codes:
+            return {"ok": True, "names": {}}
+        name_map = load_wonbe_pure_product_name_map()
+        return {"ok": True, "names": {code: name_map.get(code, "") for code in codes}}
 
     return router
