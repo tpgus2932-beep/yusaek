@@ -986,7 +986,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
     setInvoicePreviewError("");
     setInvoiceBulkRunning(true);
-    const localResults = invoiceNos.map((no) => ({ invoice_no: no, status: "pending" }));
+    const labels = getInvoiceStepLabels(invoiceStockOutEnabled);
+    const localResults = invoiceNos.map((no) => ({
+      invoice_no: no,
+      status: "pending",
+      steps: labels.map((label) => ({ label, status: "pending" })),
+    }));
     setInvoiceBulkResults(localResults);
 
     const setResult = (invoiceNo, status, detail) => {
@@ -995,11 +1000,19 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       setInvoiceBulkResults([...localResults]);
     };
 
+    const setStepResult = (invoiceNo, idx, status, detail) => {
+      const target = localResults.find((r) => r.invoice_no === invoiceNo);
+      if (target?.steps?.[idx]) { target.steps[idx] = { ...target.steps[idx], status, detail }; }
+      setInvoiceBulkResults([...localResults]);
+    };
+
     for (const invoiceNo of invoiceNos) {
       setResult(invoiceNo, "running");
       try {
         const preview = await fetchInvoicePreview(invoiceNo);
-        await runInvoicePipeline(preview, invoiceStockOutEnabled, invoiceStockOutMemo, () => {});
+        await runInvoicePipeline(preview, invoiceStockOutEnabled, invoiceStockOutMemo, (idx, status, detail) => {
+          setStepResult(invoiceNo, idx, status, detail);
+        });
         setResult(invoiceNo, "done");
       } catch (err) {
         if (err.needSession) {
@@ -1429,15 +1442,32 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 )}
 
                 {invoiceBulkResults.length > 0 && (
-                  <div style={{ marginTop: "0.75rem", fontSize: "0.85rem", maxHeight: "260px", overflowY: "auto" }}>
+                  <div style={{ marginTop: "0.75rem", fontSize: "0.85rem", maxHeight: "320px", overflowY: "auto" }}>
                     {invoiceBulkResults.map((r) => (
-                      <div key={r.invoice_no} style={{ display: "flex", alignItems: "center", gap: "0.35rem", padding: "0.15rem 0" }}>
-                        <span>
-                          {r.status === "done" ? "✔" : r.status === "error" ? "✘" : r.status === "running" ? "⏳" : "▫"}
-                        </span>
-                        <span>{r.invoice_no}</span>
-                        {r.status === "error" && r.detail && (
-                          <span style={{ color: "#dc3545", fontSize: "0.78rem" }}>({r.detail})</span>
+                      <div key={r.invoice_no} style={{ padding: "0.25rem 0", borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+                          <span>
+                            {r.status === "done" ? "✔" : r.status === "error" ? "✘" : r.status === "running" ? "⏳" : "▫"}
+                          </span>
+                          <span>{r.invoice_no}</span>
+                          {r.status === "error" && r.detail && (
+                            <span style={{ color: "#dc3545", fontSize: "0.78rem" }}>({r.detail})</span>
+                          )}
+                        </div>
+                        {r.status !== "pending" && (r.steps || []).length > 0 && (
+                          <div style={{ marginLeft: "1.3rem", marginTop: "0.15rem" }}>
+                            {r.steps.map((s) => (
+                              <div key={s.label} style={{ display: "flex", alignItems: "center", gap: "0.3rem", fontSize: "0.78rem", color: "#666", padding: "0.05rem 0" }}>
+                                <span>
+                                  {s.status === "done" ? "✔" : s.status === "error" ? "✘" : s.status === "running" ? "⏳" : "▫"}
+                                </span>
+                                <span>{s.label}</span>
+                                {s.status === "error" && s.detail && (
+                                  <span style={{ color: "#dc3545" }}>({s.detail})</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
                         )}
                       </div>
                     ))}
