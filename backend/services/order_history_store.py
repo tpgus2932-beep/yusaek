@@ -63,8 +63,11 @@ def record_order_history(
 ) -> None:
     """items(top90 형식)를 발주내역으로 남긴다. action_type='order_execute'면 매장별
     성공/실패(result_by_store)를 같이 붙여서, action_type='tsv_copy'/'excel_order'면 결과 없이 기록만 한다.
-    같은 날짜(recorded_at 날짜부분) + action_type + 상품코드 + 매장명 조합이 이미 있으면 새 행을
-    추가하지 않고 기존 행을 최신 값으로 갱신한다 - 같은 날 두 번 다운로드해도 중복이 쌓이지 않게."""
+    같은 날짜(recorded_at 날짜부분) + action_type + 상품코드 + 매장명 + 미송픽업 여부 조합이 이미 있으면
+    새 행을 추가하지 않고 기존 행을 최신 값으로 갱신한다 - 같은 날 두 번 다운로드해도 중복이 쌓이지 않게.
+    미송픽업 여부를 키에 포함하는 이유: 같은 상품코드로 일반 발주와 미송픽업 발주가 같은 날 같은 매장에
+    둘 다 잡히면, 미송픽업 여부가 없을 때 둘이 같은 행으로 취급되어 나중 기록이 먼저 기록을 덮어써
+    한쪽이 사라지는 문제가 있었다."""
     result_by_store = result_by_store or {}
     records = []
     for item in items:
@@ -100,11 +103,16 @@ def record_order_history(
     try:
         _init_order_history_table(conn)
         for rec in records:
+            is_misong_pickup = 1 if (
+                rec["recommended_qty_source"] == "misong_pickup" or "미송픽업" in rec["options"]
+            ) else 0
             existing = conn.execute(
                 """SELECT id FROM order_history
                    WHERE substr(recorded_at, 1, 10) = ? AND action_type = ?
-                     AND product_code = ? AND store_name = ?""",
-                (recorded_date, action_type, rec["product_code"], rec["store_name"]),
+                     AND product_code = ? AND store_name = ?
+                     AND (CASE WHEN recommended_qty_source = 'misong_pickup' OR options LIKE '%미송픽업%'
+                               THEN 1 ELSE 0 END) = ?""",
+                (recorded_date, action_type, rec["product_code"], rec["store_name"], is_misong_pickup),
             ).fetchone()
             if existing:
                 conn.execute(
