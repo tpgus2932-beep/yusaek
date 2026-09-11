@@ -7,6 +7,7 @@ const PAGE_SIZE = 50;
 
 const ACTION_LABELS = {
   tsv_copy: "TSV 복사",
+  excel_order: "엑셀 발주",
   order_execute: "발주 실행",
   backfill_confirmed: "확정수량 백필",
 };
@@ -27,6 +28,10 @@ function recommendedQtyDisplay(row) {
   if (row.recommended_qty != null) return row.recommended_qty;
   const label = RECOMMENDED_QTY_SOURCE_LABELS[row.recommended_qty_source];
   return label ? `- (${label})` : "-";
+}
+
+function isMisongPickup(row) {
+  return row.recommended_qty_source === "misong_pickup" || String(row.options || "").includes("미송픽업");
 }
 
 export default function OrderHistoryTable() {
@@ -131,6 +136,7 @@ export default function OrderHistoryTable() {
           <select className={styles.searchInput} style={{ width: "130px" }} value={filters.actionType} onChange={(e) => updateFilter("actionType", e.target.value)} aria-label="구분">
             <option value="">전체 구분</option>
             <option value="tsv_copy">TSV 복사</option>
+            <option value="excel_order">엑셀 발주</option>
             <option value="order_execute">발주 실행</option>
             <option value="backfill_confirmed">확정수량 백필</option>
           </select>
@@ -189,7 +195,14 @@ export default function OrderHistoryTable() {
                   />
                 </td>
                 <td>{row.recorded_at}</td>
-                <td>{ACTION_LABELS[row.action_type] || row.action_type}</td>
+                <td>
+                  {ACTION_LABELS[row.action_type] || row.action_type}
+                  {isMisongPickup(row) && (
+                    <span className={`${styles.badge} ${styles.badgeVat}`} style={{ marginLeft: "0.35rem" }}>
+                      미송픽업
+                    </span>
+                  )}
+                </td>
                 <td>{row.store_name || "-"}</td>
                 <td>{row.product_code || "-"}</td>
                 <td>{row.product_name || row.supply_product_name || "-"}</td>
