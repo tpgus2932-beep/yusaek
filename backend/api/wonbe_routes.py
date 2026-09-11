@@ -94,7 +94,7 @@ def _qcols(cols: list[str]) -> str:
 
 # username → {"running": bool, "total": int, "done": int, "matched": int} — 제조국 채우기 진행상황 폴링용
 _country_sync_progress: dict[str, dict] = {}
-EDITABLE = {"상품명합", "거래처합", "거래처", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"}
+EDITABLE = {"상품명합", "거래처합", "거래처", "거래처상품명", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"}
 
 INGODAEGI_COLUMNS = ["상품코드", "입고수량"]
 ABLY_STOCK_COLUMNS = ["옵션번호", "수량"]
@@ -200,6 +200,23 @@ def _init_wonbe_table(conn: sqlite3.Connection):
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_wonbe_상품명합 ON wonbe(상품명합)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_wonbe_거래처합 ON wonbe(거래처합)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS wonbe_groups (
+            id   INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE
+        )
+    """)
+    groups_cols = {row["name"] for row in conn.execute("PRAGMA table_info(wonbe_groups)").fetchall()}
+    if "is_exclude" not in groups_cols:
+        conn.execute("ALTER TABLE wonbe_groups ADD COLUMN is_exclude INTEGER NOT NULL DEFAULT 0")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS wonbe_group_members (
+            group_id INTEGER NOT NULL,
+            상품코드  TEXT NOT NULL,
+            PRIMARY KEY (group_id, 상품코드)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_wonbe_group_members_code ON wonbe_group_members(상품코드)")
     conn.commit()
 
 
@@ -254,6 +271,25 @@ def _set_discount_exclude_ably_ids(conn: sqlite3.Connection, ids: list[str]) -> 
     )
     conn.commit()
     return cleaned
+
+
+GROUP_EXCLUDE_SQL_CLAUSE = """(상품코드 NOT IN (
+    SELECT m.상품코드 FROM wonbe_group_members m
+    JOIN wonbe_groups g ON g.id = m.group_id
+    WHERE g.is_exclude = 1
+))"""
+
+
+def _get_group_excluded_codes(conn: sqlite3.Connection) -> set[str]:
+    """일괄작업 제외로 지정된 그룹(is_exclude=1)에 속한 상품코드 집합을 반환한다.
+    판매가 채우기 / 상품가 변경 등 일괄작업 전반에서 공통으로 건너뛰는 데 쓰인다."""
+    rows = conn.execute(
+        """SELECT DISTINCT m.상품코드 AS 상품코드
+           FROM wonbe_group_members m
+           JOIN wonbe_groups g ON g.id = m.group_id
+           WHERE g.is_exclude = 1"""
+    ).fetchall()
+    return {r["상품코드"] for r in rows}
 
 
 def _sale_price_multiplier(cost: float) -> int:
@@ -491,6 +527,20 @@ def load_wonbe_product_name_map() -> dict[str, str]:
     finally:
         conn.close()
     return {r["상품코드"]: r["상품명합"] or "" for r in rows if r["상품코드"]}
+
+
+def load_wonbe_pure_product_name_map() -> dict[str, str]:
+    """상품코드 → 순수 상품명(색상/사이즈 제외) 매핑. 판매통계 화면에서 옵션만
+    다른(색상/사이즈별로 상품코드가 다른) 상품코드들을 같은 상품으로 묶는 용도."""
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute(
+            "SELECT 상품코드, 상품명 FROM wonbe WHERE 상품코드 != ''"
+        ).fetchall()
+    finally:
+        conn.close()
+    return {r["상품코드"]: r["상품명"] or "" for r in rows if r["상품코드"]}
 
 
 def load_wonbe_product_cost_map() -> dict[str, int]:
@@ -735,6 +785,32 @@ def _init_ichae_table(conn: sqlite3.Connection):
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ichae_날짜 ON 이체파일(날짜)")
+    ichae_cols = {row["name"] for row in conn.execute("PRAGMA table_info(이체파일)").fetchall()}
+    if "수정일시" not in ichae_cols:
+        conn.execute("ALTER TABLE 이체파일 ADD COLUMN 수정일시 TEXT NOT NULL DEFAULT ''")
+    if "최근변경" not in ichae_cols:
+        conn.execute("ALTER TABLE 이체파일 ADD COLUMN 최근변경 TEXT NOT NULL DEFAULT ''")
+    conn.commit()
+
+
+def _init_ichae_log_table(conn: sqlite3.Connection):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS 이체파일_전환로그 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            날짜 TEXT NOT NULL,
+            실행일시 TEXT NOT NULL,
+            실행자 TEXT NOT NULL DEFAULT '',
+            총거래처 INTEGER NOT NULL DEFAULT 0,
+            신규 INTEGER NOT NULL DEFAULT 0,
+            갱신 INTEGER NOT NULL DEFAULT 0,
+            삭제 INTEGER NOT NULL DEFAULT 0,
+            매칭 INTEGER NOT NULL DEFAULT 0,
+            미등록 INTEGER NOT NULL DEFAULT 0,
+            저장행수 INTEGER NOT NULL DEFAULT 0,
+            일괄이체포함 INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ichae_log_날짜 ON 이체파일_전환로그(날짜)")
     conn.commit()
 
 
@@ -1177,11 +1253,12 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 rows = conn.execute(f"SELECT {select_cols} FROM wonbe").fetchall()
 
             exclude_ids = _get_discount_exclude_ably_ids(conn)
+            group_excluded_codes = _get_group_excluded_codes(conn)
             updates = []
             skipped = 0
             excluded = 0
             for r in rows:
-                if str(r["에이블리상품번호"] or "").strip() in exclude_ids:
+                if r["상품코드"] in group_excluded_codes or str(r["에이블리상품번호"] or "").strip() in exclude_ids:
                     excluded += 1
                     continue
                 base = _parse_price(r["이벤트전 할인가"])
@@ -1230,9 +1307,14 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             else:
                 rows = conn.execute("SELECT 상품코드, 원가 FROM wonbe").fetchall()
 
+            group_excluded_codes = _get_group_excluded_codes(conn)
             updates = []
             skipped = 0
+            excluded = 0
             for r in rows:
+                if r["상품코드"] in group_excluded_codes:
+                    excluded += 1
+                    continue
                 cost = _parse_price(r["원가"])
                 if cost is None:
                     skipped += 1
@@ -1253,6 +1335,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 "total": len(rows),
                 "updated": len(updates),
                 "skipped": skipped,
+                "excluded": excluded,
             }
         finally:
             conn.close()
@@ -1292,11 +1375,12 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 rows = conn.execute("SELECT 상품코드, 에이블리상품번호, 원가 FROM wonbe").fetchall()
 
             exclude_ids = _get_discount_exclude_ably_ids(conn)
+            group_excluded_codes = _get_group_excluded_codes(conn)
             updates = []
             skipped = 0
             excluded = 0
             for r in rows:
-                if str(r["에이블리상품번호"] or "").strip() in exclude_ids:
+                if r["상품코드"] in group_excluded_codes or str(r["에이블리상품번호"] or "").strip() in exclude_ids:
                     excluded += 1
                     continue
                 cost = _parse_price(r["원가"])
@@ -1331,6 +1415,80 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         finally:
             conn.close()
 
+    @router.post("/fill-sale-price-from-discount")
+    def wonbe_fill_sale_price_from_discount(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        """이벤트 할인가 또는 이벤트전 할인가를 기준으로, 지정한 퍼센트만큼 할인되기 전
+        판매가를 역산해서 채운다 (판매가 자유 — 원가식과 무관하게 판매가를 직접 산출).
+        예: 기준값(할인가) 9000 / 퍼센트 10 → 판매가 = 9000 / (1 - 0.10) = 10000 (10원 단위 반올림)."""
+        q = str(payload.get("q") or "").strip()
+        codes_filter = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
+        basis = str(payload.get("basis") or "").strip()
+        if basis not in ("이벤트 할인가", "이벤트전 할인가"):
+            raise HTTPException(status_code=400, detail="basis는 '이벤트 할인가' 또는 '이벤트전 할인가'여야 합니다.")
+        try:
+            percent = float(payload.get("percent"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="퍼센트 값이 올바르지 않습니다.")
+        if percent >= 100:
+            raise HTTPException(status_code=400, detail="퍼센트는 100보다 작아야 합니다.")
+
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            select_cols = f"상품코드, 에이블리상품번호, {_qcol(basis)}"
+            if codes_filter:
+                placeholders = ", ".join("?" for _ in codes_filter)
+                rows = conn.execute(
+                    f"SELECT {select_cols} FROM wonbe WHERE 상품코드 IN ({placeholders})",
+                    codes_filter,
+                ).fetchall()
+            elif q:
+                like = f"%{q}%"
+                rows = conn.execute(
+                    f"SELECT {select_cols} FROM wonbe WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?",
+                    (like, like, like, like),
+                ).fetchall()
+            else:
+                rows = conn.execute(f"SELECT {select_cols} FROM wonbe").fetchall()
+
+            exclude_ids = _get_discount_exclude_ably_ids(conn)
+            group_excluded_codes = _get_group_excluded_codes(conn)
+            updates = []
+            skipped = 0
+            excluded = 0
+            for r in rows:
+                if r["상품코드"] in group_excluded_codes or str(r["에이블리상품번호"] or "").strip() in exclude_ids:
+                    excluded += 1
+                    continue
+                base = _parse_price(r[basis])
+                if base is None:
+                    skipped += 1
+                    continue
+                new_price = round(base / (1 - percent / 100) / 10) * 10
+                updates.append((str(new_price), r["상품코드"]))
+
+            if updates:
+                conn.executemany(
+                    f"UPDATE wonbe SET {_qcol('판매가')} = ? WHERE 상품코드 = ?",
+                    updates,
+                )
+                conn.commit()
+
+            return {
+                "ok": True,
+                "percent": percent,
+                "basis": basis,
+                "total": len(rows),
+                "updated": len(updates),
+                "skipped": skipped,
+                "excluded": excluded,
+            }
+        finally:
+            conn.close()
+
     @router.post("/push-price-to-ably")
     async def wonbe_push_price_to_ably(
         payload: dict = Body(...),
@@ -1348,7 +1506,8 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         conn = _get_wonbe_db()
         try:
             _init_wonbe_table(conn)
-            select_cols = f"에이블리상품번호, 판매가, {_qcol(source)}"
+            group_excluded_codes = _get_group_excluded_codes(conn)
+            select_cols = f"상품코드, 에이블리상품번호, 판매가, {_qcol(source)}"
             if codes:
                 placeholders = ", ".join("?" for _ in codes)
                 rows = conn.execute(
@@ -1373,7 +1532,11 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         seen: dict[str, tuple[str, str]] = {}
         skipped_invalid = 0
         skipped_duplicate = 0
+        skipped_group_excluded = 0
         for r in rows:
+            if r["상품코드"] in group_excluded_codes:
+                skipped_group_excluded += 1
+                continue
             sno = str(r["에이블리상품번호"]).strip()
             if not sno:
                 continue
@@ -1438,9 +1601,76 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             "requested": len(entries),
             "skipped_invalid": skipped_invalid,
             "skipped_duplicate": skipped_duplicate,
+            "skipped_group_excluded": skipped_group_excluded,
             "success_row_count": total_success,
             "error_row_count": total_error,
             "batches": batches,
+        }
+
+    @router.post("/delist-other-options-by-ably-product")
+    async def wonbe_delist_other_options_by_ably_product(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        """체크한 옵션과 같은 에이블리상품번호(상품 단위)를 가진 나머지 옵션들을
+        미진열 처리한다 (체크한 옵션 자신은 제외).
+        예: 한 상품의 여러 사이즈 중 체크한 사이즈만 남기고 나머지 사이즈를 미진열."""
+        codes = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
+        if not codes:
+            raise HTTPException(status_code=400, detail="체크한 옵션이 없습니다.")
+
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            placeholders = ", ".join("?" for _ in codes)
+            checked_rows = conn.execute(
+                f"SELECT 상품코드, 에이블리상품번호 FROM wonbe WHERE 상품코드 IN ({placeholders})",
+                codes,
+            ).fetchall()
+            sno_list = sorted({
+                str(r["에이블리상품번호"]).strip()
+                for r in checked_rows
+                if str(r["에이블리상품번호"] or "").strip()
+            })
+            if not sno_list:
+                raise HTTPException(status_code=400, detail="체크한 옵션에 에이블리상품번호가 없습니다.")
+
+            sno_placeholders = ", ".join("?" for _ in sno_list)
+            other_rows = conn.execute(
+                f"SELECT 상품코드, 옵션번호 FROM wonbe WHERE 에이블리상품번호 IN ({sno_placeholders})",
+                sno_list,
+            ).fetchall()
+        finally:
+            conn.close()
+
+        checked_codes_set = set(codes)
+        non_display_snos: list[int] = []
+        skipped_no_option_sno = 0
+        for r in other_rows:
+            if r["상품코드"] in checked_codes_set:
+                continue
+            opt = str(r["옵션번호"] or "").strip()
+            if not opt:
+                skipped_no_option_sno += 1
+                continue
+            try:
+                non_display_snos.append(int(opt))
+            except ValueError:
+                skipped_no_option_sno += 1
+
+        if non_display_snos:
+            ably = AblyClient()
+            try:
+                await ably.stop_selling(non_display_option_snos=non_display_snos, soldout_goods_snos=[])
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f"미진열 처리 실패: {exc}")
+
+        return {
+            "ok": True,
+            "checked": len(codes),
+            "groups": len(sno_list),
+            "delisted": len(non_display_snos),
+            "skipped_no_option_sno": skipped_no_option_sno,
         }
 
     @router.post("/push-price-to-zigzag")
@@ -1460,7 +1690,8 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         conn = _get_wonbe_db()
         try:
             _init_wonbe_table(conn)
-            select_cols = f"지그재그상품번호, {_qcol(source)}"
+            group_excluded_codes = _get_group_excluded_codes(conn)
+            select_cols = f"상품코드, 지그재그상품번호, {_qcol(source)}"
             if codes:
                 placeholders = ", ".join("?" for _ in codes)
                 rows = conn.execute(
@@ -1485,7 +1716,11 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         seen: dict[str, str] = {}
         skipped_invalid = 0
         skipped_duplicate = 0
+        skipped_group_excluded = 0
         for r in rows:
+            if r["상품코드"] in group_excluded_codes:
+                skipped_group_excluded += 1
+                continue
             zid = str(r["지그재그상품번호"]).strip()
             if not zid:
                 continue
@@ -1524,6 +1759,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             "requested": len(entries),
             "skipped_invalid": skipped_invalid,
             "skipped_duplicate": skipped_duplicate,
+            "skipped_group_excluded": skipped_group_excluded,
             "import_id": upload_result.get("import_id"),
             "status": (import_result or {}).get("status"),
         }
@@ -1556,7 +1792,8 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         conn = _get_wonbe_db()
         try:
             _init_wonbe_table(conn)
-            select_cols = f"에이블리상품번호, {_qcol('이벤트전 할인가')}"
+            group_excluded_codes = _get_group_excluded_codes(conn)
+            select_cols = f"상품코드, 에이블리상품번호, {_qcol('이벤트전 할인가')}"
             if codes:
                 placeholders = ", ".join("?" for _ in codes)
                 rows = conn.execute(
@@ -1581,7 +1818,11 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         seen: dict[str, tuple[int, int]] = {}
         skipped_invalid = 0
         skipped_duplicate = 0
+        skipped_group_excluded = 0
         for r in rows:
+            if r["상품코드"] in group_excluded_codes:
+                skipped_group_excluded += 1
+                continue
             sno = str(r["에이블리상품번호"]).strip()
             if not sno or not sno.isdigit():
                 skipped_invalid += 1
@@ -1629,6 +1870,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             "requested": len(entries),
             "skipped_invalid": skipped_invalid,
             "skipped_duplicate": skipped_duplicate,
+            "skipped_group_excluded": skipped_group_excluded,
             "batches": len(responses),
         }
 
@@ -1901,29 +2143,33 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         offset: int = 0,
         limit: int = 50,
         empty_col: str = "",
+        group_id: int = 0,
         user: str = Depends(get_current_user),
     ):
         empty_col = empty_col.strip()
         if empty_col and empty_col not in COLUMNS:
             raise HTTPException(status_code=400, detail=f"잘못된 컬럼: {empty_col}")
         empty_clause = f"TRIM({_qcol(empty_col)}) = ''" if empty_col else ""
+        group_clause = "상품코드 IN (SELECT 상품코드 FROM wonbe_group_members WHERE group_id = ?)" if group_id else ""
 
         conn = _get_wonbe_db()
         try:
             _init_wonbe_table(conn)
             q = q.strip()
+            extra_clauses = [c for c in (empty_clause, group_clause) if c]
+            extra_params = [group_id] if group_clause else []
             if not q:
-                where = f" WHERE {empty_clause}" if empty_clause else ""
+                where = f" WHERE {' AND '.join(extra_clauses)}" if extra_clauses else ""
                 rows = conn.execute(
                     f"SELECT * FROM wonbe{where} ORDER BY rowid DESC LIMIT ? OFFSET ?",
-                    (limit, offset),
+                    (*extra_params, limit, offset),
                 ).fetchall()
-                total = conn.execute(f"SELECT COUNT(*) FROM wonbe{where}").fetchone()[0]
+                total = conn.execute(f"SELECT COUNT(*) FROM wonbe{where}", extra_params).fetchone()[0]
             else:
                 like = f"%{q}%"
                 search_clause = "(상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?)"
-                where_clause = f"{search_clause} AND {empty_clause}" if empty_clause else search_clause
-                base_params = [like, like, like, like]
+                where_clause = " AND ".join([search_clause, *extra_clauses])
+                base_params = [like, like, like, like, *extra_params]
                 rows = conn.execute(
                     f"""SELECT * FROM wonbe
                        WHERE {where_clause}
@@ -1943,6 +2189,128 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 "offset": offset,
                 "limit": limit,
             }
+        finally:
+            conn.close()
+
+    @router.get("/groups")
+    def wonbe_list_groups(user: str = Depends(get_current_user)):
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            rows = conn.execute(
+                """SELECT g.id AS id, g.name AS name, g.is_exclude AS is_exclude, COUNT(m.상품코드) AS count
+                   FROM wonbe_groups g
+                   LEFT JOIN wonbe_group_members m ON m.group_id = g.id
+                   GROUP BY g.id, g.name, g.is_exclude
+                   ORDER BY g.name COLLATE NOCASE"""
+            ).fetchall()
+            groups = [{**dict(r), "is_exclude": bool(r["is_exclude"])} for r in rows]
+            return {"ok": True, "groups": groups}
+        finally:
+            conn.close()
+
+    @router.post("/groups")
+    def wonbe_create_group(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="그룹명을 입력하세요.")
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            try:
+                cur = conn.execute("INSERT INTO wonbe_groups (name) VALUES (?)", (name,))
+            except sqlite3.IntegrityError:
+                raise HTTPException(status_code=400, detail="이미 존재하는 그룹명입니다.")
+            conn.commit()
+            return {"ok": True, "id": cur.lastrowid, "name": name, "count": 0, "is_exclude": False}
+        finally:
+            conn.close()
+
+    @router.patch("/groups")
+    def wonbe_update_group(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """그룹의 '일괄작업 제외' 여부를 설정한다. 제외로 설정된 그룹의 상품은 판매가 채우기,
+        에이블리/지그재그/아무드 상품가 변경, 헤더 일괄수정 등 일괄작업에서 건너뛴다."""
+        group_id = payload.get("id")
+        if group_id is None:
+            raise HTTPException(status_code=400, detail="id 필요")
+        if "is_exclude" not in payload:
+            raise HTTPException(status_code=400, detail="is_exclude 필요")
+        is_exclude = 1 if payload.get("is_exclude") else 0
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            cur = conn.execute("UPDATE wonbe_groups SET is_exclude = ? WHERE id = ?", (is_exclude, group_id))
+            conn.commit()
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="그룹을 찾을 수 없습니다.")
+            return {"ok": True, "id": group_id, "is_exclude": bool(is_exclude)}
+        finally:
+            conn.close()
+
+    @router.delete("/groups")
+    def wonbe_delete_group(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        group_id = payload.get("id")
+        if group_id is None:
+            raise HTTPException(status_code=400, detail="id 필요")
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            conn.execute("DELETE FROM wonbe_group_members WHERE group_id = ?", (group_id,))
+            cur = conn.execute("DELETE FROM wonbe_groups WHERE id = ?", (group_id,))
+            conn.commit()
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="그룹을 찾을 수 없습니다.")
+            return {"ok": True, "deleted": group_id}
+        finally:
+            conn.close()
+
+    @router.post("/groups/members")
+    def wonbe_add_group_members(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        group_id = payload.get("group_id")
+        codes = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
+        if group_id is None:
+            raise HTTPException(status_code=400, detail="group_id 필요")
+        if not codes:
+            raise HTTPException(status_code=400, detail="추가할 상품코드가 없습니다.")
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            exists = conn.execute("SELECT 1 FROM wonbe_groups WHERE id = ?", (group_id,)).fetchone()
+            if not exists:
+                raise HTTPException(status_code=404, detail="그룹을 찾을 수 없습니다.")
+            conn.executemany(
+                "INSERT OR IGNORE INTO wonbe_group_members (group_id, 상품코드) VALUES (?, ?)",
+                [(group_id, c) for c in codes],
+            )
+            conn.commit()
+            count = conn.execute(
+                "SELECT COUNT(*) FROM wonbe_group_members WHERE group_id = ?", (group_id,)
+            ).fetchone()[0]
+            return {"ok": True, "added": len(codes), "count": count}
+        finally:
+            conn.close()
+
+    @router.delete("/groups/members")
+    def wonbe_remove_group_members(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        group_id = payload.get("group_id")
+        codes = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
+        if group_id is None:
+            raise HTTPException(status_code=400, detail="group_id 필요")
+        if not codes:
+            raise HTTPException(status_code=400, detail="제거할 상품코드가 없습니다.")
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            placeholders = ", ".join("?" for _ in codes)
+            conn.execute(
+                f"DELETE FROM wonbe_group_members WHERE group_id = ? AND 상품코드 IN ({placeholders})",
+                (group_id, *codes),
+            )
+            conn.commit()
+            count = conn.execute(
+                "SELECT COUNT(*) FROM wonbe_group_members WHERE group_id = ?", (group_id,)
+            ).fetchone()[0]
+            return {"ok": True, "removed": len(codes), "count": count}
         finally:
             conn.close()
 
@@ -1991,11 +2359,11 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             if q:
                 like = f"%{q}%"
                 cur = conn.execute(
-                    f"UPDATE wonbe SET {_qcol(col)} = ? WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?",
+                    f"UPDATE wonbe SET {_qcol(col)} = ? WHERE (상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?) AND {GROUP_EXCLUDE_SQL_CLAUSE}",
                     (value, like, like, like, like),
                 )
             else:
-                cur = conn.execute(f"UPDATE wonbe SET {_qcol(col)} = ?", (value,))
+                cur = conn.execute(f"UPDATE wonbe SET {_qcol(col)} = ? WHERE {GROUP_EXCLUDE_SQL_CLAUSE}", (value,))
             conn.commit()
             return {"ok": True, "count": cur.rowcount}
         finally:
@@ -2439,6 +2807,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         user: str = Depends(get_current_user),
     ):
         force = bool(payload.get("force"))
+        codes_filter = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             res = await client.post(
@@ -2500,7 +2869,13 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         conn = _get_wonbe_db()
         try:
             _init_wonbe_table(conn)
-            if force:
+            if codes_filter:
+                placeholders = ", ".join("?" for _ in codes_filter)
+                rows = conn.execute(
+                    f"SELECT 상품코드, 상품명 FROM wonbe WHERE 상품코드 IN ({placeholders})",
+                    codes_filter,
+                ).fetchall()
+            elif force:
                 rows = conn.execute("SELECT 상품코드, 상품명 FROM wonbe").fetchall()
             else:
                 rows = conn.execute(
@@ -2540,6 +2915,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         user: str = Depends(get_current_user),
     ):
         force = bool(payload.get("force"))
+        codes_filter = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
 
         zigzag = ZigzagClient()
         try:
@@ -2563,7 +2939,13 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         conn = _get_wonbe_db()
         try:
             _init_wonbe_table(conn)
-            if force:
+            if codes_filter:
+                placeholders = ", ".join("?" for _ in codes_filter)
+                rows = conn.execute(
+                    f"SELECT 상품코드, 상품명 FROM wonbe WHERE 상품코드 IN ({placeholders})",
+                    codes_filter,
+                ).fetchall()
+            elif force:
                 rows = conn.execute("SELECT 상품코드, 상품명 FROM wonbe").fetchall()
             else:
                 rows = conn.execute(
@@ -2602,6 +2984,8 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         payload: dict = Body(default={}),
         user: str = Depends(get_current_user),
     ):
+        codes_filter = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
+
         async with httpx.AsyncClient(timeout=15.0) as client:
             res = await client.post(
                 f"{_ABLY_BASE}/seller/login/",
@@ -2664,9 +3048,18 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         conn = _get_wonbe_db()
         try:
             _init_wonbe_table(conn)
-            rows = conn.execute(
-                "SELECT 상품코드, 에이블리상품번호 FROM wonbe WHERE 에이블리상품번호 IS NOT NULL AND 에이블리상품번호 != ''"
-            ).fetchall()
+            if codes_filter:
+                placeholders = ", ".join("?" for _ in codes_filter)
+                rows = conn.execute(
+                    f"""SELECT 상품코드, 에이블리상품번호 FROM wonbe
+                       WHERE 에이블리상품번호 IS NOT NULL AND 에이블리상품번호 != ''
+                       AND 상품코드 IN ({placeholders})""",
+                    codes_filter,
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT 상품코드, 에이블리상품번호 FROM wonbe WHERE 에이블리상품번호 IS NOT NULL AND 에이블리상품번호 != ''"
+                ).fetchall()
 
             updates = []
             unmatched = 0
@@ -2702,13 +3095,26 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         }
 
     @router.post("/sync-country")
-    async def wonbe_sync_country(user: str = Depends(get_current_user)):
+    async def wonbe_sync_country(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        codes_filter = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
         conn = _get_wonbe_db()
         try:
             _init_wonbe_table(conn)
-            rows = conn.execute(
-                "SELECT 상품코드, 에이블리상품번호 FROM wonbe WHERE 에이블리상품번호 IS NOT NULL AND 에이블리상품번호 != ''"
-            ).fetchall()
+            if codes_filter:
+                placeholders = ", ".join("?" for _ in codes_filter)
+                rows = conn.execute(
+                    f"""SELECT 상품코드, 에이블리상품번호 FROM wonbe
+                       WHERE 에이블리상품번호 IS NOT NULL AND 에이블리상품번호 != ''
+                       AND 상품코드 IN ({placeholders})""",
+                    codes_filter,
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT 상품코드, 에이블리상품번호 FROM wonbe WHERE 에이블리상품번호 IS NOT NULL AND 에이블리상품번호 != ''"
+                ).fetchall()
         finally:
             conn.close()
 
@@ -3466,6 +3872,43 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         finally:
             conn.close()
 
+    @router.get("/invoice-manage/export")
+    def invoice_manage_export(month: str = "", user: str = Depends(get_current_user)):
+        month = month.strip()
+        if not re.fullmatch(r"\d{4}-\d{2}", month):
+            raise HTTPException(status_code=400, detail="month는 YYYY-MM 형식이어야 합니다.")
+        conn = _get_janggi_db()
+        try:
+            _init_invoice_manage_table(conn)
+            rows = conn.execute(
+                "SELECT * FROM 계산서관리 WHERE 월 = ? ORDER BY 거래처명 ASC", (month,)
+            ).fetchall()
+        finally:
+            conn.close()
+
+        export_cols = ["거래처명", "입금액", "부가세거래처", "금액체크", "입금완료", "계산서발행완료", "이월발행", "메모", "수정일시"]
+        export_labels = ["거래처명", "입금액", "부가세거래처", "금액체크", "입금완료", "계산서발행완료", "이월발행", "메모", "수정일시"]
+        flag_cols = {"부가세거래처", "금액체크", "입금완료", "계산서발행완료", "이월발행"}
+
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("Sheet1")
+        for ci, label in enumerate(export_labels):
+            sheet.write(0, ci, label)
+        for ri, row in enumerate(rows, start=1):
+            for ci, col in enumerate(export_cols):
+                value = row[col]
+                if col in flag_cols:
+                    value = "O" if int(value or 0) == 1 else ""
+                sheet.write(ri, ci, value if value is not None else "")
+
+        buf = io.BytesIO()
+        book.save(buf)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/vnd.ms-excel",
+            headers={"Content-Disposition": _content_disposition(f"계산서관리_{month}.xls")},
+        )
+
     @router.post("/invoice-manage/load")
     def invoice_manage_load(payload: dict = Body(...), user: str = Depends(get_current_user)):
         """선택한 월의 이체파일 데이터에서 거래처명을 유니크하게 뽑아 입금금액을 합산하고,
@@ -3484,14 +3927,27 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 (f"{month}%",),
             ).fetchall()
 
+            existing_before = {
+                r["거래처명"]: float(r["입금액"] or 0)
+                for r in conn.execute(
+                    "SELECT 거래처명, 입금액 FROM 계산서관리 WHERE 월 = ?", (month,)
+                ).fetchall()
+            }
+
             vat_vendors = _load_vat_vendor_set(get_setting)
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            new_vendors = []
+            updated_vendors = []
             for r in summed:
                 vendor = str(r["거래처명"] or "").strip()
                 if not vendor:
                     continue
                 amount = float(r["입금액"] or 0)
                 is_vat = 1 if vendor in vat_vendors else 0
+                if vendor not in existing_before:
+                    new_vendors.append(vendor)
+                elif abs(existing_before[vendor] - amount) > 0.5:
+                    updated_vendors.append(vendor)
                 conn.execute(
                     """INSERT INTO 계산서관리 (월, 거래처명, 입금액, 부가세거래처, 수정일시)
                        VALUES (?, ?, ?, ?, ?)
@@ -3505,7 +3961,13 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             rows = conn.execute(
                 "SELECT * FROM 계산서관리 WHERE 월 = ? ORDER BY 거래처명 ASC", (month,)
             ).fetchall()
-            return {"ok": True, "rows": [dict(r) for r in rows], "loaded": len(summed)}
+            return {
+                "ok": True,
+                "rows": [dict(r) for r in rows],
+                "loaded": len(summed),
+                "new_vendors": new_vendors,
+                "updated_vendors": updated_vendors,
+            }
         finally:
             conn.close()
 
@@ -3602,6 +4064,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             _init_janggi_table(conn)
             _init_account_table(conn)
             _init_ichae_table(conn)
+            _init_ichae_log_table(conn)
 
             include_bulk = bool(payload.get("include_bulk", False))
             if include_bulk:
@@ -3632,57 +4095,111 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 if key and key not in account_map:
                     account_map[key] = dict(ar)
 
-            # 거래처 유니크 행 생성
+            # 거래처별 최신 데이터 계산 (A: 은행코드, B: 계좌번호, C: 입금금액, 상태)
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            class _ResultRows(list):
-                def append(self, row):
-                    # 구 계좌 데이터 행은 계좌번호가 빠진 8열 튜플일 수 있어 새 C열을 보정한다.
-                    if len(row) == 8:
-                        account = account_map.get(row[3]) or {}
-                        row = tuple(row[:2]) + (account.get("C", ""),) + tuple(row[2:])
-                    super().append(row)
-
-            result_rows = _ResultRows()
+            computed: dict[str, tuple] = {}
             for supplier in sorted(supplier_totals.keys()):
                 total = supplier_totals[supplier]
                 ar = account_map.get(supplier)
                 if ar:
-                    result_rows.append((
-                        date_str,
-                        ar.get("B", "") or _resolve_bank_code(ar.get("D", "")),   # A: 은행코드
-                        ar.get("C", ""),   # B: 계좌번호
-                        total,             # C: 입금금액
-                        ar.get("A", ""),   # D: 거래처명
-                        "주식회사 유색",    # E: 거래처가 보는 메모 (기본값)
-                        "",                # F: 우리가 보는 메모
-                        "매칭",
-                        now_str,
-                    ))
+                    bank_code = ar.get("B", "") or _resolve_bank_code(ar.get("D", ""))
+                    computed[ar.get("A", "")] = (bank_code, ar.get("C", ""), total, "매칭")
                 else:
-                    result_rows.append((
-                        date_str, "", "", total, supplier,
-                        "주식회사 유색", "",
-                        "미등록", now_str,
-                    ))
+                    computed[supplier] = ("", "", total, "미등록")
 
-            # 해당 날짜 교체
-            conn.execute("DELETE FROM 이체파일 WHERE 날짜 = ?", (date_str,))
-            conn.executemany(
-                """INSERT INTO 이체파일 (날짜, A, B, C, D, E, F, 상태, 생성일시)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                result_rows,
+            # 기존 이체파일 데이터와 대조해 있으면 갱신, 없으면 추가, 더 이상 없는 거래처는 삭제
+            existing_rows = conn.execute(
+                "SELECT * FROM 이체파일 WHERE 날짜 = ?", (date_str,)
+            ).fetchall()
+            existing_by_vendor: dict[str, sqlite3.Row] = {}
+            for r in existing_rows:
+                vendor = str(r["D"] or "").strip()
+                if vendor and vendor not in existing_by_vendor:
+                    existing_by_vendor[vendor] = r
+
+            new_vendors: list[str] = []
+            updated_vendors: list[str] = []
+
+            for vendor, (a, b, c, status) in computed.items():
+                old = existing_by_vendor.get(vendor)
+                if old is None:
+                    conn.execute(
+                        """INSERT INTO 이체파일 (날짜, A, B, C, D, E, F, 상태, 생성일시, 수정일시, 최근변경)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (date_str, a, b, c, vendor, "주식회사 유색", "", status, now_str, now_str, "신규"),
+                    )
+                    new_vendors.append(vendor)
+                else:
+                    changed = (
+                        str(old["A"] or "") != str(a or "")
+                        or str(old["B"] or "") != str(b or "")
+                        or abs(float(old["C"] or 0) - float(c or 0)) > 0.5
+                        or str(old["상태"] or "") != str(status or "")
+                    )
+                    if changed:
+                        conn.execute(
+                            "UPDATE 이체파일 SET A = ?, B = ?, C = ?, 상태 = ?, 수정일시 = ?, 최근변경 = '갱신' WHERE id = ?",
+                            (a, b, c, status, now_str, old["id"]),
+                        )
+                        updated_vendors.append(vendor)
+                    else:
+                        conn.execute("UPDATE 이체파일 SET 최근변경 = '' WHERE id = ?", (old["id"],))
+
+            removed_vendors = [v for v in existing_by_vendor.keys() if v not in computed]
+            if removed_vendors:
+                conn.executemany(
+                    "DELETE FROM 이체파일 WHERE 날짜 = ? AND D = ?",
+                    [(date_str, v) for v in removed_vendors],
+                )
+
+            matched = sum(1 for v in computed.values() if v[3] == "매칭")
+            conn.execute(
+                """INSERT INTO 이체파일_전환로그
+                   (날짜, 실행일시, 실행자, 총거래처, 신규, 갱신, 삭제, 매칭, 미등록, 저장행수, 일괄이체포함)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    date_str, now_str, user, len(computed),
+                    len(new_vendors), len(updated_vendors), len(removed_vendors),
+                    matched, len(computed) - matched, len(computed),
+                    1 if include_bulk else 0,
+                ),
             )
             conn.commit()
 
-            matched = sum(1 for r in result_rows if r[7] == "매칭")
             return {
                 "ok": True,
                 "날짜": date_str,
-                "총거래처": len(supplier_totals),
+                "총거래처": len(computed),
                 "매칭": matched,
-                "미등록": len(result_rows) - matched,
-                "저장행수": len(result_rows),
+                "미등록": len(computed) - matched,
+                "저장행수": len(computed),
+                "신규": len(new_vendors),
+                "갱신": len(updated_vendors),
+                "삭제": len(removed_vendors),
+                "new_vendors": new_vendors,
+                "updated_vendors": updated_vendors,
+                "removed_vendors": removed_vendors,
             }
+        finally:
+            conn.close()
+
+    @router.get("/janggi/to-ichae/logs")
+    def janggi_to_ichae_logs(날짜: str = "", limit: int = 50, user: str = Depends(get_current_user)):
+        conn = _get_janggi_db()
+        try:
+            _init_ichae_log_table(conn)
+            날짜 = 날짜.strip()
+            if 날짜:
+                rows = conn.execute(
+                    "SELECT * FROM 이체파일_전환로그 WHERE 날짜 = ? ORDER BY 실행일시 DESC, id DESC LIMIT ?",
+                    (날짜, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM 이체파일_전환로그 ORDER BY 실행일시 DESC, id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return {"ok": True, "logs": [dict(r) for r in rows]}
         finally:
             conn.close()
 

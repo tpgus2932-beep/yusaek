@@ -3,15 +3,21 @@ import { Download, RefreshCw, Upload, RefreshCcw, PencilLine, Check, X, SlidersH
 import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
-const PAGE_SIZE = 50;
-const EDITABLE_COLS = ["상품명합", "거래처합", "거래처", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"];
+const DEFAULT_PAGE_SIZE = 50;
+const PAGE_SIZE_OPTIONS = [50, 100, 200, 500];
+const EDITABLE_COLS = ["상품명합", "거래처합", "거래처", "거래처상품명", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"];
 const ALL_COLS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가", "지그재그상품번호", "아이디"];
 const VISIBLE_COLS_STORAGE_KEY = "wonbe_visible_cols";
+const PAGE_SIZE_STORAGE_KEY = "wonbe_page_size";
 
 export default function WonbeTable() {
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
+  const [pageSize, setPageSize] = useState(() => {
+    const saved = Number(localStorage.getItem(PAGE_SIZE_STORAGE_KEY));
+    return PAGE_SIZE_OPTIONS.includes(saved) ? saved : DEFAULT_PAGE_SIZE;
+  });
   const [query, setQuery] = useState("");
   const [inputQuery, setInputQuery] = useState("");
   const [emptyCol, setEmptyCol] = useState("");
@@ -66,6 +72,14 @@ export default function WonbeTable() {
   // 이벤트전할인가 채우기(원가기준)에서 쓰는 택배비 설정값
   const [savedShippingFee, setSavedShippingFee] = useState(2060);
 
+  // 그룹 (체크한 상품을 묶어서 그룹별로만 필터링해서 보기)
+  const [groups, setGroups] = useState([]);
+  const [activeGroupId, setActiveGroupId] = useState(0);
+  const [groupPanelOpen, setGroupPanelOpen] = useState(false);
+  const groupPanelRef = useRef(null);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [groupActionLoading, setGroupActionLoading] = useState(false);
+
   useEffect(() => {
     localStorage.setItem(VISIBLE_COLS_STORAGE_KEY, JSON.stringify(Array.from(visibleCols)));
   }, [visibleCols]);
@@ -87,6 +101,124 @@ export default function WonbeTable() {
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, [excludePanelOpen]);
+
+  useEffect(() => {
+    if (!groupPanelOpen) return;
+    const onClickOutside = (e) => {
+      if (groupPanelRef.current && !groupPanelRef.current.contains(e.target)) setGroupPanelOpen(false);
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [groupPanelOpen]);
+
+  const fetchGroups = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/wonbe/groups`, { headers: getAuthHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) setGroups(data.groups || []);
+    } catch { /* noop */ }
+  }, []);
+
+  useEffect(() => { fetchGroups(); }, [fetchGroups]);
+
+  const handleCreateGroup = async () => {
+    const name = newGroupName.trim();
+    if (!name) return;
+    setGroupActionLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/groups`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "그룹 생성 실패");
+      setNewGroupName("");
+      setMessage(`그룹 "${data.name}" 생성 완료`);
+      await fetchGroups();
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setGroupActionLoading(false);
+    }
+  };
+
+  const handleDeleteGroup = async (group) => {
+    if (!window.confirm(`그룹 "${group.name}"을(를) 삭제합니다. (그룹 소속만 해제되며 원가베이스유 상품 데이터는 삭제되지 않습니다)\n진행하시겠습니까?`)) return;
+    setGroupActionLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/groups`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ id: group.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "그룹 삭제 실패");
+      if (activeGroupId === group.id) {
+        setActiveGroupId(0);
+        setOffset(0);
+      }
+      setMessage(`그룹 "${group.name}" 삭제 완료`);
+      await fetchGroups();
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setGroupActionLoading(false);
+    }
+  };
+
+  const handleAddSelectedToGroup = async (group) => {
+    const codes = Array.from(selectedCodes);
+    if (!codes.length) {
+      setMessage("먼저 그룹에 추가할 상품을 체크하세요.");
+      return;
+    }
+    setGroupActionLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/groups/members`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ group_id: group.id, codes }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "그룹 추가 실패");
+      setMessage(`"${group.name}" 그룹에 체크한 ${data.added}건 추가 완료 (그룹 전체 ${data.count}건)`);
+      await fetchGroups();
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setGroupActionLoading(false);
+    }
+  };
+
+  const handleSelectGroupFilter = (id) => {
+    setActiveGroupId(id);
+    setOffset(0);
+    setGroupPanelOpen(false);
+  };
+
+  const handleToggleGroupExclude = async (group) => {
+    setGroupActionLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/groups`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ id: group.id, is_exclude: !group.is_exclude }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "일괄작업 제외 설정 실패");
+      setMessage(`"${group.name}" 그룹 일괄작업 제외 ${data.is_exclude ? "설정" : "해제"} 완료`);
+      await fetchGroups();
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setGroupActionLoading(false);
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -174,8 +306,9 @@ export default function WonbeTable() {
   const fetchRows = useCallback(async (q, off, emptyColParam = "") => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ q, offset: off, limit: PAGE_SIZE });
+      const params = new URLSearchParams({ q, offset: off, limit: pageSize });
       if (emptyColParam) params.set("empty_col", emptyColParam);
+      if (activeGroupId) params.set("group_id", activeGroupId);
       const res = await fetch(`${API}/wonbe/search?${params}`, { headers: getAuthHeaders() });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "조회 실패");
@@ -186,9 +319,18 @@ export default function WonbeTable() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [activeGroupId, pageSize]);
 
   useEffect(() => { fetchRows(query, offset, emptyCol); }, [fetchRows, query, offset, emptyCol]);
+
+  useEffect(() => {
+    localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(pageSize));
+  }, [pageSize]);
+
+  const handlePageSizeChange = (e) => {
+    setPageSize(Number(e.target.value));
+    setOffset(0);
+  };
   useEffect(() => { setSelectedCodes(new Set()); }, [rows]);
 
   const toggleSelectRow = (code) => {
@@ -229,6 +371,36 @@ export default function WonbeTable() {
       setMessage(err.message);
     } finally {
       setBulkDeleting(false);
+    }
+  };
+
+  const [delistOthersLoading, setDelistOthersLoading] = useState(false);
+
+  const handleDelistOtherOptions = async () => {
+    const codes = Array.from(selectedCodes);
+    if (!codes.length) return;
+    if (!window.confirm(
+      `체크한 ${codes.length}건과 같은 에이블리상품번호를 가진 나머지 옵션들을 미진열 처리합니다.\n` +
+      `(체크한 옵션 자신은 제외 — 실제 판매중인 옵션이 미진열됩니다)\n진행하시겠습니까?`
+    )) return;
+    setDelistOthersLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/delist-other-options-by-ably-product`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ codes }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "미진열 처리 실패");
+      setMessage(
+        `미진열 처리 완료: 체크 ${data.checked}건 (상품그룹 ${data.groups}개) → 나머지 옵션 ${data.delisted}개 미진열 처리` +
+        (data.skipped_no_option_sno ? ` (옵션번호 없음 ${data.skipped_no_option_sno}건 제외)` : "")
+      );
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setDelistOthersLoading(false);
     }
   };
 
@@ -420,7 +592,7 @@ export default function WonbeTable() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "판매가 채우기 실패");
-      setMessage(`판매가 채우기 완료: ${data.updated}/${data.total}건 (원가 없음 ${data.skipped}건)`);
+      setMessage(`판매가 채우기 완료: ${data.updated}/${data.total}건 (원가 없음 ${data.skipped}건, 제외그룹 ${data.excluded ?? 0}건)`);
       await fetchRows(query, offset, emptyCol);
     } catch (err) {
       setMessage(err.message);
@@ -488,6 +660,46 @@ export default function WonbeTable() {
     }
   };
 
+  const [freeSalePriceMode, setFreeSalePriceMode] = useState(false);
+  const [freeSalePriceBasis, setFreeSalePriceBasis] = useState("이벤트전 할인가");
+  const [freeSalePriceLoading, setFreeSalePriceLoading] = useState(false);
+
+  const handleFillSalePriceFromDiscount = async () => {
+    const codes = Array.from(selectedCodes);
+    const label = codes.length ? `체크한 ${codes.length}건` : (query ? `"${query}" 검색 결과` : "전체");
+    const input = window.prompt(`${label}에 대해 [${freeSalePriceBasis}]가 판매가에서 몇 % 할인된 값인지 입력하면, 그 값으로 [판매가]를 역산해 채웁니다. (예: 10)`);
+    if (input === null) return;
+    const percent = Number(input);
+    if (!Number.isFinite(percent) || percent >= 100) {
+      setMessage("퍼센트 값이 올바르지 않습니다. (100 미만)");
+      return;
+    }
+    setFreeSalePriceLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/fill-sale-price-from-discount`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify(
+          codes.length
+            ? { percent, basis: freeSalePriceBasis, codes }
+            : { percent, basis: freeSalePriceBasis, q: query }
+        ),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "판매가 채우기 실패");
+      setMessage(
+        `[${data.basis}] 기준 판매가 채우기 완료 (${data.percent}%): ` +
+        `${data.updated}/${data.total}건 (${data.basis} 없음 ${data.skipped}건, 제외품목 ${data.excluded ?? 0}건)`
+      );
+      await fetchRows(query, offset, emptyCol);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setFreeSalePriceLoading(false);
+    }
+  };
+
   const [priceSource, setPriceSource] = useState("이벤트전 할인가");
   const [pricePushLoading, setPricePushLoading] = useState(false);
 
@@ -510,7 +722,7 @@ export default function WonbeTable() {
       if (!res.ok || !data.ok) throw new Error(data?.detail || "에이블리 상품가 변경 실패");
       setMessage(
         `[${data.source}] 기준 에이블리 상품가 변경 완료: 성공 ${data.success_row_count}건 / 실패 ${data.error_row_count}건 ` +
-        `(요청 ${data.requested}건, 제외 - 값이상 ${data.skipped_invalid}건 · 중복상품 ${data.skipped_duplicate}건)`
+        `(요청 ${data.requested}건, 제외 - 값이상 ${data.skipped_invalid}건 · 중복상품 ${data.skipped_duplicate}건 · 제외그룹 ${data.skipped_group_excluded ?? 0}건)`
       );
     } catch (err) {
       setMessage(err.message);
@@ -542,7 +754,7 @@ export default function WonbeTable() {
       const statusLabel = data.status ? ` (지그재그 처리결과: ${data.status})` : " (처리결과 확인 전 - 지그재그 파트너센터 엑셀 업로드 내역에서 확인해주세요)";
       setMessage(
         `[${data.source}] 기준 지그재그 상품가 변경 요청 완료: ${data.requested}건${statusLabel} ` +
-        `(제외 - 값이상 ${data.skipped_invalid}건 · 중복상품 ${data.skipped_duplicate}건)`
+        `(제외 - 값이상 ${data.skipped_invalid}건 · 중복상품 ${data.skipped_duplicate}건 · 제외그룹 ${data.skipped_group_excluded ?? 0}건)`
       );
     } catch (err) {
       setMessage(err.message);
@@ -583,7 +795,7 @@ export default function WonbeTable() {
       if (!res.ok || !data.ok) throw new Error(data?.detail || "아무드 상품가 변경 실패");
       setMessage(
         `아무드 상품가 ${mode === "revert" ? "되돌리기" : "변경"} 완료 (환율 1엔=${data.rate}원): 요청 ${data.requested}건 ` +
-        `(제외 - 값이상 ${data.skipped_invalid}건 · 중복상품 ${data.skipped_duplicate}건)`
+        `(제외 - 값이상 ${data.skipped_invalid}건 · 중복상품 ${data.skipped_duplicate}건 · 제외그룹 ${data.skipped_group_excluded ?? 0}건)`
       );
     } catch (err) {
       setMessage(err.message);
@@ -651,17 +863,19 @@ export default function WonbeTable() {
   };
 
   const handleSyncAblySno = async () => {
+    const codes = Array.from(selectedCodes);
     setSnoSyncing(true);
     setMessage("");
     try {
       const res = await fetch(`${API}/wonbe/sync-ably-sno`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({}),
+        body: JSON.stringify(codes.length ? { codes } : {}),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "에이블리상품번호 동기화 실패");
-      setMessage(`에이블리상품번호 동기화 완료: 카탈로그 ${data.fetched_goods}건 조회 · ${data.considered}건 중 ${data.matched}건 매칭 (미매칭 ${data.unmatched}건)`);
+      const scopeNote = codes.length ? ` (체크한 ${codes.length}건 대상)` : "";
+      setMessage(`에이블리상품번호 동기화 완료${scopeNote}: 카탈로그 ${data.fetched_goods}건 조회 · ${data.considered}건 중 ${data.matched}건 매칭 (미매칭 ${data.unmatched}건)`);
       await fetchRows(query, offset, emptyCol);
     } catch (err) {
       setMessage(err.message);
@@ -671,17 +885,19 @@ export default function WonbeTable() {
   };
 
   const handleSyncZigzagId = async () => {
+    const codes = Array.from(selectedCodes);
     setZigzagSyncing(true);
     setMessage("");
     try {
       const res = await fetch(`${API}/wonbe/sync-zigzag-id`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({}),
+        body: JSON.stringify(codes.length ? { codes } : {}),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "지그재그상품번호 동기화 실패");
-      setMessage(`지그재그상품번호 동기화 완료: 지그재그 ${data.fetched_products}건 조회 · ${data.considered}건 중 ${data.matched}건 매칭 (미매칭 ${data.unmatched}건)`);
+      const scopeNote = codes.length ? ` (체크한 ${codes.length}건 대상)` : "";
+      setMessage(`지그재그상품번호 동기화 완료${scopeNote}: 지그재그 ${data.fetched_products}건 조회 · ${data.considered}건 중 ${data.matched}건 매칭 (미매칭 ${data.unmatched}건)`);
       await fetchRows(query, offset, emptyCol);
     } catch (err) {
       setMessage(err.message);
@@ -691,17 +907,19 @@ export default function WonbeTable() {
   };
 
   const handleSyncRegistrationDate = async () => {
+    const codes = Array.from(selectedCodes);
     setRegDateSyncing(true);
     setMessage("");
     try {
       const res = await fetch(`${API}/wonbe/sync-registration-date`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({}),
+        body: JSON.stringify(codes.length ? { codes } : {}),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "등록일 채우기 실패");
-      setMessage(`등록일/진열상태/품절상태 채우기 완료: 카탈로그 ${data.fetched_goods}건 조회 · ${data.considered}건 중 ${data.matched}건 채움 (미매칭 ${data.unmatched}건)`);
+      const scopeNote = codes.length ? ` (체크한 ${codes.length}건 대상)` : "";
+      setMessage(`등록일/진열상태/품절상태 채우기 완료${scopeNote}: 카탈로그 ${data.fetched_goods}건 조회 · ${data.considered}건 중 ${data.matched}건 채움 (미매칭 ${data.unmatched}건)`);
       await fetchRows(query, offset, emptyCol);
     } catch (err) {
       setMessage(err.message);
@@ -720,7 +938,9 @@ export default function WonbeTable() {
   useEffect(() => stopCountryPolling, []);
 
   const handleSyncCountry = async () => {
-    if (!window.confirm("에이블리상품번호가 있는 모든 상품의 상세정보를 개별 조회해서 제조국을 채웁니다.\n상품 수에 따라 시간이 걸릴 수 있습니다. 진행하시겠습니까?")) return;
+    const codes = Array.from(selectedCodes);
+    const label = codes.length ? `체크한 ${codes.length}건` : "에이블리상품번호가 있는 모든 상품";
+    if (!window.confirm(`${label}의 상세정보를 개별 조회해서 제조국을 채웁니다.\n상품 수에 따라 시간이 걸릴 수 있습니다. 진행하시겠습니까?`)) return;
     setCountrySyncing(true);
     setMessage("");
     setCountryProgress({ total: 0, done: 0, matched: 0 });
@@ -738,11 +958,12 @@ export default function WonbeTable() {
       const res = await fetch(`${API}/wonbe/sync-country`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({}),
+        body: JSON.stringify(codes.length ? { codes } : {}),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "제조국 채우기 실패");
-      setMessage(`제조국 채우기 완료: 상품코드 ${data.considered}건 (고유 상품번호 ${data.unique_snos}건 조회) 중 ${data.matched}건 채움 (미매칭 ${data.unmatched}건)`);
+      const scopeNote = codes.length ? ` (체크한 ${codes.length}건 대상)` : "";
+      setMessage(`제조국 채우기 완료${scopeNote}: 상품코드 ${data.considered}건 (고유 상품번호 ${data.unique_snos}건 조회) 중 ${data.matched}건 채움 (미매칭 ${data.unmatched}건)`);
       await fetchRows(query, offset, emptyCol);
     } catch (err) {
       setMessage(err.message);
@@ -789,8 +1010,8 @@ export default function WonbeTable() {
       .catch(() => setMessage("엑셀 다운로드 실패"));
   };
 
-  const totalPages = Math.ceil(total / PAGE_SIZE);
-  const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
+  const totalPages = Math.ceil(total / pageSize);
+  const currentPage = Math.floor(offset / pageSize) + 1;
 
   return (
     <>
@@ -831,6 +1052,121 @@ export default function WonbeTable() {
         >
           <Trash2 size={13} />{bulkDeleting ? "삭제 중..." : `선택 삭제 (${selectedCodes.size})`}
         </button>
+        <button
+          className={`${styles.btn} ${styles.btnDanger}`}
+          onClick={handleDelistOtherOptions}
+          disabled={loading || delistOthersLoading || !selectedCodes.size}
+          title="체크한 옵션과 같은 에이블리상품번호를 가진 나머지 옵션들을 미진열 처리합니다 (체크한 옵션 자신은 제외)"
+        >
+          <RefreshCcw size={13} />{delistOthersLoading ? "처리 중..." : `나머지옵션 미진열처리 (${selectedCodes.size})`}
+        </button>
+        <div ref={groupPanelRef} style={{ position: "relative" }}>
+          <button
+            className={`${styles.btn} ${activeGroupId ? styles.btnPrimary : styles.btnSecondary}`}
+            onClick={() => setGroupPanelOpen((v) => !v)}
+            title="상품을 그룹으로 묶어서 그룹별로만 필터링해서 볼 수 있습니다"
+          >
+            <SlidersHorizontal size={13} />
+            {activeGroupId
+              ? `그룹: ${groups.find((g) => g.id === activeGroupId)?.name || activeGroupId}`
+              : `그룹 (${groups.length})`}
+          </button>
+          {groupPanelOpen && (
+            <div
+              style={{
+                position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 20,
+                background: "#fff", border: "1px solid #d1d5db", borderRadius: "6px",
+                padding: "8px", boxShadow: "0 4px 12px rgba(0,0,0,0.12)",
+                display: "flex", flexDirection: "column", gap: "6px", width: "300px",
+              }}
+            >
+              <span style={{ fontSize: "0.72rem", color: "#6b7280" }}>
+                상품을 체크한 뒤 그룹의 [추가] 버튼으로 묶고, [보기]로 그 그룹만 필터링해서 볼 수 있습니다.
+                [일괄제외]로 설정하면 그 그룹 상품은 판매가 채우기 / 상품가 변경 등 일괄작업에서 자동으로 제외됩니다.
+              </span>
+              <button
+                className={`${styles.btn} ${!activeGroupId ? styles.btnPrimary : styles.btnSecondary}`}
+                onClick={() => handleSelectGroupFilter(0)}
+                disabled={groupActionLoading}
+              >
+                전체 보기 (그룹 필터 끄기)
+              </button>
+              <div style={{ display: "flex", flexDirection: "column", gap: "4px", maxHeight: "220px", overflowY: "auto" }}>
+                {groups.length === 0 && (
+                  <span style={{ fontSize: "0.72rem", color: "#9ca3af" }}>생성된 그룹이 없습니다.</span>
+                )}
+                {groups.map((g) => (
+                  <div
+                    key={g.id}
+                    style={{
+                      display: "flex", alignItems: "center", gap: "4px",
+                      padding: "4px 6px", borderRadius: "4px",
+                      background: g.is_exclude ? "#fee2e2" : (activeGroupId === g.id ? "#ede9fe" : "transparent"),
+                    }}
+                  >
+                    <span style={{ flex: 1, fontSize: "0.78rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {g.name} <span style={{ color: "#9ca3af" }}>({g.count})</span>
+                      {g.is_exclude && <span style={{ color: "#dc2626", marginLeft: "4px" }}>제외중</span>}
+                    </span>
+                    <button
+                      onClick={() => handleToggleGroupExclude(g)}
+                      disabled={groupActionLoading}
+                      title="이 그룹 상품을 판매가 채우기 / 에이블리·지그재그·아무드 상품가 변경 / 헤더 일괄수정 등 일괄작업 대상에서 제외합니다"
+                      style={{
+                        background: g.is_exclude ? "#dc2626" : "none",
+                        color: g.is_exclude ? "#fff" : "#dc2626",
+                        border: "1px solid #dc2626", borderRadius: "3px", padding: "1px 5px", cursor: "pointer", fontSize: "0.7rem", flexShrink: 0,
+                      }}
+                    >
+                      {g.is_exclude ? "제외해제" : "일괄제외"}
+                    </button>
+                    <button
+                      onClick={() => handleSelectGroupFilter(g.id)}
+                      disabled={groupActionLoading}
+                      title="이 그룹만 필터링해서 보기"
+                      style={{ background: "none", color: "#7c3aed", border: "1px solid #7c3aed", borderRadius: "3px", padding: "1px 5px", cursor: "pointer", fontSize: "0.7rem" }}
+                    >
+                      보기
+                    </button>
+                    <button
+                      onClick={() => handleAddSelectedToGroup(g)}
+                      disabled={groupActionLoading || !selectedCodes.size}
+                      title="체크한 상품을 이 그룹에 추가"
+                      style={{ background: "none", color: "#059669", border: "1px solid #059669", borderRadius: "3px", padding: "1px 5px", cursor: "pointer", fontSize: "0.7rem" }}
+                    >
+                      추가
+                    </button>
+                    <button
+                      onClick={() => handleDeleteGroup(g)}
+                      disabled={groupActionLoading}
+                      title="그룹 삭제"
+                      style={{ background: "none", color: "#dc2626", border: "1px solid #dc2626", borderRadius: "3px", padding: "1px 5px", cursor: "pointer", fontSize: "0.7rem" }}
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: "4px" }}>
+                <input
+                  value={newGroupName}
+                  onChange={(e) => setNewGroupName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleCreateGroup(); }}
+                  placeholder="새 그룹명"
+                  style={{ flex: 1, fontSize: "0.78rem", padding: "4px 6px", border: "1px solid #d1d5db", borderRadius: "4px" }}
+                  disabled={groupActionLoading}
+                />
+                <button
+                  className={`${styles.btn} ${styles.btnPrimary}`}
+                  onClick={handleCreateGroup}
+                  disabled={groupActionLoading || !newGroupName.trim()}
+                >
+                  그룹 생성
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
         <div style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
           <span style={{ fontSize: "0.78rem", color: "#6b7280", whiteSpace: "nowrap" }}>빈칸만 보기</span>
           <select
@@ -888,7 +1224,7 @@ export default function WonbeTable() {
           className={`${styles.btn} ${styles.btnPrimary}`}
           onClick={handleFillSalePrice}
           disabled={loading || salePriceLoading}
-          title="원가 구간별 배수(3000~5500원 5배 / 5600~7500원 4배 / 7600원~ 3배)로 판매가를 채웁니다"
+          title="원가 구간별 배수(3000~5500원 5배 / 5600~7500원 4배 / 7600원~ 3배)로 판매가를 채웁니다 (일괄제외 그룹 상품은 제외)"
         >
           <RefreshCcw size={13} />{salePriceLoading ? "채우는 중..." : "판매가 채우기"}
         </button>
@@ -900,6 +1236,38 @@ export default function WonbeTable() {
         >
           <RefreshCcw size={13} />{preDiscountPriceLoading ? "채우는 중..." : "이벤트전할인가 채우기(원가기준)"}
         </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+          <button
+            className={`${styles.btn} ${styles.btnSecondary}`}
+            onClick={() => setFreeSalePriceMode((v) => !v)}
+            style={freeSalePriceMode ? { background: "#7c3aed", color: "#fff", borderColor: "#7c3aed" } : undefined}
+            title="체크하면 원가식과 무관하게, 선택한 할인가를 기준으로 판매가를 역산해서 채웁니다"
+          >
+            {freeSalePriceMode && <Check size={13} />}판매가 자유
+          </button>
+          {freeSalePriceMode && (
+            <>
+              <select
+                className={styles.searchInput}
+                value={freeSalePriceBasis}
+                onChange={(e) => setFreeSalePriceBasis(e.target.value)}
+                style={{ minWidth: "150px" }}
+                disabled={freeSalePriceLoading}
+              >
+                <option value="이벤트전 할인가">이벤트전 할인가 기준</option>
+                <option value="이벤트 할인가">이벤트 할인가 기준</option>
+              </select>
+              <button
+                className={`${styles.btn} ${styles.btnPrimary}`}
+                onClick={handleFillSalePriceFromDiscount}
+                disabled={loading || freeSalePriceLoading}
+                title={selectedCodes.size ? `체크한 ${selectedCodes.size}건만 채웁니다` : "선택한 할인가가 판매가에서 입력한 퍼센트만큼 할인된 값이라고 보고, 판매가를 역산해 채웁니다 (체크하면 체크한 건만 진행)"}
+              >
+                <RefreshCcw size={13} />{freeSalePriceLoading ? "채우는 중..." : "판매가 채우기(할인가 기준)"}
+              </button>
+            </>
+          )}
+        </div>
         <div ref={excludePanelRef} style={{ position: "relative" }}>
           <button
             className={`${styles.btn} ${styles.btnSecondary}`}
@@ -952,7 +1320,7 @@ export default function WonbeTable() {
             className={`${styles.btn} ${styles.btnDanger}`}
             onClick={handlePushPriceToAbly}
             disabled={loading || pricePushLoading}
-            title="판매가 + 선택한 할인가를 에이블리 실제 상품가로 일괄 변경합니다"
+            title="판매가 + 선택한 할인가를 에이블리 실제 상품가로 일괄 변경합니다 (일괄제외 그룹 상품은 제외)"
           >
             <RefreshCcw size={13} />{pricePushLoading ? "변경 중..." : "에이블리 상품가 변경"}
           </button>
@@ -973,7 +1341,7 @@ export default function WonbeTable() {
             className={`${styles.btn} ${styles.btnDanger}`}
             onClick={handlePushPriceToZigzag}
             disabled={loading || zigzagPricePushLoading}
-            title="선택한 가격을 지그재그 실제 상품가로 일괄 변경합니다 (엑셀 업로드)"
+            title="선택한 가격을 지그재그 실제 상품가로 일괄 변경합니다 (엑셀 업로드, 일괄제외 그룹 상품은 제외)"
           >
             <RefreshCcw size={13} />{zigzagPricePushLoading ? "변경 중..." : "지그재그 상품가 변경"}
           </button>
@@ -982,7 +1350,7 @@ export default function WonbeTable() {
           className={`${styles.btn} ${styles.btnDanger}`}
           onClick={() => handlePushPriceToAmood("increase")}
           disabled={loading || amoodPriceLoading}
-          title="이벤트전 할인가×1.2를 엔화로 환산해 할인판매가로, 그 값의 1.2배를 판매가로 삼아 아무드 실제 상품가를 일괄 변경합니다"
+          title="이벤트전 할인가×1.2를 엔화로 환산해 할인판매가로, 그 값의 1.2배를 판매가로 삼아 아무드 실제 상품가를 일괄 변경합니다 (일괄제외 그룹 상품은 제외)"
         >
           <RefreshCcw size={13} />{amoodPriceLoading ? "변경 중..." : "아무드 상품가 변경"}
         </button>
@@ -990,20 +1358,20 @@ export default function WonbeTable() {
           className={`${styles.btn} ${styles.btnDanger}`}
           onClick={() => handlePushPriceToAmood("revert")}
           disabled={loading || amoodPriceLoading}
-          title="이벤트전 할인가를 그대로 엔화로 환산해 할인판매가로, 그 값의 1.2배를 판매가로 삼아 아무드 실제 상품가를 되돌립니다"
+          title="이벤트전 할인가를 그대로 엔화로 환산해 할인판매가로, 그 값의 1.2배를 판매가로 삼아 아무드 실제 상품가를 되돌립니다 (일괄제외 그룹 상품은 제외)"
         >
           <RefreshCcw size={13} />{amoodPriceLoading ? "되돌리는 중..." : "아무드 상품가 되돌리기"}
         </button>
-        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncAblySno} disabled={loading || snoSyncing}>
+        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncAblySno} disabled={loading || snoSyncing} title={selectedCodes.size ? `체크한 ${selectedCodes.size}건만 동기화합니다` : "전체 상품을 대상으로 동기화합니다 (체크하면 체크한 건만 진행)"}>
           <RefreshCcw size={13} />{snoSyncing ? "동기화 중..." : "에이블리상품번호 채우기"}
         </button>
-        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncZigzagId} disabled={loading || zigzagSyncing} title="상품명으로 지그재그 상품과 매칭해 지그재그상품번호를 채웁니다">
+        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncZigzagId} disabled={loading || zigzagSyncing} title={selectedCodes.size ? `체크한 ${selectedCodes.size}건만 동기화합니다` : "상품명으로 지그재그 상품과 매칭해 지그재그상품번호를 채웁니다 (체크하면 체크한 건만 진행)"}>
           <RefreshCcw size={13} />{zigzagSyncing ? "동기화 중..." : "지그재그상품번호 채우기"}
         </button>
-        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncRegistrationDate} disabled={loading || regDateSyncing}>
+        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncRegistrationDate} disabled={loading || regDateSyncing} title={selectedCodes.size ? `체크한 ${selectedCodes.size}건만 채웁니다` : "전체 상품을 대상으로 채웁니다 (체크하면 체크한 건만 진행)"}>
           <RefreshCcw size={13} />{regDateSyncing ? "채우는 중..." : "등록일 채우기"}
         </button>
-        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncCountry} disabled={loading || countrySyncing}>
+        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncCountry} disabled={loading || countrySyncing} title={selectedCodes.size ? `체크한 ${selectedCodes.size}건만 채웁니다` : "전체 상품을 대상으로 채웁니다 (체크하면 체크한 건만 진행)"}>
           <RefreshCcw size={13} />{countrySyncing ? "채우는 중..." : "제조국 채우기"}
         </button>
         {countrySyncing && countryProgress && (
@@ -1169,13 +1537,29 @@ export default function WonbeTable() {
         {!rows.length && !loading && <div className={styles.empty}>조회된 데이터가 없습니다.</div>}
       </div>
 
-      {totalPages > 1 && (
-        <div className={styles.pagination}>
-          <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))} disabled={offset === 0 || loading}>이전</button>
-          <span>{currentPage} / {totalPages}</span>
-          <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setOffset(offset + PAGE_SIZE)} disabled={currentPage >= totalPages || loading}>다음</button>
+      <div className={styles.pagination}>
+        {totalPages > 1 && (
+          <>
+            <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setOffset(Math.max(0, offset - pageSize))} disabled={offset === 0 || loading}>이전</button>
+            <span>{currentPage} / {totalPages}</span>
+            <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setOffset(offset + pageSize)} disabled={currentPage >= totalPages || loading}>다음</button>
+          </>
+        )}
+        <div style={{ display: "flex", alignItems: "center", gap: "0.35rem", marginLeft: totalPages > 1 ? "1rem" : 0 }}>
+          <span style={{ fontSize: "0.78rem", color: "#6b7280", whiteSpace: "nowrap" }}>한 페이지에</span>
+          <select
+            className={styles.searchInput}
+            value={pageSize}
+            onChange={handlePageSizeChange}
+            disabled={loading}
+            style={{ minWidth: "80px" }}
+          >
+            {PAGE_SIZE_OPTIONS.map((size) => (
+              <option key={size} value={size}>{size}개</option>
+            ))}
+          </select>
         </div>
-      )}
+      </div>
     </>
   );
 }
