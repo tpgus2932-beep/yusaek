@@ -58,6 +58,13 @@ __pycache__/
 backend/app.db
 backend/app.db.backup-*
 backend/out.txt
+backend/data/
+
+# Local build/dev logs
+/build_*.log
+
+# Ad-hoc screenshots dropped at repo root
+/화면 캡처 *.png
 
 # PyInstaller build output
 /build/자동/
