@@ -33,6 +33,7 @@ def build_collab_router(
     row_to_shared_file,
     get_setting,
     set_setting,
+    get_shared_setting=None,  # 요청 SMS 설정처럼 로컬·Render가 함께 봐야 하는 값 (없으면 get_setting 사용)
     hash_pin,
     verify_pin,
     upload_base,
@@ -44,6 +45,7 @@ def build_collab_router(
     enqueue_sms=None,  # SMS 큐에 직접 넣는 함수 (sms_routes._enqueue_sms)
 ):
     router = APIRouter()
+    get_shared_setting = get_shared_setting or get_setting
     # In-memory completion state for "today todos".
     # This is intentionally reset when the server restarts.
     my_todo_completed: dict[str, set[int]] = {}
@@ -107,12 +109,12 @@ def build_collab_router(
         return hour, minute
 
     def _is_request_sms_time_allowed() -> bool:
-        enabled_raw = (get_setting("request_sms_enabled") or os.environ.get("REQUEST_SMS_ENABLED", "1")).strip().lower()
+        enabled_raw = (get_shared_setting("request_sms_enabled") or os.environ.get("REQUEST_SMS_ENABLED", "1")).strip().lower()
         if enabled_raw in ("0", "false", "off", "no"):
             return False
 
-        start = _parse_hhmm(get_setting("request_sms_start") or os.environ.get("REQUEST_SMS_START", ""))
-        end = _parse_hhmm(get_setting("request_sms_end") or os.environ.get("REQUEST_SMS_END", ""))
+        start = _parse_hhmm(get_shared_setting("request_sms_start") or os.environ.get("REQUEST_SMS_START", ""))
+        end = _parse_hhmm(get_shared_setting("request_sms_end") or os.environ.get("REQUEST_SMS_END", ""))
         if not start or not end:
             return True
 
@@ -375,7 +377,7 @@ def build_collab_router(
         )
         _send_request_sms_best_effort(
             receiver=_get_user_phone_number(assignee),
-            fallback_receiver=str(get_setting("request_sms_receiver") or ""),
+            fallback_receiver=str(get_shared_setting("request_sms_receiver") or ""),
             requester_display=requester_display,
             assignee_display=assignee_display,
             text=text,
@@ -426,7 +428,7 @@ def build_collab_router(
         )
         _send_request_sms_best_effort(
             receiver=_get_user_phone_number(assignee),
-            fallback_receiver=str(get_setting("request_sms_receiver") or ""),
+            fallback_receiver=str(get_shared_setting("request_sms_receiver") or ""),
             requester_display="익명",
             assignee_display=assignee_display,
             text=text,

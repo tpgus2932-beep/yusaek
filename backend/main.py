@@ -870,6 +870,26 @@ def _init_app_settings():
 _init_app_settings()
 
 
+def _init_shared_app_settings():
+    # 로컬 서버는 _get_db()가 항상 로컬 SQLite라서, requests처럼
+    # 로컬·Render가 공유해야 하는 설정(예: request_sms_enabled)은
+    # 별도로 _get_shared_db()(Turso)에도 app_settings 테이블을 준비해둔다.
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_shared_app_settings()
+
+
 def _ensure_default_company_pin():
     if not _get_setting("company_pin_hash"):
         _set_setting("company_pin_hash", _hash_pin("0000"))
@@ -1450,6 +1470,46 @@ def _set_setting(key: str, value: str | None):
     conn.close()
 
 
+def _get_shared_setting(key: str) -> str | None:
+    """_get_setting과 동일하지만 Turso가 설정되면 로컬·Render가 함께 보는 DB를 사용한다.
+    (요청 SMS on/off처럼 어느 서버에서 요청이 생성되든 같은 값을 봐야 하는 설정용)"""
+    conn = _get_shared_db()
+    row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row["value"] if row else None
+
+
+def _set_shared_setting(key: str, value: str | None):
+    conn = _get_shared_db()
+    if value is None:
+        conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+    else:
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+    conn.commit()
+    conn.close()
+
+
+def _migrate_request_sms_settings_to_shared():
+    """request_sms_* 설정이 로컬 전용 _get_setting()에만 저장돼 있던 시절의 값을
+    (예전엔 로컬에서 껐어도 Render는 못 봐서 문자가 계속 나가던 버그) 공유 설정으로
+    1회 이전한다. 공유 값이 이미 있으면 손대지 않는다."""
+    try:
+        for key in ("request_sms_enabled", "request_sms_receiver", "request_sms_start", "request_sms_end"):
+            if _get_shared_setting(key) is not None:
+                continue
+            local_value = _get_setting(key)
+            if local_value is not None:
+                _set_shared_setting(key, local_value)
+    except Exception:
+        pass
+
+
+_migrate_request_sms_settings_to_shared()
+
+
 _ensure_default_company_pin()
 
 
@@ -1537,6 +1597,8 @@ app.include_router(
         count_admins=_count_admins,
         get_setting=_get_setting,
         set_setting=_set_setting,
+        get_shared_setting=_get_shared_setting,
+        set_shared_setting=_set_shared_setting,
     )
 )
 app.include_router(
@@ -1735,6 +1797,7 @@ app.include_router(
         row_to_shared_file=_row_to_shared_file,
         get_setting=_get_setting,
         set_setting=_set_setting,
+        get_shared_setting=_get_shared_setting,
         hash_pin=_hash_pin,
         verify_pin=_verify_pin,
         upload_base=UPLOAD_BASE,

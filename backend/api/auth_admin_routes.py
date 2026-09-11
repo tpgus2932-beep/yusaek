@@ -16,8 +16,12 @@ def build_auth_admin_router(
     count_admins,
     get_setting,
     set_setting,
+    get_shared_setting=None,  # 요청 SMS 설정처럼 로컬·Render가 함께 봐야 하는 값 (없으면 get_setting 사용)
+    set_shared_setting=None,
 ):
     router = APIRouter()
+    get_shared_setting = get_shared_setting or get_setting
+    set_shared_setting = set_shared_setting or set_setting
 
     def _normalize_receiver(value: str) -> str:
         return "".join(ch for ch in str(value or "") if ch.isdigit())
@@ -327,10 +331,10 @@ def build_auth_admin_router(
 
     @router.get("/admin/request-sms-settings")
     def admin_get_request_sms_settings(admin: str = Depends(require_admin)):
-        enabled_raw = (get_setting("request_sms_enabled") or "").strip().lower()
-        receiver = _normalize_receiver(get_setting("request_sms_receiver") or "01095806927")
-        start = (get_setting("request_sms_start") or "").strip()
-        end = (get_setting("request_sms_end") or "").strip()
+        enabled_raw = (get_shared_setting("request_sms_enabled") or "").strip().lower()
+        receiver = _normalize_receiver(get_shared_setting("request_sms_receiver") or "01095806927")
+        start = (get_shared_setting("request_sms_start") or "").strip()
+        end = (get_shared_setting("request_sms_end") or "").strip()
         return {
             "ok": True,
             "enabled": enabled_raw not in ("0", "false", "off", "no"),
@@ -351,10 +355,10 @@ def build_auth_admin_router(
         if bool(start) != bool(end):
             raise HTTPException(status_code=400, detail="start and end must both be set")
 
-        set_setting("request_sms_enabled", "1" if enabled else "0")
-        set_setting("request_sms_receiver", receiver)
-        set_setting("request_sms_start", start or None)
-        set_setting("request_sms_end", end or None)
+        set_shared_setting("request_sms_enabled", "1" if enabled else "0")
+        set_shared_setting("request_sms_receiver", receiver)
+        set_shared_setting("request_sms_start", start or None)
+        set_shared_setting("request_sms_end", end or None)
 
         return {
             "ok": True,

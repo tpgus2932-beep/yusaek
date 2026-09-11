@@ -51,6 +51,7 @@ from main import (
     _get_request_attachments,
     _get_setting,
     _get_shared_db,
+    _get_shared_setting,
     _get_user_display,
     TURSO_DATABASE_URL,
     _USE_TURSO,
@@ -62,6 +63,7 @@ from main import (
     _row_to_request,
     _row_to_shared_file,
     _set_setting,
+    _set_shared_setting,
     _verify_password,
     _verify_pin,
 )
@@ -122,6 +124,8 @@ app.include_router(
         count_admins=_count_admins,
         get_setting=_get_setting,
         set_setting=_set_setting,
+        get_shared_setting=_get_shared_setting,
+        set_shared_setting=_set_shared_setting,
     )
 )
 
@@ -148,6 +152,7 @@ app.include_router(
         row_to_shared_file=_row_to_shared_file,
         get_setting=_get_setting,
         set_setting=_set_setting,
+        get_shared_setting=_get_shared_setting,
         hash_pin=_hash_pin,
         verify_pin=_verify_pin,
         upload_base=UPLOAD_BASE,
