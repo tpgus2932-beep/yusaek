@@ -255,6 +255,11 @@
   background: var(--bg-active, rgba(99,102,241,0.07)) !important;
 }
 
+.cellSelected {
+  outline: 2px solid #4f46e5;
+  outline-offset: -2px;
+}
+
 /* ── 인라인 편집 ── */
 .inlineInput {
   width: 100%;

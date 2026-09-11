@@ -26,8 +26,10 @@ function JanggiListView() {
   const [message, setMessage] = useState("");
   const [editing, setEditing] = useState(null);
   const inputRef = useRef(null);
-  const [quickActionArmed, setQuickActionArmed] = useState(false);
-  const quickActionTimerRef = useRef(null);
+  const searchInputRef = useRef(null);
+  const [selectedCell, setSelectedCell] = useState(null);
+  const [selectedRowIds, setSelectedRowIds] = useState(() => new Set());
+  const lastSelectedRowIdRef = useRef(null);
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
   const [misongLoading, setMisongLoading] = useState(false);
@@ -71,6 +73,8 @@ function JanggiListView() {
 
   const fetchRows = useCallback(async (q, date, off, misong = "", ilgwal = false, dFrom = "", dTo = "") => {
     setLoading(true);
+    setSelectedRowIds(new Set());
+    setSelectedCell(null);
     try {
       const params = new URLSearchParams({ q, date, date_from: dFrom, date_to: dTo, misong_filter: misong, ilgwal_only: ilgwal ? "Y" : "", offset: off, limit: PAGE_SIZE });
       const res = await fetch(`${API}/wonbe/janggi/search?${params}`, { headers: getAuthHeaders() });
@@ -99,8 +103,6 @@ function JanggiListView() {
   }, []);
 
   useEffect(() => { fetchMisongLock(dateFilter); }, [fetchMisongLock, dateFilter]);
-
-  useEffect(() => () => { if (quickActionTimerRef.current) clearTimeout(quickActionTimerRef.current); }, []);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -153,40 +155,7 @@ function JanggiListView() {
     }
   };
 
-  // Alt를 한 번 누르면 보조도구가 활성화되고, 이어서 누르는 숫자키로 지정된 행동을 실행한다.
-  const QUICK_ACTIONS = {
-    "4": { label: "행 삭제", run: (id) => handleDeleteRow(id) },
-  };
-
-  const armQuickAction = () => {
-    setQuickActionArmed(true);
-    setMessage(`보조도구 활성화: ${Object.entries(QUICK_ACTIONS).map(([k, v]) => `${k}=${v.label}`).join(", ")}`);
-    if (quickActionTimerRef.current) clearTimeout(quickActionTimerRef.current);
-    quickActionTimerRef.current = setTimeout(() => setQuickActionArmed(false), 3000);
-  };
-
-  const disarmQuickAction = () => {
-    setQuickActionArmed(false);
-    if (quickActionTimerRef.current) { clearTimeout(quickActionTimerRef.current); quickActionTimerRef.current = null; }
-  };
-
   const handleKeyDown = async (e) => {
-    if (e.key === "Alt") {
-      e.preventDefault();
-      armQuickAction();
-      return;
-    }
-    if (quickActionArmed) {
-      disarmQuickAction();
-      const action = QUICK_ACTIONS[e.key];
-      if (action && editing) {
-        e.preventDefault();
-        const targetId = editing.id;
-        setEditing(null);
-        action.run(targetId);
-      }
-      return;
-    }
     if (e.key === "Enter") { commitEdit(); return; }
     if (e.key === "Escape") { setEditing(null); return; }
     if (e.key === "ArrowUp" || e.key === "ArrowDown") {
@@ -245,6 +214,135 @@ function JanggiListView() {
       startEdit(nextRow.id, nextCol, nextRow[nextCol] ?? "");
     }
   };
+
+  // 검색창에서 아래 화살표를 누르면 표 첫 행 첫 열로 진입 (편집은 아니고 커서 선택 상태)
+  const handleSearchInputKeyDown = (e) => {
+    if (e.key !== "ArrowDown") return;
+    if (!sortedRows.length) return;
+    e.preventDefault();
+    e.currentTarget.blur();
+    setSelectedCell({ id: sortedRows[0].id, col: COLS[0] });
+  };
+
+  const moveSelectedCell = (key) => {
+    if (!selectedCell) return;
+    const colIdx = COLS.indexOf(selectedCell.col);
+    const rowIdx = sortedRows.findIndex((r) => r.id === selectedCell.id);
+    if (colIdx === -1 || rowIdx === -1) return;
+    let nextRowIdx = rowIdx;
+    let nextColIdx = colIdx;
+    if (key === "ArrowUp") nextRowIdx -= 1;
+    else if (key === "ArrowDown") nextRowIdx += 1;
+    else if (key === "ArrowLeft") {
+      nextColIdx -= 1;
+      if (nextColIdx < 0) { nextColIdx = COLS.length - 1; nextRowIdx -= 1; }
+    } else if (key === "ArrowRight") {
+      nextColIdx += 1;
+      if (nextColIdx >= COLS.length) { nextColIdx = 0; nextRowIdx += 1; }
+    }
+    if (nextRowIdx < 0 || nextRowIdx >= sortedRows.length) return;
+    const nextRow = sortedRows[nextRowIdx];
+    setSelectedCell({ id: nextRow.id, col: COLS[nextColIdx] });
+    document.getElementById(`janggi-row-${nextRow.id}`)?.scrollIntoView({ block: "nearest" });
+  };
+
+  // Ctrl/Shift+클릭으로 행을 다중선택 (일반 클릭은 그대로 편집 진입)
+  const toggleRowSelection = (id) => {
+    setSelectedRowIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    lastSelectedRowIdRef.current = id;
+  };
+
+  const shiftSelectRange = (id) => {
+    const anchor = lastSelectedRowIdRef.current;
+    const ids = sortedRows.map((r) => r.id);
+    const ai = ids.indexOf(anchor);
+    const bi = ids.indexOf(id);
+    if (anchor == null || ai === -1 || bi === -1) { toggleRowSelection(id); return; }
+    const [start, end] = ai < bi ? [ai, bi] : [bi, ai];
+    setSelectedRowIds(new Set(ids.slice(start, end + 1)));
+  };
+
+  const handleCellClick = (e, row, col) => {
+    if (e.ctrlKey || e.metaKey) { e.preventDefault(); toggleRowSelection(row.id); return; }
+    if (e.shiftKey) { e.preventDefault(); shiftSelectRange(row.id); return; }
+    if (selectedRowIds.size) setSelectedRowIds(new Set());
+    setSelectedCell(null);
+    startEdit(row.id, col, row[col] ?? "");
+  };
+
+  // Alt+2: 다중선택된 행이 있으면 일괄삭제, 없으면 현재 편집/선택 중인 행 삭제 (둘 다 확인창 필요)
+  const handleAltDeleteHotkey = () => {
+    if (selectedRowIds.size > 0) {
+      const ids = [...selectedRowIds];
+      if (!window.confirm(`선택한 ${ids.length}개 행을 정말 삭제하시겠습니까?`)) return;
+      (async () => {
+        try {
+          const results = await Promise.all(ids.map(async (id) => {
+            const res = await fetch(`${API}/wonbe/janggi/row`, {
+              method: "DELETE",
+              headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+              body: JSON.stringify({ id }),
+            });
+            const data = await res.json().catch(() => ({}));
+            return { id, ok: res.ok && data.ok };
+          }));
+          const deletedIds = new Set(results.filter((r) => r.ok).map((r) => r.id));
+          const failCount = results.length - deletedIds.size;
+          setRows((prev) => prev.filter((r) => !deletedIds.has(r.id)));
+          setTotal((t) => t - deletedIds.size);
+          setSelectedRowIds(new Set());
+          setMessage(failCount ? `${deletedIds.size}건 삭제 완료 (${failCount}건 실패)` : `${deletedIds.size}건 삭제 완료`);
+        } catch (err) {
+          setMessage(err.message || "일괄 삭제 실패");
+        }
+      })();
+      return;
+    }
+    const targetId = editing?.id ?? selectedCell?.id;
+    if (!targetId) return;
+    handleDeleteRow(targetId);
+  };
+
+  // Ctrl+F: 검색창 포커스 / Alt+1: 행 추가 / Alt+2: 행 삭제 / 선택 커서 상태에서 방향키·Enter·Esc
+  useEffect(() => {
+    const onGlobalKeyDown = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+      if (e.altKey && e.key === "1") {
+        e.preventDefault();
+        handleAddRow();
+        return;
+      }
+      if (e.altKey && e.key === "2") {
+        e.preventDefault();
+        handleAltDeleteHotkey();
+        return;
+      }
+      if (editing || !selectedCell) return;
+      if (e.key === "Escape") { e.preventDefault(); setSelectedCell(null); return; }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const row = sortedRows.find((r) => r.id === selectedCell.id);
+        if (row) startEdit(row.id, selectedCell.col, row[selectedCell.col] ?? "");
+        return;
+      }
+      if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        moveSelectedCell(e.key);
+      }
+    };
+    window.addEventListener("keydown", onGlobalKeyDown);
+    return () => window.removeEventListener("keydown", onGlobalKeyDown);
+  });
 
   const handleAddRow = async () => {
     const today = new Date().toISOString().slice(0, 10);
@@ -329,6 +427,8 @@ function JanggiListView() {
       if (!res.ok || !data.ok) throw new Error(data?.detail || "삭제 실패");
       setRows((prev) => prev.filter((r) => r.id !== id));
       setTotal((t) => t - 1);
+      setSelectedCell((sc) => (sc?.id === id ? null : sc));
+      setSelectedRowIds((prev) => (prev.has(id) ? new Set([...prev].filter((x) => x !== id)) : prev));
     } catch (err) {
       setMessage(err.message);
     }
@@ -566,10 +666,12 @@ function JanggiListView() {
       <div className={styles.controls}>
         <form onSubmit={handleSearch} style={{ display: "flex", gap: "0.5rem" }}>
           <input
+            ref={searchInputRef}
             className={styles.searchInput}
             value={inputQuery}
             onChange={(e) => setInputQuery(e.target.value)}
-            placeholder="거래처 / 거래처상품명 / 상품코드"
+            onKeyDown={handleSearchInputKeyDown}
+            placeholder="거래처 / 거래처상품명 / 상품코드 (Ctrl+F, ↓로 표 진입)"
           />
           <button className={`${styles.btn} ${styles.btnPrimary}`} type="submit" disabled={loading}>검색</button>
         </form>
@@ -721,7 +823,12 @@ function JanggiListView() {
           </thead>
           <tbody>
             {sortedRows.map((row) => (
-              <tr key={row.id} style={row["일괄이체"] === "Y" ? { background: "#eef2ff" } : undefined}>
+              <tr
+                key={row.id}
+                id={`janggi-row-${row.id}`}
+                style={row["일괄이체"] === "Y" ? { background: "#eef2ff" } : undefined}
+                className={selectedRowIds.has(row.id) ? styles.rowSelected : undefined}
+              >
                 <td style={{ textAlign: "center", padding: "0.25rem" }}>
                   <button
                     onClick={() => handleDeleteRow(row.id)}
@@ -772,8 +879,14 @@ function JanggiListView() {
                       </td>
                     );
                   }
+                  const isSelectedCell = selectedCell?.id === row.id && selectedCell?.col === col;
                   return (
-                    <td key={col} className={styles.editableCell} onClick={() => startEdit(row.id, col, row[col] ?? "")} title="클릭하여 수정">
+                    <td
+                      key={col}
+                      className={`${styles.editableCell}${isSelectedCell ? ` ${styles.cellSelected}` : ""}`}
+                      onClick={(e) => handleCellClick(e, row, col)}
+                      title="클릭하여 수정 (Ctrl/Shift+클릭: 행 다중선택)"
+                    >
                       {row[col] ?? ""}
                     </td>
                   );
