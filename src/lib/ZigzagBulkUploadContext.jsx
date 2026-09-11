@@ -242,4 +242,5 @@ export function ZigzagBulkUploadProvider({ children }) {
     );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- hook intentionally co-located with its Provider
 export const useZigzagBulkUpload = () => useContext(ZigzagBulkUploadContext);

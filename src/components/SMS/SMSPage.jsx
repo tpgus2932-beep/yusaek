@@ -569,9 +569,13 @@ export default function SMSPage() {
   };
 
   // 탭 진입 시 자동 조회
+  // 탭이 바뀔 때만 조회한다 - 아래쪽 debounce effect가 검색어/날짜 변경 시
+  // fetchHistory를 따로 호출하므로, 여기서 fetchHistory까지 deps에 넣으면
+  // 검색어 입력마다 debounce 없이 중복 조회가 발생한다.
   useEffect(() => {
     if (activeTab === 'remain') fetchRemain();
     if (activeTab === 'history') fetchHistory(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
   useEffect(() => {

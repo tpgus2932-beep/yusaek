@@ -19,7 +19,7 @@ function formatScanDate(raw) {
 
 const LS = {
   get: (k, fb) => { try { const v = localStorage.getItem(k); return v != null ? JSON.parse(v) : fb; } catch { return fb; } },
-  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* noop */ } },
 };
 
 export default function ReturnShippingTest() {
@@ -371,8 +371,6 @@ export default function ReturnShippingTest() {
               </thead>
               <tbody>
                 {items.map((item, idx) => {
-                  const invNo = item["반품송장번호"];
-                  const lr = invNo ? llogisResults[invNo] : null;
                   const orderNo = item["주문번호"];
                   const hasMemo = orderNo && !!memos[orderNo];
                   const isExpanded = orderNo && expandedMemos.has(orderNo);

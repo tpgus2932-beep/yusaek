@@ -116,26 +116,6 @@ function preprocessBaseSheet(rawRows) {
   return withIds(sheet2);
 }
 
-function parseScheduleSheet2Rows(rawRows) {
-  const rows = ensureWidth(Array.isArray(rawRows) ? rawRows : [], 8);
-  const parsed = rows
-    .map((row) => ({
-      A: toDisplayText(row[0]),
-      B: toDisplayText(row[1]),
-      C: toDisplayText(row[2]),
-      D: toDisplayText(row[3]),
-      E: toDisplayText(row[4]),
-      F: toDisplayText(row[5]),
-      G: toDisplayText(row[6]),
-      H: toDisplayText(row[7]),
-      I: toDisplayText(row[8]),
-    }))
-    .filter((row) => Object.values(row).some(Boolean));
-
-  parsed.sort((left, right) => left.B.localeCompare(right.B, 'ko'));
-  return withIds(parsed);
-}
-
 function normalizeDValueForMerge(value, baseDate) {
   const dateValue = coerceDate(value);
   if (dateValue) {
@@ -696,25 +676,6 @@ export default function ClientSchedulePage() {
       }
       setPendingBaseRows(responseData.rows);
       await retryIncomingAndRun(responseData.rows);
-      return;
-
-      setBaseEzLoading(true);
-      setStatus('EZAdmin에서 기준 파일 불러오는 중...');
-      const res = await fetch(`${LOCAL_API_BASE}/barcode/base-file-from-ezadmin`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ start_date: baseEzStart, end_date: baseEzEnd }),
-      });
-      if (res.headers.get('content-type')?.includes('application/json')) {
-        const data = await res.json().catch(() => ({}));
-        if (data?.need_session) { openEzadminModal(handleBaseFromEzadmin); return; }
-        setStatus(data?.error || 'EZAdmin 기준 파일 불러오기 실패');
-        return;
-      }
-      if (!res.ok) { setStatus(`EZAdmin 기준 파일 불러오기 실패 (HTTP ${res.status})`); return; }
-      const blob = await res.blob();
-      setBaseFile(new File([blob], 'base_file.xls', { type: 'application/vnd.ms-excel' }));
-      setStatus('EZAdmin 기준 파일 불러오기 완료');
     } catch (err) {
       setStatus(`EZAdmin 기준 파일 불러오기 실패: ${err.message || ''}`);
     } finally {
@@ -952,7 +913,7 @@ export default function ClientSchedulePage() {
 
   const handleSheet1Download = () => {
     if (!sheet2Rows.length) { setStatus('먼저 기준 파일을 가공하세요.'); return; }
-    const { sheet1Rows: built, excludedMatchedClients } = buildSheet1AndSheet2(sheet2Rows, msgPrefix, msgSuffix, excludedClients);
+    const { sheet1Rows: built } = buildSheet1AndSheet2(sheet2Rows, msgPrefix, msgSuffix, excludedClients);
     const final = built;
     if (final.length <= 1) { setStatus('문자 대상이 없습니다. 통합 실행 후 시도하세요.'); return; }
     const wb = XLSX.utils.book_new();

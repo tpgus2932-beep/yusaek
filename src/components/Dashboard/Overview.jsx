@@ -511,6 +511,10 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    // authHeaders is rebuilt every render (getAuthHeaders() isn't memoized), so this
+    // function can't be made referentially stable without a wider refactor - the
+    // moveTodayTodoBlock callback below intentionally re-creates on every render too.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     const fetchTodayTodos = async () => {
         try {
             setLoadingTodayTodos(true);
@@ -1103,7 +1107,7 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
         } catch (err) {
             setError(err.message || 'Failed to reorder my todos');
         }
-    }, [orderedTodayTodos, persistTodayTodoOrder]);
+    }, [orderedTodayTodos, persistTodayTodoOrder, fetchTodayTodos]);
 
     useEffect(() => {
         const nextGroupIds = new Set(

@@ -26,14 +26,14 @@ export default function AttendancePage() {
         const data = await res.json();
         setMembers(data.filter((m) => m.payType !== 'studio'));
       }
-    } catch {}
+    } catch { /* noop */ }
   }, []);
 
   const loadToday = useCallback(async () => {
     try {
       const res = await fetch(`${COLLAB_API_BASE}/attendance/records/today`);
       if (res.ok) setTodayRecords(await res.json());
-    } catch {}
+    } catch { /* noop */ }
   }, []);
 
   useEffect(() => {

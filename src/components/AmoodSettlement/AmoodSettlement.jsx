@@ -39,7 +39,10 @@ function ResultTable({ items, showPaymentCols = false }) {
   const [sortKey, setSortKey] = useState(null);
   const [sortAsc, setSortAsc] = useState(true);
 
-  const allCols = showPaymentCols ? [...SORT_COLS, ...PAYMENT_SORT_COLS] : SORT_COLS;
+  const allCols = React.useMemo(
+    () => (showPaymentCols ? [...SORT_COLS, ...PAYMENT_SORT_COLS] : SORT_COLS),
+    [showPaymentCols]
+  );
 
   const toggle = (name) => setExpanded((prev) => ({ ...prev, [name]: !prev[name] }));
 
@@ -152,7 +155,7 @@ function toYearMonth(offset = 0) {
 
 const LS = {
   get: (k, fallback) => { try { const v = localStorage.getItem(k); return v != null ? JSON.parse(v) : fallback; } catch { return fallback; } },
-  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* noop */ } },
 };
 
 function SettlementView() {

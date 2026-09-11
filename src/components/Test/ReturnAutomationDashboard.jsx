@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { MessageSquare } from "lucide-react";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
@@ -410,7 +410,7 @@ export default function ReturnAutomationDashboard() {
     }
   };
 
-  const applyPreviewResult = (result) => {
+  const applyPreviewResult = useCallback((result) => {
     setBusy(false);
     if (!result.ok) {
       setMessageIsError(true);
@@ -431,7 +431,7 @@ export default function ReturnAutomationDashboard() {
     setMessage(
       `에이블리 ${data.source_item_count || 0}건 조회, ${data.excluded_recent_count || 0}건 제외, 대상 ${data.items?.length || 0}건${errorNote}`
     );
-  };
+  }, [defaultTemplateId]);
 
   // If a preview started before this component was last unmounted (e.g. the
   // user switched to another sidebar tab mid-scan) is still running, resume
@@ -445,7 +445,7 @@ export default function ReturnAutomationDashboard() {
     setMessage("최근 30일 반품 조회 → LOGIS 조회 → CS 조회 중... (다른 메뉴에 다녀와도 계속 진행됩니다)");
     job.listeners.add(applyPreviewResult);
     return () => job.listeners.delete(applyPreviewResult);
-  }, []);
+  }, [applyPreviewResult]);
 
   const passCount = run ? run.items.filter((x) => x.elapsed_status === "PASS").length : 0;
   const errorCount = run ? run.items.filter((x) => x.elapsed_status === "ERROR").length : 0;

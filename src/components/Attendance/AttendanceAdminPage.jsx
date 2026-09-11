@@ -503,9 +503,34 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
     if (pinAuth && tab === 'paymentRequest') loadPaymentRequests();
   }, [pinAuth, tab, loadPaymentRequests]);
 
+  const loadStudioPayments = useCallback(async () => {
+    if (studioPaymentFilterFrom && studioPaymentFilterTo && studioPaymentFilterFrom > studioPaymentFilterTo) {
+      setStudioPaymentError('조회 시작일은 종료일보다 늦을 수 없습니다.');
+      return;
+    }
+    setStudioPaymentLoading(true);
+    setStudioPaymentError('');
+    try {
+      const params = new URLSearchParams({
+        pin,
+        date_from: studioPaymentFilterFrom,
+        date_to: studioPaymentFilterTo,
+      });
+      const res = await fetch(`${COLLAB_API_BASE}/attendance/studio-payments?${params}`);
+      const data = await res.json().catch(() => []);
+      if (!res.ok) throw new Error(data.detail || '스튜디오 입금 조회에 실패했습니다.');
+      setStudioPayments(Array.isArray(data) ? data : []);
+      setSelectedStudioPaymentIds(new Set());
+    } catch (error) {
+      setStudioPaymentError(error.message || '스튜디오 입금 조회에 실패했습니다.');
+    } finally {
+      setStudioPaymentLoading(false);
+    }
+  }, [pin, studioPaymentFilterFrom, studioPaymentFilterTo]);
+
   useEffect(() => {
     if (pinAuth && tab === 'payroll' && payrollMode === 'studio-payment') loadStudioPayments();
-  }, [pinAuth, tab, payrollMode]);
+  }, [pinAuth, tab, payrollMode, loadStudioPayments]);
 
   const addPaymentRequest = async () => {
     const bankName = paymentRequestBank === '직접입력:'
@@ -595,31 +620,6 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
       return;
     }
     await loadPaymentRequests();
-  };
-
-  const loadStudioPayments = async () => {
-    if (studioPaymentFilterFrom && studioPaymentFilterTo && studioPaymentFilterFrom > studioPaymentFilterTo) {
-      setStudioPaymentError('조회 시작일은 종료일보다 늦을 수 없습니다.');
-      return;
-    }
-    setStudioPaymentLoading(true);
-    setStudioPaymentError('');
-    try {
-      const params = new URLSearchParams({
-        pin,
-        date_from: studioPaymentFilterFrom,
-        date_to: studioPaymentFilterTo,
-      });
-      const res = await fetch(`${COLLAB_API_BASE}/attendance/studio-payments?${params}`);
-      const data = await res.json().catch(() => []);
-      if (!res.ok) throw new Error(data.detail || '스튜디오 입금 조회에 실패했습니다.');
-      setStudioPayments(Array.isArray(data) ? data : []);
-      setSelectedStudioPaymentIds(new Set());
-    } catch (error) {
-      setStudioPaymentError(error.message || '스튜디오 입금 조회에 실패했습니다.');
-    } finally {
-      setStudioPaymentLoading(false);
-    }
   };
 
   const formatStudioApiError = (detail, fallback) => {
