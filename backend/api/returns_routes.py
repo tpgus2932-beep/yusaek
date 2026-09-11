@@ -3142,7 +3142,7 @@ def build_returns_router(
                 option_code = str(item.get("option_code") or "").strip()
                 original_option_sno = str(item.get("original_option_sno") or "").strip()
                 if option_code:
-                    product_id = option_code if option_code in product_codes else None
+                    product_id = product_codes.get(option_code.upper())
                     if not product_id:
                         raise ValueError(f"상품코드({option_code})를 원가베이스유에서 찾을 수 없음")
                 elif original_option_sno:
@@ -3191,7 +3191,7 @@ def build_returns_router(
             original_option_sno = str(item.get("original_option_sno") or "").strip()
             error = None
             if option_code:
-                product_id = option_code if option_code in product_codes else None
+                product_id = product_codes.get(option_code.upper())
                 if not product_id:
                     error = f"상품코드({option_code})를 원가베이스유에서 찾을 수 없음"
             elif original_option_sno:

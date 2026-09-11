@@ -414,19 +414,26 @@ def load_wonbe_option_sno_map() -> dict[str, str]:
     return sno_map
 
 
-def load_wonbe_product_codes() -> set[str]:
-    """원가베이스유(wonbe)에 등록된 상품코드 전체 집합.
+def load_wonbe_product_codes() -> dict[str, str]:
+    """원가베이스유(wonbe)에 등록된 상품코드 전체 집합 (대문자 정규화 키 → 원본 상품코드).
 
     에이블리 option_stock_sync_code가 옵션 sno가 아니라 상품코드를 그대로
     내려주도록 바뀐 뒤로, 반품 쪽에서 그 값을 옵션번호맵이 아니라 이 목록으로
-    바로 검증한다."""
+    바로 검증한다. 에이블리 쪽 대소문자가 원가베이스유 등록값과 다르게 내려오는
+    경우가 있어(예: 's00002' vs 'S00002') 대문자로 정규화한 키로 조회하고,
+    실제 EZAdmin에 넘길 때는 원가베이스유에 등록된 원본 표기(값)를 쓴다."""
     conn = _get_wonbe_db()
     try:
         _init_wonbe_table(conn)
         rows = conn.execute("SELECT 상품코드 FROM wonbe WHERE 상품코드 != ''").fetchall()
     finally:
         conn.close()
-    return {str(r["상품코드"]).strip() for r in rows}
+    codes: dict[str, str] = {}
+    for r in rows:
+        code = str(r["상품코드"]).strip()
+        if code:
+            codes.setdefault(code.upper(), code)
+    return codes
 
 
 def load_wonbe_client_info_by_code() -> dict[str, dict[str, str]]:
