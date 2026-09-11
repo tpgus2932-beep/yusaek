@@ -36,6 +36,7 @@ from api.misong_routes import build_misong_router
 from api.order_routes import build_order_router
 from api.timebox_routes import build_timebox_router
 from api.worklog_routes import build_worklog_router
+from api.equipment_routes import build_equipment_router
 from api.wonbe_routes import WONBE_DB_PATH, build_wonbe_read_router
 from main import (
     ALLOWED_REQUEST_EXTS,
@@ -72,6 +73,7 @@ from services.easyadmin_product import (
 )
 from services.timebox_store import init_timebox_tables
 from services.worklog_store import init_worklog_tables
+from services.equipment_store import init_equipment_tables
 
 
 def _env_int(name: str, default: int) -> int:
@@ -222,6 +224,17 @@ app.include_router(
     build_worklog_router(
         get_current_user=_get_current_user,
         get_db=_get_shared_db,
+        get_user_display=_get_user_display,
+    )
+)
+
+init_equipment_tables(_get_shared_db)
+
+app.include_router(
+    build_equipment_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        get_setting=_get_setting,
         get_user_display=_get_user_display,
     )
 )

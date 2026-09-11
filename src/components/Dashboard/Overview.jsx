@@ -6,6 +6,7 @@ import DeliveryAnomalyCard from './DeliveryAnomalyCard';
 import ExchangeReturnAnomalyCard from './ExchangeReturnAnomalyCard';
 import ReturnAnomalyCard from './ReturnAnomalyCard';
 import DailyChecklistCard from './DailyChecklistCard';
+import EquipmentCard from './EquipmentCard';
 
 function AuthImage({ src, token, className, alt, onClick }) {
     const [blobUrl, setBlobUrl] = useState('');
@@ -34,16 +35,13 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
     const [requestFiles, setRequestFiles] = useState([]);
     const fileInputRef = useRef(null);
     const [activity, setActivity] = useState([]);
-    const [resolved, setResolved] = useState([]);
     const [loadingUsers, setLoadingUsers] = useState(true);
     const [loadingActivity, setLoadingActivity] = useState(true);
-    const [loadingResolved, setLoadingResolved] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState('');
     const [freshnessChecking, setFreshnessChecking] = useState(false);
     const [freshnessResult, setFreshnessResult] = useState(null);
     const [freshnessError, setFreshnessError] = useState('');
-    const [sentFilter, setSentFilter] = useState('all');
     const [previewImage, setPreviewImage] = useState(null);
     const [previewScale, setPreviewScale] = useState(1);
     const [companyCreds, setCompanyCreds] = useState([]);
@@ -51,15 +49,6 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
     const [credView, setCredView] = useState({});
     const [credEdit, setCredEdit] = useState({});
     const [companyPin, setCompanyPin] = useState('');
-    const [todoText, setTodoText] = useState('');
-    const [todos, setTodos] = useState([]);
-    const [showTodoInput, setShowTodoInput] = useState(false);
-    const [showAllTodos, setShowAllTodos] = useState(false);
-    const [todoTab, setTodoTab] = useState('open');
-    const [todoCompleteInputId, setTodoCompleteInputId] = useState(null);
-    const [todoCompleteComment, setTodoCompleteComment] = useState('');
-    const [loadingTodos, setLoadingTodos] = useState(false);
-    const [submittingTodo, setSubmittingTodo] = useState(false);
     const [todayTodoText, setTodayTodoText] = useState('');
     const [todayTodos, setTodayTodos] = useState([]);
     const [showTodayTodoInput, setShowTodayTodoInput] = useState(false);
@@ -70,15 +59,11 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
     const [collapsedTodayGroups, setCollapsedTodayGroups] = useState({});
     const [draggingTodaySectionKey, setDraggingTodaySectionKey] = useState('');
     const [dragOverTodaySectionKey, setDragOverTodaySectionKey] = useState('');
-    const [sharedTodoOpen, setSharedTodoOpen] = useState(false);
-    const [sentRequestsOpen, setSentRequestsOpen] = useState(false);
     const [activityPanelWidth, setActivityPanelWidth] = useState(420);
     const [dashboardLayoutLoaded, setDashboardLayoutLoaded] = useState(false);
     const [pinnedRequestIds, setPinnedRequestIds] = useState([]);
     const [pinnedRequestsLoaded, setPinnedRequestsLoaded] = useState(false);
     const [requestAlertsEnabled, setRequestAlertsEnabled] = useState(false);
-    const [editingRequestId, setEditingRequestId] = useState(null);
-    const [editingRequestText, setEditingRequestText] = useState('');
     const [expandedCommentIds, setExpandedCommentIds] = useState(new Set());
     // { [requestId]: { items: Comment[]|null, loading, input, submitting } }
     const [commentsCache, setCommentsCache] = useState({});
@@ -326,21 +311,6 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
         }
     };
 
-    const fetchResolved = async () => {
-        try {
-            setLoadingResolved(true);
-            const res = await fetch(`${API}/requests/resolved`, { headers: authHeaders });
-            if (handleUnauthorized(res)) return;
-            const data = await res.json();
-            if (!res.ok) throw new Error(data?.detail || 'Failed to load resolved');
-            setResolved(data?.requests || []);
-        } catch (err) {
-            setError(err.message || 'Failed to load resolved');
-        } finally {
-            setLoadingResolved(false);
-        }
-    };
-
     const handleFreshnessCheck = async () => {
         setFreshnessChecking(true);
         setFreshnessError('');
@@ -377,8 +347,6 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
 
     useEffect(() => {
         fetchUsers();
-        fetchResolved();
-        fetchTodos();
         fetchTodayTodos();
         fetchFreshnessStatus();
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -543,21 +511,6 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const fetchTodos = async () => {
-        try {
-            setLoadingTodos(true);
-            const res = await fetch(`${API}/shared-todos`, { headers: authHeaders });
-            if (handleUnauthorized(res)) return;
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || 'Failed to load todos');
-            setTodos(Array.isArray(data?.todos) ? data.todos : []);
-        } catch (err) {
-            setError(err.message || 'Failed to load todos');
-        } finally {
-            setLoadingTodos(false);
-        }
-    };
-
     const fetchTodayTodos = async () => {
         try {
             setLoadingTodayTodos(true);
@@ -597,16 +550,12 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
             if (handleUnauthorized(res)) return;
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data?.detail || 'Failed to send request');
-            if (data?.request) {
-                setResolved((prev) => [data.request, ...prev.filter((item) => item.id !== data.request.id)]);
-                if (data.request.assignee_username === (currentUser || localStorage.getItem('username'))) {
-                    setActivity((prev) => [data.request, ...prev.filter((item) => item.id !== data.request.id)]);
-                }
+            if (data?.request && data.request.assignee_username === (currentUser || localStorage.getItem('username'))) {
+                setActivity((prev) => [data.request, ...prev.filter((item) => item.id !== data.request.id)]);
             }
             setRequestText('');
             setRequestFiles([]);
             if (fileInputRef.current) fileInputRef.current.value = '';
-            await fetchResolved();
             if ((data?.request?.assignee_username || assignee) === (currentUser || localStorage.getItem('username'))) {
                 await fetchActivity();
             }
@@ -703,24 +652,8 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data?.detail || 'Failed to complete');
             await fetchActivity();
-            await fetchResolved();
         } catch (err) {
             setError(err.message || 'Failed to complete');
-        }
-    };
-
-    const handleAck = async (id) => {
-        try {
-            const res = await fetch(`${API}/requests/${id}/ack`, {
-                method: 'POST',
-                headers: authHeaders,
-            });
-            if (handleUnauthorized(res)) return;
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || 'Failed to acknowledge');
-            await fetchResolved();
-        } catch (err) {
-            setError(err.message || 'Failed to acknowledge');
         }
     };
 
@@ -772,63 +705,6 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
 
         setRequestAlertsEnabled(true);
         localStorage.setItem(requestAlertsStorageKey, '1');
-    };
-
-    const handleClearSent = async () => {
-        if (!window.confirm('보낸 요청에서 완료된 항목만 삭제할까요?')) return;
-        try {
-            const res = await fetch(`${API}/requests/sent/clear`, {
-                method: 'DELETE',
-                headers: authHeaders,
-            });
-            if (handleUnauthorized(res)) return;
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || 'Failed to clear sent requests');
-            await fetchResolved();
-        } catch (err) {
-            setError(err.message || 'Failed to clear sent requests');
-        }
-    };
-
-    const handleEditRequest = (item) => {
-        setEditingRequestId(item.id);
-        setEditingRequestText(item.text);
-    };
-
-    const handleSaveEditRequest = async (id) => {
-        const text = editingRequestText.trim();
-        if (!text) return;
-        try {
-            const res = await fetch(`${API}/requests/${id}`, {
-                method: 'PATCH',
-                headers: { ...authHeaders, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text }),
-            });
-            if (handleUnauthorized(res)) return;
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '수정에 실패했습니다');
-            setEditingRequestId(null);
-            setEditingRequestText('');
-            await fetchResolved();
-        } catch (err) {
-            setError(err.message || '수정에 실패했습니다');
-        }
-    };
-
-    const handleDeleteRequest = async (id) => {
-        if (!window.confirm('이 요청을 삭제할까요?')) return;
-        try {
-            const res = await fetch(`${API}/requests/${id}`, {
-                method: 'DELETE',
-                headers: authHeaders,
-            });
-            if (handleUnauthorized(res)) return;
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '삭제에 실패했습니다');
-            await fetchResolved();
-        } catch (err) {
-            setError(err.message || '삭제에 실패했습니다');
-        }
     };
 
     const handlePaste = (e) => {
@@ -1043,55 +919,6 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
         }
     };
 
-    const handleAddTodo = async () => {
-        const text = todoText.trim();
-        if (!text) return;
-        try {
-            setSubmittingTodo(true);
-            const res = await fetch(`${API}/shared-todos`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...authHeaders },
-                body: JSON.stringify({ text }),
-            });
-            if (handleUnauthorized(res)) return;
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || 'Failed to add todo');
-            setTodoText('');
-            await fetchTodos();
-        } catch (err) {
-            setError(err.message || 'Failed to add todo');
-        } finally {
-            setSubmittingTodo(false);
-        }
-    };
-
-    const handleCompleteTodo = async (id, comment = '') => {
-        try {
-            const res = await fetch(`${API}/shared-todos/${id}/complete`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...authHeaders },
-                body: JSON.stringify({ comment }),
-            });
-            if (handleUnauthorized(res)) return;
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || 'Failed to complete todo');
-            setTodoCompleteInputId(null);
-            setTodoCompleteComment('');
-            await fetchTodos();
-        } catch (err) {
-            setError(err.message || 'Failed to complete todo');
-        }
-    };
-
-    const orderedTodos = useMemo(() => {
-        return [...todos].sort((a, b) => {
-            const aDone = a.status === 'completed';
-            const bDone = b.status === 'completed';
-            if (aDone !== bDone) return aDone ? 1 : -1;
-            return String(a.created_at || '').localeCompare(String(b.created_at || ''));
-        });
-    }, [todos]);
-
     const orderedActivity = useMemo(() => {
         const pinnedSet = new Set(pinnedRequestIds);
         return [...activity].sort((a, b) => {
@@ -1116,11 +943,6 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
         listEl.scrollTop = Math.min(savedScrollTop, maxScrollTop);
         pendingActivityScrollTopRef.current = null;
     }, [orderedActivity]);
-
-    const visibleTodos = useMemo(() => {
-        if (todoTab === 'completed') return orderedTodos.filter((item) => item.status === 'completed');
-        return orderedTodos.filter((item) => item.status !== 'completed');
-    }, [orderedTodos, todoTab]);
 
     const handleAddTodayTodo = async () => {
         const text = todayTodoText.trim();
@@ -1973,304 +1795,7 @@ const Overview = ({ currentUser, currentUserPhone: authPhoneNumber = '' }) => {
 
             <DailyChecklistCard />
 
-            <div className={styles.resolvedGrid}>
-                {/* 공동 할 일 - 접기/펼치기 */}
-                <div className={styles.card}>
-                    <button
-                        type="button"
-                        className={styles.collapsibleHeader}
-                        onClick={() => setSharedTodoOpen((v) => !v)}
-                    >
-                        <span className={styles.collapsibleTitle}>공동 할 일</span>
-                        <span className={styles.collapsibleMeta}>
-                            {todos.filter((t) => t.status !== 'completed').length > 0 && (
-                                <span className={styles.countBadge}>
-                                    {todos.filter((t) => t.status !== 'completed').length}
-                                </span>
-                            )}
-                            {sharedTodoOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                        </span>
-                    </button>
-                    {sharedTodoOpen && (
-                        <>
-                            <div className={styles.todoHeaderActions} style={{ marginBottom: '1rem' }}>
-                                <button
-                                    type="button"
-                                    className={`${styles.filterBtn} ${todoTab === 'open' ? styles.filterActive : ''}`}
-                                    onClick={() => setTodoTab('open')}
-                                >
-                                    진행중
-                                </button>
-                                <button
-                                    type="button"
-                                    className={`${styles.filterBtn} ${todoTab === 'completed' ? styles.filterActive : ''}`}
-                                    onClick={() => setTodoTab('completed')}
-                                >
-                                    완료
-                                </button>
-                                <button
-                                    type="button"
-                                    className={styles.todoAddToggle}
-                                    onClick={() => setShowTodoInput((v) => !v)}
-                                >
-                                    <Plus size={16} />
-                                    {showTodoInput ? '닫기' : '추가'}
-                                </button>
-                            </div>
-                            {showTodoInput && (
-                                <div className={styles.todoRow}>
-                                    <input
-                                        className={styles.todoInput}
-                                        placeholder="공동 할 일을 입력하세요"
-                                        value={todoText}
-                                        onChange={(e) => setTodoText(e.target.value)}
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter') {
-                                                e.preventDefault();
-                                                handleAddTodo();
-                                            }
-                                        }}
-                                    />
-                                    <button type="button" className={styles.primaryBtn} onClick={handleAddTodo} disabled={submittingTodo}>
-                                        {submittingTodo ? '등록 중...' : '등록'}
-                                    </button>
-                                </div>
-                            )}
-                            <div className={`${styles.todoList} ${!showAllTodos ? styles.todoListCollapsed : ''}`}>
-                                {loadingTodos && <div className={styles.mutedText}>불러오는 중...</div>}
-                                {!loadingTodos && visibleTodos.length === 0 && (
-                                    <div className={styles.mutedText}>
-                                        {todoTab === 'completed' ? '완료된 공동 할 일이 없습니다.' : '등록된 공동 할 일이 없습니다.'}
-                                    </div>
-                                )}
-                                {!loadingTodos && visibleTodos.map((item) => {
-                                    const done = item.status === 'completed';
-                                    return (
-                                        <div key={item.id} className={styles.todoItem}>
-                                            <label className={styles.todoLabel}>
-                                                <div>
-                                                    <div className={`${styles.todoText} ${done ? styles.todoTextDone : ''}`}>
-                                                        {item.text}
-                                                    </div>
-                                                    <div className={styles.todoMeta}>
-                                                        등록: {item.created_by_display || item.created_by_username || '-'}
-                                                        {done && (
-                                                            <>
-                                                                {' · '}완료: {item.completed_by_display || item.completed_by_username || '-'}
-                                                            </>
-                                                        )}
-                                                    </div>
-                                                    {done && item.completed_comment && (
-                                                        <div className={styles.todoMeta}>코멘트: {item.completed_comment}</div>
-                                                    )}
-                                                    {!done && todoCompleteInputId === item.id && (
-                                                        <div className={styles.todoInlineEditor}>
-                                                            <input
-                                                                className={styles.todoInput}
-                                                                placeholder="완료 코멘트 (선택)"
-                                                                value={todoCompleteComment}
-                                                                onChange={(e) => setTodoCompleteComment(e.target.value)}
-                                                                onKeyDown={(e) => {
-                                                                    if (e.key === 'Enter') {
-                                                                        e.preventDefault();
-                                                                        handleCompleteTodo(item.id, todoCompleteComment);
-                                                                    }
-                                                                }}
-                                                            />
-                                                            <button
-                                                                type="button"
-                                                                className={styles.primaryBtn}
-                                                                onClick={() => handleCompleteTodo(item.id, todoCompleteComment)}
-                                                            >
-                                                                완료 저장
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                className={styles.secondaryBtn}
-                                                                onClick={() => {
-                                                                    setTodoCompleteInputId(null);
-                                                                    setTodoCompleteComment('');
-                                                                }}
-                                                            >
-                                                                취소
-                                                            </button>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            </label>
-                                            <div className={styles.todoActions}>
-                                                {done ? (
-                                                    <span className={styles.completedBadge}>완료됨</span>
-                                                ) : (
-                                                    <button
-                                                        type="button"
-                                                        className={styles.todoDoneBtn}
-                                                        onClick={() => {
-                                                            setTodoCompleteInputId(item.id);
-                                                            setTodoCompleteComment('');
-                                                        }}
-                                                    >
-                                                        완료
-                                                    </button>
-                                                )}
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                            {visibleTodos.length > 0 && (
-                                <div className={styles.todoToggleRow}>
-                                    <button
-                                        type="button"
-                                        className={styles.todoToggleBtn}
-                                        onClick={() => setShowAllTodos((v) => !v)}
-                                    >
-                                        {showAllTodos ? '접기' : '펼치기'}
-                                    </button>
-                                </div>
-                            )}
-                        </>
-                    )}
-                </div>
-
-                {/* 보낸 요청 - 접기/펼치기 */}
-                <div className={styles.card}>
-                    <button
-                        type="button"
-                        className={styles.collapsibleHeader}
-                        onClick={() => setSentRequestsOpen((v) => !v)}
-                    >
-                        <span className={styles.collapsibleTitle}>
-                            보낸 요청
-                            <Bell size={15} className={styles.cardHeaderIcon} />
-                        </span>
-                        <span className={styles.collapsibleMeta}>
-                            {resolved.filter((r) => r.status !== 'completed').length > 0 && (
-                                <span className={styles.countBadge}>
-                                    {resolved.filter((r) => r.status !== 'completed').length}
-                                </span>
-                            )}
-                            {resolved.some((r) => r.can_ack) && (
-                                <span className={styles.newBadge}>NEW</span>
-                            )}
-                            {sentRequestsOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                        </span>
-                    </button>
-                    {sentRequestsOpen && (
-                        <>
-                            <div className={styles.filterGroup} style={{ marginBottom: '1rem' }}>
-                                <button
-                                    type="button"
-                                    className={`${styles.filterBtn} ${sentFilter === 'all' ? styles.filterActive : ''}`}
-                                    onClick={() => setSentFilter('all')}
-                                >
-                                    전체
-                                </button>
-                                <button
-                                    type="button"
-                                    className={`${styles.filterBtn} ${sentFilter === 'open' ? styles.filterActive : ''}`}
-                                    onClick={() => setSentFilter('open')}
-                                >
-                                    진행중
-                                </button>
-                                <button
-                                    type="button"
-                                    className={`${styles.filterBtn} ${sentFilter === 'completed' ? styles.filterActive : ''}`}
-                                    onClick={() => setSentFilter('completed')}
-                                >
-                                    완료
-                                </button>
-                                <button className={styles.filterBtn} type="button" onClick={handleClearSent}>
-                                    목록 지우기
-                                </button>
-                            </div>
-                            <div className={styles.resolvedList}>
-                                {loadingResolved && <div className={styles.mutedText}>불러오는 중...</div>}
-                                {!loadingResolved && resolved.length === 0 && (
-                                    <div className={styles.mutedText}>보낸 요청이 없습니다.</div>
-                                )}
-                                {!loadingResolved &&
-                                    resolved
-                                        .filter((item) => {
-                                            if (sentFilter === 'open') return item.status !== 'completed';
-                                            if (sentFilter === 'completed') return item.status === 'completed';
-                                            return true;
-                                        })
-                                        .map((item) => (
-                                        <div key={item.id} className={styles.resolvedItem}>
-                                            <div className={styles.resolvedInfo}>
-                                                {editingRequestId === item.id ? (
-                                                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                                                        <input
-                                                            className={styles.credentialInput}
-                                                            value={editingRequestText}
-                                                            onChange={(e) => setEditingRequestText(e.target.value)}
-                                                            onKeyDown={(e) => {
-                                                                if (e.key === 'Enter') handleSaveEditRequest(item.id);
-                                                                if (e.key === 'Escape') { setEditingRequestId(null); setEditingRequestText(''); }
-                                                            }}
-                                                            autoFocus
-                                                            style={{ flex: 1 }}
-                                                        />
-                                                        <button className={styles.primaryBtn} type="button" onClick={() => handleSaveEditRequest(item.id)}>저장</button>
-                                                        <button className={styles.secondaryBtn} type="button" onClick={() => { setEditingRequestId(null); setEditingRequestText(''); }}>취소</button>
-                                                    </div>
-                                                ) : (
-                                                    <div className={styles.resolvedTitle}>{item.text}</div>
-                                                )}
-                                                <div className={styles.resolvedMeta}>
-                                                    받는사람: {item.assignee_display || item.assignee_username}
-                                                    {' · '}{formatDateTime(item.created_at)}
-                                                </div>
-                                                {renderAttachments(item)}
-                                            </div>
-                                            <div className={styles.resolvedActions}>
-                                                {item.status === 'completed' && item.can_ack ? (
-                                                    <>
-                                                        <span className={styles.newBadge}>NEW</span>
-                                                        <button
-                                                            className={styles.secondaryBtn}
-                                                            type="button"
-                                                            onClick={() => handleAck(item.id)}
-                                                        >
-                                                            확인
-                                                        </button>
-                                                    </>
-                                                ) : item.status === 'completed' ? (
-                                                    <span className={styles.completedStatusBadge}>완료됨</span>
-                                                ) : (
-                                                    <>
-                                                        <span className={styles.pendingBadge}>진행중</span>
-                                                        {editingRequestId !== item.id && (
-                                                            <>
-                                                                <button
-                                                                    className={styles.secondaryBtn}
-                                                                    type="button"
-                                                                    onClick={() => handleEditRequest(item)}
-                                                                    style={{ marginLeft: '0.4rem' }}
-                                                                >
-                                                                    수정
-                                                                </button>
-                                                                <button
-                                                                    className={styles.dangerBtn}
-                                                                    type="button"
-                                                                    onClick={() => handleDeleteRequest(item.id)}
-                                                                    style={{ marginLeft: '0.25rem' }}
-                                                                >
-                                                                    삭제
-                                                                </button>
-                                                            </>
-                                                        )}
-                                                    </>
-                                                )}
-                                            </div>
-                                        </div>
-                                    ))}
-                            </div>
-                        </>
-                    )}
-                </div>
-            </div>
+            <EquipmentCard />
 
             <div className={styles.card}>
                 <div className={styles.credSectionHeader}>

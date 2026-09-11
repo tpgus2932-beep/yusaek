@@ -76,6 +76,8 @@ from api.return_anomaly_routes import build_return_anomaly_router
 from api.daily_checklist_routes import build_daily_checklist_router
 from api.timebox_routes import build_timebox_router
 from api.worklog_routes import build_worklog_router
+from api.equipment_routes import build_equipment_router
+from services.equipment_store import init_equipment_tables
 from services.delivery_anomaly_store import init_delivery_anomaly_tables
 from services.exchange_return_anomaly_store import init_exchange_return_anomaly_tables
 from services.return_anomaly_store import init_return_anomaly_tables
@@ -2034,6 +2036,17 @@ _delivery_anomaly_router = build_delivery_anomaly_router(
     set_setting=_set_setting,
 )
 app.include_router(_delivery_anomaly_router)
+
+init_equipment_tables(_get_shared_db)
+
+app.include_router(
+    build_equipment_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        get_setting=_get_setting,
+        get_user_display=_get_user_display,
+    )
+)
 
 init_exchange_return_anomaly_tables(_get_shared_db)
 
