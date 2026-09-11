@@ -1554,6 +1554,17 @@ export default function CollaborationMenuPage() {
                         >
                           {draftItem ? `담기 (담김 ${draftItem.qty})` : '담기'}
                         </button>
+                        {draftItem && (
+                          <button
+                            type="button"
+                            className={styles.dangerBtn}
+                            title="담긴 목록에서 빼기"
+                            onClick={() => removeReceivingDraftItem(rowKey)}
+                            style={{ marginLeft: '0.25rem' }}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        )}
                       </td>
                     </tr>
                   );
