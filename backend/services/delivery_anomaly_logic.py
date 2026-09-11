@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 
 def parse_ably_sent_date(raw: str | None) -> date | None:
@@ -112,6 +112,35 @@ def evaluate_return_anomaly(today: date, llogis_raw: dict) -> str | None:
     scan_date = latest_scan_date(llogis_raw)
     if scan_date is None or (today - scan_date).days >= 3:
         return "최종스캔 3일 이상 경과"
+    return None
+
+
+def business_days_between(start: date, end: date) -> int:
+    """start(제외) ~ end(포함) 사이의 평일(월~금) 일수. end가 start 이전/당일이면 0."""
+    if end <= start:
+        return 0
+    days = 0
+    current = start + timedelta(days=1)
+    while current <= end:
+        if current.weekday() < 5:
+            days += 1
+        current += timedelta(days=1)
+    return days
+
+
+def evaluate_exchange_redelivery_anomaly(shipped_date: date | None, today: date, llogis_raw: dict) -> str | None:
+    """교환 재배송(출고완료, status=5) 송장 이상현상이면 사유 문자열, 아니면 None.
+
+    조건: 재배송 시작일(shipped_at)로부터 주말 제외 3일 이상 지났는데 llogis에서
+    실제 이동 이력(집화/배송 스캔)을 찾을 수 없는 경우 - 발송만 등록되고 택배사가
+    실제로 안 가져간(혹은 계속 제자리인) 건을 잡아내기 위함.
+    """
+    if shipped_date is None:
+        return None
+    if business_days_between(shipped_date, today) < 3:
+        return None
+    if is_invoice_missing(llogis_raw):
+        return "재배송 송장 이동 없음 (3영업일 이상 경과)"
     return None
 
 

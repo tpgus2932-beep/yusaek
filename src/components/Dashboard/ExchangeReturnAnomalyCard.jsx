@@ -206,13 +206,13 @@ export default function ExchangeReturnAnomalyCard() {
                                 {formatPhone(item.phone)}
                             </div>
                             <div className={styles.anomalyField}>
-                                <span className={styles.anomalyFieldLabel}>수거완료일</span>
+                                <span className={styles.anomalyFieldLabel}>{item.kind === 'redelivery' ? '재배송 시작일' : '수거완료일'}</span>
                                 {formatDate(item.receivedAt)}
                             </div>
                             <div className={styles.anomalyField}>
-                                <span className={styles.anomalyFieldLabel}>반품송장번호</span>
+                                <span className={styles.anomalyFieldLabel}>{item.kind === 'redelivery' ? '재배송송장번호' : '반품송장번호'}</span>
                                 {item.returnInvoiceNo}
-                                {regatheringInvoices.has(normalizeInvoice(item.returnInvoiceNo)) && (
+                                {item.kind !== 'redelivery' && regatheringInvoices.has(normalizeInvoice(item.returnInvoiceNo)) && (
                                     <span className={styles.pendingBadge} style={{ marginLeft: '0.4rem' }}>오회수 접수됨</span>
                                 )}
                             </div>

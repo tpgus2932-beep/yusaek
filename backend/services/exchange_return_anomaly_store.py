@@ -5,6 +5,18 @@ from datetime import datetime, timedelta, timezone
 _KST = timezone(timedelta(hours=9))
 
 
+def _ensure_column(get_db, table: str, column: str, ddl: str) -> bool:
+    """column을 추가한다. 이번 호출에서 실제로 새로 추가했으면 True를 반환한다."""
+    conn = get_db()
+    cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    added = column not in cols
+    if added:
+        conn.execute(ddl)
+        conn.commit()
+    conn.close()
+    return added
+
+
 def init_exchange_return_anomaly_tables(get_db) -> None:
     conn = get_db()
     conn.execute(
@@ -28,6 +40,11 @@ def init_exchange_return_anomaly_tables(get_db) -> None:
     )
     conn.commit()
     conn.close()
+    # 반품(수거완료) 이상현상과 재배송(출고완료) 이상현상을 같은 테이블에 합쳐 관리하기
+    # 위한 구분 컬럼 - kind='redelivery'인 행은 received_at/return_invoice_no를
+    # 각각 재배송시작일/재배송송장번호 의미로 재사용한다 (프론트에서 kind로 라벨 분기).
+    _ensure_column(get_db, "exchange_return_anomalies", "kind",
+                   "ALTER TABLE exchange_return_anomalies ADD COLUMN kind TEXT NOT NULL DEFAULT 'return'")
 
 
 def sync_anomalies(conn, computed: dict[str, dict]) -> None:
@@ -52,8 +69,8 @@ def sync_anomalies(conn, computed: dict[str, dict]) -> None:
             """
             INSERT INTO exchange_return_anomalies
                 (exchange_sno, order_no, product_name, option_info, phone,
-                 received_at, return_invoice_no, status, location, scan_date, reason, detected_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 received_at, return_invoice_no, status, location, scan_date, reason, detected_at, kind)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 sno,
@@ -68,6 +85,7 @@ def sync_anomalies(conn, computed: dict[str, dict]) -> None:
                 data.get("scan_date", ""),
                 data.get("reason", ""),
                 detected_at,
+                data.get("kind", "return"),
             ),
         )
 

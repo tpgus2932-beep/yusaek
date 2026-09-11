@@ -4,7 +4,14 @@ from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 
-from services.delivery_anomaly_logic import evaluate_return_anomaly, is_invoice_missing, latest_movement, parse_llogis_scan_date
+from services.delivery_anomaly_logic import (
+    evaluate_exchange_redelivery_anomaly,
+    evaluate_return_anomaly,
+    is_invoice_missing,
+    latest_movement,
+    parse_ably_sent_date,
+    parse_llogis_scan_date,
+)
 from services.exchange_return_anomaly_store import sync_anomalies
 
 try:
@@ -50,6 +57,7 @@ def build_exchange_return_anomaly_router(*, get_current_user, get_db, get_settin
                     "scanDate": r["scan_date"],
                     "reason": r["reason"],
                     "detectedAt": r["detected_at"],
+                    "kind": r["kind"],
                 }
                 for r in rows
             ]
@@ -113,6 +121,58 @@ def build_exchange_return_anomaly_router(*, get_current_user, get_db, get_settin
                 "location": location,
                 "scan_date": scan_date,
                 "reason": reason,
+                "kind": "return",
+            }
+
+        # 재배송(출고완료, status=5) 건도 같은 검사에 합친다: 재배송 시작일(shipped_at)로부터
+        # 주말 제외 3일 이상 지났는데 llogis에서 실제 이동 이력이 안 잡히면 이상현상.
+        redelivery_exchanges = await ably.list_exchanges(status=5, start_date=start_date, end_date=end_date)
+        for ex in redelivery_exchanges:
+            exchange_delivery = ex.get("exchange_delivery") or {}
+            inv_no = str(exchange_delivery.get("invoice_number") or "").strip()
+            if not inv_no:
+                continue
+
+            shipped_date = parse_ably_sent_date(ex.get("shipped_at"))
+
+            items_list = ex.get("exchange_items") or []
+            first = items_list[0] if items_list else {}
+            order_item = first.get("order_item") or {}
+            option_values = (order_item.get("original_goods_option") or {}).get("option_values") or []
+            member = ex.get("member") or {}
+
+            try:
+                llogis_raw = await llogis.query_raw(inv_no)
+            except Exception:
+                continue
+
+            reason = evaluate_exchange_redelivery_anomaly(shipped_date, today, llogis_raw)
+            if not reason:
+                continue
+
+            if is_invoice_missing(llogis_raw):
+                status, location, scan_date = "-", "-", "-"
+            else:
+                latest = latest_movement(llogis_raw) or {}
+                status = latest.get("paclStatNm") or "-"
+                location = latest.get("scanBrshNm") or "-"
+                scan_date = latest.get("rgstYmd") or "-"
+
+            exchange_sno = str(ex.get("exchange_sno") or ex.get("sno") or "")
+            if not exchange_sno:
+                continue
+            computed[exchange_sno] = {
+                "order_no": str(ex.get("order_sno") or ""),
+                "product_name": order_item.get("goods_name") or "",
+                "option_info": " / ".join(str(v) for v in option_values),
+                "phone": member.get("contact") or "",
+                "received_at": ex.get("shipped_at") or "",
+                "return_invoice_no": inv_no,
+                "status": status,
+                "location": location,
+                "scan_date": scan_date,
+                "reason": reason,
+                "kind": "redelivery",
             }
 
         conn = get_db()

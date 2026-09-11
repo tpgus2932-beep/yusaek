@@ -7,7 +7,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.delivery_anomaly_logic import (
     LOST_PACKAGE_MESSAGE,
     build_confirm_receipt_message,
+    business_days_between,
     evaluate_anomaly,
+    evaluate_exchange_redelivery_anomaly,
     is_invoice_missing,
     latest_movement,
     latest_reply_after,
@@ -309,6 +311,51 @@ def test_latest_reply_after_picks_latest_when_multiple_replies():
 
 def test_latest_reply_after_returns_none_when_no_messages():
     assert latest_reply_after([], datetime(2026, 7, 20, 20, 19, 16)) is None
+
+
+def test_business_days_between_skips_weekend():
+    # 2026-07-17(금) 발송 -> 2026-07-22(수)까지는 주말(18토/19일) 제외하고 3영업일(20월/21화/22수)
+    assert business_days_between(date(2026, 7, 17), date(2026, 7, 22)) == 3
+
+
+def test_business_days_between_counts_weekdays_only_no_weekend_in_range():
+    # 2026-07-16(목) -> 2026-07-20(월): 17금(+1), 18토/19일(제외), 20월(+1) = 2
+    assert business_days_between(date(2026, 7, 16), date(2026, 7, 20)) == 2
+
+
+def test_business_days_between_zero_when_end_not_after_start():
+    assert business_days_between(date(2026, 7, 20), date(2026, 7, 20)) == 0
+    assert business_days_between(date(2026, 7, 20), date(2026, 7, 18)) == 0
+
+
+def test_evaluate_exchange_redelivery_anomaly_none_when_shipped_date_missing():
+    assert evaluate_exchange_redelivery_anomaly(None, date(2026, 7, 22), {"invInfoList": [], "mvmList": []}) is None
+
+
+def test_evaluate_exchange_redelivery_anomaly_not_yet_three_business_days():
+    shipped = date(2026, 7, 17)
+    today = date(2026, 7, 21)  # 금 발송 기준 아직 2영업일
+    assert evaluate_exchange_redelivery_anomaly(shipped, today, {"invInfoList": [], "mvmList": []}) is None
+
+
+def test_evaluate_exchange_redelivery_anomaly_flagged_when_no_movement_after_three_business_days():
+    shipped = date(2026, 7, 17)
+    today = date(2026, 7, 22)  # 금 발송 기준 3영업일(월/화/수) 경과
+    reason = evaluate_exchange_redelivery_anomaly(shipped, today, {"invInfoList": [], "mvmList": []})
+    assert reason == "재배송 송장 이동 없음 (3영업일 이상 경과)"
+
+
+def test_evaluate_exchange_redelivery_anomaly_not_flagged_when_real_movement_exists():
+    shipped = date(2026, 7, 17)
+    today = date(2026, 7, 22)
+    llogis_raw = {
+        "invInfoList": None,
+        "mvmList": [
+            {"paclStatNm": "예약접수", "rgstYmd": "20260717"},
+            {"paclStatNm": "간선상차", "rgstYmd": "20260720"},
+        ],
+    }
+    assert evaluate_exchange_redelivery_anomaly(shipped, today, llogis_raw) is None
 
 
 def test_lost_package_message_content():

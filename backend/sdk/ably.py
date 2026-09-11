@@ -168,7 +168,7 @@ class AblyClient:
     async def list_exchanges(self, *, status: int | list[int], start_date: str, end_date: str, per_page: int = 30) -> list[dict]:
         """상태별 교환 목록 전체 페이지 조회.
 
-        status 예: 2=교환요청, 3=교환수거중, 4=수거완료, 9=교환출고대기.
+        status 예: 2=교환요청, 3=교환수거중, 4=수거완료, 5=교환재배송중, 9=교환출고대기.
         """
         statuses = status if isinstance(status, list) else [status]
         all_exchanges: list[dict] = []
