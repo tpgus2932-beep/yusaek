@@ -454,7 +454,8 @@ function JanggiListView() {
       if (!res.ok || !data.ok) throw new Error(data?.detail || "이체파일 전환 실패");
       const bulkNote = includeBulk ? " (일괄이체 포함)" : "";
       setMessage(
-        `이체파일 전환 완료${bulkNote}: 총 ${data.총거래처}개 거래처 → 매칭 ${data.매칭}건 / 미등록 ${data.미등록}건 (${data.저장행수}행 저장)`
+        `이체파일 전환 완료${bulkNote}: 총 ${data.총거래처}개 거래처 → 매칭 ${data.매칭}건 / 미등록 ${data.미등록}건 `
+        + `(신규 ${data.신규}건 · 갱신 ${data.갱신}건 · 삭제 ${data.삭제}건, ${data.저장행수}행 저장)`
       );
     } catch (err) {
       setMessage(err.message || "이체파일 전환 실패");
