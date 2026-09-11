@@ -1294,14 +1294,14 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
         if not base_snos:
             raise HTTPException(status_code=404, detail="에이블리재고변경 테이블에 데이터가 없습니다.")
 
-        # 가공결과 중 기준 파일에 매칭된 A열만 추출
-        item_list = [
+        # 가공결과 중 기준 파일에 매칭된 옵션번호(A)만 추출
+        matched_snos = {
             str(r["A"]).strip()
             for r in rows
             if r.get("A") and str(r["A"]).strip() in base_snos
-        ]
+        }
 
-        if not item_list:
+        if not matched_snos:
             raise HTTPException(status_code=400, detail="기준 파일과 매칭된 옵션번호가 없습니다.")
 
         try:
@@ -1311,6 +1311,8 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
 
+        # 에이블리 판매자센터가 실제로 쓰는 배송타입 일괄변경 API
+        # (재고수량 엑셀 업로드 API가 아니라 sno 목록 기준 delivery_type 변경 API)
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 res = await client.put(
@@ -1324,8 +1326,8 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
                     },
                     json={
                         "column_to_filter": "sno",
-                        "item_list": item_list,
                         "delivery_type": "today",
+                        "item_list": sorted(matched_snos),
                     },
                 )
                 res.raise_for_status()
@@ -1336,7 +1338,99 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"오출로 변경 실패: {e}")
 
-        return {"ok": True, "message": f"오출로 변경 완료 ({len(item_list)}건)"}
+        result = res.json()
+        success = result.get("success_row_count", 0)
+        error = result.get("error_row_count", 0)
+        return {"ok": True, "message": f"오출로 변경 완료 (성공 {success}건, 실패 {error}건)"}
+
+    @router.post("/today/check")
+    async def today_check_stock(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        rows = payload.get("rows", [])
+        if not rows:
+            raise HTTPException(status_code=400, detail="가공된 데이터가 없습니다.")
+
+        processed_map: dict[str, int] = {}
+        for r in rows:
+            sno = str(r.get("A") or "").strip()
+            if not sno:
+                continue
+            try:
+                processed_map[sno] = int(float(r.get("B") or 0))
+            except (TypeError, ValueError):
+                processed_map[sno] = 0
+
+        try:
+            token = await _ably_login_noye()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        ably_by_sno: dict[str, dict] = {}
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                page = 1
+                while True:
+                    res = await client.get(
+                        f"{ABLY_BASE}/seller/today-delivery-goods-options/",
+                        headers={
+                            "Authorization": f"JWT {token}",
+                            "Accept": "application/json",
+                            "Origin": "https://my.a-bly.com",
+                            "Referer": "https://my.a-bly.com/",
+                            "User-Agent": "Mozilla/5.0",
+                        },
+                        params={"keyword_type": "goods_name", "current_page": page, "per_page": 50},
+                    )
+                    res.raise_for_status()
+                    data = res.json()
+                    opts = data.get("data") or []
+                    for opt in opts:
+                        ably_by_sno[str(opt.get("sno"))] = opt
+                    max_page = data.get("max_page_number", 1)
+                    if not opts or page >= max_page:
+                        break
+                    page += 1
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=502, detail=f"오출 목록 조회 실패 (HTTP {e.response.status_code}): {e.response.text[:200]}")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"오출 목록 조회 실패: {e}")
+
+        mismatches = []
+        for sno, processed_qty in processed_map.items():
+            opt = ably_by_sno.get(sno)
+            if opt is None:
+                mismatches.append({
+                    "sno": sno,
+                    "goodsName": "",
+                    "optionName": "",
+                    "processedQty": processed_qty,
+                    "ablyStock": None,
+                    "diff": None,
+                    "reason": "sno_not_found",
+                })
+                continue
+            ably_stock = int(opt.get("stock") or 0)
+            if ably_stock != processed_qty:
+                mismatches.append({
+                    "sno": sno,
+                    "goodsName": opt.get("goods_name", ""),
+                    "optionName": opt.get("option_name", ""),
+                    "processedQty": processed_qty,
+                    "ablyStock": ably_stock,
+                    "diff": ably_stock - processed_qty,
+                    "reason": "qty_mismatch",
+                })
+
+        return {
+            "ok": True,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "processed_count": len(processed_map),
+            "ably_count": len(ably_by_sno),
+            "mismatches": mismatches,
+        }
 
     @router.post("/date-chunk/copy")
     async def date_chunk_copy(file: UploadFile = File(...), user: str = Depends(get_current_user)):

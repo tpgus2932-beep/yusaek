@@ -117,6 +117,20 @@ function getMisongCheckBadgeClass(reason, styles) {
   return styles.misongBadgeNotFound;
 }
 
+const TODAY_CHECK_REASON_LABELS = {
+  qty_mismatch: "수량불일치",
+  sno_not_found: "옵션번호없음",
+};
+
+function getTodayCheckReasonLabel(reason) {
+  return TODAY_CHECK_REASON_LABELS[reason] || "알림";
+}
+
+function getTodayCheckBadgeClass(reason, styles) {
+  if (reason === "qty_mismatch") return styles.misongBadgeNegative;
+  return styles.misongBadgeMissing;
+}
+
 function extractProductName(supplierProductName) {
   const cleaned = String(supplierProductName || "").trim();
   const [head = "", ...rest] = cleaned.split(/\s+/);
@@ -416,6 +430,9 @@ export default function NoyeKimPage() {
   const [todayEzadminLoading, setTodayEzadminLoading] = useState(false);
   const { openModal: openEzadminModal } = useEzadminSession();
   const [ablyMinusLoading, setAblyMinusLoading] = useState(false);
+  const [todayCheckLoading, setTodayCheckLoading] = useState(false);
+  const [todayCheckOpen, setTodayCheckOpen] = useState(false);
+  const [todayCheckResult, setTodayCheckResult] = useState(null);
   const [excelSlipFile, setExcelSlipFile] = useState(null);
   const [excelSlipRows, setExcelSlipRows] = useState([]);
   const [excelSlipOutput, setExcelSlipOutput] = useState("");
@@ -1134,6 +1151,30 @@ export default function NoyeKimPage() {
       setMessage(err.message || "실행 실패");
     } finally {
       setAblyMinusLoading(false);
+    }
+  };
+
+  const handleTodayCheck = async () => {
+    if (!todayRows.length) {
+      setMessage("먼저 파일을 선택하고 가공 버튼을 눌러주세요.");
+      return;
+    }
+    setTodayCheckLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/noye-kimsungil/today/check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ rows: todayRows }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "오출체크 실패");
+      setTodayCheckResult(data);
+      setTodayCheckOpen(true);
+    } catch (err) {
+      setMessage(err.message || "오출체크 실패");
+    } finally {
+      setTodayCheckLoading(false);
     }
   };
 
@@ -2996,11 +3037,75 @@ export default function NoyeKimPage() {
               <button className={styles.secondaryBtn} onClick={handleAblyMinus} disabled={ablyMinusLoading}>
                 <RefreshCw size={14} />{ablyMinusLoading ? "실행 중..." : "오출마이너스"}
               </button>
+              <button className={styles.secondaryBtn} onClick={handleTodayCheck} disabled={todayCheckLoading || !todayRows.length}>
+                <Search size={13} />{todayCheckLoading ? "확인 중..." : "오출체크"}
+              </button>
             </div>
             <div className={styles.statusMsg}>
               <strong>설명:</strong> 이지어드민 현재고조회 다운로드항목4 파일 넣기
             </div>
           </section>
+
+          {todayCheckOpen && todayCheckResult && (
+            <div className={styles.modalOverlay} onClick={() => setTodayCheckOpen(false)}>
+              <div className={`${styles.modal} ${styles.wideModal}`} onClick={(e) => e.stopPropagation()}>
+                <div className={styles.modalHeader}>
+                  <span className={styles.modalTitle}>오출체크 결과</span>
+                  <div className={styles.modalActions}>
+                    <button className={styles.secondaryBtn} onClick={handleTodayCheck} disabled={todayCheckLoading}>
+                      <RefreshCw size={13} />다시 확인
+                    </button>
+                    <button className={styles.secondaryBtn} onClick={() => setTodayCheckOpen(false)}>
+                      <X size={13} />닫기
+                    </button>
+                  </div>
+                </div>
+                <div className={styles.misongLogBody}>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-muted)", marginBottom: "0.5rem" }}>
+                    가공결과 {todayCheckResult.processed_count}건 / 에이블리 오늘출발 {todayCheckResult.ably_count}건 확인
+                  </div>
+                  {todayCheckResult.mismatches.length === 0 ? (
+                    <div className={styles.empty}>✅ 전체 일치</div>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: "0.85rem", fontWeight: 700, marginBottom: "0.5rem" }}>
+                        ⚠️ 불일치 {todayCheckResult.mismatches.length}건
+                      </div>
+                      <div className={styles.misongCheckHeader}>
+                        <span>옵션번호</span>
+                        <span>상품명</span>
+                        <span>옵션명</span>
+                        <span>가공수량</span>
+                        <span>에이블리수량</span>
+                        <span>차이</span>
+                        <span>상태</span>
+                      </div>
+                      {todayCheckResult.mismatches.map((m) => (
+                        <div key={m.sno} className={styles.misongCheckEntry}>
+                          <span className={styles.misongAlertCode}>{m.sno}</span>
+                          <span className={styles.misongSearchName}>{m.goodsName || "-"}</span>
+                          <span className={styles.misongSearchName}>{m.optionName || "-"}</span>
+                          <span>{m.processedQty ?? "-"}</span>
+                          <span>{m.ablyStock ?? "-"}</span>
+                          <span
+                            style={{
+                              fontWeight: 700,
+                              color: m.diff == null ? "var(--text-muted)" : m.diff < 0 ? "#b91c1c" : "#1d4ed8",
+                            }}
+                          >
+                            {m.diff == null ? "-" : m.diff > 0 ? `+${m.diff}` : m.diff}
+                          </span>
+                          <span className={getTodayCheckBadgeClass(m.reason, styles)}>
+                            {getTodayCheckReasonLabel(m.reason)}
+                          </span>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {todayRows.length > 0 && (
             <section className={styles.card}>
