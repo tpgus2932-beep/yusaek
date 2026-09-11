@@ -189,6 +189,7 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
   const [easyadminBPreviewText, setEasyadminBPreviewText] = useState("");
   const [easyadminBCopyMessage, setEasyadminBCopyMessage] = useState("");
   const [hblLoading, setHblLoading] = useState(false);
+  const [hblDeleteLoading, setHblDeleteLoading] = useState(false);
   const [hblResult, setHblResult] = useState(null);
   const [loadingEzadmin, setLoadingEzadmin] = useState(false);
   const [mgmtNumbers, setMgmtNumbers] = useState([]);
@@ -321,19 +322,6 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
     }
 
     return values.join(", ");
-  };
-
-  const showEasyadminBPreview = async (file) => {
-    try {
-      const text = await extractEasyadminColumnBText(file);
-      setEasyadminBPreviewText(text);
-      setEasyadminBCopyMessage("");
-      setEasyadminBPreviewOpen(true);
-    } catch {
-      setEasyadminBPreviewText("");
-      setEasyadminBCopyMessage("");
-      setEasyadminBPreviewOpen(false);
-    }
   };
 
   const copyEasyadminBPreview = async () => {
@@ -722,6 +710,24 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
     }
   };
 
+  const deleteAllHbl = async () => {
+    if (!window.confirm("SHIPPING_READYING 주문의 선적바코드를 전체 삭제합니다.\n되돌릴 수 없습니다. 진행하시겠습니까?")) return;
+    setHblDeleteLoading(true);
+    setHblResult(null);
+    try {
+      const res = await fetch(`${API}/pastelco/delete-all-hbl`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      setHblResult(data);
+    } catch (err) {
+      setHblResult({ ok: false, error: err.message });
+    } finally {
+      setHblDeleteLoading(false);
+    }
+  };
+
   const resetUploads = async () => {
     setResetting(true);
     setMessage("");
@@ -817,15 +823,25 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
               type="button"
               className={styles.primaryBtn}
               onClick={issueHbl}
-              disabled={hblLoading}
+              disabled={hblLoading || hblDeleteLoading}
             >
               {hblLoading ? "발급 중..." : "선적바코드 발급"}
             </button>
+            <button
+              type="button"
+              className={styles.secondaryBtn}
+              onClick={deleteAllHbl}
+              disabled={hblLoading || hblDeleteLoading}
+            >
+              {hblDeleteLoading ? "삭제 중..." : "선적바코드 전체삭제"}
+            </button>
             {hblResult && (
-              <span style={{ fontSize: "0.85rem", color: hblResult.ok ? "#15803d" : hblResult.issued > 0 ? "#b45309" : "#dc2626" }}>
-                {hblResult.error && !hblResult.issued
+              <span style={{ fontSize: "0.85rem", color: hblResult.ok ? "#15803d" : (hblResult.issued > 0 || hblResult.deleted > 0) ? "#b45309" : "#dc2626" }}>
+                {hblResult.error && !hblResult.issued && !hblResult.deleted
                   ? `오류: ${hblResult.error}`
-                  : `발급 ${hblResult.issued ?? 0}건 / 스킵 ${hblResult.skipped ?? 0}건 / 삭제 ${hblResult.deleted ?? 0}건`}
+                  : "total_hbl" in hblResult
+                    ? `전체 ${hblResult.total_hbl ?? 0}건 중 삭제 ${hblResult.deleted ?? 0}건`
+                    : `발급 ${hblResult.issued ?? 0}건 / 스킵 ${hblResult.skipped ?? 0}건 / 삭제 ${hblResult.deleted ?? 0}건`}
                 {hblResult.errors?.length > 0 && (
                   <span style={{ color: "#dc2626", marginLeft: "0.5rem" }}
                     title={hblResult.errors.join("\n")}>

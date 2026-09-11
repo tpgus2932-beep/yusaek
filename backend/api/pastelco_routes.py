@@ -115,4 +115,46 @@ def build_pastelco_router(*, get_current_user):
             "errors": errors,
         }
 
+    @router.post("/delete-all-hbl")
+    async def delete_all_hbl(user=Depends(get_current_user)):
+        try:
+            token = await pastelco_login()
+        except Exception as e:
+            return {"ok": False, "error": f"로그인 실패: {e}"}
+
+        try:
+            items = await pastelco_fetch_all_orders(token)
+        except Exception as e:
+            return {"ok": False, "error": f"주문 조회 실패: {e}"}
+
+        hbl_ids = {
+            item["ably_pantos_hbl"]["id"]
+            for item in items
+            if item.get("ably_pantos_hbl")
+        }
+
+        deleted = 0
+        errors = []
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for hbl_id in hbl_ids:
+                try:
+                    res = await client.delete(
+                        f"https://api.pastelco.jp/seller/orders/combined-packages/mapping/",
+                        headers=_pastelco_headers(token),
+                        params={"hbl_ids": hbl_id},
+                    )
+                    if res.status_code in (200, 204):
+                        deleted += 1
+                    else:
+                        errors.append(f"hbl_id={hbl_id} 삭제 실패 (HTTP {res.status_code})")
+                except Exception as e:
+                    errors.append(f"hbl_id={hbl_id} 삭제 오류: {e}")
+
+        return {
+            "ok": not errors,
+            "total_hbl": len(hbl_ids),
+            "deleted": deleted,
+            "errors": errors,
+        }
+
     return router

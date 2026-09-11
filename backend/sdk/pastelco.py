@@ -45,6 +45,10 @@ class PastelcoClient:
         async with httpx.AsyncClient(timeout=30.0) as client:
             while True:
                 response = await client.get(f"{config.PASTELCO_BASE}/seller/orders/", headers=headers, params=params)
+                if response.status_code == 401:
+                    token = await self._ably.login(force=True)
+                    headers["Authorization"] = f"JWT {token}"
+                    response = await client.get(f"{config.PASTELCO_BASE}/seller/orders/", headers=headers, params=params)
                 if response.status_code != 200: break
                 data = response.json(); page_items = data.get("order_line_items", [])
                 if not page_items: break
