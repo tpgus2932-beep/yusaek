@@ -333,6 +333,34 @@ export default function InvoiceManageTable() {
   const clearFilter = (key) => setFilters((prev) => { const next = { ...prev }; delete next[key]; return next; });
   const clearAllFilters = () => setFilters({});
 
+  // ── 표에서 셀을 드래그 선택해 Ctrl+C로 복사할 때, 입금액처럼 data-raw-value를 가진
+  // 셀은 화면 표시값("1,234,567원") 대신 콤마/단위 없는 순수 숫자를 클립보드에 넣는다.
+  const handleTableCopy = (e) => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
+    const table = e.currentTarget;
+    const lines = [];
+    let touchedRaw = false;
+    for (const tr of table.querySelectorAll("tr")) {
+      const selectedCells = Array.from(tr.children).filter((cell) => selection.containsNode(cell, true));
+      if (selectedCells.length === 0) continue;
+      lines.push(
+        selectedCells
+          .map((cell) => {
+            if (cell.dataset.rawValue !== undefined) {
+              touchedRaw = true;
+              return cell.dataset.rawValue;
+            }
+            return cell.textContent || "";
+          })
+          .join("\t")
+      );
+    }
+    if (!touchedRaw || lines.length === 0) return; // 콤마 정리할 셀이 없으면 기본 복사 동작 그대로 둔다
+    e.preventDefault();
+    e.clipboardData.setData("text/plain", lines.join("\n"));
+  };
+
   // ── 일괄복사: 현재 필터로 보이는 행들을 거래처계좌데이터와 매칭해 이체 붙여넣기용 탭/줄 구분 텍스트로 클립보드에 복사 ──
   const handleBulkCopy = async () => {
     if (!filteredRows.length) return;
@@ -591,7 +619,7 @@ export default function InvoiceManageTable() {
       {message && <div className={styles.message}>{message}</div>}
 
       <div className={styles.tableWrap}>
-        <table className={styles.table}>
+        <table className={styles.table} onCopy={handleTableCopy}>
           <thead>
             <tr>
               <th>
@@ -654,7 +682,7 @@ export default function InvoiceManageTable() {
                     <span className={`${styles.badge} ${styles.badgeUpdated}`} style={{ marginLeft: "0.4rem" }}>금액갱신</span>
                   )}
                 </td>
-                <td>{(Number(row.입금액) || 0).toLocaleString()}원</td>
+                <td data-raw-value={Number(row.입금액) || 0}>{(Number(row.입금액) || 0).toLocaleString()}원</td>
                 <td>{accountMap[String(row.거래처명 || "").trim()]?.E || "-"}</td>
                 <td>
                   {Number(row.부가세거래처) === 1 ? (
