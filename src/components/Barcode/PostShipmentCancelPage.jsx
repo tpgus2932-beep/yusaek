@@ -35,15 +35,15 @@ function buildIncomingCodeInfo(rawData) {
     if (!supplierProductName && !optionCell && !originalQty && !requestQty && !pickupText) continue;
     if (/합\s*계/.test(supplierProductName)) continue;
     if (!code) continue;
-    const qty = originalQty + requestQty;
-    if (!qty) continue;
+    if (!originalQty && !requestQty) continue;
 
-    const isPickup = hasMisongPickupMarker(pickupText);
+    // 요청수량(D열)으로 들어온 건은 미송 자체의 입고이므로, 미송픽업 문구가 없어도 미송픽업과 동일하게 취급해 제외 대상으로 본다.
+    const isMisongIncoming = hasMisongPickupMarker(pickupText) || requestQty > 0;
     const prev = codeInfo.get(code);
     codeInfo.set(code, {
-      hasPickup: Boolean(prev?.hasPickup) || isPickup,
+      hasPickup: Boolean(prev?.hasPickup) || isMisongIncoming,
       productName: prev?.productName || supplierProductName,
-      qty: (prev?.qty || 0) + qty,
+      qty: (prev?.qty || 0) + originalQty, // 일반주문(원래수량)만 집계 - 요청수량은 미송 입고라 제외
     });
   }
   return codeInfo;
@@ -92,6 +92,9 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
   const [closingSno, setClosingSno] = useState(null);
   const [closeErrors, setCloseErrors] = useState({});
   const [deletingSno, setDeletingSno] = useState(null);
+  const [replyDrafts, setReplyDrafts] = useState({});
+  const [replyingSno, setReplyingSno] = useState(null);
+  const [replyModalRow, setReplyModalRow] = useState(null);
 
   useEffect(() => {
     const pool = Array.from({ length: 3 }, () => new Audio("/sounds/ice.wav"));
@@ -275,11 +278,13 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
       const misongItems = misongData.items || [];
 
       const flagged = [];
+      const flaggedCodes = new Set(); // 같은 상품이 미송관리에 여러 건 있어도 한 번만 표시
       misongItems.forEach((item) => {
         const code = normalizeProductCode(item.originalF);
-        if (!code) return;
+        if (!code || flaggedCodes.has(code)) return;
         const info = codeInfo.get(code);
         if (!info || info.hasPickup) return;
+        flaggedCodes.add(code);
         flagged.push({
           code,
           supplier: item.A,
@@ -467,6 +472,41 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
       setDeletingSno(null);
     }
   }, []);
+
+  // 발송내역 목록에서 고객에게 바로 답장 문자를 보낸다.
+  const handleSendReply = useCallback(async (cancelSno) => {
+    const message = (replyDrafts[cancelSno] || "").trim();
+    if (!message) return;
+    setReplyingSno(cancelSno);
+    setRepliesMessage("");
+    try {
+      const res = await fetch(`${API}/post-shipment-cancel-stock-sms/reply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ cancel_sno: cancelSno, message }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        throw new Error(
+          data?.need_ezdesk_session
+            ? "EZDesk 세션이 만료되었습니다. 세션을 다시 붙여넣고 답장을 다시 보내주세요."
+            : data?.detail || "답장 발송 실패"
+        );
+      }
+      setReplyDrafts((prev) => {
+        const next = { ...prev };
+        delete next[cancelSno];
+        return next;
+      });
+      setReplyModalRow(null);
+      setRepliesMessage("답장을 보냈습니다.");
+    } catch (err) {
+      setRepliesMessage(err.message || "답장 발송 실패");
+    } finally {
+      setReplyingSno(null);
+    }
+  }, [replyDrafts]);
 
   const handleScan = () => {
     const value = scanText.trim();
@@ -926,7 +966,8 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                   <th>상품명</th>
                   <th>고객 답장</th>
                   <th>답장시각</th>
-                  <th>완료</th>
+                  <th>답장하기</th>
+                  <th>완료 / 삭제</th>
                 </tr>
               </thead>
               <tbody>
@@ -939,6 +980,14 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                     <td style={{ whiteSpace: "pre-wrap" }}>{row.reply_content || "-"}</td>
                     <td>{row.reply_at || "-"}</td>
                     <td>
+                      <button
+                        className={pageStyles.secondaryBtn}
+                        onClick={() => setReplyModalRow(row)}
+                      >
+                        답장하기
+                      </button>
+                    </td>
+                    <td>
                       <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem", alignItems: "flex-start" }}>
                         <button
                           className={pageStyles.secondaryBtn}
@@ -947,28 +996,26 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                         >
                           {closingSno === row.cancel_sno ? "처리 중..." : "완료"}
                         </button>
-                        {closeErrors[row.cancel_sno]?.includes("승인할 주문상품 정보가 없습니다") && (
-                          <>
-                            <span style={{ fontSize: "0.78rem", color: "rgba(220,53,69,0.85)" }}>
-                              {closeErrors[row.cancel_sno]}
-                            </span>
-                            <button
-                              className={pageStyles.secondaryBtn}
-                              style={{ borderColor: "rgba(220,53,69,0.4)", color: "rgba(220,53,69,0.9)" }}
-                              onClick={() => handleDeleteSentSms(row.cancel_sno)}
-                              disabled={deletingSno === row.cancel_sno}
-                            >
-                              {deletingSno === row.cancel_sno ? "삭제 중..." : "삭제"}
-                            </button>
-                          </>
+                        {closeErrors[row.cancel_sno] && (
+                          <span style={{ fontSize: "0.78rem", color: "rgba(220,53,69,0.85)" }}>
+                            {closeErrors[row.cancel_sno]}
+                          </span>
                         )}
+                        <button
+                          className={pageStyles.secondaryBtn}
+                          style={{ borderColor: "rgba(220,53,69,0.4)", color: "rgba(220,53,69,0.9)" }}
+                          onClick={() => handleDeleteSentSms(row.cancel_sno)}
+                          disabled={deletingSno === row.cancel_sno}
+                        >
+                          {deletingSno === row.cancel_sno ? "삭제 중..." : "삭제"}
+                        </button>
                       </div>
                     </td>
                   </tr>
                 ))}
                 {stockSmsLogs.length === 0 && !stockSmsLogsLoading && (
                   <tr>
-                    <td colSpan={7}>발송된 확인문자가 없습니다.</td>
+                    <td colSpan={8}>발송된 확인문자가 없습니다.</td>
                   </tr>
                 )}
               </tbody>
@@ -976,6 +1023,47 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
           </div>
         </section>
       </div>
+
+      {replyModalRow && (
+        <div className={pageStyles.modalOverlay} onClick={() => { if (replyingSno !== replyModalRow.cancel_sno) setReplyModalRow(null); }}>
+          <div className={pageStyles.modal} style={{ width: "min(420px, 92vw)" }} onClick={(e) => e.stopPropagation()}>
+            <div className={pageStyles.modalHeader}>
+              <span className={pageStyles.modalTitle}>답장 보내기</span>
+              <button
+                type="button"
+                className={pageStyles.secondaryBtn}
+                onClick={() => setReplyModalRow(null)}
+                disabled={replyingSno === replyModalRow.cancel_sno}
+              >
+                닫기
+              </button>
+            </div>
+            <p className={pageStyles.subtitle}>
+              {replyModalRow.buyer_tel} ({(replyModalRow.product_names || []).join(", ")})
+            </p>
+            <textarea
+              value={replyDrafts[replyModalRow.cancel_sno] || ""}
+              onChange={(e) => setReplyDrafts((prev) => ({ ...prev, [replyModalRow.cancel_sno]: e.target.value }))}
+              placeholder="답장 내용 입력"
+              rows={5}
+              style={{ width: "100%", fontSize: "0.85rem", padding: "0.5rem", boxSizing: "border-box" }}
+              autoFocus
+            />
+            <div className={pageStyles.modalActions} style={{ marginTop: "1rem" }}>
+              <button className={pageStyles.secondaryBtn} onClick={() => setReplyModalRow(null)} disabled={replyingSno === replyModalRow.cancel_sno}>
+                취소
+              </button>
+              <button
+                className={pageStyles.primaryBtn}
+                onClick={() => handleSendReply(replyModalRow.cancel_sno)}
+                disabled={replyingSno === replyModalRow.cancel_sno || !(replyDrafts[replyModalRow.cancel_sno] || "").trim()}
+              >
+                {replyingSno === replyModalRow.cancel_sno ? "전송 중..." : "답장 보내기"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showMisongVoucherModal && (
         <div className={pageStyles.modalOverlay} onClick={() => setShowMisongVoucherModal(false)}>

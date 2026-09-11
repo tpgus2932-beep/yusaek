@@ -355,10 +355,44 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
             conn.close()
         return {"ok": True, "cancel_sno": cancel_sno}
 
+    @router.post("/reply")
+    async def reply(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """발송내역 목록에서 고객에게 바로 답장 문자를 보낸다."""
+        cancel_sno = str(payload.get("cancel_sno") or "").strip()
+        message = str(payload.get("message") or "").strip()
+        if not cancel_sno:
+            raise HTTPException(status_code=400, detail="cancel_sno is required")
+        if not message:
+            raise HTTPException(status_code=400, detail="메시지를 입력하세요")
+
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT buyer_tel FROM post_shipment_cancel_stock_review WHERE cancel_sno = ?",
+                (cancel_sno,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            raise HTTPException(status_code=404, detail="발송내역을 찾을 수 없습니다")
+        buyer_tel = str(row["buyer_tel"] or "").strip()
+        if not buyer_tel:
+            raise HTTPException(status_code=400, detail="구매자 연락처가 없습니다")
+
+        ez = EzAdminClient(get_setting)
+        try:
+            await ez.send_sms(buyer_tel, ez_config.EZDESK_SMS_SENDER, message)
+        except EzDeskSessionExpired:
+            return {"ok": False, "need_ezdesk_session": True}
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"답장 발송 실패: {exc}")
+
+        return {"ok": True, "cancel_sno": cancel_sno}
+
     @router.post("/delete")
     def delete(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        """승인할 주문상품 정보가 없어 자동 완료가 불가능한 건을, 에이블리에서 직접 처리한 뒤
-        발송내역 목록에서만 지운다 (실제 에이블리 취소 승인은 하지 않음)."""
+        """웹 화면 밖에서(에이블리 등에서 직접) 이미 처리한 건을 발송내역 목록에서만 지운다
+        (실제 에이블리 취소 승인은 여기서 하지 않음)."""
         cancel_sno = str(payload.get("cancel_sno") or "").strip()
         if not cancel_sno:
             raise HTTPException(status_code=400, detail="cancel_sno is required")
