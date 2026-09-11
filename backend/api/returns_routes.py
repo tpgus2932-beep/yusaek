@@ -8,6 +8,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pandas as pd
@@ -572,7 +573,7 @@ def build_returns_router(
             """
             DELETE FROM return_saved_snapshots
             WHERE username = ? AND id NOT IN (
-                SELECT id FROM return_saved_snapshots WHERE username = ? ORDER BY id DESC LIMIT 3
+                SELECT id FROM return_saved_snapshots WHERE username = ? ORDER BY id DESC LIMIT 6
             )
             """,
             (user, user),
@@ -586,7 +587,7 @@ def build_returns_router(
         target = username or user
         conn = get_db()
         rows = conn.execute(
-            "SELECT id, name, updated_at FROM return_saved_snapshots WHERE username = ? ORDER BY id DESC LIMIT 3",
+            "SELECT id, name, updated_at FROM return_saved_snapshots WHERE username = ? ORDER BY id DESC LIMIT 6",
             (target,),
         ).fetchall()
         conn.close()
@@ -2716,20 +2717,27 @@ def build_returns_router(
         headers = {"Content-Disposition": content_disposition(filename)}
         return Response(content=buf.getvalue(), media_type=media_type, headers=headers)
 
-    @router.post("/returns/download/queues")
-    def returns_download_queues(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        state = get_return_state(user)
+    def _build_queues_export_response(
+        memo_state,
+        queue_seller: list[dict],
+        queue_customer: list[dict],
+        queue_unmatched: list[dict],
+        queue_exchange: list[dict],
+        queue_exchange_seller: list[dict],
+        queue_exchange_customer: list[dict],
+        fmt: str,
+    ):
         if (
-            (not state.queue_seller)
-            and (not state.queue_customer)
-            and (not state.queue_unmatched)
-            and (not state.queue_exchange)
-            and (not state.queue_exchange_seller)
-            and (not state.queue_exchange_customer)
+            (not queue_seller)
+            and (not queue_customer)
+            and (not queue_unmatched)
+            and (not queue_exchange)
+            and (not queue_exchange_seller)
+            and (not queue_exchange_customer)
         ):
             raise HTTPException(status_code=400, detail="추출할 대기 데이터가 없습니다.")
 
-        fmt = (payload.get("format") or "xlsx").lower().strip()
+        fmt = (fmt or "xlsx").lower().strip()
         if fmt not in ("xlsx", "xls"):
             fmt = "xlsx"
 
@@ -2737,16 +2745,16 @@ def build_returns_router(
             resolved = []
             for item in items:
                 next_item = dict(item)
-                next_item["match"] = _request_memo_for_item(state, next_item)
+                next_item["match"] = _request_memo_for_item(memo_state, next_item)
                 resolved.append(next_item)
             return resolved
 
-        df_seller = pd.DataFrame(state.queue_seller)
-        df_customer = pd.DataFrame(state.queue_customer)
-        df_unmatched = pd.DataFrame(state.queue_unmatched)
-        df_exchange_seller = pd.DataFrame(with_resolved_request_memo(state.queue_exchange_seller))
+        df_seller = pd.DataFrame(queue_seller)
+        df_customer = pd.DataFrame(queue_customer)
+        df_unmatched = pd.DataFrame(queue_unmatched)
+        df_exchange_seller = pd.DataFrame(with_resolved_request_memo(queue_exchange_seller))
         df_exchange_customer = pd.DataFrame(
-            with_resolved_request_memo(list(state.queue_exchange_customer) + list(state.queue_exchange))
+            with_resolved_request_memo(list(queue_exchange_customer) + list(queue_exchange))
         )
 
         for dfx in (df_seller, df_customer, df_unmatched, df_exchange_seller, df_exchange_customer):
@@ -2794,6 +2802,44 @@ def build_returns_router(
 
         headers = {"Content-Disposition": content_disposition(filename)}
         return Response(content=buf.getvalue(), media_type=media_type, headers=headers)
+
+    @router.post("/returns/download/queues")
+    def returns_download_queues(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        state = get_return_state(user)
+        return _build_queues_export_response(
+            state,
+            state.queue_seller,
+            state.queue_customer,
+            state.queue_unmatched,
+            state.queue_exchange,
+            state.queue_exchange_seller,
+            state.queue_exchange_customer,
+            payload.get("format"),
+        )
+
+    @router.post("/returns/saves/{snapshot_id}/download")
+    def returns_save_download(snapshot_id: int, payload: dict = Body(None), user: str = Depends(get_current_user)):
+        conn = get_db()
+        row = conn.execute(
+            "SELECT payload FROM return_saved_snapshots WHERE id = ?",
+            (snapshot_id,),
+        ).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="임시저장 기록을 찾을 수 없습니다.")
+
+        stored_payload = json.loads(row["payload"])
+        memo_state = SimpleNamespace(map_lotte=dict(stored_payload.get("map_lotte") or {}))
+        return _build_queues_export_response(
+            memo_state,
+            list(stored_payload.get("queue_seller") or []),
+            list(stored_payload.get("queue_customer") or []),
+            list(stored_payload.get("queue_unmatched") or []),
+            list(stored_payload.get("queue_exchange") or []),
+            list(stored_payload.get("queue_exchange_seller") or []),
+            list(stored_payload.get("queue_exchange_customer") or []),
+            (payload or {}).get("format"),
+        )
 
     @router.post("/returns/ably-refund-from-excel")
     async def returns_ably_refund_from_excel(

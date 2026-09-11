@@ -65,10 +65,8 @@ const ReturnsPage = () => {
     const [isExecutingChangeProduct, setIsExecutingChangeProduct] = useState(false);
     const [isResolvingEzadminSeller, setIsResolvingEzadminSeller] = useState(false);
     const [isExecutingChangeProductSeller, setIsExecutingChangeProductSeller] = useState(false);
-    const [lotteDateFr, setLotteDateFr] = useState(
-        new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10)
-    );
-    const [lotteDateTo, setLotteDateTo] = useState(new Date().toISOString().slice(0, 10));
+    const lotteDateFr = new Date(Date.now() - 30 * 86400 * 1000).toISOString().slice(0, 10);
+    const lotteDateTo = new Date().toISOString().slice(0, 10);
     const [lotteAccount, setLotteAccount] = useState('348867');
     const [scanText, setScanText] = useState('');
     const [lastType, setLastType] = useState('-');
@@ -342,11 +340,6 @@ const ReturnsPage = () => {
         await handleUpload(file, '/returns/excel1', 'CJ 엑셀');
     };
 
-    const handleLotteExcelChange = async (file) => {
-        if (!file) return;
-        await handleUpload(file, '/returns/excel_lotte', '롯데택배 엑셀');
-    };
-
     const fetchLotteFromApi = async () => {
         const res = await fetch(`${API}/returns/lotte-from-api`, {
             method: 'POST',
@@ -362,11 +355,6 @@ const ReturnsPage = () => {
         setStatus(data.status || status);
         await refreshState();
         return `롯데 ${data.map_count}건 매핑`;
-    };
-
-    const handleExcel2Change = async (file) => {
-        if (!file) return;
-        await handleUpload(file, '/returns/excel2', '에이블리 엑셀');
     };
 
     const fetchAblyReturnApi = async () => {
@@ -709,7 +697,7 @@ const ReturnsPage = () => {
         const cardsHtml = valid.map((l) => `
             <div class="card">
                 <div class="title">${escapeHtml(l.title)}</div>
-                ${l.option ? `<div class="option">${escapeHtml(l.option)}</div>` : ''}
+                <div class="option"${l.option ? '' : ' style="visibility:hidden"'}>${l.option ? escapeHtml(l.option) : '-'}</div>
                 <div class="barcode">${buildBarcodeSvgMarkup(l.code)}</div>
             </div>
         `).join('\n');
@@ -999,30 +987,6 @@ body { background: #fff; font-family: sans-serif; }
         }
         setIsLoadingAllApis(false);
         setMessage(results.join(' / '));
-    };
-
-    const handleExchangeExcelChange = async (files) => {
-        if (!files || files.length === 0) return;
-        setLoading(true);
-        setMessage('');
-        try {
-            const formData = new FormData();
-            Array.from(files).forEach((f) => formData.append('files', f));
-            const res = await fetch(`${API}/returns/exchange`, {
-                method: 'POST',
-                headers: getAuthHeaders(),
-                body: formData,
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '업로드 실패');
-            setStatus(data.status || status);
-            await refreshState();
-            setMessage(`교환 엑셀 업로드 완료 (${files.length}개)`);
-        } catch (err) {
-            setMessage(err.message || '업로드 실패');
-        } finally {
-            setLoading(false);
-        }
     };
 
     const handleResolveExchangeEzadmin = async (queue = 'customer') => {
@@ -1510,6 +1474,13 @@ body { background: #fff; font-family: sans-serif; }
         } catch (err) {
             setMessage(err.message || '불러오기 실패');
         }
+    };
+
+    const handleDownloadSnapshot = (item) => {
+        const label = item.name || formatSnapshotTime(item.updated_at);
+        handleDownload(`/returns/saves/${item.id}/download`, `${label} 반품대기_추출.${exportFormat}`, {
+            format: exportFormat,
+        });
     };
 
     const handleReset = async () => {
@@ -3387,6 +3358,14 @@ body { background: #fff; font-family: sans-serif; }
                                                     title="이름 변경"
                                                 >
                                                     이름변경
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className={pageStyles.secondaryBtn}
+                                                    onClick={() => handleDownloadSnapshot(item)}
+                                                    title="판매자/고객/미매칭 추출 다운로드"
+                                                >
+                                                    다운로드
                                                 </button>
                                             </>
                                         )}
