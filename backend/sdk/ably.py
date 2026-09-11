@@ -236,11 +236,15 @@ class AblyClient:
         response.raise_for_status()
 
     async def search_order_items_by_goods_name(self, keyword: str, *, per_page: int = 100) -> list[dict]:
-        """상품명으로 미발송(processing_status=2) 주문상품 전체 페이지 조회.
+        """상품명으로 미발송(processing_status=1 신규접수 또는 2 상품준비중) 주문상품 전체 페이지 조회.
 
         keyword_type을 goods_name으로 고정하면 에이블리가 내부 goods_name
         필드에 대해 부분일치 검색을 해준다 (앞의 태그/이모지 접두사가
         붙어 있어도 매칭됨 - 실제 브라우저 캡처로 확인).
+
+        processing_status=2(상품준비중)만 조회하면 아직 "접수" 상태(=1,
+        상품준비중으로 전환되기 전)인 주문이 검색에서 빠져 품절취소가
+        되지 않는 문제가 있어 [1, 2] 둘 다 조회한다.
         """
         all_items: list[dict] = []
         page = 1
@@ -250,7 +254,7 @@ class AblyClient:
                 params={
                     "order": "-checked_at",
                     "delivery_type[]": ["standard", "today", "combine", "reserved"],
-                    "processing_status[]": 2,
+                    "processing_status[]": [1, 2],
                     "processing_sub_status[]": 0,
                     "page": page,
                     "per_page": per_page,

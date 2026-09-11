@@ -37,7 +37,7 @@ def test_search_order_items_by_goods_name_paginates_until_max_page():
     assert first_call_kwargs["origin"] == "my.a-bly.com"
     assert first_call_kwargs["params"]["keyword"] == "빈티지 흑청 스커트"
     assert first_call_kwargs["params"]["keyword_type"] == "goods_name"
-    assert first_call_kwargs["params"]["processing_status[]"] == 2
+    assert first_call_kwargs["params"]["processing_status[]"] == [1, 2]
 
 
 def test_search_order_items_by_goods_name_stops_on_empty_page():
