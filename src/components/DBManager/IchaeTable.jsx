@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Clipboard, Download, RefreshCw, Trash2 } from "lucide-react";
+import { Clipboard, Download, History, RefreshCw, Trash2, X } from "lucide-react";
 import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
@@ -25,6 +25,9 @@ export default function IchaeTable() {
   const [total, setTotal]         = useState(0);
   const [editing, setEditing]     = useState(null); // { id, col, value }
   const [exportMonth, setExportMonth] = useState("");
+  const [showLogs, setShowLogs] = useState(false);
+  const [logs, setLogs] = useState([]);
+  const [logsLoading, setLogsLoading] = useState(false);
   const inputRef = useRef(null);
 
   const fetchDates = useCallback(async () => {
@@ -113,6 +116,23 @@ export default function IchaeTable() {
   const handleKeyDown = (e) => {
     if (e.key === "Enter") commitEdit();
     if (e.key === "Escape") setEditing(null);
+  };
+
+  const fetchLogs = useCallback(async (date) => {
+    setLogsLoading(true);
+    try {
+      const params = date ? `?날짜=${encodeURIComponent(date)}` : "";
+      const res = await fetch(`${API}/wonbe/janggi/to-ichae/logs${params}`, { headers: getAuthHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) setLogs(data.logs || []);
+    } catch { /* ignore */ } finally {
+      setLogsLoading(false);
+    }
+  }, []);
+
+  const openLogs = () => {
+    setShowLogs(true);
+    fetchLogs(dateFilter);
   };
 
   const totalAmount = rows.reduce((sum, r) => sum + (typeof r.C === "number" ? r.C : 0), 0);
@@ -207,6 +227,13 @@ export default function IchaeTable() {
         >
           <Trash2 size={13} />날짜별 삭제
         </button>
+        <button
+          className={`${styles.btn} ${styles.btnSecondary}`}
+          onClick={openLogs}
+          title={dateFilter ? `${dateFilter} 날짜의 이체파일 전환 로그` : "전체 날짜의 이체파일 전환 로그"}
+        >
+          <History size={13} />갱신로그
+        </button>
         <input
           type="month"
           className={styles.dateInput}
@@ -280,6 +307,19 @@ export default function IchaeTable() {
                       </td>
                     );
                   }
+                  if (col === "D") {
+                    return (
+                      <td key={col}>
+                        {row.D}
+                        {row.최근변경 === "신규" && (
+                          <span className={`${styles.badge} ${styles.badgeNew}`} style={{ marginLeft: "0.4rem" }}>신규</span>
+                        )}
+                        {row.최근변경 === "갱신" && (
+                          <span className={`${styles.badge} ${styles.badgeUpdated}`} style={{ marginLeft: "0.4rem" }}>갱신</span>
+                        )}
+                      </td>
+                    );
+                  }
                   return <td key={col}>{row[col] ?? ""}</td>;
                 })}
               </tr>
@@ -292,6 +332,61 @@ export default function IchaeTable() {
           </div>
         )}
       </div>
+
+      {showLogs && (
+        <div
+          onClick={() => setShowLogs(false)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "5vh" }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: "var(--surface, #fff)", borderRadius: "10px", boxShadow: "0 8px 32px rgba(0,0,0,0.22)", width: "min(760px, 95vw)", maxHeight: "80vh", display: "flex", flexDirection: "column", overflow: "hidden" }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", padding: "0.9rem 1rem", borderBottom: "1px solid var(--border, #e5e7eb)" }}>
+              <History size={16} style={{ flexShrink: 0 }} />
+              <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>
+                이체파일 전환 로그{dateFilter ? ` — ${dateFilter}` : " (전체 날짜, 최근 50건)"}
+              </span>
+              <button onClick={() => setShowLogs(false)} style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", color: "var(--text-muted, #888)", padding: "0.2rem", lineHeight: 1 }}>
+                <X size={16} />
+              </button>
+            </div>
+            <div style={{ overflowY: "auto", flex: 1 }}>
+              {logsLoading ? (
+                <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted, #888)", fontSize: "0.85rem" }}>불러오는 중…</div>
+              ) : logs.length === 0 ? (
+                <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted, #888)", fontSize: "0.85rem" }}>전환 로그가 없습니다.</div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem" }}>
+                  <thead>
+                    <tr style={{ background: "var(--table-header, #f3f4f6)", position: "sticky", top: 0 }}>
+                      {["실행일시", "실행자", "날짜", "총거래처", "신규", "갱신", "삭제", "매칭", "미등록", "일괄이체"].map((h) => (
+                        <th key={h} style={{ padding: "0.45rem 0.6rem", textAlign: "left", fontWeight: 600, borderBottom: "1px solid var(--border, #e5e7eb)", whiteSpace: "nowrap" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {logs.map((log) => (
+                      <tr key={log.id} style={{ borderBottom: "1px solid var(--border, #f0f0f0)" }}>
+                        <td style={{ padding: "0.4rem 0.6rem", whiteSpace: "nowrap" }}>{log.실행일시}</td>
+                        <td style={{ padding: "0.4rem 0.6rem" }}>{log.실행자}</td>
+                        <td style={{ padding: "0.4rem 0.6rem" }}>{log.날짜}</td>
+                        <td style={{ padding: "0.4rem 0.6rem" }}>{log.총거래처}</td>
+                        <td style={{ padding: "0.4rem 0.6rem", color: "#166534", fontWeight: 600 }}>{log.신규}</td>
+                        <td style={{ padding: "0.4rem 0.6rem", color: "#1e40af", fontWeight: 600 }}>{log.갱신}</td>
+                        <td style={{ padding: "0.4rem 0.6rem", color: log.삭제 ? "#b91c1c" : undefined, fontWeight: log.삭제 ? 600 : undefined }}>{log.삭제}</td>
+                        <td style={{ padding: "0.4rem 0.6rem" }}>{log.매칭}</td>
+                        <td style={{ padding: "0.4rem 0.6rem" }}>{log.미등록}</td>
+                        <td style={{ padding: "0.4rem 0.6rem" }}>{log.일괄이체포함 ? "포함" : ""}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
