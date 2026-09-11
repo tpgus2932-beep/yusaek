@@ -40,6 +40,7 @@ export default function OrderRecommendationExcelOrderSection({ daily, discover }
   const [searchMessage, setSearchMessage] = useState('');
   const [sortKey, setSortKey] = useState(null);
   const [sortDir, setSortDir] = useState('desc');
+  const [downloadMessage, setDownloadMessage] = useState('');
   const edits = useDailyRowEdits(daily?.date, excelDefaultConfirmedQty);
 
   const selectVendor = (key) => {
@@ -101,8 +102,11 @@ export default function OrderRecommendationExcelOrderSection({ daily, discover }
 
   const vendorItems = useMemo(() => {
     if (!activeVendor) return [];
+    // 판매이력이 없어 추천발주량(recommended_qty)이 없는 상품도 확정수량(요청수량
+    // 기반 기본값)만 있으면 발주 대상이므로 같이 잡는다 - recommended_qty만 보면
+    // 판매이력 없는 부족상품이 여기서 통째로 빠진다.
     const dailyItems = (daily?.items || []).filter(
-      (i) => i.recommended_qty != null && i.client === activeVendor
+      (i) => (i.recommended_qty != null || i.confirmed_qty != null) && i.client === activeVendor
     );
     const discoverItems = (discover.result?.items || [])
       .filter((i) => i.client === activeVendor)
@@ -146,9 +150,10 @@ export default function OrderRecommendationExcelOrderSection({ daily, discover }
 
   const dirtyCount = edits.dirtyCount(vendorItems);
 
-  const downloadExcel = () => {
+  const downloadExcel = async () => {
     const vendor = ORDER_EXCEL_VENDORS.find((v) => v.key === activeVendor);
     if (!vendor || vendorItems.length === 0) return;
+    setDownloadMessage('');
     const rows = vendorItems.map((item) => {
       const fields = edits.getFields(item);
       return {
@@ -159,6 +164,37 @@ export default function OrderRecommendationExcelOrderSection({ daily, discover }
       };
     });
     vendor.build(rows);
+
+    const historyItems = vendorItems
+      .map((item) => {
+        const fields = edits.getFields(item);
+        const qty = fields.confirmedQty === '' ? 0 : Number(fields.confirmedQty);
+        return {
+          code: item.yusas_code,
+          name: item.product_name,
+          options: item.options,
+          supplyProductName: `${activeVendor} ${item.client_product_name || item.product_name || ''}`.trim(),
+          clientProductName: item.client_product_name,
+          stock: item.stock_qty,
+          notYetDeliv: item.incoming_qty,
+          lackQty: item.ezadmin_real_lack_qty,
+          recommendedQty: item.recommended_qty,
+          requestQty: qty,
+        };
+      })
+      .filter((item) => item.requestQty > 0);
+    if (historyItems.length === 0) return;
+    try {
+      const res = await fetch(`${API}/order/main-order/record-tsv-copy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ items: historyItems, action_type: 'excel_order' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok === false) throw new Error(data?.detail || data?.error || '발주내역 저장 실패');
+    } catch (err) {
+      setDownloadMessage(`⚠ 엑셀 다운로드는 완료됐지만 발주내역 저장에 실패했습니다 (${err.message || ''}).`);
+    }
   };
 
   return (
@@ -274,6 +310,7 @@ export default function OrderRecommendationExcelOrderSection({ daily, discover }
                   엑셀 다운로드
                 </button>
                 {edits.bulkMessage && <span className={styles.rowMessage}>{edits.bulkMessage}</span>}
+                {downloadMessage && <span className={styles.rowMessage}>{downloadMessage}</span>}
               </div>
               <div className={styles.dailyTableScroll}>
                 <table className={styles.dailyTable}>

@@ -560,6 +560,39 @@ class EzAdminClient:
                 result[code] = 0
         return result
 
+    async def get_in_stock_map(self) -> dict[str, int]:
+        """I100(현재고조회)에서 재고 1개 이상인 상품 전체를 한 번에 조회해
+        {상품코드: 재고수량}으로 반환한다. get_stock_for_codes처럼 코드를 몇백~몇천개
+        나열해서 검색하면 이지어드민이 응답을 못 주고 타임아웃난다 — 대신
+        "재고>=1"(stock_start=1) 필터로 전체를 한 번에 받는다. 결과에 없는 코드는
+        재고 0(품절/미보유)으로 간주하면 된다."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        par = (
+            "auto_search=&search_all_product=&multi_supply_group=&multi_supply=&str_supply_code=0"
+            "&tags_string=&product_tag_include_type=1&query_type=name&query_str="
+            "&stock_type=0&stock_start=1&stock_end=&notrans_day=&notrans_cnt=&notrans_status=0&stock_status=0"
+            f"&start_date={today}&start_hour=00:00:00&end_date={today}&end_hour=23:59:59"
+            "&date_period_sel=0&work_type=stockin&work_start=&work_end=&inout_type=0&product_date="
+            f"&start_date2={today}&end_date2={today}&date_period_sel2=0"
+            "&products_sort=1&category=0&except_soldout=0&temp_soldout=0&location=0"
+        )
+        data = await self.post(
+            "I100", "search",
+            data={"_search": "false", "rows": "9999", "page": "1", "sidx": "", "sord": "asc", "page_code": "I100"},
+            par=par, time_flag=None,
+        )
+        result: dict[str, int] = {}
+        for row in data.get("rows") or []:
+            cell = (row or {}).get("cell") or {}
+            code = str(cell.get("key") or "").strip()
+            if not code:
+                continue
+            try:
+                result[code] = int(float(cell.get("stock_normal") or 0))
+            except (TypeError, ValueError):
+                result[code] = 0
+        return result
+
     async def sms_chat_detail(
         self,
         phone: str,

@@ -285,13 +285,15 @@ def default_confirmed_qty_for_row(
     예상판매량이 3개 미만이면 예측 기반 추천발주는 신뢰하지 않고(추천발주량도 0으로
     강제) ezadmin_lack_qty만 기준으로 삼지만, 재고/미송은 그래도 넘겨받은 만큼 뺀다 —
     안 그러면 재고/미송이 이미 접수수량보다 많아도(=더 안 사도 되는 상황) 그대로
-    발주가 나가버린다.
+    발주가 나가버린다. 판매이력이 아예 없어 예상판매량 자체를 계산 못한 경우(None)도
+    같은 취급이다 — 안 그러면 추천발주량도 함께 None이 되어 확정수량까지 통째로
+    None이 되고, 실제 부족수량이 있는 상품이 발주 화면에서 완전히 빠지게 된다.
     3개 이상이면 ezadmin_lack_qty + 추천발주량에서, 넘겨받은 재고/미송이 있으면 뺀다.
     ezadmin_lack_qty가 없으면(None) 계산하지 않고 None을 반환한다. recommended_qty는
-    3개 미만 구간에서는 안 쓰이므로 그 구간에서는 None이어도 계산된다."""
+    3개 미만/None 구간에서는 안 쓰이므로 그 구간에서는 None이어도 계산된다."""
     if ezadmin_lack_qty is None:
         return None
-    if expected_sales_today is not None and expected_sales_today < 3:
+    if expected_sales_today is None or expected_sales_today < 3:
         total = ezadmin_lack_qty
     else:
         if recommended_qty is None:

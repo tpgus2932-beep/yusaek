@@ -4,6 +4,7 @@ import styles from './OrderRecommendationDashboardPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders } from '../../lib/api';
 import { useEzadminSession } from '../../lib/EzadminSessionContext';
 import OrderRecommendationBacktestSection from './OrderRecommendationBacktestSection';
+import OrderRecommendationSalesStatsSection from './OrderRecommendationSalesStatsSection';
 import OrderRecommendationCoverageCheckSection from './OrderRecommendationCoverageCheckSection';
 import OrderRecommendationDiscoverSection from './OrderRecommendationDiscoverSection';
 import OrderRecommendationTop90Section from './OrderRecommendationTop90Section';
@@ -17,6 +18,7 @@ import { sumValues, formatSum } from './tableSums';
 const PAGE_TABS = [
   { key: 'dashboard', label: '대시보드' },
   { key: 'backtest', label: '백테스팅' },
+  { key: 'sales-stats', label: '판매통계' },
   { key: 'excel-order', label: '엑셀주문' },
 ];
 
@@ -211,7 +213,11 @@ function DailyDataTable({ date, items }) {
   const [sortDir, setSortDir] = useState('desc');
   const edits = useDailyRowEdits(date);
 
-  const withRecommendation = (items || []).filter((i) => i.recommended_qty != null);
+  // 판매이력이 없어 추천발주량(recommended_qty)이 없어도 확정수량(요청수량 기반
+  // 기본값)이 있는 상품은 실제 발주 대상이므로 계속 보여준다.
+  const withRecommendation = (items || []).filter(
+    (i) => i.recommended_qty != null || i.confirmed_qty != null
+  );
   const term = search.trim();
   const searched = term
     ? withRecommendation.filter(
@@ -340,6 +346,11 @@ export default function OrderRecommendationDashboardPage() {
           <OrderRecommendationBacktestSection daily={daily} />
           <h4 className={styles.sectionTitle}>커버리지 검증</h4>
           <OrderRecommendationCoverageCheckSection />
+        </section>
+      ) : pageTab === 'sales-stats' ? (
+        <section className={styles.section}>
+          <h3 className={styles.sectionTitle}>판매통계 (순위별)</h3>
+          <OrderRecommendationSalesStatsSection />
         </section>
       ) : pageTab === 'excel-order' ? (
         <section className={styles.section}>

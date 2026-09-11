@@ -383,8 +383,11 @@ def test_default_confirmed_qty_at_least_3_none_when_any_input_missing():
     assert default_confirmed_qty_for_row(5, 13, None) is None
 
 
-def test_default_confirmed_qty_none_expected_sales_uses_at_least_3_formula():
-    assert default_confirmed_qty_for_row(None, 13, 10) == 23
+def test_default_confirmed_qty_none_expected_sales_uses_lack_qty_only():
+    # 판매이력이 아예 없어 예상판매량을 계산 못한 경우(None)도 3개 미만과 동일하게
+    # 취급한다 - 추천발주량(recommended_qty)은 무시하고 ezadmin_lack_qty만 쓴다.
+    # 실제로는 이 경우 recommended_qty도 같은 이유로 None이라 이 값(13)은 안 쓰인다.
+    assert default_confirmed_qty_for_row(None, 13, 10) == 10
 
 
 def test_default_confirmed_qty_clamped_to_zero_when_negative():

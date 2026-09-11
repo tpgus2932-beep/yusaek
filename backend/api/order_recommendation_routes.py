@@ -5,7 +5,12 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends
 
-from api.wonbe_routes import build_dash_options, load_wonbe_client_info_by_code, load_wonbe_product_name_map
+from api.wonbe_routes import (
+    build_dash_options,
+    load_wonbe_client_info_by_code,
+    load_wonbe_product_name_map,
+    load_wonbe_pure_product_name_map,
+)
 from services.order_recommendation_ably_sales import collect_ably_sales_history, get_sales_history_progress
 from services.order_recommendation_discover import (
     DEFAULT_DISCOVER_DAYS,
@@ -31,7 +36,7 @@ from services.order_recommendation_order_performance import (
     evaluate_order_performance_all,
 )
 from services.order_recommendation_store import ensure_row, get_row, list_rows, now_kst_iso, today_kst
-from sdk.ezadmin import EzAdminSessionExpired
+from sdk.ezadmin import EzAdminClient, EzAdminSessionExpired
 
 
 BACKTEST_TOP_N = 50
@@ -408,6 +413,78 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
             return {"ok": True, "min_date": min_date, "max_date": max_date}
         finally:
             conn.close()
+
+    @router.get("/sales-stats/date-range")
+    def sales_stats_date_range(user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT MIN(date) AS min_date, MAX(date) AS max_date "
+                "FROM order_recommendation_daily WHERE sales_qty IS NOT NULL"
+            ).fetchone()
+            return {"ok": True, "min_date": row["min_date"], "max_date": row["max_date"]}
+        finally:
+            conn.close()
+
+    @router.get("/sales-stats")
+    def sales_stats(start_date: str, end_date: str | None = None, user: str = Depends(get_current_user)):
+        end_date = end_date or start_date
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT yusas_code, SUM(sales_qty) AS sales_qty, SUM(cart_count) AS cart_count "
+                "FROM order_recommendation_daily "
+                "WHERE date BETWEEN ? AND ? AND sales_qty IS NOT NULL "
+                "GROUP BY yusas_code",
+                (start_date, end_date),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        # 색상/사이즈별로 상품코드가 갈라져도 순수 상품명이 같으면 하나의 상품으로 묶는다.
+        # 묶은 뒤에도 옵션별(상품코드별) 원본 수치는 options에 남겨 펼쳐볼 수 있게 한다.
+        pure_name_map = load_wonbe_pure_product_name_map()
+        option_name_map = load_wonbe_product_name_map()  # 상품명합(상품명+색상+사이즈)
+        grouped: dict[str, dict] = {}
+        for r in rows:
+            code = r["yusas_code"]
+            name = pure_name_map.get(code) or code
+            g = grouped.setdefault(
+                name, {"product_name": name, "sales_qty": 0, "cart_count": 0, "options": []}
+            )
+            sales_qty = r["sales_qty"] or 0
+            cart_count = r["cart_count"] or 0
+            g["sales_qty"] += sales_qty
+            g["cart_count"] += cart_count
+            g["options"].append({
+                "yusas_code": code,
+                "option_name": option_name_map.get(code) or code,
+                "sales_qty": sales_qty,
+                "cart_count": cart_count,
+            })
+
+        items = sorted(grouped.values(), key=lambda x: x["sales_qty"], reverse=True)
+        for i, item in enumerate(items, start=1):
+            item["rank"] = i
+            item["options"].sort(key=lambda o: o["sales_qty"], reverse=True)
+
+        return {"ok": True, "start_date": start_date, "end_date": end_date, "items": items}
+
+    @router.post("/sales-stats/stock")
+    async def sales_stats_stock(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        codes = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
+        if not codes:
+            return {"ok": True, "stock": {}}
+        try:
+            # 코드를 몇백~몇천개 나열해서 한 번에 검색(get_stock_for_codes)하면
+            # 이지어드민이 응답을 못 주고 타임아웃난다. 대신 "재고>=1" 전체를 한 번에
+            # 조회(get_in_stock_map)해서, 거기 없는 코드는 재고 0으로 채운다 —
+            # 요청 1번으로 끝나서 훨씬 빠르다.
+            in_stock = await EzAdminClient(get_setting, timeout=300.0).get_in_stock_map()
+        except EzAdminSessionExpired:
+            return {"ok": False, "need_session": True}
+        stock_map = {code: in_stock.get(code, 0) for code in codes}
+        return {"ok": True, "stock": stock_map}
 
     @router.get("/backtest")
     def backtest(

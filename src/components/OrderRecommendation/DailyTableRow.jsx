@@ -18,7 +18,7 @@ export default function DailyTableRow({ item, edits }) {
       <td>{item.ezadmin_lack_qty ?? '-'}</td>
       <td>{item.ezadmin_real_lack_qty ?? '-'}</td>
       <td>{item.coverage_days_used != null ? `${item.coverage_days_used}일` : '-'}</td>
-      <td>{item.recommended_qty ?? '-'}</td>
+      <td>{item.recommended_qty ?? '데이터 부족'}</td>
       <td>
         <input
           type="number"
