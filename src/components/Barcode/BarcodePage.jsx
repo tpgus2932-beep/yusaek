@@ -487,6 +487,15 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const getDefectTotalCount = () =>
     defectList.reduce((sum, item) => sum + (Number(item.count) || 0), 0);
 
+  // 불량 목록 중 "김승일 소환술"로 넘어온 항목이 있으면, 출고/오출/불량출력 등을
+  // 실행하기 전에 그 항목까지 포함할지 물어본다. 소환술 항목이 없으면 물어볼 필요가
+  // 없으니 그냥 포함(exclude=false)한다.
+  const askExcludeKimsungil = () => {
+    const summonedCount = defectList.filter((item) => (item.kimsungil_summon_qty || 0) > 0).length;
+    if (summonedCount === 0) return false;
+    return window.confirm(`불량 목록 중 김승일 소환술로 추가된 ${summonedCount}종은 이번 작업에서 제외할까요? (확인=제외, 취소=포함)`);
+  };
+
   const getKimsungilTotalCount = () =>
     kimsungilList.reduce((sum, item) => sum + (Number(item.count) || 0), 0);
 
@@ -725,8 +734,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       alert("보낼 불량 목록이 없습니다.");
       return;
     }
+    const excludeKimsungil = askExcludeKimsungil();
     try {
-      const rows = defectList
+      const sourceList = excludeKimsungil
+        ? defectList.filter((item) => !(item.kimsungil_summon_qty > 0))
+        : defectList;
+      const rows = sourceList
         .map((item) => ({
           vendor: String(item.base_vendor || "").trim(),
           name: String(item.base_product || "").trim(),
@@ -771,10 +784,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       alert("보낼 불량 목록이 없습니다.");
       return;
     }
+    const excludeKimsungil = askExcludeKimsungil();
     try {
       const res = await fetch(`${API}/barcode/defect/purchase-manager-handoff`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ exclude_kimsungil_summon: excludeKimsungil }),
       });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
@@ -800,23 +815,24 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     }
   };
 
-  const handleDefectExportAndOchuul = async () => {
+  const handleDefectExportAndOchuul = async (excludeKimsungilOverride) => {
     if (defectList.length === 0) { alert("불량 목록이 없습니다."); return; }
     const total = getDefectTotalCount();
     if (!window.confirm(`불량 목록 ${defectList.length}종 합계 ${total}개를 출고처리 후 오출 차감하겠습니까?`)) return;
+    const excludeKimsungil = excludeKimsungilOverride ?? askExcludeKimsungil();
 
     try {
       setDefectEzadminLoading(true); setDefectEzadminMsg("EZAdmin 출고처리 중...");
       const res = await fetch(`${API}/barcode/defect/export-to-ezadmin`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ exclude_kimsungil_summon: excludeKimsungil }),
       });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (data?.need_session) {
         setDefectEzadminMsg("");
-        openEzadminModal(handleDefectExportAndOchuul);
+        openEzadminModal(() => handleDefectExportAndOchuul(excludeKimsungil));
         return;
       }
       if (!data?.ok) {
@@ -836,7 +852,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       setOchuulResult(null);
       const res = await fetch(`${API}/barcode/defect/ochuul-minus`, {
         method: "POST",
-        headers: getAuthHeaders(),
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ exclude_kimsungil_summon: excludeKimsungil }),
       });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
@@ -1237,6 +1254,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                           {renderDefectLabel(item)}
                         </span>
                         <span className={styles.inlineTagDanger}>불량 {item.count}</span>
+                        {item.kimsungil_summon_qty > 0 && (
+                          <span className={styles.inlineTagIncoming}>김승일 소환 {item.kimsungil_summon_qty}</span>
+                        )}
                         {item.code && <span className={styles.inlineMeta}>{item.code}</span>}
                       </span>
                     ))}
@@ -1585,6 +1605,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                   <div key={`${item.code}-defect-${idx}`} className={styles.defectLine}>
                     <span className={styles.defectText}>{renderDefectLabel(item)}</span>
                     <span className={styles.inlineTagDanger}>불량 {item.count}</span>
+                    {item.kimsungil_summon_qty > 0 && (
+                      <span className={styles.inlineTagIncoming}>김승일 소환 {item.kimsungil_summon_qty}</span>
+                    )}
                     <div className={styles.defectActions}>
                       <button className={styles.ghostBtn} onClick={() => handleDefectDec(item.code)}>-1</button>
                       <button className={styles.ghostBtn} onClick={() => handleDefectRemove(item.code)}>삭제</button>

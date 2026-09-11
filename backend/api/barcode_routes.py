@@ -50,6 +50,8 @@ def build_barcode_router(
     set_shared_incoming_counts,
     get_shared_defect_counts,
     set_shared_defect_counts,
+    get_shared_defect_summon_counts,
+    set_shared_defect_summon_counts,
     get_shared_kimsungil_counts,
     set_shared_kimsungil_counts,
     set_shared_barcode_data,
@@ -617,17 +619,22 @@ def build_barcode_router(
     def _find_item_detail_by_code(state, code: str):
         return _get_item_detail_lookup(state).get(code, {"name": "", "option": ""})
 
-    def _get_defect_list(state):
+    def _get_defect_list(state, *, exclude_kimsungil: bool = False):
         defect_counts = get_shared_defect_counts()
+        summon_counts = get_shared_defect_summon_counts()
         defect_base_lookup = _build_defect_base_lookup()
         rows = []
         for code, count in sorted(defect_counts.items()):
+            summon_qty = summon_counts.get(code, 0)
+            if exclude_kimsungil and summon_qty > 0:
+                continue
             det = _find_item_detail_by_code(state, code)
             base_row = defect_base_lookup.get(code, {})
             rows.append(
                 {
                     "code": code,
                     "count": count,
+                    "kimsungil_summon_qty": summon_qty,
                     "name": det.get("name", ""),
                     "option": det.get("option", ""),
                     "base_vendor": base_row.get("c", ""),
@@ -707,8 +714,11 @@ def build_barcode_router(
         value = str(code or "").strip()
         return f"S{value[5:]}" if value.startswith("YUSAS") else value
 
-    def _build_defect_xls_bytes() -> bytes:
+    def _build_defect_xls_bytes(*, exclude_kimsungil: bool = False) -> bytes:
         defect_counts = get_shared_defect_counts()
+        if exclude_kimsungil:
+            summon_counts = get_shared_defect_summon_counts()
+            defect_counts = {c: q for c, q in defect_counts.items() if not summon_counts.get(c)}
         book = xlwt.Workbook()
         sheet = book.add_sheet("defects")
         header_style = xlwt.easyxf("font: bold on; align: horiz center;")
@@ -2178,10 +2188,12 @@ def build_barcode_router(
 
         moved_codes = [code for code in kimsungil_counts if int(incoming_counts.get(code, 0) or 0) > 0]
         defect_counts = dict(get_shared_defect_counts())
+        summon_counts = dict(get_shared_defect_summon_counts())
         moved_total = 0
         for code in moved_codes:
             qty = kimsungil_counts.pop(code, 0)
             defect_counts[code] = defect_counts.get(code, 0) + qty
+            summon_counts[code] = summon_counts.get(code, 0) + qty
             moved_total += qty
             _log_kimsungil_event(
                 code=code,
@@ -2194,6 +2206,7 @@ def build_barcode_router(
 
         set_shared_kimsungil_counts(kimsungil_counts)
         set_shared_defect_counts(defect_counts)
+        set_shared_defect_summon_counts(summon_counts)
 
         return {
             "ok": True,
@@ -2256,8 +2269,14 @@ def build_barcode_router(
         )
 
     @router.post("/barcode/defect/purchase-manager-handoff")
-    def defect_purchase_manager_handoff(user: str = Depends(get_current_user)):
+    def defect_purchase_manager_handoff(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
         defect_counts = get_shared_defect_counts()
+        if payload.get("exclude_kimsungil_summon"):
+            summon_counts = get_shared_defect_summon_counts()
+            defect_counts = {c: q for c, q in defect_counts.items() if not summon_counts.get(c)}
         if not defect_counts:
             raise HTTPException(status_code=400, detail="불량 목록이 비어 있습니다.")
 
@@ -2313,12 +2332,16 @@ def build_barcode_router(
         if not phpsessid:
             return {"ok": False, "need_session": True}
 
+        exclude_kimsungil = bool(payload.get("exclude_kimsungil_summon"))
         defect_counts = get_shared_defect_counts()
+        if exclude_kimsungil:
+            summon_counts = get_shared_defect_summon_counts()
+            defect_counts = {c: q for c, q in defect_counts.items() if not summon_counts.get(c)}
         if not defect_counts:
             return {"ok": False, "error": "불량 목록이 비어 있습니다."}
 
-        defect_rows = _get_defect_list(get_barcode_state(user))
-        xls_bytes = _build_defect_xls_bytes()
+        defect_rows = _get_defect_list(get_barcode_state(user), exclude_kimsungil=exclude_kimsungil)
+        xls_bytes = _build_defect_xls_bytes(exclude_kimsungil=exclude_kimsungil)
         cookies = {"PHPSESSID": phpsessid}
         ez_headers = {
             "User-Agent": "Mozilla/5.0",
@@ -2468,6 +2491,15 @@ def build_barcode_router(
                 del defect_counts[code]
         set_shared_defect_counts(defect_counts)
 
+        summon_counts = dict(get_shared_defect_summon_counts())
+        if code in summon_counts:
+            remaining = defect_counts.get(code, 0)
+            if remaining <= 0:
+                summon_counts.pop(code, None)
+            elif summon_counts[code] > remaining:
+                summon_counts[code] = remaining
+            set_shared_defect_summon_counts(summon_counts)
+
         inv = state.get("current_invoice")
         return {
             "ok": True,
@@ -2491,6 +2523,11 @@ def build_barcode_router(
         defect_counts.pop(code, None)
         set_shared_defect_counts(defect_counts)
 
+        summon_counts = dict(get_shared_defect_summon_counts())
+        if code in summon_counts:
+            summon_counts.pop(code, None)
+            set_shared_defect_summon_counts(summon_counts)
+
         inv = state.get("current_invoice")
         return {
             "ok": True,
@@ -2500,13 +2537,20 @@ def build_barcode_router(
         }
 
     @router.post("/barcode/defect/ochuul-minus")
-    async def defect_ochuul_minus(user: str = Depends(get_current_user)):
+    async def defect_ochuul_minus(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
         """불량 목록 기준으로 Ably 오출 재고 차감."""
+        exclude_kimsungil = bool(payload.get("exclude_kimsungil_summon"))
         defect_counts = get_shared_defect_counts()
+        if exclude_kimsungil:
+            summon_counts = get_shared_defect_summon_counts()
+            defect_counts = {c: q for c, q in defect_counts.items() if not summon_counts.get(c)}
         if not defect_counts:
             return {"ok": True, "matched": 0, "details": [], "message": "불량 목록이 없습니다."}
 
-        defect_rows = _get_defect_list(get_barcode_state(user))
+        defect_rows = _get_defect_list(get_barcode_state(user), exclude_kimsungil=exclude_kimsungil)
         code_to_sno: dict[str, int] = {}
         _wconn = _get_wonbe_db()
         try:

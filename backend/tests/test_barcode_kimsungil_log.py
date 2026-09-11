@@ -63,6 +63,7 @@ def _make_client(monkeypatch, user="tester"):
 
     kimsungil_store = {"counts": {}}
     defect_store = {"counts": {}}
+    defect_summon_store = {"counts": {}}
 
     app = FastAPI()
     app.include_router(
@@ -79,6 +80,8 @@ def _make_client(monkeypatch, user="tester"):
             set_shared_incoming_counts=lambda *a, **k: None,
             get_shared_defect_counts=lambda: defect_store["counts"],
             set_shared_defect_counts=lambda c: defect_store.__setitem__("counts", dict(c or {})),
+            get_shared_defect_summon_counts=lambda: defect_summon_store["counts"],
+            set_shared_defect_summon_counts=lambda c: defect_summon_store.__setitem__("counts", dict(c or {})),
             get_shared_kimsungil_counts=lambda: kimsungil_store["counts"],
             set_shared_kimsungil_counts=lambda c: kimsungil_store.__setitem__("counts", dict(c or {})),
             set_shared_barcode_data=lambda *a, **k: None,

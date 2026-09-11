@@ -171,6 +171,10 @@ COST_BASE_MATCH_COL = 8
 COST_BASE_REQUIRED_COLS = COST_BASE_MATCH_COL + 1
 SHARED_INCOMING_COUNTS: dict[str, int] = {}
 SHARED_DEFECT_COUNTS: dict[str, int] = {}
+# SHARED_DEFECT_COUNTS 중 김승일 소환술(불량 이동)로 들어온 수량만 별도 추적 -
+# 불량 리스트에서 어떤 코드가 소환술로 추가됐는지 표시하고, 출고/오출/불량출력 같은
+# 후속 작업에서 그 코드들을 포함할지 선택할 수 있게 하기 위함.
+SHARED_DEFECT_SUMMON_COUNTS: dict[str, int] = {}
 SHARED_KIMSUNGIL_COUNTS: dict[str, int] = {}
 SHARED_AMOOD_EZADMIN_FILE: dict = {}
 _KIMSUNGIL_LOADED: bool = False
@@ -367,6 +371,16 @@ def _set_shared_defect_counts(counts: dict[str, int] | None):
     SHARED_DEFECT_COUNTS.clear()
     if counts:
         SHARED_DEFECT_COUNTS.update(counts)
+
+
+def _get_shared_defect_summon_counts() -> dict[str, int]:
+    return SHARED_DEFECT_SUMMON_COUNTS
+
+
+def _set_shared_defect_summon_counts(counts: dict[str, int] | None):
+    SHARED_DEFECT_SUMMON_COUNTS.clear()
+    if counts:
+        SHARED_DEFECT_SUMMON_COUNTS.update(counts)
 
 
 def _get_shared_kimsungil_counts() -> dict[str, int]:
@@ -1615,6 +1629,8 @@ app.include_router(
         set_shared_incoming_counts=_set_shared_incoming_counts,
         get_shared_defect_counts=_get_shared_defect_counts,
         set_shared_defect_counts=_set_shared_defect_counts,
+        get_shared_defect_summon_counts=_get_shared_defect_summon_counts,
+        set_shared_defect_summon_counts=_set_shared_defect_summon_counts,
         get_shared_kimsungil_counts=_get_shared_kimsungil_counts,
         set_shared_kimsungil_counts=_set_shared_kimsungil_counts,
         set_shared_barcode_data=_set_shared_barcode_data,
