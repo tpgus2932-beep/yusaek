@@ -1485,13 +1485,30 @@ def build_order_router(
             is_misong_pickup = bool(item.get("isMisongPickup"))
             # 프론트에서 직접 입력한 요청메모가 있으면 그걸 쓰고, 없으면 기존처럼 미송픽업 여부로 자동 채운다.
             custom_memo = str(item.get("memo") or "").strip()
-            items.append({
-                "code": code,
-                "qty": qty,
-                # 요청수량에는 미송으로 담은 수량만 들어간다 - 그냥 담은 수량(qty)은 입고수량에만 반영.
-                "request_qty": misong_qty,
-                "memo": custom_memo or ("미송픽업" if is_misong_pickup else ""),
-            })
+            if is_misong_pickup and qty > 0 and misong_qty > 0:
+                # 미송픽업 상품이라도 담을 수량(입고수량)은 미송 요청과 무관한 별도 수량이라
+                # 같은 줄에 실으면 "미송픽업" 메모가 담을 수량 쪽까지 같이 붙어버린다.
+                # 미송 수량과 담을 수량을 줄을 나눠서, 미송 수량 쪽에만 메모가 남게 한다.
+                items.append({
+                    "code": code,
+                    "qty": 0,
+                    "request_qty": misong_qty,
+                    "memo": custom_memo or "미송픽업",
+                })
+                items.append({
+                    "code": code,
+                    "qty": qty,
+                    "request_qty": 0,
+                    "memo": custom_memo or "",
+                })
+            else:
+                items.append({
+                    "code": code,
+                    "qty": qty,
+                    # 요청수량에는 미송으로 담은 수량만 들어간다 - 그냥 담은 수량(qty)은 입고수량에만 반영.
+                    "request_qty": misong_qty,
+                    "memo": custom_memo or ("미송픽업" if is_misong_pickup else ""),
+                })
         if not items:
             return {"ok": False, "error": "입고할 상품(담을 수량 또는 미송 수량 1 이상)이 없습니다."}
 
