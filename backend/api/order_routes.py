@@ -1465,7 +1465,6 @@ def build_order_router(
     async def simple_receiving_apply(payload: dict = Body(...), admin: str = Depends(require_admin)):
         raw_items = payload.get("items") or []
         sheet_title = str(payload.get("sheetTitle") or "").strip() or _SIMPLE_RECEIVING_SHEET_TITLE
-        misong_qty_by_code = load_misong_qty_by_code(get_shared_db)
         items = []
         for item in raw_items:
             code = str(item.get("code") or "").strip()
@@ -1481,10 +1480,9 @@ def build_order_router(
                 misong_qty = 0
             if qty <= 0 and misong_qty <= 0:
                 continue
-            normalized_code = " ".join(code.split())
-            # 프론트에서 미송픽업 검색 결과로 담은 줄은 명시적으로 표시해서 넘긴다 - 같은 상품코드라도
-            # 일반주문 줄과 절대 합쳐지지 않고 따로 요청메모에 남아야 하기 때문.
-            is_misong_pickup = bool(item.get("isMisongPickup")) or misong_qty_by_code.get(normalized_code, 0) > 0
+            # 프론트에서 미송픽업 검색 결과로 담은 줄만 미송픽업으로 취급한다 - 일반 상품에 담을 수량과
+            # 미송 수량을 같이 입력했다고 해서 미송픽업으로 취급하면 안 된다.
+            is_misong_pickup = bool(item.get("isMisongPickup"))
             # 프론트에서 직접 입력한 요청메모가 있으면 그걸 쓰고, 없으면 기존처럼 미송픽업 여부로 자동 채운다.
             custom_memo = str(item.get("memo") or "").strip()
             items.append({
