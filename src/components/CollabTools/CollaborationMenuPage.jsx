@@ -133,14 +133,18 @@ const toExcelTextCell = (value) => {
 const COLLAB_MENU_ACTIVE_TAB_KEY = 'collabMenuActiveTab';
 const COLLAB_MENU_RECEIVING_DRAFT_KEY = 'collabMenuReceivingDraft';
 const COLLAB_MENU_RECEIVING_DRAFT_SLOT_KEY = 'collabMenuReceivingDraftSlot';
+const EMPTY_SET = new Set();
 
-const loadReceivingDraft = () => {
+// 슬롯(담당자 탭)별로 완전히 분리된 입고목록을 보관한다 - { [slot]: item[] }.
+// 예전 버전은 슬롯 구분 없이 배열 하나만 저장했으므로, 그 형식이면 1번 슬롯으로 옮겨 이어서 쓴다.
+const loadReceivingDraftsBySlot = () => {
   try {
     const raw = localStorage.getItem(COLLAB_MENU_RECEIVING_DRAFT_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (Array.isArray(parsed)) return parsed.length ? { 1: parsed } : {};
+    return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
-    return [];
+    return {};
   }
 };
 
@@ -201,18 +205,35 @@ export default function CollaborationMenuPage() {
   const [receivingSearchMisongEdits, setReceivingSearchMisongEdits] = useState({});
   const [receivingSearchMemoEdits, setReceivingSearchMemoEdits] = useState({});
   const [receivingSearching, setReceivingSearching] = useState(false);
-  const [receivingDraft, setReceivingDraft] = useState(loadReceivingDraft);
-  // 간단입고 입고목록도 매입차감 입력 데이터 복붙처럼 슬롯(담당자)별로 나눠서 여러 명이 동시에 작업한다.
+  // 간단입고 입고목록은 매입차감 입력 데이터 복붙처럼 슬롯(담당자 탭)별로 완전히 분리해서 보관한다 -
+  // 탭을 바꿔도 다른 탭에서 담은 상품이 섞여 보이거나 같이 수정되지 않는다.
+  const [receivingDraftsBySlot, setReceivingDraftsBySlot] = useState(loadReceivingDraftsBySlot);
   const [receivingDraftSlot, setReceivingDraftSlot] = useState(() => {
     const saved = Number(localStorage.getItem(COLLAB_MENU_RECEIVING_DRAFT_SLOT_KEY));
     return SHARED_PASTE_SLOTS.includes(saved) ? saved : 1;
   });
+  const receivingDraft = receivingDraftsBySlot[receivingDraftSlot] || [];
+  const updateReceivingDraftForSlot = (slot, updater) => {
+    setReceivingDraftsBySlot((prev) => {
+      const prevForSlot = prev[slot] || [];
+      const nextForSlot = typeof updater === 'function' ? updater(prevForSlot) : updater;
+      return { ...prev, [slot]: nextForSlot };
+    });
+  };
   const [receivingDraftSlotLoading, setReceivingDraftSlotLoading] = useState(false);
   const [receivingDraftSlotSaving, setReceivingDraftSlotSaving] = useState(false);
   const [receivingDraftSlotMeta, setReceivingDraftSlotMeta] = useState('');
-  // 바코드 출력은 "현재 검색에서 담은 것"만 대상으로 한다 - 새로 검색하면 비워지고,
-  // 그 검색 결과에서 담을 때만 채워진다(이전 검색에서 담아둔 건 이번 출력에서 빠짐).
-  const [receivingPrintBatchKeys, setReceivingPrintBatchKeys] = useState(() => new Set());
+  // 바코드 출력은 "현재 탭에서, 이번 검색으로 담은 것"만 대상으로 한다 - 새로 검색하면 비워지고,
+  // 그 검색 결과에서 담을 때만 채워진다(이전 검색에서 담아둔 건 이번 출력에서 빠짐). 슬롯별로 분리한다.
+  const [receivingPrintBatchKeysBySlot, setReceivingPrintBatchKeysBySlot] = useState({});
+  const receivingPrintBatchKeys = receivingPrintBatchKeysBySlot[receivingDraftSlot] || EMPTY_SET;
+  const updatePrintBatchKeysForSlot = (slot, updater) => {
+    setReceivingPrintBatchKeysBySlot((prev) => {
+      const prevForSlot = prev[slot] || new Set();
+      const nextForSlot = typeof updater === 'function' ? updater(prevForSlot) : updater;
+      return { ...prev, [slot]: nextForSlot };
+    });
+  };
   const [receivingApplying, setReceivingApplying] = useState(false);
   const [receivingMessage, setReceivingMessage] = useState('');
   const [receivingMessageType, setReceivingMessageType] = useState('');
@@ -300,8 +321,8 @@ export default function CollaborationMenuPage() {
   }, [activeTab]);
 
   useEffect(() => {
-    localStorage.setItem(COLLAB_MENU_RECEIVING_DRAFT_KEY, JSON.stringify(receivingDraft));
-  }, [receivingDraft]);
+    localStorage.setItem(COLLAB_MENU_RECEIVING_DRAFT_KEY, JSON.stringify(receivingDraftsBySlot));
+  }, [receivingDraftsBySlot]);
 
   useEffect(() => {
     localStorage.setItem(COLLAB_MENU_RECEIVING_DRAFT_SLOT_KEY, String(receivingDraftSlot));
@@ -561,7 +582,7 @@ export default function CollaborationMenuPage() {
       setReceivingSearchResults(sortedRows);
       setReceivingSearchQtyEdits({});
       setReceivingSearchMisongEdits({});
-      setReceivingPrintBatchKeys(new Set());
+      updatePrintBatchKeysForSlot(receivingDraftSlot, new Set());
       if (!data.rows?.length) setReceivingFeedback('error', '검색 결과가 없습니다.');
     } catch (error) {
       setReceivingSearchResults([]);
@@ -751,7 +772,7 @@ export default function CollaborationMenuPage() {
     const finalMemo = (memo ?? '').trim();
     const rowIsMisongPickup = isMisongPickupRow(row);
     const key = receivingDraftKey({ code: row.product_code, isMisongPickup: rowIsMisongPickup });
-    setReceivingDraft((prev) => {
+    updateReceivingDraftForSlot(receivingDraftSlot, (prev) => {
       const existingIndex = prev.findIndex((item) => receivingDraftKey(item) === key);
       if (existingIndex >= 0) {
         const next = [...prev];
@@ -779,7 +800,7 @@ export default function CollaborationMenuPage() {
         },
       ];
     });
-    setReceivingPrintBatchKeys((prev) => new Set(prev).add(key));
+    updatePrintBatchKeysForSlot(receivingDraftSlot, (prev) => new Set(prev).add(key));
     // 담기 후에도 화살표로 계속 다음 행으로 이동할 수 있게 포커스를 넘긴다.
     if (typeof index === 'number' && !focusReceivingQtyInputAt(index + 1, 1)) {
       receivingSearchInputRef.current?.focus();
@@ -803,19 +824,22 @@ export default function CollaborationMenuPage() {
   };
 
   const updateReceivingDraftQty = (key, qty) => {
-    setReceivingDraft((prev) => prev.map((item) => (receivingDraftKey(item) === key ? { ...item, qty } : item)));
+    updateReceivingDraftForSlot(receivingDraftSlot, (prev) =>
+      prev.map((item) => (receivingDraftKey(item) === key ? { ...item, qty } : item)));
   };
 
   const updateReceivingDraftMisongQty = (key, misongQty) => {
-    setReceivingDraft((prev) => prev.map((item) => (receivingDraftKey(item) === key ? { ...item, misongQty } : item)));
+    updateReceivingDraftForSlot(receivingDraftSlot, (prev) =>
+      prev.map((item) => (receivingDraftKey(item) === key ? { ...item, misongQty } : item)));
   };
 
   const updateReceivingDraftMemo = (key, memo) => {
-    setReceivingDraft((prev) => prev.map((item) => (receivingDraftKey(item) === key ? { ...item, memo } : item)));
+    updateReceivingDraftForSlot(receivingDraftSlot, (prev) =>
+      prev.map((item) => (receivingDraftKey(item) === key ? { ...item, memo } : item)));
   };
 
   const removeReceivingDraftItem = (key) => {
-    setReceivingDraft((prev) => prev.filter((item) => receivingDraftKey(item) !== key));
+    updateReceivingDraftForSlot(receivingDraftSlot, (prev) => prev.filter((item) => receivingDraftKey(item) !== key));
   };
 
   const handleLoadSharedReceivingDraft = async () => {
@@ -830,8 +854,8 @@ export default function CollaborationMenuPage() {
       if (!res.ok || data.ok === false) {
         throw new Error(data.detail || '공용 입고목록을 불러오지 못했습니다.');
       }
-      setReceivingDraft(Array.isArray(data.items) ? data.items : []);
-      setReceivingPrintBatchKeys(new Set());
+      updateReceivingDraftForSlot(receivingDraftSlot, () => (Array.isArray(data.items) ? data.items : []));
+      updatePrintBatchKeysForSlot(receivingDraftSlot, new Set());
       const slotLabel = getSharedPasteSlotLabel(receivingDraftSlot);
       setReceivingDraftSlotMeta(data.updated_by ? `${slotLabel} 최근 저장: ${data.updated_by}` : `${slotLabel} 공용 데이터 없음`);
       setReceivingFeedback('ok', `${slotLabel} 공용 입고목록을 불러왔습니다.`);
@@ -904,7 +928,7 @@ export default function CollaborationMenuPage() {
         ? `전표 ${voucherCount}장 (같은 상품코드가 겹쳐 나눠 생성됨)`
         : `전표: ${data.vouchers?.[0]?.sheet_title || ''}`;
       setReceivingFeedback('ok', `입고전표 생성 완료 (${voucherSummary}, 총 ${data.count}건)`);
-      setReceivingDraft([]);
+      updateReceivingDraftForSlot(receivingDraftSlot, () => []);
     } catch (error) {
       setReceivingFeedback('error', error.message || '입고 처리에 실패했습니다.');
     } finally {
