@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import re
 from urllib.parse import quote
 
@@ -9,6 +10,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 SHARED_PASTE_KEY = "collaboration_tools:purchase_deduction:shared_paste"
 SHARED_PASTE_UPDATED_BY_KEY = "collaboration_tools:purchase_deduction:shared_paste:updated_by"
 SHARED_PASTE_SLOT_COUNT = 5
+
+SHARED_RECEIVING_DRAFT_KEY = "collaboration_tools:simple_receiving:shared_draft"
+SHARED_RECEIVING_DRAFT_UPDATED_BY_KEY = "collaboration_tools:simple_receiving:shared_draft:updated_by"
 
 _ACCOUNT_TABLE_DDL = """
     CREATE TABLE IF NOT EXISTS 거래처계좌데이터 (
@@ -44,6 +48,18 @@ def build_collaboration_tools_router(*, get_current_user, get_setting, set_setti
     def _shared_paste_updated_by_key(slot: int) -> str:
         slot_no = _normalize_shared_paste_slot(slot)
         return SHARED_PASTE_UPDATED_BY_KEY if slot_no == 1 else f"{SHARED_PASTE_UPDATED_BY_KEY}:{slot_no}"
+
+    def _shared_receiving_draft_key(slot: int) -> str:
+        slot_no = _normalize_shared_paste_slot(slot)
+        return SHARED_RECEIVING_DRAFT_KEY if slot_no == 1 else f"{SHARED_RECEIVING_DRAFT_KEY}:{slot_no}"
+
+    def _shared_receiving_draft_updated_by_key(slot: int) -> str:
+        slot_no = _normalize_shared_paste_slot(slot)
+        return (
+            SHARED_RECEIVING_DRAFT_UPDATED_BY_KEY
+            if slot_no == 1
+            else f"{SHARED_RECEIVING_DRAFT_UPDATED_BY_KEY}:{slot_no}"
+        )
 
     # ── 공통 헬퍼 ────────────────────────────────────────────────
 
@@ -312,5 +328,42 @@ def build_collaboration_tools_router(*, get_current_user, get_setting, set_setti
         set_setting(_shared_paste_key(slot_no), pasted_text)
         set_setting(_shared_paste_updated_by_key(slot_no), user)
         return {"ok": True, "slot": slot_no, "pasted_text": pasted_text, "updated_by": user}
+
+    # ── 간단입고 공용 입고목록 (슬롯별로 나눠서 여러 명이 동시에 작업) ──
+
+    @router.get("/simple-receiving/shared-draft")
+    def get_simple_receiving_shared_draft(
+        slot: int = Query(1, ge=1, le=SHARED_PASTE_SLOT_COUNT),
+        user: str = Depends(get_current_user),
+    ):
+        slot_no = _normalize_shared_paste_slot(slot)
+        raw = get_setting(_shared_receiving_draft_key(slot_no)) or ""
+        try:
+            items = json.loads(raw) if raw else []
+        except Exception:
+            items = []
+        if not isinstance(items, list):
+            items = []
+        return {
+            "ok": True,
+            "slot": slot_no,
+            "items": items,
+            "updated_by": get_setting(_shared_receiving_draft_updated_by_key(slot_no)) or "",
+            "viewer": user,
+        }
+
+    @router.put("/simple-receiving/shared-draft")
+    def set_simple_receiving_shared_draft(
+        payload: dict = Body(...),
+        slot: int = Query(1, ge=1, le=SHARED_PASTE_SLOT_COUNT),
+        user: str = Depends(get_current_user),
+    ):
+        slot_no = _normalize_shared_paste_slot(slot)
+        items = payload.get("items")
+        if not isinstance(items, list):
+            raise HTTPException(status_code=400, detail="items 형식이 올바르지 않습니다.")
+        set_setting(_shared_receiving_draft_key(slot_no), json.dumps(items, ensure_ascii=False))
+        set_setting(_shared_receiving_draft_updated_by_key(slot_no), user)
+        return {"ok": True, "slot": slot_no, "items": items, "updated_by": user}
 
     return router

@@ -132,6 +132,7 @@ const toExcelTextCell = (value) => {
 
 const COLLAB_MENU_ACTIVE_TAB_KEY = 'collabMenuActiveTab';
 const COLLAB_MENU_RECEIVING_DRAFT_KEY = 'collabMenuReceivingDraft';
+const COLLAB_MENU_RECEIVING_DRAFT_SLOT_KEY = 'collabMenuReceivingDraftSlot';
 
 const loadReceivingDraft = () => {
   try {
@@ -201,6 +202,14 @@ export default function CollaborationMenuPage() {
   const [receivingSearchMemoEdits, setReceivingSearchMemoEdits] = useState({});
   const [receivingSearching, setReceivingSearching] = useState(false);
   const [receivingDraft, setReceivingDraft] = useState(loadReceivingDraft);
+  // 간단입고 입고목록도 매입차감 입력 데이터 복붙처럼 슬롯(담당자)별로 나눠서 여러 명이 동시에 작업한다.
+  const [receivingDraftSlot, setReceivingDraftSlot] = useState(() => {
+    const saved = Number(localStorage.getItem(COLLAB_MENU_RECEIVING_DRAFT_SLOT_KEY));
+    return SHARED_PASTE_SLOTS.includes(saved) ? saved : 1;
+  });
+  const [receivingDraftSlotLoading, setReceivingDraftSlotLoading] = useState(false);
+  const [receivingDraftSlotSaving, setReceivingDraftSlotSaving] = useState(false);
+  const [receivingDraftSlotMeta, setReceivingDraftSlotMeta] = useState('');
   // 바코드 출력은 "현재 검색에서 담은 것"만 대상으로 한다 - 새로 검색하면 비워지고,
   // 그 검색 결과에서 담을 때만 채워진다(이전 검색에서 담아둔 건 이번 출력에서 빠짐).
   const [receivingPrintBatchKeys, setReceivingPrintBatchKeys] = useState(() => new Set());
@@ -293,6 +302,10 @@ export default function CollaborationMenuPage() {
   useEffect(() => {
     localStorage.setItem(COLLAB_MENU_RECEIVING_DRAFT_KEY, JSON.stringify(receivingDraft));
   }, [receivingDraft]);
+
+  useEffect(() => {
+    localStorage.setItem(COLLAB_MENU_RECEIVING_DRAFT_SLOT_KEY, String(receivingDraftSlot));
+  }, [receivingDraftSlot]);
 
   // 간단입고 탭에서 Ctrl/Cmd+F는 브라우저 찾기 대신 발주내역 검색창으로 포커스를 보낸다.
   useEffect(() => {
@@ -803,6 +816,54 @@ export default function CollaborationMenuPage() {
 
   const removeReceivingDraftItem = (key) => {
     setReceivingDraft((prev) => prev.filter((item) => receivingDraftKey(item) !== key));
+  };
+
+  const handleLoadSharedReceivingDraft = async () => {
+    try {
+      setReceivingDraftSlotLoading(true);
+      setReceivingFeedback('', '');
+      const res = await fetch(`${LOCAL_API_BASE}/collaboration-tools/simple-receiving/shared-draft?slot=${receivingDraftSlot}`, {
+        headers: getAuthHeaders(),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.detail || '공용 입고목록을 불러오지 못했습니다.');
+      }
+      setReceivingDraft(Array.isArray(data.items) ? data.items : []);
+      setReceivingPrintBatchKeys(new Set());
+      const slotLabel = getSharedPasteSlotLabel(receivingDraftSlot);
+      setReceivingDraftSlotMeta(data.updated_by ? `${slotLabel} 최근 저장: ${data.updated_by}` : `${slotLabel} 공용 데이터 없음`);
+      setReceivingFeedback('ok', `${slotLabel} 공용 입고목록을 불러왔습니다.`);
+    } catch (error) {
+      setReceivingFeedback('error', error.message || '공용 입고목록을 불러오지 못했습니다.');
+    } finally {
+      setReceivingDraftSlotLoading(false);
+    }
+  };
+
+  const handleSaveSharedReceivingDraft = async () => {
+    try {
+      setReceivingDraftSlotSaving(true);
+      setReceivingFeedback('', '');
+      const res = await fetch(`${LOCAL_API_BASE}/collaboration-tools/simple-receiving/shared-draft?slot=${receivingDraftSlot}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ items: receivingDraft }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.detail || '공용 입고목록 저장에 실패했습니다.');
+      }
+      const slotLabel = getSharedPasteSlotLabel(receivingDraftSlot);
+      setReceivingDraftSlotMeta(data.updated_by ? `${slotLabel} 최근 저장: ${data.updated_by}` : '');
+      setReceivingFeedback('ok', `${slotLabel} 공용 입고목록을 저장했습니다.`);
+    } catch (error) {
+      setReceivingFeedback('error', error.message || '공용 입고목록 저장에 실패했습니다.');
+    } finally {
+      setReceivingDraftSlotSaving(false);
+    }
   };
 
   const applyReceiving = async () => {
@@ -1754,6 +1815,7 @@ export default function CollaborationMenuPage() {
             <p className={styles.cardHint}>
               수량을 수정한 뒤 입고전표 생성을 누르면 이지어드민에 실입고로 반영됩니다.
               미송 수량은 전표의 요청수량으로, 담을 수량은 입고수량으로 들어갑니다.
+              담당자 탭을 나눠서 저장/불러오기하면 여러 명이 동시에 각자 목록을 채울 수 있습니다.
             </p>
           </div>
           <div className={styles.headerActions}>
@@ -1774,6 +1836,44 @@ export default function CollaborationMenuPage() {
               {receivingApplying ? '입고 처리 중...' : `입고전표 생성 (${receivingDraft.length}건)`}
             </button>
           </div>
+        </div>
+
+        <div className={styles.inputLabelRow}>
+          <span className={styles.inputLabel}>담당자 탭</span>
+          <div className={styles.slotTabs} aria-label="공용 입고목록 슬롯">
+            {SHARED_PASTE_SLOTS.map((slot) => (
+              <button
+                key={slot}
+                type="button"
+                className={`${styles.slotTab} ${receivingDraftSlot === slot ? styles.slotTabActive : ''}`}
+                onClick={() => {
+                  setReceivingDraftSlot(slot);
+                  setReceivingDraftSlotMeta('');
+                }}
+              >
+                {getSharedPasteSlotLabel(slot)}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className={styles.headerActions} style={{ marginBottom: '0.5rem' }}>
+          <button
+            type="button"
+            className={styles.secondaryBtn}
+            onClick={handleLoadSharedReceivingDraft}
+            disabled={receivingDraftSlotLoading}
+          >
+            <Download size={14} />{receivingDraftSlotLoading ? '불러오는 중...' : '공용 불러오기'}
+          </button>
+          <button
+            type="button"
+            className={styles.secondaryBtn}
+            onClick={handleSaveSharedReceivingDraft}
+            disabled={receivingDraftSlotSaving}
+          >
+            <Upload size={14} />{receivingDraftSlotSaving ? '저장 중...' : '공용 저장'}
+          </button>
+          {receivingDraftSlotMeta && <span className={styles.sharedMeta}>{receivingDraftSlotMeta}</span>}
         </div>
 
         {receivingDraft.length === 0 ? (
