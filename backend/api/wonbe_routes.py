@@ -2173,10 +2173,22 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 ).fetchall()
                 total = conn.execute(f"SELECT COUNT(*) FROM wonbe{where}", extra_params).fetchone()[0]
             else:
-                like = f"%{q}%"
-                search_clause = "(상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?)"
+                # 공백으로 나눈 단어들을 각각 AND로 요구한다 - "글로우 검정"처럼 상품명 일부와
+                # 색상을 띄어서 검색해도, 그 단어들이 (순서·인접 여부 상관없이) 상품명/색상/
+                # 사이즈 등 어딘가에 흩어져 있기만 하면 걸리게 한다. 예전엔 q 전체를 한
+                # 문자열로 LIKE 검색해서 "글로우 검정"이 정확히 그 순서로 붙어있어야 했고,
+                # 색상/사이즈 칼럼은 검색 대상에 아예 빠져 있었다.
+                tokens = q.split()
+                search_columns = ["상품코드", "상품명합", "거래처합", "거래처", "색상", "사이즈"]
+                token_params = []
+                token_clauses = []
+                for token in tokens:
+                    like = f"%{token}%"
+                    token_clauses.append("(" + " OR ".join(f"{col} LIKE ?" for col in search_columns) + ")")
+                    token_params.extend([like] * len(search_columns))
+                search_clause = " AND ".join(token_clauses)
                 where_clause = " AND ".join([search_clause, *extra_clauses])
-                base_params = [like, like, like, like, *extra_params]
+                base_params = [*token_params, *extra_params]
                 rows = conn.execute(
                     f"""SELECT * FROM wonbe
                        WHERE {where_clause}
@@ -4250,10 +4262,17 @@ def build_wonbe_read_router(*, get_current_user, get_shared_db):
                     ).fetchall()
                     total = conn.execute(f"SELECT COUNT(*) FROM wonbe{where}").fetchone()[0]
                 else:
-                    like = f"%{q}%"
-                    search_clause = "(상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?)"
+                    # 로컬 /search와 동일하게 단어별 AND 매칭 + 색상/사이즈 칼럼 포함.
+                    tokens = q.split()
+                    search_columns = ["상품코드", "상품명합", "거래처합", "거래처", "색상", "사이즈"]
+                    base_params = []
+                    token_clauses = []
+                    for token in tokens:
+                        like = f"%{token}%"
+                        token_clauses.append("(" + " OR ".join(f"{col} LIKE ?" for col in search_columns) + ")")
+                        base_params.extend([like] * len(search_columns))
+                    search_clause = " AND ".join(token_clauses)
                     where_clause = f"{search_clause} AND {empty_clause}" if empty_clause else search_clause
-                    base_params = [like, like, like, like]
                     rows = conn.execute(
                         f"""SELECT * FROM wonbe
                            WHERE {where_clause}
