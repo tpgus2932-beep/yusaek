@@ -266,6 +266,21 @@ const ClientCancelSoldOutPage = () => {
               EZAdmin 세션이 만료되어 남은 접수 수량을 조회하지 못했습니다. 세션을 다시 붙여넣고 확인해주세요.
             </p>
           )}
+          {result.search_debug?.length > 0 && (
+            <>
+              <h4 className={styles.subTitle}>상품명별 에이블리 주문 검색 결과</h4>
+              <ul className={styles.resultList}>
+                {result.search_debug.map((sd) => (
+                  <li key={sd.product_name} className={styles.resultItem}>
+                    <span>{sd.product_name}</span>
+                    <span>
+                      전체 검색 {sd.raw_order_item_count}건 / 선택 옵션 매칭 {sd.matched_order_item_count}건
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
           {result.pending_counts?.length > 0 && (
             <>
               <h4 className={styles.subTitle}>상품코드별 잔여 접수</h4>

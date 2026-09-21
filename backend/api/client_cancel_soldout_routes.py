@@ -182,9 +182,16 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
                 detail=f"'{_SOLDOUT_TEMPLATE_NAME}' 템플릿이 없습니다. SMS 탭에서 먼저 만들어주세요.",
             )
 
+        # option_stock_sync_code에 에이블리가 상품코드를 내려주는 게 기본 전제지만(코드 상단 주석 참고),
+        # 리스팅마다 재고연동 설정이 달라 옵션번호(goods_option_sno)를 그대로 내려주는 경우도 있을 수 있어
+        # (EZAdmin 접수 수량은 있는데 실행 결과가 0건으로 나오는 사례의 유력한 원인) 두 형식을 모두 인식한다.
+        matching_ids = set(product_id_to_name) | set(option_code_to_name)
+        name_by_code = {**option_code_to_name, **product_id_to_name}
+
         ably = AblyClient()
         failed: list[dict] = []
         matched_items: list[dict] = []
+        search_debug: list[dict] = []
 
         product_names = sorted({str(p.get("name") or "").strip() for p in products if p.get("name")})
         for name in product_names:
@@ -193,7 +200,13 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
             except Exception as exc:
                 failed.append({"order_sno": None, "product_name": name, "stage": "search", "reason": str(exc)})
                 continue
-            matched_items.extend(filter_matching_order_items(items, set(product_id_to_name)))
+            name_matched = filter_matching_order_items(items, matching_ids)
+            matched_items.extend(name_matched)
+            search_debug.append({
+                "product_name": name,
+                "raw_order_item_count": len(items),
+                "matched_order_item_count": len(name_matched),
+            })
 
         order_items_by_sno = group_items_by_order_sno(matched_items)
 
@@ -230,12 +243,12 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
                     soldout_snos.add(sno)
 
             names = [
-                product_id_to_name.get(str(item.get("option_stock_sync_code") or ""), item.get("goods_name", ""))
+                name_by_code.get(str(item.get("option_stock_sync_code") or ""), item.get("goods_name", ""))
                 for item in items
             ]
             item_details = [
                 {
-                    "name": product_id_to_name.get(str(item.get("option_stock_sync_code") or ""), item.get("goods_name", "")),
+                    "name": name_by_code.get(str(item.get("option_stock_sync_code") or ""), item.get("goods_name", "")),
                     "option_info": item.get("option_info", ""),
                     "ea": item.get("ea"),
                 }
@@ -296,6 +309,7 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
             "failed_orders": failed,
             "non_display_option_count": len(non_display_snos),
             "soldout_goods_count": len(soldout_snos),
+            "search_debug": search_debug,
         })
 
         return {
@@ -307,6 +321,7 @@ def build_client_cancel_soldout_router(*, get_current_user, get_setting, get_db,
             "need_ezdesk_session": need_ezdesk_session,
             "need_ezadmin_session": need_ezadmin_session,
             "pending_counts": pending_counts,
+            "search_debug": search_debug,
         }
 
     @router.get("/logs")
