@@ -1341,13 +1341,17 @@ def build_order_router(
             clauses.append("action_type = ?")
             params.append(action_type)
         if q.strip():
-            like = f"%{q.strip()}%"
-            clauses.append(
-                "(product_code LIKE ? OR product_name LIKE ? OR client_product_name LIKE ? "
-                "OR store_name LIKE ? OR options LIKE ? "
-                "OR recorded_by_username LIKE ? OR recorded_by_display_name LIKE ?)"
-            )
-            params.extend([like, like, like, like, like, like, like])
+            # 공백으로 나눈 단어들을 각각 AND로 요구한다 - "글로우 검정"처럼 상품명(client_product_name)
+            # 일부와 옵션(options)의 색상을 띄어 검색해도 잡히게 한다. 예전엔 검색어 전체를 하나의
+            # 문자열로 LIKE 검색해서 그 순서·인접대로 어딘가에 통째로 붙어있어야만 걸렸다.
+            search_columns = [
+                "product_code", "product_name", "client_product_name",
+                "store_name", "options", "recorded_by_username", "recorded_by_display_name",
+            ]
+            for token in q.strip().split():
+                like = f"%{token}%"
+                clauses.append("(" + " OR ".join(f"{col} LIKE ?" for col in search_columns) + ")")
+                params.extend([like] * len(search_columns))
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         init_order_history_table(get_db)
         conn = get_db()
