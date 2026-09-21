@@ -269,7 +269,11 @@ class AblyClient:
             if not items:
                 break
             all_items.extend(items)
-            if page >= data.get("max_page_number", 1):
+            # 이 엔드포인트는 max_page_number가 아니라 has_more_window/window_max_page_number를
+            # 내려준다 (실제 응답 캡처로 확인 - max_page_number로 확인하면 항상 없는 필드라
+            # 기본값 1이 되어 1페이지만 읽고 멈추는 바람에, 정렬(-checked_at) 뒤쪽에 있는
+            # 오래된 주문이 통째로 누락되는 문제가 있었다).
+            if not data.get("has_more_window", False):
                 break
             page += 1
         return all_items

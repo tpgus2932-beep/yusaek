@@ -11,12 +11,16 @@ from sdk.ably import AblyClient
 
 
 def test_search_order_items_by_goods_name_paginates_until_max_page():
+    # 실제 응답에는 max_page_number가 없고 has_more_window/window_max_page_number를
+    # 쓴다 (실제 브라우저 요청 캡처로 확인) - 이 필드명으로 모킹해야 페이지네이션
+    # 중단 버그(1페이지에서 항상 멈추던 문제)를 테스트가 실제로 잡아낸다.
     client = AblyClient()
     page1 = httpx.Response(
         200,
         json={
             "order_items": [{"sno": 1, "order_sno": 100, "option_stock_sync_code": "175252569"}],
-            "max_page_number": 2,
+            "has_more_window": True,
+            "window_max_page_number": 2,
         },
         request=httpx.Request("GET", "https://api.a-bly.com/seller/order_items/"),
     )
@@ -24,7 +28,8 @@ def test_search_order_items_by_goods_name_paginates_until_max_page():
         200,
         json={
             "order_items": [{"sno": 2, "order_sno": 200, "option_stock_sync_code": "175252570"}],
-            "max_page_number": 2,
+            "has_more_window": False,
+            "window_max_page_number": 2,
         },
         request=httpx.Request("GET", "https://api.a-bly.com/seller/order_items/"),
     )
@@ -44,7 +49,7 @@ def test_search_order_items_by_goods_name_stops_on_empty_page():
     client = AblyClient()
     empty_page = httpx.Response(
         200,
-        json={"order_items": [], "max_page_number": 5},
+        json={"order_items": [], "has_more_window": True, "window_max_page_number": 5},
         request=httpx.Request("GET", "https://api.a-bly.com/seller/order_items/"),
     )
     with patch.object(client, "request", new=AsyncMock(return_value=empty_page)) as mock_request:
