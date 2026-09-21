@@ -198,6 +198,8 @@ export default function CollaborationMenuPage() {
   const receivingQtyInputRefs = useRef({});
   const receivingMisongInputRefs = useRef({});
   const receivingMemoInputRefs = useRef({});
+  const draftQtyInputRefs = useRef({});
+  const draftMisongInputRefs = useRef({});
   const receivingBarcodePrintBtnRef = useRef(null);
   const [receivingSearchQuery, setReceivingSearchQuery] = useState('');
   const [receivingSearchResults, setReceivingSearchResults] = useState([]);
@@ -652,7 +654,9 @@ export default function CollaborationMenuPage() {
         receivingSearchInputRef.current?.focus();
         receivingSearchInputRef.current?.select();
       }
-    } else if (e.key === 'ArrowRight') {
+    } else if (e.key === 'ArrowRight' || e.key === 'Tab') {
+      // Tab도 화살표처럼 같은 행의 미송 칸으로만 이동한다 - 브라우저 기본 탭 순서(다음 칸/다음 행)로
+      // 안 새게 막고, 담을 수량<->미송 두 칸만 이 행 안에서 오가게 한다.
       const row = receivingSearchResults[index];
       const el = row && receivingMisongInputRefs.current[row.id];
       if (el) {
@@ -683,7 +687,9 @@ export default function CollaborationMenuPage() {
   };
 
   const handleMisongInputKeyDown = (e, index) => {
-    if (e.key === 'ArrowLeft') {
+    if (e.key === 'ArrowLeft' || e.key === 'Tab') {
+      // Tab은 요청메모 쪽(ArrowRight)이 아니라 담을 수량 쪽으로 보낸다 - 담을 수량<->미송을
+      // Tab 하나로 왔다갔다 전환하는 용도라, 이 행을 벗어나는 다음 칸으로는 안 넘어간다.
       const row = receivingSearchResults[index];
       const el = row && receivingQtyInputRefs.current[row.id];
       if (el) {
@@ -831,6 +837,30 @@ export default function CollaborationMenuPage() {
   const updateReceivingDraftMisongQty = (key, misongQty) => {
     updateReceivingDraftForSlot(receivingDraftSlot, (prev) =>
       prev.map((item) => (receivingDraftKey(item) === key ? { ...item, misongQty } : item)));
+  };
+
+  // 입고 목록에서도 검색 결과와 동일하게 Tab으로 수량<->미송만 오가게 한다 - 포커스가
+  // 있는 행에서만 동작하고, 브라우저 기본 탭 순서(요청메모/다음 행)로는 넘어가지 않는다.
+  const handleDraftQtyInputKeyDown = (e, key) => {
+    if (e.key === 'Tab') {
+      const el = draftMisongInputRefs.current[key];
+      if (el) {
+        e.preventDefault();
+        el.focus();
+        el.select();
+      }
+    }
+  };
+
+  const handleDraftMisongInputKeyDown = (e, key) => {
+    if (e.key === 'Tab') {
+      const el = draftQtyInputRefs.current[key];
+      if (el) {
+        e.preventDefault();
+        el.focus();
+        el.select();
+      }
+    }
   };
 
   const updateReceivingDraftMemo = (key, memo) => {
@@ -1121,7 +1151,8 @@ export default function CollaborationMenuPage() {
         wonbeSearchInputRef.current?.focus();
         wonbeSearchInputRef.current?.select();
       }
-    } else if (e.key === 'ArrowRight') {
+    } else if (e.key === 'ArrowRight' || e.key === 'Tab') {
+      // Tab도 화살표처럼 같은 행의 미송 칸으로만 이동한다 - 담을 수량<->미송 두 칸만 오가게 한다.
       const row = wonbeSearchResults[index];
       const el = row && wonbeMisongInputRefs.current[row['상품코드']];
       if (el) {
@@ -1136,7 +1167,8 @@ export default function CollaborationMenuPage() {
   };
 
   const handleWonbeMisongInputKeyDown = (e, index) => {
-    if (e.key === 'ArrowLeft') {
+    if (e.key === 'ArrowLeft' || e.key === 'Tab') {
+      // Tab은 요청메모 쪽이 아니라 담을 수량 쪽으로 보낸다 (담을 수량<->미송 전환용).
       const row = wonbeSearchResults[index];
       const el = row && wonbeQtyInputRefs.current[row['상품코드']];
       if (el) {
@@ -1933,21 +1965,25 @@ export default function CollaborationMenuPage() {
                     <td>{item.storeName || '-'}</td>
                     <td>
                       <input
+                        ref={(el) => { draftQtyInputRefs.current[receivingDraftKey(item)] = el; }}
                         className={styles.cellInput}
                         type="number"
                         min="0"
                         value={item.qty}
                         onChange={(e) => updateReceivingDraftQty(receivingDraftKey(item), e.target.value)}
+                        onKeyDown={(e) => handleDraftQtyInputKeyDown(e, receivingDraftKey(item))}
                         style={{ width: '80px' }}
                       />
                     </td>
                     <td>
                       <input
+                        ref={(el) => { draftMisongInputRefs.current[receivingDraftKey(item)] = el; }}
                         className={styles.cellInput}
                         type="number"
                         min="0"
                         value={item.misongQty || 0}
                         onChange={(e) => updateReceivingDraftMisongQty(receivingDraftKey(item), e.target.value)}
+                        onKeyDown={(e) => handleDraftMisongInputKeyDown(e, receivingDraftKey(item))}
                         style={{ width: '80px' }}
                       />
                     </td>
