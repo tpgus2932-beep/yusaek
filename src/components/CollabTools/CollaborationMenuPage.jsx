@@ -198,8 +198,6 @@ export default function CollaborationMenuPage() {
   const receivingQtyInputRefs = useRef({});
   const receivingMisongInputRefs = useRef({});
   const receivingMemoInputRefs = useRef({});
-  const draftQtyInputRefs = useRef({});
-  const draftMisongInputRefs = useRef({});
   const receivingBarcodePrintBtnRef = useRef(null);
   const [receivingSearchQuery, setReceivingSearchQuery] = useState('');
   const [receivingSearchResults, setReceivingSearchResults] = useState([]);
@@ -602,6 +600,15 @@ export default function CollaborationMenuPage() {
     setReceivingSearchMisongEdits((prev) => ({ ...prev, [rowId]: misongQty }));
   };
 
+  const swapReceivingSearchQtyMisong = (index) => {
+    const row = receivingSearchResults[index];
+    if (!row) return;
+    const qtyValue = receivingSearchQtyEdits[row.id] ?? row.request_qty ?? 1;
+    const misongValue = receivingSearchMisongEdits[row.id] ?? 0;
+    updateReceivingSearchQty(row.id, misongValue);
+    updateReceivingSearchMisong(row.id, qtyValue);
+  };
+
   // 검색창/담을 수량 칸 사이를 화살표 위·아래로 오가며 수량을 바로 수정할 수 있게 한다.
   // 이미 담긴 행(입력칸 disabled)은 건너뛰고, 맨 위에서 더 올라가면 검색창으로 돌아간다.
   const focusReceivingQtyInputAt = (index, step) => {
@@ -654,9 +661,7 @@ export default function CollaborationMenuPage() {
         receivingSearchInputRef.current?.focus();
         receivingSearchInputRef.current?.select();
       }
-    } else if (e.key === 'ArrowRight' || e.key === 'Tab') {
-      // Tab도 화살표처럼 같은 행의 미송 칸으로만 이동한다 - 브라우저 기본 탭 순서(다음 칸/다음 행)로
-      // 안 새게 막고, 담을 수량<->미송 두 칸만 이 행 안에서 오가게 한다.
+    } else if (e.key === 'ArrowRight') {
       const row = receivingSearchResults[index];
       const el = row && receivingMisongInputRefs.current[row.id];
       if (el) {
@@ -664,6 +669,10 @@ export default function CollaborationMenuPage() {
         el.focus();
         el.select();
       }
+    } else if (e.key === 'Tab') {
+      // Tab은 포커스 이동이 아니라, 이 행의 담을 수량<->미송 값 자체를 맞바꾼다.
+      e.preventDefault();
+      swapReceivingSearchQtyMisong(index);
     } else if (e.key === 'Enter') {
       e.preventDefault();
       triggerAddToReceivingDraft(index);
@@ -687,9 +696,7 @@ export default function CollaborationMenuPage() {
   };
 
   const handleMisongInputKeyDown = (e, index) => {
-    if (e.key === 'ArrowLeft' || e.key === 'Tab') {
-      // Tab은 요청메모 쪽(ArrowRight)이 아니라 담을 수량 쪽으로 보낸다 - 담을 수량<->미송을
-      // Tab 하나로 왔다갔다 전환하는 용도라, 이 행을 벗어나는 다음 칸으로는 안 넘어간다.
+    if (e.key === 'ArrowLeft') {
       const row = receivingSearchResults[index];
       const el = row && receivingQtyInputRefs.current[row.id];
       if (el) {
@@ -705,6 +712,10 @@ export default function CollaborationMenuPage() {
         el.focus();
         el.select();
       }
+    } else if (e.key === 'Tab') {
+      // Tab은 포커스 이동이 아니라, 이 행의 담을 수량<->미송 값 자체를 맞바꾼다.
+      e.preventDefault();
+      swapReceivingSearchQtyMisong(index);
     } else if (e.key === 'ArrowDown' && e.ctrlKey) {
       e.preventDefault();
       focusReceivingBarcodePrintBtn();
@@ -839,27 +850,26 @@ export default function CollaborationMenuPage() {
       prev.map((item) => (receivingDraftKey(item) === key ? { ...item, misongQty } : item)));
   };
 
-  // 입고 목록에서도 검색 결과와 동일하게 Tab으로 수량<->미송만 오가게 한다 - 포커스가
-  // 있는 행에서만 동작하고, 브라우저 기본 탭 순서(요청메모/다음 행)로는 넘어가지 않는다.
+  // 입고 목록에서도 검색 결과와 동일하게, 포커스가 있는 행에서 Tab을 누르면
+  // 포커스 이동이 아니라 그 행의 담을 수량<->미송 값 자체를 맞바꾼다.
+  const swapDraftQtyMisong = (key) => {
+    updateReceivingDraftForSlot(receivingDraftSlot, (prev) =>
+      prev.map((item) => (receivingDraftKey(item) === key
+        ? { ...item, qty: item.misongQty || 0, misongQty: item.qty || 0 }
+        : item)));
+  };
+
   const handleDraftQtyInputKeyDown = (e, key) => {
     if (e.key === 'Tab') {
-      const el = draftMisongInputRefs.current[key];
-      if (el) {
-        e.preventDefault();
-        el.focus();
-        el.select();
-      }
+      e.preventDefault();
+      swapDraftQtyMisong(key);
     }
   };
 
   const handleDraftMisongInputKeyDown = (e, key) => {
     if (e.key === 'Tab') {
-      const el = draftQtyInputRefs.current[key];
-      if (el) {
-        e.preventDefault();
-        el.focus();
-        el.select();
-      }
+      e.preventDefault();
+      swapDraftQtyMisong(key);
     }
   };
 
@@ -1048,6 +1058,16 @@ export default function CollaborationMenuPage() {
     setWonbeSearchMisongEdits((prev) => ({ ...prev, [code]: misongQty }));
   };
 
+  const swapWonbeSearchQtyMisong = (index) => {
+    const row = wonbeSearchResults[index];
+    const code = row && row['상품코드'];
+    if (!code) return;
+    const qtyValue = wonbeSearchQtyEdits[code] ?? 1;
+    const misongValue = wonbeSearchMisongEdits[code] ?? 0;
+    updateWonbeSearchQty(code, misongValue);
+    updateWonbeSearchMisong(code, qtyValue);
+  };
+
   const updateWonbeSearchMemo = (code, memo) => {
     setWonbeSearchMemoEdits((prev) => ({ ...prev, [code]: memo }));
   };
@@ -1151,8 +1171,7 @@ export default function CollaborationMenuPage() {
         wonbeSearchInputRef.current?.focus();
         wonbeSearchInputRef.current?.select();
       }
-    } else if (e.key === 'ArrowRight' || e.key === 'Tab') {
-      // Tab도 화살표처럼 같은 행의 미송 칸으로만 이동한다 - 담을 수량<->미송 두 칸만 오가게 한다.
+    } else if (e.key === 'ArrowRight') {
       const row = wonbeSearchResults[index];
       const el = row && wonbeMisongInputRefs.current[row['상품코드']];
       if (el) {
@@ -1160,6 +1179,10 @@ export default function CollaborationMenuPage() {
         el.focus();
         el.select();
       }
+    } else if (e.key === 'Tab') {
+      // Tab은 포커스 이동이 아니라, 이 행의 담을 수량<->미송 값 자체를 맞바꾼다.
+      e.preventDefault();
+      swapWonbeSearchQtyMisong(index);
     } else if (e.key === 'Enter') {
       e.preventDefault();
       triggerAddWonbeRow(index);
@@ -1167,8 +1190,7 @@ export default function CollaborationMenuPage() {
   };
 
   const handleWonbeMisongInputKeyDown = (e, index) => {
-    if (e.key === 'ArrowLeft' || e.key === 'Tab') {
-      // Tab은 요청메모 쪽이 아니라 담을 수량 쪽으로 보낸다 (담을 수량<->미송 전환용).
+    if (e.key === 'ArrowLeft') {
       const row = wonbeSearchResults[index];
       const el = row && wonbeQtyInputRefs.current[row['상품코드']];
       if (el) {
@@ -1184,6 +1206,10 @@ export default function CollaborationMenuPage() {
         el.focus();
         el.select();
       }
+    } else if (e.key === 'Tab') {
+      // Tab은 포커스 이동이 아니라, 이 행의 담을 수량<->미송 값 자체를 맞바꾼다.
+      e.preventDefault();
+      swapWonbeSearchQtyMisong(index);
     } else if (e.key === 'ArrowDown' && e.ctrlKey) {
       e.preventDefault();
       focusWonbeBarcodePrintBtn();
@@ -1965,7 +1991,6 @@ export default function CollaborationMenuPage() {
                     <td>{item.storeName || '-'}</td>
                     <td>
                       <input
-                        ref={(el) => { draftQtyInputRefs.current[receivingDraftKey(item)] = el; }}
                         className={styles.cellInput}
                         type="number"
                         min="0"
@@ -1977,7 +2002,6 @@ export default function CollaborationMenuPage() {
                     </td>
                     <td>
                       <input
-                        ref={(el) => { draftMisongInputRefs.current[receivingDraftKey(item)] = el; }}
                         className={styles.cellInput}
                         type="number"
                         min="0"
