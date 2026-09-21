@@ -234,6 +234,15 @@ export default function CollaborationMenuPage() {
       return { ...prev, [slot]: nextForSlot };
     });
   };
+  // 새로 검색하면 위 배치가 비워지는데, 그 직전 배치를 담아놓고 깜빡 잊고 출력을 안 했을 수
+  // 있어 "이전 바코드 출력"으로 다시 꺼내 출력할 수 있게 슬롯별로 한 단계 보관해둔다.
+  const [receivingPreviousPrintBatchKeysBySlot, setReceivingPreviousPrintBatchKeysBySlot] = useState({});
+  const receivingPreviousPrintBatchKeys = receivingPreviousPrintBatchKeysBySlot[receivingDraftSlot] || EMPTY_SET;
+  const snapshotPreviousPrintBatch = (slot) => {
+    const current = receivingPrintBatchKeysBySlot[slot];
+    if (!current || current.size === 0) return;
+    setReceivingPreviousPrintBatchKeysBySlot((prev) => ({ ...prev, [slot]: current }));
+  };
   const [receivingApplying, setReceivingApplying] = useState(false);
   const [receivingMessage, setReceivingMessage] = useState('');
   const [receivingMessageType, setReceivingMessageType] = useState('');
@@ -582,6 +591,7 @@ export default function CollaborationMenuPage() {
       setReceivingSearchResults(sortedRows);
       setReceivingSearchQtyEdits({});
       setReceivingSearchMisongEdits({});
+      snapshotPreviousPrintBatch(receivingDraftSlot);
       updatePrintBatchKeysForSlot(receivingDraftSlot, new Set());
       if (!data.rows?.length) setReceivingFeedback('error', '검색 결과가 없습니다.');
     } catch (error) {
@@ -895,6 +905,7 @@ export default function CollaborationMenuPage() {
         throw new Error(data.detail || '공용 입고목록을 불러오지 못했습니다.');
       }
       updateReceivingDraftForSlot(receivingDraftSlot, () => (Array.isArray(data.items) ? data.items : []));
+      snapshotPreviousPrintBatch(receivingDraftSlot);
       updatePrintBatchKeysForSlot(receivingDraftSlot, new Set());
       const slotLabel = getSharedPasteSlotLabel(receivingDraftSlot);
       setReceivingDraftSlotMeta(data.updated_by ? `${slotLabel} 최근 저장: ${data.updated_by}` : `${slotLabel} 공용 데이터 없음`);
@@ -977,15 +988,19 @@ export default function CollaborationMenuPage() {
   };
 
   // 판매자대기/교환고객처럼 EZAdmin 전표 없이 라벨을 바로 인쇄한다.
-  // 대상은 "이번 검색에서 담은 것"만(receivingPrintBatchKeys) - 예전 검색에서 담아둔 건 빠진다.
+  // 대상은 batchKeys에 담긴 것만 - 기본은 "이번 검색에서 담은 것"(receivingPrintBatchKeys)이고,
+  // "이전 바코드 출력" 버튼은 그 직전 배치(receivingPreviousPrintBatchKeys)를 넘겨 재사용한다.
   // 상품명은 원가베이스유에서 상품코드로 다시 찾은 순수 상품명을 쓴다 - 미송픽업 검색결과는
   // product_name/거래처상품명 칸에 실제 상품명이 아니라 미송관리 표시용 값이 들어있기 때문.
-  const handleSimpleReceivingBarcodePrint = async () => {
+  const handleSimpleReceivingBarcodePrint = async (
+    batchKeys = receivingPrintBatchKeys,
+    emptyMessage = '이번 검색에서 담은 상품이 없습니다.',
+  ) => {
     const batchItems = receivingDraft.filter(
-      (item) => item.code && receivingPrintBatchKeys.has(receivingDraftKey(item)),
+      (item) => item.code && batchKeys.has(receivingDraftKey(item)),
     );
     if (!batchItems.length) {
-      setReceivingFeedback('error', '이번 검색에서 담은 상품이 없습니다.');
+      setReceivingFeedback('error', emptyMessage);
       return;
     }
     let nameByCode = {};
@@ -1011,6 +1026,11 @@ export default function CollaborationMenuPage() {
     });
     printProductLabels(labels);
   };
+
+  // 담아놓고 출력을 깜빡한 채 다른 걸 검색해버려서 이번 배치(receivingPrintBatchKeys)가
+  // 비워졌을 때, 그 직전 배치를 다시 꺼내 출력한다.
+  const handlePreviousBarcodePrint = () =>
+    handleSimpleReceivingBarcodePrint(receivingPreviousPrintBatchKeys, '이전 검색에서 담은 상품이 없습니다.');
 
   // 원가베이스유 검색 결과 행을 발주내역 검색 행과 같은 모양으로 맞춰서
   // addToReceivingDraft/isMisongPickupRow가 그대로 재사용되게 한다.
@@ -1723,7 +1743,7 @@ export default function CollaborationMenuPage() {
             type="button"
             className={styles.secondaryBtn}
             disabled={receivingPrintBatchKeys.size === 0}
-            onClick={handleSimpleReceivingBarcodePrint}
+            onClick={() => handleSimpleReceivingBarcodePrint()}
             onKeyDown={(e) => {
               if (e.key === 'ArrowUp') {
                 e.preventDefault();
@@ -1735,6 +1755,15 @@ export default function CollaborationMenuPage() {
             }}
           >
             {`바코드 출력${receivingPrintBatchKeys.size ? ` (${receivingPrintBatchKeys.size}건)` : ''}`}
+          </button>
+          <button
+            type="button"
+            className={styles.secondaryBtn}
+            disabled={receivingPreviousPrintBatchKeys.size === 0}
+            onClick={handlePreviousBarcodePrint}
+            title="담아놓고 출력을 깜빡한 채 다른 걸 검색했을 때, 그 직전 검색에서 담은 상품을 다시 출력합니다"
+          >
+            {`이전 바코드 출력${receivingPreviousPrintBatchKeys.size ? ` (${receivingPreviousPrintBatchKeys.size}건)` : ''}`}
           </button>
           {receivingPrintBatchKeys.size === 0 && (
             <span className={styles.cardHint}>이번 검색에서 담은 상품이 있어야 바코드 출력을 쓸 수 있습니다.</span>
@@ -1868,7 +1897,7 @@ export default function CollaborationMenuPage() {
             type="button"
             className={styles.secondaryBtn}
             disabled={receivingPrintBatchKeys.size === 0}
-            onClick={handleSimpleReceivingBarcodePrint}
+            onClick={() => handleSimpleReceivingBarcodePrint()}
             onKeyDown={(e) => {
               if (e.key === 'ArrowUp') {
                 e.preventDefault();
@@ -1880,6 +1909,15 @@ export default function CollaborationMenuPage() {
             }}
           >
             {`바코드 출력${receivingPrintBatchKeys.size ? ` (${receivingPrintBatchKeys.size}건)` : ''}`}
+          </button>
+          <button
+            type="button"
+            className={styles.secondaryBtn}
+            disabled={receivingPreviousPrintBatchKeys.size === 0}
+            onClick={handlePreviousBarcodePrint}
+            title="담아놓고 출력을 깜빡한 채 다른 걸 검색했을 때, 그 직전 검색에서 담은 상품을 다시 출력합니다"
+          >
+            {`이전 바코드 출력${receivingPreviousPrintBatchKeys.size ? ` (${receivingPreviousPrintBatchKeys.size}건)` : ''}`}
           </button>
           {receivingPrintBatchKeys.size === 0 && (
             <span className={styles.cardHint}>이번 검색에서 담은 상품이 있어야 바코드 출력을 쓸 수 있습니다.</span>
