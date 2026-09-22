@@ -98,6 +98,21 @@ def test_resolve_product_codes_is_case_insensitive(monkeypatch):
     assert result["product_id"] == "S00002"
 
 
+def test_resolve_product_codes_falls_back_to_option_sno(monkeypatch):
+    client, _state = _make_client(monkeypatch)
+    monkeypatch.setattr(returns_routes, "load_wonbe_option_sno_map", lambda: {"542200734": "S27714"})
+
+    res = client.post(
+        "/returns/resolve-product-codes",
+        json={"items": [{"id": 1, "option_code": "542200734"}]},
+    )
+
+    assert res.status_code == 200
+    result = res.json()["results"][0]
+    assert result["error"] is None
+    assert result["product_id"] == "S27714"
+
+
 def test_ezadmin_receive_stock_is_case_insensitive(monkeypatch):
     client, state = _make_client(monkeypatch)
     item = {"id": 1, "scan": "return-1", "option_code": "s00002", "qty": "1", "order_no": "1001"}
@@ -115,6 +130,29 @@ def test_ezadmin_receive_stock_is_case_insensitive(monkeypatch):
     assert data["results"][0]["product_id"] == "S00002"
     assert _FakeEzAdminClient.receive_stock_calls == [
         {"product_id": "S00002", "qty": 1, "memo": "반품입고 1001"}
+    ]
+
+
+def test_ezadmin_receive_stock_falls_back_to_option_sno(monkeypatch):
+    # 에이블리에서 해당 옵션의 재고동기화코드가 아직 상품코드로 설정 안 돼
+    # 옵션번호(542200734)가 그대로 내려오는 실제 사례를 재현.
+    client, state = _make_client(monkeypatch)
+    monkeypatch.setattr(returns_routes, "load_wonbe_option_sno_map", lambda: {"542200734": "S27714"})
+    item = {"id": 3, "scan": "return-3", "option_code": "542200734", "qty": "1", "order_no": "1003"}
+    state.queue_customer = [item]
+    state.all_items = [item]
+
+    res = client.post(
+        "/returns/ezadmin-receive-stock",
+        json={"items": [{"id": 3, "option_code": "542200734", "qty": "1", "order_no": "1003"}]},
+    )
+
+    assert res.status_code == 200
+    result = res.json()["results"][0]
+    assert result["ok"] is True
+    assert result["product_id"] == "S27714"
+    assert _FakeEzAdminClient.receive_stock_calls == [
+        {"product_id": "S27714", "qty": 1, "memo": "반품입고 1003"}
     ]
 
 

@@ -3142,7 +3142,10 @@ def build_returns_router(
                 option_code = str(item.get("option_code") or "").strip()
                 original_option_sno = str(item.get("original_option_sno") or "").strip()
                 if option_code:
-                    product_id = product_codes.get(option_code.upper())
+                    # option_code는 보통 상품코드 그 자체지만, 에이블리에서 해당 옵션의
+                    # 재고동기화코드가 아직 상품코드로 설정 안 돼 옵션번호 그대로 내려오는
+                    # 경우가 있어(예: 542200734) 상품코드 매칭 실패 시 옵션번호로도 조회한다.
+                    product_id = product_codes.get(option_code.upper()) or option_sno_map.get(option_code)
                     if not product_id:
                         raise ValueError(f"상품코드({option_code})를 원가베이스유에서 찾을 수 없음")
                 elif original_option_sno:
@@ -3191,7 +3194,10 @@ def build_returns_router(
             original_option_sno = str(item.get("original_option_sno") or "").strip()
             error = None
             if option_code:
-                product_id = product_codes.get(option_code.upper())
+                # option_code는 보통 상품코드 그 자체지만, 에이블리에서 해당 옵션의
+                # 재고동기화코드가 아직 상품코드로 설정 안 돼 옵션번호 그대로 내려오는
+                # 경우가 있어(예: 542200734) 상품코드 매칭 실패 시 옵션번호로도 조회한다.
+                product_id = product_codes.get(option_code.upper()) or option_sno_map.get(option_code)
                 if not product_id:
                     error = f"상품코드({option_code})를 원가베이스유에서 찾을 수 없음"
             elif original_option_sno:
