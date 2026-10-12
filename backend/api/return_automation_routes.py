@@ -576,28 +576,20 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
         except EzAdminSessionExpired as exc: raise HTTPException(status_code=401, detail=f"EZAdmin 세션이 만료되었습니다: {exc}")
         except Exception as exc: raise HTTPException(status_code=502, detail=str(exc))
 
-    # Ably 1:1 문의방 카테고리 전체 목록 - seller-admin 문의 화면이 필터 없이 조회할 때
-    # 보내는 category[] 값 그대로 고정해 둔다(신규 카테고리 추가 시 함께 갱신 필요).
-    CS_CHECK_CATEGORIES = ["2","101","120","3","102","121","4","103","122","5","104","123","9","11","106","125",
-        "12","107","126","13","108","127","14","109","128","15","110","129","16","111","130","19","153","172"]
-
     @router.post("/check-cs")
     async def check_cs(payload: dict = Body(...), user=Depends(get_current_user)):
         items = payload.get("items") or []
-        start_date = str(payload.get("start_date") or "")
-        end_date = str(payload.get("end_date") or "")
         phones = sorted({str(x.get("phone") or "").strip() for x in items if str(x.get("phone") or "").strip()})
         if not phones:
             return {"ok": True, "results": {}}
+        # 반품요청 조회 기간(최근 30일)보다 먼저 들어온 문의도 잡도록 90일, 완료된 문의방(status 3~5)까지 조회한다.
+        now = datetime.now(KST)
+        start_date = (now - timedelta(days=90)).strftime("%Y-%m-%d")
+        end_date = now.strftime("%Y-%m-%d")
         try:
             ably = AblyClient(); results = {}
             for phone in phones:
-                response = await ably.request("GET", "/seller/contact_rooms/", params={
-                    "start_date": start_date, "end_date": end_date, "order": "-updated_latest_message_at",
-                    "category[]": CS_CHECK_CATEGORIES, "status[]": ["1", "2"], "mobile": phone,
-                })
-                response.raise_for_status(); data = response.json()
-                rooms = data.get("contact_rooms") or []
+                rooms = await ably.list_contact_rooms_by_mobile(phone, start_date=start_date, end_date=end_date)
                 latest = rooms[0] if rooms else {}
                 results[phone] = {
                     "has_contact": bool(rooms), "count": len(rooms),
