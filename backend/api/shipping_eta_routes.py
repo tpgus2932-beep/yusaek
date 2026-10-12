@@ -10,6 +10,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 _EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+# get_number_list는 PHPSESSID만으로는 응답하지 않고(ReadTimeout), 로그인 도메인/아이디 쿠키가 같이 있어야 한다.
+_EZ_EXTRA_COOKIES = {"ezdomain": "yusaek", "ezuserid": "yusaek", "ezsave": "on"}
 _KST = ZoneInfo("Asia/Seoul")
 _BULK_MIN_COUNT = 10
 _HISTORY_DAYS = 5
@@ -123,10 +125,10 @@ def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
             async with httpx.AsyncClient(timeout=60.0, verify=False, follow_redirects=True) as client:
                 res = await client.post(
                     f"{_EZADMIN_BASE}/function.htm", headers=headers,
-                    cookies={"PHPSESSID": phpsessid}, data=form,
+                    cookies={"PHPSESSID": phpsessid, **_EZ_EXTRA_COOKIES}, data=form,
                 )
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"이지어드민 응답 오류: {e}")
+            raise HTTPException(status_code=502, detail=f"이지어드민 응답 오류: {type(e).__name__} {e}".strip())
         try:
             return res.json()
         except Exception:
