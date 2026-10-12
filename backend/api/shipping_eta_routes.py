@@ -18,14 +18,20 @@ _KST = ZoneInfo("Asia/Seoul")
 _BULK_MIN_COUNT = 10
 _HISTORY_DAYS = 5
 
-# 버튼 순서. 각 이벤트는 앞 단계가 기록돼 있어야 하고 자기 자신은 비어 있어야 한다.
-_EVENT_COLUMNS = {
-    "pack_start": "bulk_start",
-    "bulk_end": "bulk_end",
-    "single_start": "single_start",
-    "single_end": "single_end",
+# 6단계: 종류(대량/개별/합배) x 공정(포장/출고). 예상 시간 계산은 이 순서대로 이어서 진행한다고 가정한다.
+# 칸마다 시작/종료를 따로 기록하며 기록 순서는 강제하지 않는다.
+_STAGES = [
+    ("bulk_pack", "bulk"), ("bulk_ship", "bulk"),
+    ("single_pack", "single"), ("single_ship", "single"),
+    ("combo_pack", "combo"), ("combo_ship", "combo"),
+]
+_STAGE_KEYS = [k for k, _ in _STAGES]
+_STAGE_COLUMNS = [f"{k}_{edge}" for k in _STAGE_KEYS for edge in ("start", "end")]
+# 이전 버전(4칸)에서 쌓인 기록을 새 칼럼으로 옮기기 위한 매핑
+_LEGACY_COLUMNS = {
+    "bulk_start": "bulk_pack_start", "bulk_end": "bulk_pack_end",
+    "single_start": "single_pack_start", "single_end": "single_pack_end",
 }
-_EVENT_ORDER = ["bulk_start", "bulk_end", "single_start", "single_end"]
 
 _NUMBER_TITLE_RE = re.compile(r"\[\s*(\d+)\s*\]\s*\((\d{2}:\d{2}:\d{2})\)\s*개수\s*:\s*(\d+)")
 _PRODUCT_RE = re.compile(r"\[([A-Z]\d+)\](.*?)(?:-\[([^\]]*)\])?\s+(\d+)개")
@@ -34,14 +40,12 @@ _PRODUCT_RE = re.compile(r"\[([A-Z]\d+)\](.*?)(?:-\[([^\]]*)\])?\s+(\d+)개")
 def init_shipping_eta_table(get_db):
     conn = get_db()
     try:
+        stage_ddl = ",\n".join(f"                {c} TEXT NOT NULL DEFAULT ''" for c in _STAGE_COLUMNS)
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS shipping_eta_log (
                 work_date TEXT PRIMARY KEY,
-                bulk_start TEXT NOT NULL DEFAULT '',
-                bulk_end TEXT NOT NULL DEFAULT '',
-                single_start TEXT NOT NULL DEFAULT '',
-                single_end TEXT NOT NULL DEFAULT '',
+{stage_ddl},
                 bulk_count INTEGER NOT NULL DEFAULT 0,
                 single_count INTEGER NOT NULL DEFAULT 0,
                 combo_count INTEGER NOT NULL DEFAULT 0,
@@ -50,6 +54,13 @@ def init_shipping_eta_table(get_db):
             )
             """
         )
+        existing = {r["name"] for r in conn.execute("PRAGMA table_info(shipping_eta_log)").fetchall()}
+        for col in _STAGE_COLUMNS:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE shipping_eta_log ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+        for old, new in _LEGACY_COLUMNS.items():
+            if old in existing:
+                conn.execute(f"UPDATE shipping_eta_log SET {new} = {old} WHERE {new} = '' AND {old} != ''")
         conn.commit()
     finally:
         conn.close()
@@ -138,58 +149,54 @@ def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
 
     def _read_row(conn, work_date: str) -> dict:
         row = conn.execute("SELECT * FROM shipping_eta_log WHERE work_date = ?", (work_date,)).fetchone()
+        keys = ["work_date", *_STAGE_COLUMNS, "bulk_count", "single_count", "combo_count"]
         if row is None:
-            return {
-                "work_date": work_date, "bulk_start": "", "bulk_end": "", "single_start": "", "single_end": "",
-                "bulk_count": 0, "single_count": 0, "combo_count": 0,
-            }
-        return {k: row[k] for k in row.keys()}
+            return {k: ("" if k in _STAGE_COLUMNS or k == "work_date" else 0) for k in keys} | {"work_date": work_date}
+        return {k: row[k] for k in keys}
 
     def _estimate(conn, work_date: str, current: dict) -> dict:
         rows = conn.execute(
             "SELECT * FROM shipping_eta_log WHERE work_date < ? ORDER BY work_date DESC LIMIT 60", (work_date,)
         ).fetchall()
-        bulk_rates: list[float] = []
-        single_rates: list[float] = []
-        for r in rows:
-            if len(bulk_rates) < _HISTORY_DAYS:
-                v = _rate(r["bulk_start"], r["bulk_end"], r["bulk_count"])
+        rates: dict[str, float | None] = {}
+        history_days: dict[str, int] = {}
+        for key, kind in _STAGES:
+            values: list[float] = []
+            for r in rows:
+                v = _rate(r[f"{key}_start"], r[f"{key}_end"], r[f"{kind}_count"])
                 if v is not None:
-                    bulk_rates.append(v)
-            if len(single_rates) < _HISTORY_DAYS:
-                # 합포는 개별 포장 시간에 포함해서 계산한다
-                v = _rate(r["single_start"], r["single_end"], r["single_count"] + r["combo_count"])
-                if v is not None:
-                    single_rates.append(v)
-        bulk_rate, single_rate = _avg(bulk_rates), _avg(single_rates)
+                    values.append(v)
+                if len(values) >= _HISTORY_DAYS:
+                    break
+            rates[key] = _avg(values)
+            history_days[key] = len(values)
+
         now = _now()
-
-        bulk_end_est = None
-        if current["bulk_end"]:
-            bulk_end_est = _parse_dt(current["bulk_end"])
-        elif bulk_rate is not None and current["bulk_count"] > 0:
-            start = _parse_dt(current["bulk_start"]) or now
-            bulk_end_est = max(now, start + timedelta(seconds=bulk_rate * current["bulk_count"]))
-
-        single_end_est = None
-        single_n = current["single_count"] + current["combo_count"]
-        if current["single_end"]:
-            single_end_est = _parse_dt(current["single_end"])
-        elif single_rate is not None and single_n > 0:
-            start = _parse_dt(current["single_start"]) or bulk_end_est or now
-            single_end_est = max(now, start + timedelta(seconds=single_rate * single_n))
-
-        eta = single_end_est if single_n > 0 else bulk_end_est
-        if eta is not None and (current["bulk_count"] > 0 and bulk_end_est is None):
-            eta = None  # 대량 구간 예상을 못 내면 전체 예상도 내지 않는다
+        cursor = now
+        unknown = False
+        stage_est: dict[str, str] = {}
+        for key, kind in _STAGES:
+            n = current[f"{kind}_count"]
+            start, end = _parse_dt(current[f"{key}_start"]), _parse_dt(current[f"{key}_end"])
+            if end:
+                est = end
+                cursor = max(cursor, end)
+            elif n <= 0:
+                continue
+            elif rates[key] is None:
+                unknown = True
+                continue
+            else:
+                begin = start or cursor
+                est = max(now, begin + timedelta(seconds=rates[key] * n))
+                cursor = max(cursor, est)
+            stage_est[key] = est.isoformat()
+        has_work = any(current[f"{kind}_count"] > 0 for _, kind in _STAGES)
         return {
-            "bulk_rate_sec": bulk_rate,
-            "single_rate_sec": single_rate,
-            "history_bulk_days": len(bulk_rates),
-            "history_single_days": len(single_rates),
-            "bulk_end_est": bulk_end_est.isoformat() if bulk_end_est else "",
-            "single_end_est": single_end_est.isoformat() if single_end_est else "",
-            "eta": eta.isoformat() if eta else "",
+            "rates": rates,
+            "history_days": history_days,
+            "stage_est": stage_est,
+            "eta": cursor.isoformat() if has_work and not unknown else "",
             "now": now.isoformat(),
         }
 
@@ -279,24 +286,31 @@ def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
     @router.post("/event")
     async def event(payload: dict = Body(...), user: str = Depends(get_current_user)):
         work_date = _norm_date(payload.get("date", ""))
-        name = str(payload.get("event", "")).strip()
+        stage = str(payload.get("stage", "")).strip()
+        action = str(payload.get("action", "")).strip()
+        if stage not in _STAGE_KEYS:
+            raise HTTPException(status_code=400, detail="알 수 없는 단계입니다.")
+        start_col, end_col = f"{stage}_start", f"{stage}_end"
         conn = get_db()
         try:
             current = _read_row(conn, work_date)
-            if name == "undo":
-                last = next((c for c in reversed(_EVENT_ORDER) if current[c]), None)
-                if last is None:
+            if action == "start":
+                if current[start_col]:
+                    raise HTTPException(status_code=400, detail="이미 시작한 단계입니다.")
+                column, value = start_col, _now().isoformat()
+            elif action == "end":
+                if not current[start_col]:
+                    raise HTTPException(status_code=400, detail="먼저 시작을 기록해 주세요.")
+                if current[end_col]:
+                    raise HTTPException(status_code=400, detail="이미 종료한 단계입니다.")
+                column, value = end_col, _now().isoformat()
+            elif action == "undo":
+                column = end_col if current[end_col] else start_col
+                if not current[column]:
                     raise HTTPException(status_code=400, detail="취소할 기록이 없습니다.")
-                column, value = last, ""
-            elif name in _EVENT_COLUMNS:
-                column, value = _EVENT_COLUMNS[name], _now().isoformat()
-                idx = _EVENT_ORDER.index(column)
-                if current[column]:
-                    raise HTTPException(status_code=400, detail="이미 기록된 단계입니다.")
-                if idx > 0 and not current[_EVENT_ORDER[idx - 1]]:
-                    raise HTTPException(status_code=400, detail="이전 단계를 먼저 기록해 주세요.")
+                value = ""
             else:
-                raise HTTPException(status_code=400, detail="알 수 없는 이벤트입니다.")
+                raise HTTPException(status_code=400, detail="알 수 없는 동작입니다.")
             conn.execute(
                 f"INSERT INTO shipping_eta_log (work_date, {column}, updated_by, updated_at) VALUES (?, ?, ?, ?) "
                 f"ON CONFLICT(work_date) DO UPDATE SET {column}=excluded.{column}, "

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import pageStyles from "./BarcodePage.module.css";
+import styles from "./ShippingEtaPage.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
 function todayStr() {
@@ -9,37 +10,41 @@ function todayStr() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-function fmtTime(iso) {
-  return iso ? iso.slice(11, 19) : "-";
+function fmtClock(iso) {
+  return iso ? iso.slice(11, 16) : "-";
 }
 
-function fmtDuration(startIso, endIso) {
-  if (!startIso || !endIso) return "-";
-  const sec = Math.round((new Date(endIso) - new Date(startIso)) / 1000);
+function fmtSpan(sec) {
   if (!Number.isFinite(sec) || sec < 0) return "-";
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
-  return h > 0 ? `${h}시간 ${m}분` : `${m}분`;
+  const s = Math.floor(sec % 60);
+  const pad = (n) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
-function fmtRate(sec) {
-  return sec == null ? "기록 없음" : `${sec.toFixed(1)}초/건`;
+// 서버 시각(KST, 시간대 없는 ISO)끼리 비교한다. 브라우저 시간대에 영향받지 않도록 같은 방식으로 파싱.
+function diffSec(fromIso, toIso) {
+  return (new Date(toIso) - new Date(fromIso)) / 1000;
 }
 
-// 단계 버튼: 앞 단계가 기록돼 있고 자기 단계는 비어 있을 때만 활성화된다.
-const STEPS = [
-  { event: "pack_start", label: "포장시작(대량)", column: "bulk_start", prev: null },
-  { event: "bulk_end", label: "대량종료", column: "bulk_end", prev: "bulk_start" },
-  { event: "single_start", label: "개별시작", column: "single_start", prev: "bulk_end" },
-  { event: "single_end", label: "개별종료", column: "single_end", prev: "single_start" },
+const KINDS = [
+  { kind: "bulk", label: "대량" },
+  { kind: "single", label: "개별" },
+  { kind: "combo", label: "합배" },
+];
+const PHASES = [
+  { phase: "pack", label: "포장" },
+  { phase: "ship", label: "출고" },
 ];
 
 export default function ShippingEtaPage({ headerExtra = null }) {
   const [date, setDate] = useState(todayStr());
   const [numbers, setNumbers] = useState([]);
   const [selected, setSelected] = useState(new Set());
-  const [counts, setCounts] = useState(null);
   const [state, setState] = useState(null);
+  const [serverOffset, setServerOffset] = useState(0); // 서버 시각 - 브라우저 시각 (초)
+  const [tick, setTick] = useState(0);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const { openModal: openEzadminModal } = useEzadminSession();
@@ -55,19 +60,36 @@ export default function ShippingEtaPage({ headerExtra = null }) {
     return data;
   }, []);
 
+  const applyState = useCallback((data) => {
+    setState({ log: data.log, estimate: data.estimate });
+    // 진행 중 경과시간을 서버 기준으로 맞추기 위해 서버-브라우저 시각 차이를 저장한다.
+    setServerOffset((new Date(data.estimate.now) - new Date()) / 1000);
+  }, []);
+
   const loadState = useCallback(async () => {
     try {
       const data = await request(`/state?date=${date}`);
-      if (data) setState(data);
+      if (data) applyState(data);
     } catch (err) {
       setMessage(err.message || "기록 조회 실패");
     }
-  }, [request, date]);
+  }, [request, date, applyState]);
 
   useEffect(() => {
-    setCounts(null);
     loadState();
   }, [loadState]);
+
+  const log = state?.log;
+  const est = state?.estimate;
+  const anyRunning = Boolean(
+    log && KINDS.some(({ kind }) => PHASES.some(({ phase }) => log[`${kind}_${phase}_start`] && !log[`${kind}_${phase}_end`]))
+  );
+
+  useEffect(() => {
+    if (!anyRunning) return undefined;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [anyRunning]);
 
   const handleLoadNumbers = useCallback(async () => {
     setBusy(true);
@@ -92,7 +114,7 @@ export default function ShippingEtaPage({ headerExtra = null }) {
   const handleClassify = useCallback(async () => {
     if (selected.size === 0) { setMessage("불러올 출력차수를 선택해 주세요."); return; }
     setBusy(true);
-    setMessage("");
+    setMessage("선택한 차수의 주문을 조회하는 중입니다. 건수가 많으면 1~2분 걸릴 수 있습니다.");
     try {
       const data = await request("/classify", {
         method: "POST",
@@ -103,24 +125,24 @@ export default function ShippingEtaPage({ headerExtra = null }) {
         openEzadminModal(handleClassify);
         return;
       }
-      setCounts(data.totals);
-      setState({ log: data.log, estimate: data.estimate });
+      applyState(data);
+      setMessage("");
     } catch (err) {
       setMessage(err.message || "분류 실패");
     } finally {
       setBusy(false);
     }
-  }, [request, date, selected, openEzadminModal]);
+  }, [request, date, selected, openEzadminModal, applyState]);
 
-  const handleEvent = useCallback(async (event) => {
+  const handleEvent = useCallback(async (stage, action) => {
     setMessage("");
     try {
-      const data = await request("/event", { method: "POST", body: JSON.stringify({ date, event }) });
-      if (data) setState(data);
+      const data = await request("/event", { method: "POST", body: JSON.stringify({ date, stage, action }) });
+      if (data) applyState(data);
     } catch (err) {
       setMessage(err.message || "기록 실패");
     }
-  }, [request, date]);
+  }, [request, date, applyState]);
 
   const toggleNumber = (num) => {
     setSelected((prev) => {
@@ -130,126 +152,163 @@ export default function ShippingEtaPage({ headerExtra = null }) {
     });
   };
 
-  const log = state?.log;
-  const est = state?.estimate;
-  const shown = counts || (log ? { bulk: log.bulk_count, single: log.single_count, combo: log.combo_count } : null);
+  // 서버 기준 현재 시각 (tick으로 매초 갱신)
+  const serverNowMs = Date.now() + serverOffset * 1000 + 0 * tick;
+
+  const renderCell = ({ kind, label: kindLabel }, { phase, label: phaseLabel }) => {
+    const key = `${kind}_${phase}`;
+    const count = log?.[`${kind}_count`] ?? 0;
+    const start = log?.[`${key}_start`] || "";
+    const end = log?.[`${key}_end`] || "";
+    const rate = est?.rates?.[key];
+    if (!log || count === 0) {
+      return <div key={key} className={`${styles.cell} ${styles.cellOff}`}>해당 없음</div>;
+    }
+    if (end) {
+      return (
+        <div key={key} className={`${styles.cell} ${styles.cellDone}`}>
+          <div className={styles.cellStatus}>
+            <span className={styles.statusTag}>완료</span>
+            <span className={styles.elapsed}>{fmtSpan(diffSec(start, end))}</span>
+          </div>
+          <div className={styles.cellActions}>
+            <span className={styles.cellMeta}>
+              {fmtClock(start)} → {fmtClock(end)} · 건당 {(diffSec(start, end) / count).toFixed(1)}초
+            </span>
+            <button className={styles.linkBtn} onClick={() => handleEvent(key, "undo")}>종료 취소</button>
+          </div>
+        </div>
+      );
+    }
+    if (start) {
+      const elapsed = (serverNowMs - new Date(start).getTime()) / 1000;
+      const stageEst = est?.stage_est?.[key];
+      return (
+        <div key={key} className={`${styles.cell} ${styles.cellRunning}`}>
+          <div className={styles.cellStatus}>
+            <span className={`${styles.statusTag} ${styles.statusTagRunning}`}>진행 중 · {fmtClock(start)} 시작</span>
+            <span className={styles.elapsed}>{fmtSpan(elapsed)}</span>
+          </div>
+          <div className={styles.cellMeta}>{stageEst ? `예상 종료 ${fmtClock(stageEst)}` : "예상 불가 (과거 기록 없음)"}</div>
+          <div className={styles.cellActions}>
+            <button className={`${pageStyles.primaryBtn} ${styles.cellBtn}`} onClick={() => handleEvent(key, "end")}>
+              {phaseLabel} 종료
+            </button>
+            <button className={styles.linkBtn} onClick={() => handleEvent(key, "undo")}>시작 취소</button>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div key={key} className={styles.cell}>
+        <div className={styles.cellStatus}>
+          <span className={styles.statusTag}>대기</span>
+          <span className={styles.cellMeta}>{rate != null ? `예상 ${fmtSpan(rate * count)}` : "예상 불가"}</span>
+        </div>
+        <div className={styles.cellActions}>
+          <button className={`${pageStyles.secondaryBtn} ${styles.cellBtn}`} onClick={() => handleEvent(key, "start")}>
+            {kindLabel} {phaseLabel} 시작
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const counts = { bulk: log?.bulk_count ?? 0, single: log?.single_count ?? 0, combo: log?.combo_count ?? 0 };
+  const noCounts = counts.bulk + counts.single + counts.combo === 0;
 
   return (
     <div className={pageStyles.page}>
       <div className={pageStyles.pageHeader}>
         <div>
           <h2 className={pageStyles.title}>출고예상</h2>
-          <p className={pageStyles.subtitle}>출력차수 불러오기 · 대량/개별 포장시간 기록 · 종료 예상시간</p>
+          <p className={pageStyles.subtitle}>출력차수 불러오기 · 대량/개별/합배 포장·출고 시간 기록 · 종료 예상</p>
         </div>
         {headerExtra}
       </div>
 
       <div className={pageStyles.stack}>
+        <section className={`${pageStyles.card} ${styles.summary}`}>
+          <div className={styles.etaBlock}>
+            <span className={styles.etaLabel}>{date} 예상 종료</span>
+            {est?.eta ? (
+              <span className={styles.etaValue}>{fmtClock(est.eta)}</span>
+            ) : (
+              <span className={styles.etaValueMuted}>{noCounts ? "차수를 불러와 주세요" : "예상 불가"}</span>
+            )}
+            <span className={styles.etaHint}>
+              {est?.eta
+                ? "최근 5일 건당 평균 · 대량→개별→합배 순서로 이어서 진행한다고 가정"
+                : !noCounts && "과거 기록이 없는 구간이 있어 계산할 수 없습니다. 기록이 쌓이면 표시됩니다."}
+            </span>
+          </div>
+          <div className={styles.countRow}>
+            {KINDS.map(({ kind, label }) => (
+              <div key={kind} className={styles.countBox}>
+                <span className={styles.countName}>{label}</span>
+                <span className={styles.countNum}>{counts[kind].toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+
         <section className={pageStyles.card}>
           <div className={pageStyles.cardHeader}>
             <h3 className={pageStyles.cardTitle}>출력차수 불러오기</h3>
             <div className={pageStyles.headerActions}>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+              <input className={pageStyles.dateInput} type="date" value={date} onChange={(e) => setDate(e.target.value)} />
               <button className={pageStyles.secondaryBtn} onClick={handleLoadNumbers} disabled={busy}>
-                {busy ? "불러오는 중..." : "차수 목록 불러오기"}
+                차수 목록 불러오기
               </button>
               <button className={pageStyles.primaryBtn} onClick={handleClassify} disabled={busy || selected.size === 0}>
-                선택 차수 분류 ({selected.size})
+                {busy ? "조회 중..." : `선택 차수 분류 (${selected.size})`}
               </button>
             </div>
           </div>
-          {message && <div className={pageStyles.statusMsg}>{message}</div>}
           {numbers.length > 0 && (
-            <div className={pageStyles.tableWrap}>
-              <table className={pageStyles.table}>
-                <thead>
-                  <tr><th>선택</th><th>차수</th><th>출력시각</th><th>건수</th></tr>
-                </thead>
-                <tbody>
-                  {numbers.map((n) => (
-                    <tr key={n.print_num}>
-                      <td><input type="checkbox" checked={selected.has(n.print_num)} onChange={() => toggleNumber(n.print_num)} /></td>
-                      <td>{n.print_num}차</td>
-                      <td>{n.time || "-"}</td>
-                      <td>{n.count}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-
-        <section className={pageStyles.card}>
-          <div className={pageStyles.cardHeader}>
-            <h3 className={pageStyles.cardTitle}>출고 건수</h3>
-            <div className={pageStyles.headerActions}>
-              <span className={pageStyles.pill}>대량 {shown?.bulk ?? 0}</span>
-              <span className={pageStyles.pill}>개별 {shown?.single ?? 0}</span>
-              <span className={pageStyles.pill}>합포 {shown?.combo ?? 0}</span>
-            </div>
-          </div>
-        </section>
-
-        <section className={pageStyles.card}>
-          <div className={pageStyles.cardHeader}>
-            <h3 className={pageStyles.cardTitle}>{date} 포장 기록</h3>
-            <div className={pageStyles.headerActions}>
-              {STEPS.map((step) => (
+            <div className={styles.chipRow}>
+              {numbers.map((n) => (
                 <button
-                  key={step.event}
-                  className={pageStyles.secondaryBtn}
-                  onClick={() => handleEvent(step.event)}
-                  disabled={!log || Boolean(log[step.column]) || (step.prev && !log[step.prev])}
+                  key={n.print_num}
+                  className={`${styles.chip} ${selected.has(n.print_num) ? styles.chipOn : ""}`}
+                  onClick={() => toggleNumber(n.print_num)}
                 >
-                  {step.label}
+                  <span className={styles.chipName}>{n.print_num}차</span>
+                  <span className={styles.chipMeta}>{n.time.slice(0, 5)} · {n.count.toLocaleString()}건</span>
                 </button>
               ))}
-              <button className={pageStyles.secondaryBtn} onClick={() => handleEvent("undo")} disabled={!log || !log.bulk_start}>
-                마지막 기록 취소
-              </button>
-            </div>
-          </div>
-          {log && (
-            <div className={pageStyles.tableWrap}>
-              <table className={pageStyles.table}>
-                <thead>
-                  <tr><th>구분</th><th>시작</th><th>종료</th><th>소요</th><th>건수</th></tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td>대량</td><td>{fmtTime(log.bulk_start)}</td><td>{fmtTime(log.bulk_end)}</td>
-                    <td>{fmtDuration(log.bulk_start, log.bulk_end)}</td><td>{log.bulk_count}</td>
-                  </tr>
-                  <tr>
-                    <td>개별(합포 포함)</td><td>{fmtTime(log.single_start)}</td><td>{fmtTime(log.single_end)}</td>
-                    <td>{fmtDuration(log.single_start, log.single_end)}</td><td>{log.single_count + log.combo_count}</td>
-                  </tr>
-                </tbody>
-              </table>
             </div>
           )}
+          {message && <div className={pageStyles.statusMsg}>{message}</div>}
         </section>
 
         <section className={pageStyles.card}>
           <div className={pageStyles.cardHeader}>
-            <h3 className={pageStyles.cardTitle}>종료 예상</h3>
-            <div className={pageStyles.headerActions}>
-              <span className={pageStyles.pill}>
-                {est?.eta ? `예상 종료 ${fmtTime(est.eta)}` : "예상 불가"}
-              </span>
-            </div>
+            <h3 className={pageStyles.cardTitle}>포장 · 출고 기록</h3>
           </div>
-          {est && (
-            <p className={pageStyles.subtitle}>
-              대량 {fmtRate(est.bulk_rate_sec)} (최근 {est.history_bulk_days}일 평균) · 개별 {fmtRate(est.single_rate_sec)} (최근 {est.history_single_days}일 평균)
-              {est.bulk_end_est && ` · 대량 종료 예상 ${fmtTime(est.bulk_end_est)}`}
-              {est.single_end_est && ` · 개별 종료 예상 ${fmtTime(est.single_end_est)}`}
-              {!est.eta && " · 과거 기록이 없거나 건수를 아직 불러오지 않았습니다."}
-            </p>
-          )}
+          <div className={styles.board}>
+            <span className={styles.boardCorner} />
+            {PHASES.map(({ phase, label }) => (
+              <span key={phase} className={styles.boardHead}>{label}</span>
+            ))}
+            {KINDS.map((k) => (
+              <KindRow key={k.kind} kind={k} count={counts[k.kind]} renderCell={renderCell} />
+            ))}
+          </div>
         </section>
       </div>
     </div>
+  );
+}
+
+function KindRow({ kind, count, renderCell }) {
+  return (
+    <>
+      <div className={styles.rowHead}>
+        <span className={styles.rowName}>{kind.label}</span>
+        <span className={styles.rowCount}>{count.toLocaleString()}건</span>
+      </div>
+      {PHASES.map((phase) => renderCell(kind, phase))}
+    </>
   );
 }
