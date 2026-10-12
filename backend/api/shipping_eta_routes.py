@@ -16,7 +16,7 @@ _EZ_EXTRA_COOKIES = {"ezdomain": "yusaek", "ezuserid": "yusaek", "ezsave": "on"}
 _EZ_TIMEOUT = 300.0
 _KST = ZoneInfo("Asia/Seoul")
 _BULK_MIN_COUNT = 10
-_HISTORY_DAYS = 5
+_SIMILAR_DAYS = 3  # 구간별로 건수가 가장 비슷한 과거 N일을 참고한다
 
 # 6단계: 종류(대량/개별/합배) x 공정(포장/출고). 예상 시간 계산은 이 순서대로 이어서 진행한다고 가정한다.
 # 칸마다 시작/종료를 따로 기록하며 기록 순서는 강제하지 않는다.
@@ -106,10 +106,6 @@ def _rate(start: str, end: str, count: int) -> float | None:
     return seconds / count if seconds > 0 else None
 
 
-def _avg(values: list[float]) -> float | None:
-    return sum(values) / len(values) if values else None
-
-
 def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
     router = APIRouter(prefix="/shipping-eta")
 
@@ -156,46 +152,57 @@ def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
 
     def _estimate(conn, work_date: str, current: dict) -> dict:
         rows = conn.execute(
-            "SELECT * FROM shipping_eta_log WHERE work_date < ? ORDER BY work_date DESC LIMIT 60", (work_date,)
+            "SELECT * FROM shipping_eta_log WHERE work_date < ? ORDER BY work_date DESC LIMIT 180", (work_date,)
         ).fetchall()
-        rates: dict[str, float | None] = {}
-        history_days: dict[str, int] = {}
-        for key, kind in _STAGES:
-            values: list[float] = []
+
+        def predict(key: str, kind: str, n: int):
+            """같은 종류(kind) 건수가 오늘(n)과 가장 비슷한 과거 날들의 건당 시간으로 오늘 소요시간(초)을 예측한다."""
+            if n <= 0:
+                return None, []
+            cands = []
             for r in rows:
-                v = _rate(r[f"{key}_start"], r[f"{key}_end"], r[f"{kind}_count"])
-                if v is not None:
-                    values.append(v)
-                if len(values) >= _HISTORY_DAYS:
-                    break
-            rates[key] = _avg(values)
-            history_days[key] = len(values)
+                rate = _rate(r[f"{key}_start"], r[f"{key}_end"], r[f"{kind}_count"])
+                if rate is None:
+                    continue
+                past_n = r[f"{kind}_count"]
+                diff = abs(past_n - n) / max(past_n, n)
+                cands.append((diff, r["work_date"], past_n, rate, rate * past_n))
+            cands.sort(key=lambda c: c[0])
+            picked = cands[:_SIMILAR_DAYS]
+            if not picked:
+                return None, []
+            weights = [1.0 / (c[0] + 0.05) for c in picked]
+            rate = sum(w * c[3] for w, c in zip(weights, picked)) / sum(weights)
+            basis = [{"date": c[1], "count": c[2], "sec": round(c[4])} for c in picked]
+            return rate * n, basis
 
         now = _now()
         cursor = now
         unknown = False
-        stage_est: dict[str, str] = {}
+        stages: dict[str, dict] = {}
         for key, kind in _STAGES:
             n = current[f"{kind}_count"]
             start, end = _parse_dt(current[f"{key}_start"]), _parse_dt(current[f"{key}_end"])
+            pred_sec, basis = predict(key, kind, n)
+            info = {"pred_sec": pred_sec, "basis": basis, "start_est": "", "end_est": ""}
             if end:
-                est = end
+                info["end_est"] = end.isoformat()
                 cursor = max(cursor, end)
             elif n <= 0:
+                stages[key] = info
                 continue
-            elif rates[key] is None:
+            elif pred_sec is None:
                 unknown = True
-                continue
             else:
                 begin = start or cursor
-                est = max(now, begin + timedelta(seconds=rates[key] * n))
+                info["start_est"] = begin.isoformat()
+                est = max(now, begin + timedelta(seconds=pred_sec))
+                info["end_est"] = est.isoformat()
                 cursor = max(cursor, est)
-            stage_est[key] = est.isoformat()
+            stages[key] = info
         has_work = any(current[f"{kind}_count"] > 0 for _, kind in _STAGES)
         return {
-            "rates": rates,
-            "history_days": history_days,
-            "stage_est": stage_est,
+            "stages": stages,
             "eta": cursor.isoformat() if has_work and not unknown else "",
             "now": now.isoformat(),
         }

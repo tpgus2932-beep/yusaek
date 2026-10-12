@@ -160,7 +160,10 @@ export default function ShippingEtaPage({ headerExtra = null }) {
     const count = log?.[`${kind}_count`] ?? 0;
     const start = log?.[`${key}_start`] || "";
     const end = log?.[`${key}_end`] || "";
-    const rate = est?.rates?.[key];
+    const stage = est?.stages?.[key];
+    const basisText = stage?.basis?.length
+      ? `유사일 ${stage.basis.map((b) => `${b.date.slice(5).replace("-", "/")}(${b.count.toLocaleString()}건)`).join(" · ")}`
+      : "";
     if (!log || count === 0) {
       return <div key={key} className={`${styles.cell} ${styles.cellOff}`}>해당 없음</div>;
     }
@@ -182,14 +185,16 @@ export default function ShippingEtaPage({ headerExtra = null }) {
     }
     if (start) {
       const elapsed = (serverNowMs - new Date(start).getTime()) / 1000;
-      const stageEst = est?.stage_est?.[key];
       return (
         <div key={key} className={`${styles.cell} ${styles.cellRunning}`}>
           <div className={styles.cellStatus}>
             <span className={`${styles.statusTag} ${styles.statusTagRunning}`}>진행 중 · {fmtClock(start)} 시작</span>
             <span className={styles.elapsed}>{fmtSpan(elapsed)}</span>
           </div>
-          <div className={styles.cellMeta}>{stageEst ? `예상 종료 ${fmtClock(stageEst)}` : "예상 불가 (과거 기록 없음)"}</div>
+          <div className={styles.cellMeta}>
+            {stage?.end_est ? `예상 종료 ${fmtClock(stage.end_est)}` : "예상 불가 (과거 기록 없음)"}
+            {basisText && <span className={styles.basis}>{basisText}</span>}
+          </div>
           <div className={styles.cellActions}>
             <button className={`${pageStyles.primaryBtn} ${styles.cellBtn}`} onClick={() => handleEvent(key, "end")}>
               {phaseLabel} 종료
@@ -203,7 +208,11 @@ export default function ShippingEtaPage({ headerExtra = null }) {
       <div key={key} className={styles.cell}>
         <div className={styles.cellStatus}>
           <span className={styles.statusTag}>대기</span>
-          <span className={styles.cellMeta}>{rate != null ? `예상 ${fmtSpan(rate * count)}` : "예상 불가"}</span>
+          <span className={styles.endEst}>{stage?.end_est ? `종료 예상 ${fmtClock(stage.end_est)}` : "예상 불가"}</span>
+        </div>
+        <div className={styles.cellMeta}>
+          {stage?.pred_sec != null ? `소요 예상 ${fmtSpan(stage.pred_sec)}` : "과거 기록 없음"}
+          {basisText && <span className={styles.basis}>{basisText}</span>}
         </div>
         <div className={styles.cellActions}>
           <button className={`${pageStyles.secondaryBtn} ${styles.cellBtn}`} onClick={() => handleEvent(key, "start")}>
@@ -228,28 +237,36 @@ export default function ShippingEtaPage({ headerExtra = null }) {
       </div>
 
       <div className={pageStyles.stack}>
-        <section className={`${pageStyles.card} ${styles.summary}`}>
-          <div className={styles.etaBlock}>
-            <span className={styles.etaLabel}>{date} 예상 종료</span>
-            {est?.eta ? (
-              <span className={styles.etaValue}>{fmtClock(est.eta)}</span>
-            ) : (
-              <span className={styles.etaValueMuted}>{noCounts ? "차수를 불러와 주세요" : "예상 불가"}</span>
-            )}
-            <span className={styles.etaHint}>
-              {est?.eta
-                ? "최근 5일 건당 평균 · 대량→개별→합배 순서로 이어서 진행한다고 가정"
-                : !noCounts && "과거 기록이 없는 구간이 있어 계산할 수 없습니다. 기록이 쌓이면 표시됩니다."}
-            </span>
+        <section className={pageStyles.card}>
+          <div className={pageStyles.cardHeader}>
+            <h3 className={pageStyles.cardTitle}>{date} 구간별 종료</h3>
+            <div className={styles.countRow}>
+              {KINDS.map(({ kind, label }) => (
+                <span key={kind} className={pageStyles.pill}>{label} {counts[kind].toLocaleString()}건</span>
+              ))}
+            </div>
           </div>
-          <div className={styles.countRow}>
-            {KINDS.map(({ kind, label }) => (
-              <div key={kind} className={styles.countBox}>
-                <span className={styles.countName}>{label}</span>
-                <span className={styles.countNum}>{counts[kind].toLocaleString()}</span>
-              </div>
-            ))}
-          </div>
+          {noCounts ? (
+            <span className={styles.etaHint}>출력차수를 불러와 분류하면 구간별 종료 시각이 표시됩니다.</span>
+          ) : (
+            <div className={styles.stageStrip}>
+              {KINDS.flatMap((k) => PHASES.map((p) => {
+                const key = `${k.kind}_${p.phase}`;
+                const stage = est?.stages?.[key];
+                const done = Boolean(log?.[`${key}_end`]);
+                const running = Boolean(log?.[`${key}_start`]) && !done;
+                if (counts[k.kind] === 0) return null;
+                return (
+                  <div key={key} className={`${styles.stageItem} ${done ? styles.stageDone : ""} ${running ? styles.stageRunning : ""}`}>
+                    <span className={styles.stageName}>{k.label} {p.label}{done ? " 완료" : running ? " 진행" : ""}</span>
+                    <span className={stage?.end_est ? styles.stageTime : styles.stageTimeMuted}>
+                      {stage?.end_est ? fmtClock(stage.end_est) : "예상 불가"}
+                    </span>
+                  </div>
+                );
+              }))}
+            </div>
+          )}
         </section>
 
         <section className={pageStyles.card}>
