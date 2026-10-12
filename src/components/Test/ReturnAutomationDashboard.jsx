@@ -159,6 +159,7 @@ export default function ReturnAutomationDashboard() {
   const [expandedReplies, setExpandedReplies] = useState(new Set());
   const [replySending, setReplySending] = useState({});
   const [csChecking, setCsChecking] = useState(false);
+  const [csDetail, setCsDetail] = useState(null);
   const [rejecting, setRejecting] = useState(false);
   const [subTab, setSubTab] = useState("scan"); // "scan" | "manual"
   const [manualInvoices, setManualInvoices] = useState([]);
@@ -693,6 +694,23 @@ export default function ReturnAutomationDashboard() {
     }
   };
 
+  const openCsDetail = async (phone) => {
+    setCsDetail({ phone, loading: true, rooms: [], error: "" });
+    try {
+      const res = await fetch(`${API}/returns/unmatched/cs-detail`, {
+        method: "POST",
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ phone }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.detail || "CS 내용 조회 실패");
+      setCsDetail({ phone, loading: false, rooms: data.rooms || [], error: "" });
+    } catch (err) {
+      setCsDetail({ phone, loading: false, rooms: [], error: err.message || "CS 내용 조회 실패" });
+    }
+  };
+
   const execute = async () => {
     const items = (run.items || [])
       .filter((x) => selected[x.invoice_no])
@@ -1019,7 +1037,8 @@ export default function ReturnAutomationDashboard() {
                         {item.csCheck && (
                           <span
                             className={`${styles.badge} ${item.csCheck.has_contact ? styles.badgePass : styles.badgeNeutral}`}
-                            style={{ marginLeft: "0.4rem" }}
+                            style={{ marginLeft: "0.4rem", cursor: item.csCheck.has_contact ? "pointer" : undefined }}
+                            onClick={item.csCheck.has_contact ? () => openCsDetail(item.phone) : undefined}
                             title={
                               item.csCheck.has_contact
                                 ? `[${item.csCheck.status_display || "-"}] ${item.csCheck.latest_message || ""} (${item.csCheck.latest_message_at || ""})`
@@ -1270,6 +1289,36 @@ export default function ReturnAutomationDashboard() {
             >
               {ezdeskLoading ? "저장 중..." : "저장"}
             </button>
+          </div>
+        </div>
+      )}
+
+      {csDetail && (
+        <div className={styles.modalOverlay} onClick={() => setCsDetail(null)}>
+          <div className={styles.modalBox} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <span>에이블리 CS 내용 · {csDetail.phone}</span>
+              <button type="button" className={styles.modalCloseBtn} onClick={() => setCsDetail(null)}>닫기</button>
+            </div>
+            <div className={styles.smsHistoryList}>
+              {csDetail.loading && <p className={styles.modalSmsContent}>불러오는 중...</p>}
+              {!csDetail.loading && csDetail.error && <p className={styles.modalSmsContent}>{csDetail.error}</p>}
+              {!csDetail.loading && !csDetail.error && csDetail.rooms.length === 0 && (
+                <p className={styles.modalSmsContent}>CS문의 내용을 찾을 수 없습니다.</p>
+              )}
+              {!csDetail.loading && csDetail.rooms.map((room, i) => (
+                <div key={i} className={styles.smsHistoryItem}>
+                  <span className={styles.smsHistoryMeta}>{room.market_name} · {room.status_display}</span>
+                  {room.error && <p className={styles.modalSmsContent}>{room.error}</p>}
+                  {(room.messages || []).map((msg, j) => (
+                    <div key={j}>
+                      <span className={styles.smsHistoryMeta}>{msg.sender} · {msg.created_at}</span>
+                      <p className={styles.modalSmsContent}>{limitLineBreaks(msg.content) || "(내용 없음)"}</p>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
