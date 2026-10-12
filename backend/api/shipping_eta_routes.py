@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
 from datetime import date as date_cls, datetime, timedelta
@@ -18,6 +19,9 @@ _KST = ZoneInfo("Asia/Seoul")
 _BULK_MIN_COUNT = 10
 _LOOKBACK_DAYS = 60  # 과거 약 2개월까지만 찾는다
 _MAX_COUNT_DIFF = 0.10  # 오늘 건수 대비 건수 차이가 이 비율 이내인 날만 유사일로 인정한다
+_MAX_WORKER_DIFF = 1  # 공정 시작 시점의 근무 인원 차이가 이 값(명) 이내인 날만 유사일로 인정한다
+_ATTENDANCE_COLUMNS = {"checkin": "checkin_json", "checkout": "checkout_json"}
+_ATTENDANCE_TYPES = {"checkin": "출근", "checkout": "퇴근"}
 
 # 6단계: 종류(대량/개별/합배) x 공정(포장/출고). 예상 시간 계산은 이 순서대로 이어서 진행한다고 가정한다.
 # 칸마다 시작/종료를 따로 기록하며 기록 순서는 강제하지 않는다.
@@ -50,6 +54,8 @@ def init_shipping_eta_table(get_db):
                 bulk_count INTEGER NOT NULL DEFAULT 0,
                 single_count INTEGER NOT NULL DEFAULT 0,
                 combo_count INTEGER NOT NULL DEFAULT 0,
+                checkin_json TEXT NOT NULL DEFAULT '',
+                checkout_json TEXT NOT NULL DEFAULT '',
                 updated_by TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT ''
             )
@@ -57,6 +63,9 @@ def init_shipping_eta_table(get_db):
         )
         existing = {r["name"] for r in conn.execute("PRAGMA table_info(shipping_eta_log)").fetchall()}
         for col in _STAGE_COLUMNS:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE shipping_eta_log ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+        for col in _ATTENDANCE_COLUMNS.values():
             if col not in existing:
                 conn.execute(f"ALTER TABLE shipping_eta_log ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
         for old, new in _LEGACY_COLUMNS.items():
@@ -107,6 +116,48 @@ def _rate(start: str, end: str, count: int) -> float | None:
     return seconds / count if seconds > 0 else None
 
 
+def _load_records(raw: str) -> list[dict]:
+    try:
+        data = json.loads(raw) if raw else []
+    except ValueError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _headcount(checkins: list[dict], checkouts: list[dict], at: datetime | None) -> int | None:
+    """at 시각에 근무 중인 인원 수. 출근 기록이 없으면 알 수 없으므로 None."""
+    if not checkins or at is None:
+        return None
+    first_in: dict[str, datetime] = {}
+    for rec in checkins:
+        t = _parse_dt(rec.get("time", ""))
+        if t and (rec["name"] not in first_in or t < first_in[rec["name"]]):
+            first_in[rec["name"]] = t
+    last_out: dict[str, datetime] = {}
+    for rec in checkouts:
+        t = _parse_dt(rec.get("time", ""))
+        if t and (rec["name"] not in last_out or t > last_out[rec["name"]]):
+            last_out[rec["name"]] = t
+    return sum(
+        1 for name, t_in in first_in.items()
+        if t_in <= at and not (name in last_out and last_out[name] <= at)
+    )
+
+
+def _attendance_timeline(checkins: list[dict], checkouts: list[dict]) -> list[dict]:
+    """출근/퇴근 이벤트를 시간순으로 나열하고 각 시점 직후의 근무 인원을 붙인다."""
+    events = sorted(
+        [(r.get("time", ""), "출근", r["name"]) for r in checkins]
+        + [(r.get("time", ""), "퇴근", r["name"]) for r in checkouts]
+    )
+    present = 0
+    timeline = []
+    for time, kind, name in events:
+        present += 1 if kind == "출근" else -1
+        timeline.append({"time": time, "type": kind, "name": name, "present": max(present, 0)})
+    return timeline
+
+
 def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
     router = APIRouter(prefix="/shipping-eta")
 
@@ -146,10 +197,41 @@ def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
 
     def _read_row(conn, work_date: str) -> dict:
         row = conn.execute("SELECT * FROM shipping_eta_log WHERE work_date = ?", (work_date,)).fetchone()
-        keys = ["work_date", *_STAGE_COLUMNS, "bulk_count", "single_count", "combo_count"]
+        text_keys = {"work_date", *_STAGE_COLUMNS, *_ATTENDANCE_COLUMNS.values()}
+        keys = ["work_date", *_STAGE_COLUMNS, "bulk_count", "single_count", "combo_count", *_ATTENDANCE_COLUMNS.values()]
         if row is None:
-            return {k: ("" if k in _STAGE_COLUMNS or k == "work_date" else 0) for k in keys} | {"work_date": work_date}
+            return {k: ("" if k in text_keys else 0) for k in keys} | {"work_date": work_date}
         return {k: row[k] for k in keys}
+
+    def _fetch_attendance(conn, work_date: str, edge: str) -> list[dict]:
+        """근태 기록(출근/퇴근)을 KST 시각으로 바꿔 [{name, time}] 로 돌려준다."""
+        try:
+            rows = conn.execute(
+                "SELECT member_name, timestamp FROM attendance_records WHERE date = ? AND type = ? ORDER BY timestamp",
+                (work_date, _ATTENDANCE_TYPES[edge]),
+            ).fetchall()
+        except Exception:
+            return []
+        records = []
+        for r in rows:
+            dt = _parse_dt(r["timestamp"])
+            if dt is None:
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+            kst = dt.astimezone(_KST).replace(tzinfo=None, microsecond=0)
+            records.append({"name": r["member_name"], "time": kst.isoformat()})
+        return records
+
+    def _save_attendance(conn, work_date: str, edge: str, user: str) -> None:
+        column = _ATTENDANCE_COLUMNS[edge]
+        records = _fetch_attendance(conn, work_date, edge)
+        conn.execute(
+            f"INSERT INTO shipping_eta_log (work_date, {column}, updated_by, updated_at) VALUES (?, ?, ?, ?) "
+            f"ON CONFLICT(work_date) DO UPDATE SET {column}=excluded.{column}, "
+            f"updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+            (work_date, json.dumps(records, ensure_ascii=False), user, _now().isoformat()),
+        )
 
     def _estimate(conn, work_date: str, current: dict) -> dict:
         since = (date_cls.fromisoformat(work_date) - timedelta(days=_LOOKBACK_DAYS)).isoformat()
@@ -158,19 +240,40 @@ def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
             (since, work_date),
         ).fetchall()
 
-        def predict(key: str, kind: str, n: int):
-            """같은 종류(kind) 건수가 오늘(n)과 _MAX_COUNT_DIFF 이내인 가장 최근 날 1개의 건당 시간으로 오늘 소요시간(초)을 예측한다.
-            rows가 최근 날짜순이라 처음 조건에 맞는 날에서 바로 멈춘다."""
+        today_in = _load_records(current["checkin_json"])
+        today_out = _load_records(current["checkout_json"])
+
+        def predict(key: str, kind: str, n: int, begin: datetime):
+            """같은 종류(kind) 건수가 오늘(n)과 _MAX_COUNT_DIFF 이내이고, 공정 시작 시점 근무 인원 차이가
+            _MAX_WORKER_DIFF 이내인 가장 최근 날 1개의 건당 시간으로 오늘 소요시간(초)을 예측한다.
+            오늘 출근 기록이 없으면 인원은 비교하지 않는다. 과거 날에 근태 기록이 없으면 판단 불가라서
+            인원이 맞는 날이 없을 때의 마지막 대안으로만 쓴다.
+            rows가 최근 날짜순이라 조건에 맞는 첫 날에서 바로 멈춘다."""
             if n <= 0:
-                return None, []
+                return None, [], None
+            today_hc = _headcount(today_in, today_out, begin)
+            fallback = None
             for r in rows:
                 rate = _rate(r[f"{key}_start"], r[f"{key}_end"], r[f"{kind}_count"])
                 if rate is None:
                     continue
                 past_n = r[f"{kind}_count"]
-                if abs(past_n - n) / n <= _MAX_COUNT_DIFF:
-                    return rate * n, [{"date": r["work_date"], "count": past_n, "sec": round(rate * past_n)}]
-            return None, []
+                if abs(past_n - n) / n > _MAX_COUNT_DIFF:
+                    continue
+                basis = {"date": r["work_date"], "count": past_n, "sec": round(rate * past_n), "workers": None}
+                if today_hc is None:
+                    return rate * n, [basis], None
+                past_hc = _headcount(
+                    _load_records(r["checkin_json"]), _load_records(r["checkout_json"]), _parse_dt(r[f"{key}_start"])
+                )
+                if past_hc is None:
+                    if fallback is None:
+                        fallback = (rate * n, [basis], today_hc)
+                    continue
+                basis["workers"] = past_hc
+                if abs(past_hc - today_hc) <= _MAX_WORKER_DIFF:
+                    return rate * n, [basis], today_hc
+            return fallback if fallback else (None, [], today_hc)
 
         now = _now()
         cursor = now
@@ -179,8 +282,8 @@ def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
         for key, kind in _STAGES:
             n = current[f"{kind}_count"]
             start, end = _parse_dt(current[f"{key}_start"]), _parse_dt(current[f"{key}_end"])
-            pred_sec, basis = predict(key, kind, n)
-            info = {"pred_sec": pred_sec, "basis": basis, "start_est": "", "end_est": ""}
+            pred_sec, basis, workers = predict(key, kind, n, start or cursor)
+            info = {"pred_sec": pred_sec, "basis": basis, "workers": workers, "start_est": "", "end_est": ""}
             if end:
                 info["end_est"] = end.isoformat()
                 cursor = max(cursor, end)
@@ -207,7 +310,10 @@ def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
         conn = get_db()
         try:
             current = _read_row(conn, work_date)
-            return {"ok": True, "log": current, "estimate": _estimate(conn, work_date, current)}
+            checkins = _load_records(current["checkin_json"])
+            checkouts = _load_records(current["checkout_json"])
+            attendance = {"checkin": checkins, "checkout": checkouts, "timeline": _attendance_timeline(checkins, checkouts)}
+            return {"ok": True, "log": current, "estimate": _estimate(conn, work_date, current), "attendance": attendance}
         finally:
             conn.close()
 
@@ -277,10 +383,25 @@ def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
                 "updated_by=excluded.updated_by, updated_at=excluded.updated_at",
                 (work_date, totals["bulk"], totals["single"], totals["combo"], user, _now().isoformat()),
             )
+            _save_attendance(conn, work_date, "checkin", user)  # 불러온 시점의 출근 인원(몇 시에 몇 명)도 같이 저장
             conn.commit()
         finally:
             conn.close()
         return {"ok": True, "totals": totals, "per_number": per_number, **_state(work_date)}
+
+    @router.post("/attendance-load")
+    async def attendance_load(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        work_date = _norm_date(payload.get("date", ""))
+        edge = str(payload.get("kind", "")).strip()
+        if edge not in _ATTENDANCE_COLUMNS:
+            raise HTTPException(status_code=400, detail="알 수 없는 근태 종류입니다.")
+        conn = get_db()
+        try:
+            _save_attendance(conn, work_date, edge, user)
+            conn.commit()
+        finally:
+            conn.close()
+        return _state(work_date)
 
     @router.get("/state")
     async def state(date: str, user: str = Depends(get_current_user)):

@@ -61,7 +61,7 @@ export default function ShippingEtaPage({ headerExtra = null }) {
   }, []);
 
   const applyState = useCallback((data) => {
-    setState({ log: data.log, estimate: data.estimate });
+    setState({ log: data.log, estimate: data.estimate, attendance: data.attendance });
     // 진행 중 경과시간을 서버 기준으로 맞추기 위해 서버-브라우저 시각 차이를 저장한다.
     setServerOffset((new Date(data.estimate.now) - new Date()) / 1000);
   }, []);
@@ -81,6 +81,7 @@ export default function ShippingEtaPage({ headerExtra = null }) {
 
   const log = state?.log;
   const est = state?.estimate;
+  const attendance = state?.attendance;
   const anyRunning = Boolean(
     log && KINDS.some(({ kind }) => PHASES.some(({ phase }) => log[`${kind}_${phase}_start`] && !log[`${kind}_${phase}_end`]))
   );
@@ -144,6 +145,16 @@ export default function ShippingEtaPage({ headerExtra = null }) {
     }
   }, [request, date, applyState]);
 
+  const handleLoadAttendance = useCallback(async (kind) => {
+    setMessage("");
+    try {
+      const data = await request("/attendance-load", { method: "POST", body: JSON.stringify({ date, kind }) });
+      if (data) applyState(data);
+    } catch (err) {
+      setMessage(err.message || "근태 불러오기 실패");
+    }
+  }, [request, date, applyState]);
+
   const toggleNumber = (num) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -162,7 +173,7 @@ export default function ShippingEtaPage({ headerExtra = null }) {
     const end = log?.[`${key}_end`] || "";
     const stage = est?.stages?.[key];
     const basisText = stage?.basis?.length
-      ? `유사일 ${stage.basis.map((b) => `${b.date.slice(5).replace("-", "/")}(${b.count.toLocaleString()}건)`).join(" · ")}`
+      ? `유사일 ${stage.basis.map((b) => `${b.date.slice(5).replace("-", "/")}(${b.count.toLocaleString()}건${b.workers != null ? ` · ${b.workers}명` : ""})`).join(" · ")}${stage.workers != null ? ` / 오늘 ${stage.workers}명` : ""}`
       : "";
     if (!log || count === 0) {
       return <div key={key} className={`${styles.cell} ${styles.cellOff}`}>해당 없음</div>;
@@ -297,6 +308,31 @@ export default function ShippingEtaPage({ headerExtra = null }) {
             </div>
           )}
           {message && <div className={pageStyles.statusMsg}>{message}</div>}
+        </section>
+
+        <section className={pageStyles.card}>
+          <div className={pageStyles.cardHeader}>
+            <h3 className={pageStyles.cardTitle}>근무 인원 (출근 {attendance?.checkin?.length ?? 0}명 · 퇴근 {attendance?.checkout?.length ?? 0}명)</h3>
+            <div className={pageStyles.headerActions}>
+              <button className={pageStyles.secondaryBtn} onClick={() => handleLoadAttendance("checkin")}>
+                출근 불러오기
+              </button>
+              <button className={pageStyles.secondaryBtn} onClick={() => handleLoadAttendance("checkout")}>
+                퇴근 불러오기
+              </button>
+            </div>
+          </div>
+          {attendance?.timeline?.length > 0 ? (
+            <div className={styles.chipRow}>
+              {attendance.timeline.map((e, i) => (
+                <span key={`${e.time}-${e.name}-${i}`} className={pageStyles.pill}>
+                  {fmtClock(e.time)} {e.type} · 현재 {e.present}명
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span className={styles.etaHint}>출력차수를 분류하면 출근 인원이 함께 저장됩니다. 퇴근은 버튼으로 불러오세요.</span>
+          )}
         </section>
 
         <section className={pageStyles.card}>
