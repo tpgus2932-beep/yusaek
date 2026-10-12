@@ -175,7 +175,9 @@ export default function ShippingEtaPage({ headerExtra = null }) {
     const basisText = stage?.basis?.length
       ? `유사일 ${stage.basis.map((b) => `${b.date.slice(5).replace("-", "/")}(${b.count.toLocaleString()}건${b.workers != null ? ` · ${b.workers}명` : ""})`).join(" · ")}${stage.workers != null ? ` / 오늘 ${stage.workers}명` : ""}`
       : "";
-    if (!log || count === 0) {
+    // 차수를 늦게 불러와도(건수 미확정) 포장·출고 시작은 기록할 수 있어야 한다. 건수가 하나라도 확정된 뒤에만 0건 칸을 "해당 없음"으로 본다.
+    const countsKnown = (log?.bulk_count ?? 0) + (log?.single_count ?? 0) + (log?.combo_count ?? 0) > 0;
+    if (!log || (count === 0 && countsKnown && !start && !end)) {
       return <div key={key} className={`${styles.cell} ${styles.cellOff}`}>해당 없음</div>;
     }
     if (end) {
@@ -187,7 +189,7 @@ export default function ShippingEtaPage({ headerExtra = null }) {
           </div>
           <div className={styles.cellActions}>
             <span className={styles.cellMeta}>
-              {fmtClock(start)} → {fmtClock(end)} · 건당 {(diffSec(start, end) / count).toFixed(1)}초
+              {fmtClock(start)} → {fmtClock(end)}{count > 0 ? ` · 건당 ${(diffSec(start, end) / count).toFixed(1)}초` : ""}
             </span>
             <button className={styles.linkBtn} onClick={() => handleEvent(key, "undo")}>종료 취소</button>
           </div>
@@ -203,7 +205,7 @@ export default function ShippingEtaPage({ headerExtra = null }) {
             <span className={styles.elapsed}>{fmtSpan(elapsed)}</span>
           </div>
           <div className={styles.cellMeta}>
-            {stage?.end_est ? `예상 종료 ${fmtClock(stage.end_est)}` : "예상 불가 (과거 기록 없음)"}
+            {stage?.end_est ? `예상 종료 ${fmtClock(stage.end_est)}` : count === 0 ? "예상 불가 (건수 미확정)" : "예상 불가 (과거 기록 없음)"}
             {basisText && <span className={styles.basis}>{basisText}</span>}
           </div>
           <div className={styles.cellActions}>
@@ -222,7 +224,7 @@ export default function ShippingEtaPage({ headerExtra = null }) {
           <span className={styles.endEst}>{stage?.end_est ? `종료 예상 ${fmtClock(stage.end_est)}` : "예상 불가"}</span>
         </div>
         <div className={styles.cellMeta}>
-          {stage?.pred_sec != null ? `소요 예상 ${fmtSpan(stage.pred_sec)}` : "과거 기록 없음"}
+          {count === 0 ? "건수 미확정 (차수를 불러오면 예상 표시)" : stage?.pred_sec != null ? `소요 예상 ${fmtSpan(stage.pred_sec)}` : "과거 기록 없음"}
           {basisText && <span className={styles.basis}>{basisText}</span>}
         </div>
         <div className={styles.cellActions}>
