@@ -18,6 +18,7 @@ _KST = ZoneInfo("Asia/Seoul")
 _BULK_MIN_COUNT = 10
 _SIMILAR_DAYS = 5  # 구간별로 건수가 가장 비슷한 과거 N일을 참고한다
 _LOOKBACK_DAYS = 60  # 과거 약 2개월까지만 찾는다
+_MAX_COUNT_DIFF = 0.10  # 오늘 건수 대비 건수 차이가 이 비율 이내인 날만 유사일로 인정한다
 
 # 6단계: 종류(대량/개별/합배) x 공정(포장/출고). 예상 시간 계산은 이 순서대로 이어서 진행한다고 가정한다.
 # 칸마다 시작/종료를 따로 기록하며 기록 순서는 강제하지 않는다.
@@ -168,7 +169,9 @@ def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
                 if rate is None:
                     continue
                 past_n = r[f"{kind}_count"]
-                diff = abs(past_n - n) / max(past_n, n)
+                diff = abs(past_n - n) / n
+                if diff > _MAX_COUNT_DIFF:
+                    continue
                 cands.append((diff, r["work_date"], past_n, rate, rate * past_n))
             cands.sort(key=lambda c: c[0])
             picked = cands[:_SIMILAR_DAYS]
