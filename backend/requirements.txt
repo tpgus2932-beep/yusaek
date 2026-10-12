@@ -10,3 +10,6 @@ passlib[bcrypt]
 python-jose
 python-dotenv
 httpx
+winocr
+pillow
+playwright

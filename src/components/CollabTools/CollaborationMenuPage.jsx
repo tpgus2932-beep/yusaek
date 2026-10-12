@@ -3,6 +3,7 @@ import JsBarcode from 'jsbarcode';
 import styles from './CollaborationMenuPage.module.css';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import { useEzadminSession } from '../../lib/EzadminSessionContext';
+import ReceiptOcrPanel from './ReceiptOcrPanel';
 import {
   ArrowDownToLine, CheckCircle, ChevronDown, ChevronUp, Clipboard,
   Database, Download, Eye, FileSpreadsheet, PackagePlus, Plus, RefreshCw, Save, Search, Trash2, Upload, XCircle,
@@ -243,6 +244,21 @@ export default function CollaborationMenuPage() {
     if (!current || current.size === 0) return;
     setReceivingPreviousPrintBatchKeysBySlot((prev) => ({ ...prev, [slot]: current }));
   };
+  // 마지막에 담은 상품의 매장/미송픽업 여부 - "이전 바코드 출력" 옆에 그 매장의 담긴 수량 합계를 보여주는 기준.
+  // 슬롯별로 분리한다. 합계는 담긴 목록에서 실시간으로 계산하므로 수량을 고쳐도 바로 반영된다.
+  const [lastAddedBySlot, setLastAddedBySlot] = useState({});
+  const lastReceiptAddedRef = useRef(null);
+  const lastAdded = lastAddedBySlot[receivingDraftSlot];
+  const lastAddedStoreSummary = lastAdded?.storeName
+    ? {
+      storeName: lastAdded.storeName,
+      isMisongPickup: lastAdded.isMisongPickup,
+      total: receivingDraft
+        .filter((item) => item.storeName === lastAdded.storeName
+          && Boolean(item.isMisongPickup) === lastAdded.isMisongPickup)
+        .reduce((sum, item) => sum + (Number(item.qty) || 0), 0),
+    }
+    : null;
   const [receivingApplying, setReceivingApplying] = useState(false);
   const [receivingMessage, setReceivingMessage] = useState('');
   const [receivingMessageType, setReceivingMessageType] = useState('');
@@ -828,6 +844,10 @@ export default function CollaborationMenuPage() {
       ];
     });
     updatePrintBatchKeysForSlot(receivingDraftSlot, (prev) => new Set(prev).add(key));
+    setLastAddedBySlot((prev) => ({
+      ...prev,
+      [receivingDraftSlot]: { storeName: row.store_name || '', isMisongPickup: rowIsMisongPickup },
+    }));
     // 담기 후에도 화살표로 계속 다음 행으로 이동할 수 있게 포커스를 넘긴다.
     if (typeof index === 'number' && !focusReceivingQtyInputAt(index + 1, 1)) {
       receivingSearchInputRef.current?.focus();
@@ -1019,7 +1039,7 @@ export default function CollaborationMenuPage() {
     const labels = batchItems.flatMap((item) => {
       const qty = Number(item.qty) || 0;
       if (qty <= 0) return [];
-      const title = nameByCode[item.code] || item.clientProductName || item.name || '';
+      const title = nameByCode[item.code] || item.name || item.clientProductName || '';
       // 라벨은 미송픽업 여부와 상관없이 일반 상품과 똑같이 나가야 하므로 "(미송픽업)" 표시는 지운다.
       const option = (item.options || '').replace(/\(?미송픽업\)?/g, '').replace(/\s+/g, ' ').trim();
       return Array.from({ length: qty }, () => ({ title, option, code: item.code }));
@@ -1031,6 +1051,31 @@ export default function CollaborationMenuPage() {
   // 비워졌을 때, 그 직전 배치를 다시 꺼내 출력한다.
   const handlePreviousBarcodePrint = () =>
     handleSimpleReceivingBarcodePrint(receivingPreviousPrintBatchKeys, '이전 검색에서 담은 상품이 없습니다.');
+
+  // 바코드 출력 / 이전 바코드 출력 / 매장 바코드 출력 버튼 줄에서 좌우 방향키로 버튼 간 이동.
+  // 비활성 버튼은 건너뛴다.
+  const moveFocusAmongPrintButtons = (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    const buttons = [...e.currentTarget.querySelectorAll('button:not(:disabled)')];
+    const idx = buttons.indexOf(document.activeElement);
+    if (idx < 0) return;
+    const next = buttons[idx + (e.key === 'ArrowRight' ? 1 : -1)];
+    if (!next) return;
+    e.preventDefault();
+    next.focus();
+  };
+
+  // 마지막에 담은 매장(미송픽업은 별도 구분)의 담긴 상품 전체를 이번 검색 여부와 상관없이 출력한다.
+  const handleLastStoreBarcodePrint = () => {
+    if (!lastAdded?.storeName) return;
+    const keys = new Set(
+      receivingDraft
+        .filter((item) => item.storeName === lastAdded.storeName
+          && Boolean(item.isMisongPickup) === lastAdded.isMisongPickup)
+        .map(receivingDraftKey),
+    );
+    handleSimpleReceivingBarcodePrint(keys, '마지막에 담은 매장의 상품이 없습니다.');
+  };
 
   // 원가베이스유 검색 결과 행을 발주내역 검색 행과 같은 모양으로 맞춰서
   // addToReceivingDraft/isMisongPickupRow가 그대로 재사용되게 한다.
@@ -1061,6 +1106,8 @@ export default function CollaborationMenuPage() {
       setWonbeSearchResults(data.rows || []);
       setWonbeSearchQtyEdits({});
       setWonbeSearchMisongEdits({});
+      snapshotPreviousPrintBatch(receivingDraftSlot);
+      updatePrintBatchKeysForSlot(receivingDraftSlot, new Set());
       if (!data.rows?.length) setReceivingFeedback('error', '검색 결과가 없습니다.');
     } catch (error) {
       setWonbeSearchResults([]);
@@ -1608,6 +1655,22 @@ export default function CollaborationMenuPage() {
         <div className={styles.heroIcon}><PackagePlus size={26} /></div>
       </section>
 
+      <ReceiptOcrPanel
+        onAdd={(row, qty, memo, receiptId) => {
+          // 다른 사진(탭)에서 담기 시작하면 이번 출력 대상을 비워서 그 탭에서 담은 것만 출력되게 한다.
+          if (lastReceiptAddedRef.current !== receiptId) {
+            lastReceiptAddedRef.current = receiptId;
+            snapshotPreviousPrintBatch(receivingDraftSlot);
+            updatePrintBatchKeysForSlot(receivingDraftSlot, new Set());
+          }
+          addToReceivingDraft(row, qty, 0, undefined, memo || '');
+        }}
+        onPrint={(codes) => handleSimpleReceivingBarcodePrint(
+          new Set(codes.map((code) => receivingDraftKey({ code, isMisongPickup: false }))),
+          '담은 상품이 없습니다.',
+        )}
+      />
+
       <section className={styles.card}>
         <div className={styles.cardHeader}>
           <div>
@@ -1737,7 +1800,7 @@ export default function CollaborationMenuPage() {
           </div>
         )}
 
-        <div className={styles.headerActions} style={{ marginTop: '0.5rem' }}>
+        <div className={styles.headerActions} style={{ marginTop: '0.5rem' }} onKeyDown={moveFocusAmongPrintButtons}>
           <button
             ref={receivingBarcodePrintBtnRef}
             type="button"
@@ -1765,6 +1828,20 @@ export default function CollaborationMenuPage() {
           >
             {`이전 바코드 출력${receivingPreviousPrintBatchKeys.size ? ` (${receivingPreviousPrintBatchKeys.size}건)` : ''}`}
           </button>
+          <button
+            type="button"
+            className={styles.secondaryBtn}
+            disabled={!lastAddedStoreSummary}
+            onClick={handleLastStoreBarcodePrint}
+            title="마지막에 담은 매장(미송픽업은 별도)의 담긴 상품 바코드를 모두 출력합니다"
+          >
+            매장 바코드 출력
+          </button>
+          {lastAddedStoreSummary && (
+            <span className={styles.cardHint} style={{ alignSelf: 'center', fontWeight: 600 }}>
+              {`마지막 담은 매장: ${lastAddedStoreSummary.storeName}${lastAddedStoreSummary.isMisongPickup ? ' (미송픽업)' : ''} · 합계 ${lastAddedStoreSummary.total}개`}
+            </span>
+          )}
           {receivingPrintBatchKeys.size === 0 && (
             <span className={styles.cardHint}>이번 검색에서 담은 상품이 있어야 바코드 출력을 쓸 수 있습니다.</span>
           )}
@@ -1891,7 +1968,7 @@ export default function CollaborationMenuPage() {
           </div>
         )}
 
-        <div className={styles.headerActions} style={{ marginTop: '0.5rem' }}>
+        <div className={styles.headerActions} style={{ marginTop: '0.5rem' }} onKeyDown={moveFocusAmongPrintButtons}>
           <button
             ref={wonbeBarcodePrintBtnRef}
             type="button"
@@ -1919,6 +1996,20 @@ export default function CollaborationMenuPage() {
           >
             {`이전 바코드 출력${receivingPreviousPrintBatchKeys.size ? ` (${receivingPreviousPrintBatchKeys.size}건)` : ''}`}
           </button>
+          <button
+            type="button"
+            className={styles.secondaryBtn}
+            disabled={!lastAddedStoreSummary}
+            onClick={handleLastStoreBarcodePrint}
+            title="마지막에 담은 매장(미송픽업은 별도)의 담긴 상품 바코드를 모두 출력합니다"
+          >
+            매장 바코드 출력
+          </button>
+          {lastAddedStoreSummary && (
+            <span className={styles.cardHint} style={{ alignSelf: 'center', fontWeight: 600 }}>
+              {`마지막 담은 매장: ${lastAddedStoreSummary.storeName}${lastAddedStoreSummary.isMisongPickup ? ' (미송픽업)' : ''} · 합계 ${lastAddedStoreSummary.total}개`}
+            </span>
+          )}
           {receivingPrintBatchKeys.size === 0 && (
             <span className={styles.cardHint}>이번 검색에서 담은 상품이 있어야 바코드 출력을 쓸 수 있습니다.</span>
           )}

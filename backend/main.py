@@ -58,6 +58,8 @@ from api.order_routes import build_order_router
 from api.noye_kimsungil_routes import build_noye_kimsungil_router
 from api.zigzag_upload_routes import build_zigzag_upload_router
 from api.misong_routes import build_misong_router
+from api.receipt_routes import build_receipt_router
+from api.wonbe_routes import _get_wonbe_db as _receipt_get_wonbe_db
 from api.sms_routes import build_sms_router
 from api.return_shipping_routes import build_return_shipping_router
 from api.return_automation_routes import build_return_automation_router
@@ -1942,6 +1944,13 @@ app.include_router(build_return_automation_router(
     get_sms_templates=_return_automation_templates,
     get_notes_db=_get_shared_db,
 ))
+app.include_router(
+    build_receipt_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        get_wonbe_db=_receipt_get_wonbe_db,
+    )
+)
 app.include_router(
     build_misong_router(
         get_current_user=_get_current_user,
