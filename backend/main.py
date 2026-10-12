@@ -71,6 +71,7 @@ from api.return_special_notes_routes import build_return_special_notes_router
 from api.delivery_anomaly_routes import build_delivery_anomaly_router
 from api.client_cancel_soldout_routes import build_client_cancel_soldout_router
 from api.post_shipment_cancel_stock_sms_routes import build_post_shipment_cancel_stock_sms_router
+from api.shipping_eta_routes import build_shipping_eta_router, init_shipping_eta_table
 from api.exchange_return_anomaly_routes import build_exchange_return_anomaly_router
 from api.return_anomaly_routes import build_return_anomaly_router
 from api.daily_checklist_routes import build_daily_checklist_router
@@ -1792,6 +1793,15 @@ _ensure_post_shipment_cancel_stock_review_column(
 
 app.include_router(
     build_post_shipment_cancel_stock_sms_router(
+        get_current_user=_get_current_user,
+        get_setting=_get_setting,
+        get_db=_get_shared_db,
+    )
+)
+
+init_shipping_eta_table(_get_shared_db)
+app.include_router(
+    build_shipping_eta_router(
         get_current_user=_get_current_user,
         get_setting=_get_setting,
         get_db=_get_shared_db,
