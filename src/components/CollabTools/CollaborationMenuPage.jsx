@@ -1677,10 +1677,10 @@ export default function CollaborationMenuPage() {
                         <input
                           ref={(el) => { receivingQtyInputRefs.current[row.id] = el; }}
                           className={styles.cellInput}
-                          type="number"
-                          min="0"
+                          type="text"
+                          inputMode="numeric"
                           value={qtyValue}
-                          onChange={(e) => updateReceivingSearchQty(row.id, e.target.value)}
+                          onChange={(e) => updateReceivingSearchQty(row.id, e.target.value.replace(/\D/g, ''))}
                           onKeyDown={(e) => handleQtyInputKeyDown(e, index)}
                           style={{ width: '80px' }}
                         />
@@ -1689,10 +1689,10 @@ export default function CollaborationMenuPage() {
                         <input
                           ref={(el) => { receivingMisongInputRefs.current[row.id] = el; }}
                           className={styles.cellInput}
-                          type="number"
-                          min="0"
+                          type="text"
+                          inputMode="numeric"
                           value={misongValue}
-                          onChange={(e) => updateReceivingSearchMisong(row.id, e.target.value)}
+                          onChange={(e) => updateReceivingSearchMisong(row.id, e.target.value.replace(/\D/g, ''))}
                           onKeyDown={(e) => handleMisongInputKeyDown(e, index)}
                           style={{ width: '80px' }}
                         />
@@ -1842,10 +1842,10 @@ export default function CollaborationMenuPage() {
                         <input
                           ref={(el) => { wonbeQtyInputRefs.current[code] = el; }}
                           className={styles.cellInput}
-                          type="number"
-                          min="0"
+                          type="text"
+                          inputMode="numeric"
                           value={qtyValue}
-                          onChange={(e) => updateWonbeSearchQty(code, e.target.value)}
+                          onChange={(e) => updateWonbeSearchQty(code, e.target.value.replace(/\D/g, ''))}
                           onKeyDown={(e) => handleWonbeQtyInputKeyDown(e, index)}
                           style={{ width: '80px' }}
                         />
@@ -1854,10 +1854,10 @@ export default function CollaborationMenuPage() {
                         <input
                           ref={(el) => { wonbeMisongInputRefs.current[code] = el; }}
                           className={styles.cellInput}
-                          type="number"
-                          min="0"
+                          type="text"
+                          inputMode="numeric"
                           value={misongValue}
-                          onChange={(e) => updateWonbeSearchMisong(code, e.target.value)}
+                          onChange={(e) => updateWonbeSearchMisong(code, e.target.value.replace(/\D/g, ''))}
                           onKeyDown={(e) => handleWonbeMisongInputKeyDown(e, index)}
                           style={{ width: '80px' }}
                         />
@@ -2030,10 +2030,10 @@ export default function CollaborationMenuPage() {
                     <td>
                       <input
                         className={styles.cellInput}
-                        type="number"
-                        min="0"
+                        type="text"
+                        inputMode="numeric"
                         value={item.qty}
-                        onChange={(e) => updateReceivingDraftQty(receivingDraftKey(item), e.target.value)}
+                        onChange={(e) => updateReceivingDraftQty(receivingDraftKey(item), e.target.value.replace(/\D/g, ''))}
                         onKeyDown={(e) => handleDraftQtyInputKeyDown(e, receivingDraftKey(item))}
                         style={{ width: '80px' }}
                       />
@@ -2041,10 +2041,10 @@ export default function CollaborationMenuPage() {
                     <td>
                       <input
                         className={styles.cellInput}
-                        type="number"
-                        min="0"
+                        type="text"
+                        inputMode="numeric"
                         value={item.misongQty || 0}
-                        onChange={(e) => updateReceivingDraftMisongQty(receivingDraftKey(item), e.target.value)}
+                        onChange={(e) => updateReceivingDraftMisongQty(receivingDraftKey(item), e.target.value.replace(/\D/g, ''))}
                         onKeyDown={(e) => handleDraftMisongInputKeyDown(e, receivingDraftKey(item))}
                         style={{ width: '80px' }}
                       />
