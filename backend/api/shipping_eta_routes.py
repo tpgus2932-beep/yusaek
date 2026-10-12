@@ -16,7 +16,8 @@ _EZ_EXTRA_COOKIES = {"ezdomain": "yusaek", "ezuserid": "yusaek", "ezsave": "on"}
 _EZ_TIMEOUT = 300.0
 _KST = ZoneInfo("Asia/Seoul")
 _BULK_MIN_COUNT = 10
-_SIMILAR_DAYS = 3  # 구간별로 건수가 가장 비슷한 과거 N일을 참고한다
+_SIMILAR_DAYS = 5  # 구간별로 건수가 가장 비슷한 과거 N일을 참고한다
+_LOOKBACK_DAYS = 60  # 과거 약 2개월까지만 찾는다
 
 # 6단계: 종류(대량/개별/합배) x 공정(포장/출고). 예상 시간 계산은 이 순서대로 이어서 진행한다고 가정한다.
 # 칸마다 시작/종료를 따로 기록하며 기록 순서는 강제하지 않는다.
@@ -151,12 +152,14 @@ def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
         return {k: row[k] for k in keys}
 
     def _estimate(conn, work_date: str, current: dict) -> dict:
+        since = (date_cls.fromisoformat(work_date) - timedelta(days=_LOOKBACK_DAYS)).isoformat()
         rows = conn.execute(
-            "SELECT * FROM shipping_eta_log WHERE work_date < ? ORDER BY work_date DESC LIMIT 180", (work_date,)
+            "SELECT * FROM shipping_eta_log WHERE work_date >= ? AND work_date < ? ORDER BY work_date DESC",
+            (since, work_date),
         ).fetchall()
 
         def predict(key: str, kind: str, n: int):
-            """같은 종류(kind) 건수가 오늘(n)과 가장 비슷한 과거 날들의 건당 시간으로 오늘 소요시간(초)을 예측한다."""
+            """같은 종류(kind) 건수가 오늘(n)과 가장 비슷한 과거 날들의 건당 시간의 단순 평균으로 오늘 소요시간(초)을 예측한다."""
             if n <= 0:
                 return None, []
             cands = []
@@ -171,8 +174,7 @@ def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
             picked = cands[:_SIMILAR_DAYS]
             if not picked:
                 return None, []
-            weights = [1.0 / (c[0] + 0.05) for c in picked]
-            rate = sum(w * c[3] for w, c in zip(weights, picked)) / sum(weights)
+            rate = sum(c[3] for c in picked) / len(picked)
             basis = [{"date": c[1], "count": c[2], "sec": round(c[4])} for c in picked]
             return rate * n, basis
 
