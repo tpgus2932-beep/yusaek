@@ -2236,6 +2236,80 @@ def build_barcode_router(
             conn.close()
         return {"ok": True, "items": [dict(row) for row in rows]}
 
+    _BAD_STOCK_ZONES = ("A", "B", "C")
+
+    def _bad_stock_conn():
+        conn = get_shared_db()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS barcode_bad_stock (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                zone TEXT NOT NULL DEFAULT '',
+                code TEXT NOT NULL DEFAULT '',
+                product_name TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                username TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        return conn
+
+    @router.get("/barcode/bad-stock/list")
+    def list_bad_stock(user: str = Depends(get_current_user)):
+        conn = _bad_stock_conn()
+        try:
+            rows = conn.execute("SELECT * FROM barcode_bad_stock ORDER BY id DESC").fetchall()
+        finally:
+            conn.close()
+        return {"ok": True, "items": [dict(row) for row in rows]}
+
+    @router.post("/barcode/bad-stock/add")
+    def add_bad_stock(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """구역(A/B/C)별 악성재고 상품 추가. 바코드(code) 또는 검색 선택(code+product_name) 모두 지원."""
+        zone = str(payload.get("zone") or "").strip().upper()
+        if zone not in _BAD_STOCK_ZONES:
+            raise HTTPException(status_code=400, detail="구역은 A, B, C 중 하나여야 합니다")
+        raw = str(payload.get("code") or "").strip()
+        if not raw:
+            raise HTTPException(status_code=400, detail="code is required")
+        code = normalize_to_yusas(raw) or raw
+        product_name = str(payload.get("product_name") or "").strip()
+        if not product_name:
+            info = _build_defect_base_lookup().get(code)
+            if not info:
+                raise HTTPException(status_code=404, detail=f"상품을 찾을 수 없습니다: {raw}")
+            product_name = info["g"] or info["b"]
+        conn = _bad_stock_conn()
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM barcode_bad_stock WHERE zone = ? AND code = ?", (zone, code)
+            ).fetchone()
+            if exists:
+                raise HTTPException(status_code=409, detail=f"이미 {zone}구역에 등록된 상품입니다: {product_name}")
+            conn.execute(
+                "INSERT INTO barcode_bad_stock (zone, code, product_name, created_at, username)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (zone, code, product_name, datetime.now(_KST).isoformat(), user),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {**list_bad_stock(user), "added": {"zone": zone, "code": code, "product_name": product_name}}
+
+    @router.post("/barcode/bad-stock/remove")
+    def remove_bad_stock(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        try:
+            item_id = int(payload.get("id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="id is required")
+        conn = _bad_stock_conn()
+        try:
+            conn.execute("DELETE FROM barcode_bad_stock WHERE id = ?", (item_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        return list_bad_stock(user)
+
     @router.get("/barcode/defect/export")
     def export_defects(user: str = Depends(get_current_user)):
         state = get_barcode_state(user)

@@ -53,6 +53,14 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [, setLog] = useState([]);
   const [items, setItems] = useState([]);
   const [defectMode, setDefectMode] = useState(false);
+  const [showBadStockModal, setShowBadStockModal] = useState(false);
+  const [badStockZone, setBadStockZone] = useState("A");
+  const [badStockList, setBadStockList] = useState([]);
+  const [badStockScan, setBadStockScan] = useState("");
+  const [badStockQuery, setBadStockQuery] = useState("");
+  const [badStockRows, setBadStockRows] = useState([]);
+  const [badStockSearching, setBadStockSearching] = useState(false);
+  const [badStockMessage, setBadStockMessage] = useState("");
   const [showDefectList, setShowDefectList] = useState(false);
   const [defectList, setDefectList] = useState([]);
   const [defectSearchQuery, setDefectSearchQuery] = useState("");
@@ -364,6 +372,79 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       setKimsungilLogMessage(err.message || "김승일 로그 조회 실패");
     } finally {
       setKimsungilLogLoading(false);
+    }
+  };
+
+  const fetchBadStock = async () => {
+    try {
+      const res = await fetch(`${API}/barcode/bad-stock/list`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "악성재고 불러오기 실패");
+      setBadStockList(data.items ?? []);
+    } catch (err) {
+      setBadStockMessage(err.message || "악성재고 불러오기 실패");
+    }
+  };
+
+  const openBadStockModal = () => {
+    setShowBadStockModal(true);
+    setBadStockMessage("");
+    fetchBadStock();
+  };
+
+  const callBadStockApi = async (path, body) => {
+    try {
+      const res = await fetch(`${API}/barcode/bad-stock/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify(body),
+      });
+      if (handleUnauthorized(res)) return null;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "악성재고 처리 실패");
+      setBadStockList(data.items ?? []);
+      return data;
+    } catch (err) {
+      setBadStockMessage(err.message || "악성재고 처리 실패");
+      return null;
+    }
+  };
+
+  const addBadStock = async (code, productName) => {
+    const data = await callBadStockApi("add", { zone: badStockZone, code, product_name: productName });
+    if (data) setBadStockMessage(`${badStockZone}구역 추가: ${data.added?.product_name || code}`);
+    return !!data;
+  };
+
+  const handleBadStockScan = async () => {
+    const code = badStockScan.trim();
+    if (!code) return;
+    await addBadStock(code, "");
+    setBadStockScan("");
+  };
+
+  const searchBadStock = async () => {
+    const query = badStockQuery.trim();
+    if (!query) {
+      setBadStockRows([]);
+      setBadStockMessage("검색어를 입력하세요.");
+      return;
+    }
+    try {
+      setBadStockSearching(true);
+      setBadStockMessage("");
+      const res = await fetch(`${API}/barcode/defect/search?q=${encodeURIComponent(query)}`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "상품 검색 실패");
+      setBadStockRows(data.rows || []);
+      setBadStockMessage((data.rows || []).length ? `${data.rows.length}건 검색됨` : "검색 결과가 없습니다.");
+    } catch (err) {
+      setBadStockRows([]);
+      setBadStockMessage(err.message || "상품 검색 실패");
+    } finally {
+      setBadStockSearching(false);
     }
   };
 
@@ -1189,6 +1270,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                   <span className={styles.inlineTagIncoming} style={{ marginLeft: "0.35rem" }}>{kimsungilList.filter(i => (i.incoming_qty || 0) > 0).length}</span>
                 )}
               </button>
+              <button className={styles.secondaryBtn} onClick={openBadStockModal}>
+                악성재고
+              </button>
               <button className={styles.secondaryBtn} onClick={openDefectBaseEditor}>
                 불량베이스 편집
               </button>
@@ -1508,6 +1592,104 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {showBadStockModal && (
+        <div className={styles.modalOverlay} onClick={() => setShowBadStockModal(false)}>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <h4 className={styles.modalTitle}>악성재고</h4>
+              <div className={styles.modalActions}>
+                <button className={styles.secondaryBtn} onClick={() => setShowBadStockModal(false)}>닫기</button>
+              </div>
+            </div>
+            <div className={styles.tabRow} style={{ marginBottom: "0.75rem" }}>
+              {["A", "B", "C"].map((zone) => (
+                <button
+                  key={zone}
+                  className={`${styles.tabBtn} ${badStockZone === zone ? styles.tabActive : ""}`}
+                  onClick={() => { setBadStockZone(zone); setBadStockRows([]); setBadStockMessage(""); }}
+                >
+                  {zone}구역 ({badStockList.filter((i) => i.zone === zone).length})
+                </button>
+              ))}
+            </div>
+            <div className={styles.uploadRow} style={{ marginBottom: "0.5rem" }}>
+              <input
+                value={badStockScan}
+                onChange={(e) => setBadStockScan(toEnglishKey(e.target.value))}
+                onKeyDown={(e) => { if (e.key === "Enter") handleBadStockScan(); }}
+                placeholder={`${badStockZone}구역 상품 바코드 스캔 후 Enter`}
+                className={styles.searchInput}
+                autoFocus
+              />
+              <button className={styles.primaryBtn} onClick={handleBadStockScan}>바코드 추가</button>
+            </div>
+            <div className={styles.uploadRow}>
+              <input
+                value={badStockQuery}
+                onChange={(e) => setBadStockQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") searchBadStock(); }}
+                placeholder="상품명 검색"
+                className={styles.searchInput}
+              />
+              <button className={styles.secondaryBtn} onClick={searchBadStock} disabled={badStockSearching}>
+                {badStockSearching ? "검색 중..." : "상품 검색"}
+              </button>
+            </div>
+            <div className={styles.modalBody}>
+              {badStockMessage && (
+                <div className={styles.statusMsg}><strong>{badStockMessage}</strong></div>
+              )}
+              {badStockRows.length > 0 && (
+                <div className={styles.defectList} style={{ marginBottom: "0.75rem" }}>
+                  {badStockRows.map((row, idx) => (
+                    <div key={`${row.code}-badstock-${idx}`} className={styles.defectLine}>
+                      <span className={styles.defectText}>
+                        {row.base_name}
+                        {row.base_code && <span className={styles.inlineMeta} style={{ marginLeft: "0.4rem" }}>{row.base_code}</span>}
+                      </span>
+                      <button className={styles.ghostBtn} onClick={() => addBadStock(row.code, row.base_name)}>
+                        {badStockZone}구역에 추가
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {badStockList.filter((i) => i.zone === badStockZone).length === 0 ? (
+                <div className={styles.empty}>{badStockZone}구역에 등록된 상품이 없습니다.</div>
+              ) : (
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th>상품코드</th>
+                      <th>상품명</th>
+                      <th>등록일</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {badStockList.filter((i) => i.zone === badStockZone).map((item) => (
+                      <tr key={`badstock-${item.id}`}>
+                        <td>{item.code}</td>
+                        <td>{item.product_name}</td>
+                        <td>{String(item.created_at || "").slice(0, 10)}</td>
+                        <td>
+                          <button
+                            className={styles.ghostBtn}
+                            onClick={() => { if (window.confirm("삭제하시겠습니까?")) callBadStockApi("remove", { id: item.id }); }}
+                          >
+                            삭제
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
         </div>
       )}

@@ -45,7 +45,7 @@ from api.jeju_hapbae import router as jeju_hapbae_router
 from api.auth_admin_routes import build_auth_admin_router
 from api.collab_routes import build_collab_router
 from api.barcode_routes import build_barcode_router
-from api.inventory_dashboard_routes import build_inventory_dashboard_router
+from api.inventory_dashboard_routes import build_inventory_dashboard_router, init_inventory_dashboard_tables
 from api.order_recommendation_routes import build_order_recommendation_router
 from services.order_recommendation_store import init_order_recommendation_tables
 from services.order_recommendation_collect import register_collector
@@ -935,6 +935,7 @@ _init_request_attachments()
 
 init_order_recommendation_tables(_get_order_recommendation_db)
 init_non_ably_backorder_table(_get_order_recommendation_db)
+init_inventory_dashboard_tables(_get_shared_db)
 
 
 def _init_shared_files():
@@ -1649,7 +1650,8 @@ app.include_router(
         get_current_user=_get_current_user,
         get_setting=_get_setting,
         normalize_to_yusas=normalize_to_yusas,
-        get_shared_incoming_counts=_get_shared_incoming_counts,
+        get_db=_get_shared_db,
+        allow_refresh=not _IS_RENDER,
     )
 )
 app.include_router(

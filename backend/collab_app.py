@@ -37,6 +37,8 @@ from api.order_routes import build_order_router
 from api.timebox_routes import build_timebox_router
 from api.worklog_routes import build_worklog_router
 from api.equipment_routes import build_equipment_router
+from api.inventory_dashboard_routes import build_inventory_dashboard_router
+from barcode_core import normalize_to_yusas
 from api.wonbe_routes import WONBE_DB_PATH, build_wonbe_read_router
 from main import (
     ALLOWED_REQUEST_EXTS,
@@ -387,6 +389,17 @@ app.include_router(
     build_ably_settlement_router(
         get_current_user=_get_current_user,
         get_db=_get_db,
+    )
+)
+
+# 재고 대시보드: 로컬에서 조회해 공유 DB(Turso)에 저장한 내용을 읽기 전용으로 제공한다.
+app.include_router(
+    build_inventory_dashboard_router(
+        get_current_user=_get_current_user,
+        get_setting=_get_setting,
+        normalize_to_yusas=normalize_to_yusas,
+        get_db=_get_shared_db,
+        allow_refresh=False,
     )
 )
 
