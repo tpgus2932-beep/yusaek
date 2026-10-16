@@ -102,3 +102,36 @@
   font-weight: 700;
   cursor: pointer;
 }
+
+.accountList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.accountBtn {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border-color, #ddd);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+.accountBtn:hover:not(:disabled) {
+  border-color: var(--accent-black);
+}
+.accountBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.accountId {
+  font-weight: 400;
+  opacity: 0.6;
+  font-size: 0.85em;
+}

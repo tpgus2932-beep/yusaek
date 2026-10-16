@@ -1544,8 +1544,8 @@ _ensure_bootstrap_admin()
 
 
 def _create_access_token(username: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": username, "exp": expire}
+    # 만료 없음: exp 클레임을 넣지 않아 작업 중 로그아웃되지 않게 한다.
+    payload = {"sub": username}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 

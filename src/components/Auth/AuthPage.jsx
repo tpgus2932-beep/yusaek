@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import styles from "./AuthPage.module.css";
 import { COLLAB_API_BASE as API } from "../../lib/api";
 
 export default function AuthPage({
   onAuth,
   title = "YUSAEK",
-  loginSubtitle = "로그인",
+  loginSubtitle = "계정을 선택하세요",
   registerSubtitle = "회원가입",
   registerSuccessMessage = "회원가입이 완료되었습니다. 관리자 승인 후 로그인 가능합니다.",
 }) {
@@ -52,15 +52,34 @@ export default function AuthPage({
         return;
       }
 
-      const res = await fetch(`${API}/auth/login`, {
+    } catch (err) {
+      setError(err.message || "요청 실패");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const [accounts, setAccounts] = useState([]);
+
+  useEffect(() => {
+    fetch(`${API}/auth/accounts`)
+      .then((res) => res.json())
+      .then((data) => setAccounts(Array.isArray(data?.accounts) ? data.accounts : []))
+      .catch(() => setError("계정 목록을 불러오지 못했습니다."));
+  }, []);
+
+  const handleSelect = async (account) => {
+    resetFeedback();
+    try {
+      setLoading(true);
+      const res = await fetch(`${API}/auth/select`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username: account.username }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "로그인 실패");
-
-      if (data?.token) onAuth(data.token, data.display_name || data.username, data.username, !!data.is_admin, data.role || 'user', data.phone_number || '');
+      if (!res.ok) throw new Error(data?.detail || "입장 실패");
+      if (data?.token) onAuth(data.token, data.display_name || data.username, data.username, !!data.is_admin, data.role || "user", data.phone_number || "");
     } catch (err) {
       setError(err.message || "요청 실패");
     } finally {
@@ -76,6 +95,28 @@ export default function AuthPage({
           <p>{mode === "login" ? loginSubtitle : registerSubtitle}</p>
         </div>
 
+        {mode === "login" && (
+          <div className={styles.form}>
+            <div className={styles.accountList}>
+              {accounts.map((a) => (
+                <button
+                  key={a.username}
+                  type="button"
+                  className={styles.accountBtn}
+                  disabled={loading}
+                  onClick={() => handleSelect(a)}
+                >
+                  <span>{a.display_name}</span>
+                  <span className={styles.accountId}>{a.username}</span>
+                </button>
+              ))}
+            </div>
+            {message && <div className={styles.success}>{message}</div>}
+            {error && <div className={styles.error}>{error}</div>}
+          </div>
+        )}
+
+        {mode === "register" && (
         <form className={styles.form} onSubmit={handleSubmit}>
           <label className={styles.label}>
             아이디
@@ -129,9 +170,10 @@ export default function AuthPage({
           {error && <div className={styles.error}>{error}</div>}
 
           <button className={styles.primaryBtn} type="submit" disabled={loading}>
-            {loading ? "처리 중..." : mode === "login" ? "로그인" : "회원가입"}
+            {loading ? "처리 중..." : "회원가입"}
           </button>
         </form>
+        )}
 
         <div className={styles.switchRow}>
           {mode === "login" ? "계정이 없나요?" : "이미 계정이 있나요?"}

@@ -109,6 +109,60 @@ def build_auth_admin_router(
     def login_options():
         return {}
 
+    @router.get("/auth/accounts")
+    def list_accounts():
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT username, display_name, role, approval_status FROM users ORDER BY display_name, username"
+        ).fetchall()
+        conn.close()
+        return {
+            "ok": True,
+            "accounts": [
+                {
+                    "username": r["username"],
+                    "display_name": r["display_name"] or r["username"],
+                    "role": r["role"] or "user",
+                }
+                for r in rows
+                if (r["approval_status"] or "approved") == "approved"
+            ],
+        }
+
+    @router.options("/auth/accounts")
+    def accounts_options():
+        return {}
+
+    # 비밀번호 없이 계정 선택만으로 입장 (사용자 요청)
+    @router.post("/auth/select")
+    def select_account(payload: dict = Body(...)):
+        username = (payload.get("username") or "").strip()
+        if not username:
+            raise HTTPException(status_code=400, detail="username required")
+        conn = get_db()
+        row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="계정을 찾을 수 없습니다.")
+        approval_status = row["approval_status"] if row["approval_status"] else "approved"
+        if approval_status != "approved":
+            raise HTTPException(status_code=403, detail="승인되지 않은 계정입니다.")
+        role = row["role"] if row["role"] else "user"
+        return {
+            "ok": True,
+            "token": create_access_token(username),
+            "username": username,
+            "display_name": row["display_name"],
+            "phone_number": row["phone_number"] if row["phone_number"] else "",
+            "role": role,
+            "is_admin": role == "admin",
+            "approval_status": approval_status,
+        }
+
+    @router.options("/auth/select")
+    def select_options():
+        return {}
+
     @router.get("/auth/me")
     def me(user: str = Depends(get_current_user)):
         conn = get_db()
