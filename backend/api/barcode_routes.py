@@ -34,6 +34,7 @@ _INCOMING_VERIFY_EXCLUDED_CLIENTS = {"케이디지", "리자드스탠다드", "�
 _SCHEDULE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 from api.wonbe_routes import _get_wonbe_db as _get_wonbe_db, record_defect_process_logs
+from barcode_core import normalize_to_s5
 
 
 def build_barcode_router(
@@ -2236,7 +2237,133 @@ def build_barcode_router(
             conn.close()
         return {"ok": True, "items": [dict(row) for row in rows]}
 
-    _BAD_STOCK_ZONES = ("A", "B", "C")
+    def _anomaly_conn():
+        conn = get_shared_db()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS barcode_anomalies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                registered_date TEXT NOT NULL DEFAULT '',
+                product_name TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                normalized INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT '',
+                username TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        # 기존 테이블에는 개수 컬럼이 없으므로 한 번 추가한다(이미 있으면 에러 → 무시).
+        try:
+            conn.execute("ALTER TABLE barcode_anomalies ADD COLUMN qty INTEGER NOT NULL DEFAULT 1")
+            conn.commit()
+        except Exception:
+            pass
+        return conn
+
+    def _anomaly_qty(value) -> int:
+        try:
+            return max(int(value), 0)
+        except (TypeError, ValueError):
+            return 1
+
+    @router.get("/barcode/anomaly/list")
+    def list_anomalies(user: str = Depends(get_current_user)):
+        conn = _anomaly_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM barcode_anomalies ORDER BY registered_date DESC, id DESC"
+            ).fetchall()
+        finally:
+            conn.close()
+        return {"ok": True, "items": [dict(row) for row in rows]}
+
+    @router.post("/barcode/anomaly/add")
+    def add_anomaly(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        product_name = str(payload.get("product_name") or "").strip()
+        if not product_name:
+            raise HTTPException(status_code=400, detail="상품명은 필수입니다")
+        registered_date = str(payload.get("registered_date") or "").strip() or datetime.now(_KST).strftime("%Y-%m-%d")
+        reason = str(payload.get("reason") or "").strip()
+        normalized = 1 if payload.get("normalized") else 0
+        qty = _anomaly_qty(payload.get("qty", 1))
+        conn = _anomaly_conn()
+        try:
+            conn.execute(
+                "INSERT INTO barcode_anomalies (registered_date, product_name, qty, reason, normalized, created_at, username)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (registered_date, product_name, qty, reason, normalized, datetime.now(_KST).isoformat(), user),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return list_anomalies(user)
+
+    @router.post("/barcode/anomaly/update")
+    def update_anomaly(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        try:
+            anomaly_id = int(payload.get("id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="id is required")
+        # 전달된 필드만 수정한다(정상화 체크박스는 normalized 만 보냄).
+        sets, params = [], []
+        if "normalized" in payload:
+            sets.append("normalized = ?")
+            params.append(1 if payload.get("normalized") else 0)
+        if "qty" in payload:
+            sets.append("qty = ?")
+            params.append(_anomaly_qty(payload.get("qty")))
+        if "reason" in payload:
+            sets.append("reason = ?")
+            params.append(str(payload.get("reason") or "").strip())
+        if "registered_date" in payload:
+            sets.append("registered_date = ?")
+            params.append(str(payload.get("registered_date") or "").strip())
+        if "product_name" in payload:
+            product_name = str(payload.get("product_name") or "").strip()
+            if not product_name:
+                raise HTTPException(status_code=400, detail="상품명은 필수입니다")
+            sets.append("product_name = ?")
+            params.append(product_name)
+        if not sets:
+            raise HTTPException(status_code=400, detail="수정할 항목이 없습니다")
+        conn = _anomaly_conn()
+        try:
+            conn.execute(
+                f"UPDATE barcode_anomalies SET {', '.join(sets)} WHERE id = ?",
+                (*params, anomaly_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return list_anomalies(user)
+
+    @router.post("/barcode/anomaly/remove")
+    def remove_anomaly(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        try:
+            anomaly_id = int(payload.get("id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="id is required")
+        conn = _anomaly_conn()
+        try:
+            conn.execute("DELETE FROM barcode_anomalies WHERE id = ?", (anomaly_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        return list_anomalies(user)
+
+    _BAD_STOCK_CATEGORIES = ("상의", "하의")
+    _BAD_STOCK_LETTERS = ("A", "B", "C", "D", "E")
+    _BAD_STOCK_ZONES = tuple(f"{cat}{letter}" for cat in _BAD_STOCK_CATEGORIES for letter in _BAD_STOCK_LETTERS)
+    _bad_stock_migrated = [False]
+
+    def _migrate_bad_stock_zones(conn):
+        """기존 단일 문자 구역(A/B/C/D/E)을 상의/하의 구역으로 옮긴다. C는 하의C, 나머지는 상의로 보낸다.
+        행을 지우지 않고 zone 값만 바꾸며, 이미 옮겨진 행은 조건에 걸리지 않아 여러 번 실행해도 안전하다."""
+        conn.execute("UPDATE barcode_bad_stock SET zone = '하의C' WHERE zone = 'C'")
+        conn.execute(
+            "UPDATE barcode_bad_stock SET zone = '상의' || zone WHERE zone IN ('A', 'B', 'D', 'E')"
+        )
+        conn.commit()
 
     def _bad_stock_conn():
         conn = get_shared_db()
@@ -2252,6 +2379,15 @@ def build_barcode_router(
             )
             """
         )
+        # 기존 테이블에는 수량 컬럼이 없으므로 한 번 추가한다(이미 있으면 에러 → 무시).
+        try:
+            conn.execute("ALTER TABLE barcode_bad_stock ADD COLUMN qty INTEGER NOT NULL DEFAULT 1")
+            conn.commit()
+        except Exception:
+            pass
+        if not _bad_stock_migrated[0]:
+            _migrate_bad_stock_zones(conn)
+            _bad_stock_migrated[0] = True
         return conn
 
     @router.get("/barcode/bad-stock/list")
@@ -2265,10 +2401,10 @@ def build_barcode_router(
 
     @router.post("/barcode/bad-stock/add")
     def add_bad_stock(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        """구역(A/B/C)별 악성재고 상품 추가. 바코드(code) 또는 검색 선택(code+product_name) 모두 지원."""
+        """구역(상의A~E/하의A~E)별 악성재고 상품 추가. 바코드(code) 또는 검색 선택(code+product_name) 모두 지원."""
         zone = str(payload.get("zone") or "").strip().upper()
         if zone not in _BAD_STOCK_ZONES:
-            raise HTTPException(status_code=400, detail="구역은 A, B, C 중 하나여야 합니다")
+            raise HTTPException(status_code=400, detail="구역은 상의/하의 A~E 중 하나여야 합니다")
         raw = str(payload.get("code") or "").strip()
         if not raw:
             raise HTTPException(status_code=400, detail="code is required")
@@ -2281,16 +2417,18 @@ def build_barcode_router(
             product_name = info["g"] or info["b"]
         conn = _bad_stock_conn()
         try:
+            # 같은 구역에 같은 상품을 또 입고하면 새 행을 만들지 않고 수량을 1 올린다.
             exists = conn.execute(
-                "SELECT 1 FROM barcode_bad_stock WHERE zone = ? AND code = ?", (zone, code)
+                "SELECT id FROM barcode_bad_stock WHERE zone = ? AND code = ?", (zone, code)
             ).fetchone()
             if exists:
-                raise HTTPException(status_code=409, detail=f"이미 {zone}구역에 등록된 상품입니다: {product_name}")
-            conn.execute(
-                "INSERT INTO barcode_bad_stock (zone, code, product_name, created_at, username)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (zone, code, product_name, datetime.now(_KST).isoformat(), user),
-            )
+                conn.execute("UPDATE barcode_bad_stock SET qty = COALESCE(qty, 1) + 1 WHERE id = ?", (exists["id"],))
+            else:
+                conn.execute(
+                    "INSERT INTO barcode_bad_stock (zone, code, product_name, created_at, username, qty)"
+                    " VALUES (?, ?, ?, ?, ?, 1)",
+                    (zone, code, product_name, datetime.now(_KST).isoformat(), user),
+                )
             conn.commit()
         finally:
             conn.close()
@@ -2302,13 +2440,187 @@ def build_barcode_router(
             item_id = int(payload.get("id"))
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="id is required")
+        # decrement=true면 수량만 1 줄이고(1개 남았으면 삭제), 아니면 행 전체를 삭제한다.
+        decrement = bool(payload.get("decrement"))
         conn = _bad_stock_conn()
         try:
-            conn.execute("DELETE FROM barcode_bad_stock WHERE id = ?", (item_id,))
+            row = conn.execute("SELECT qty FROM barcode_bad_stock WHERE id = ?", (item_id,)).fetchone()
+            if decrement and row and (row["qty"] or 1) > 1:
+                conn.execute("UPDATE barcode_bad_stock SET qty = qty - 1 WHERE id = ?", (item_id,))
+            else:
+                conn.execute("DELETE FROM barcode_bad_stock WHERE id = ?", (item_id,))
             conn.commit()
         finally:
             conn.close()
         return list_bad_stock(user)
+
+    _EZ_TAG_RE = re.compile(r"<[^>]+>")
+
+    def _ez_cell_int(value) -> int:
+        text = _EZ_TAG_RE.sub("", str(value or "")).replace(",", "").strip()
+        try:
+            return int(float(text or 0))
+        except ValueError:
+            return 0
+
+    async def _compare_bad_stock_with_ezadmin():
+        """악성재고에 등록된 상품코드를 이지어드민 재고(I100)에서 일괄 검색해 정상재고와 등록 수량을 비교한다."""
+        from urllib.parse import quote
+
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        conn = _bad_stock_conn()
+        try:
+            rows = [dict(r) for r in conn.execute("SELECT * FROM barcode_bad_stock").fetchall()]
+        finally:
+            conn.close()
+        if not rows:
+            return {"ok": True, "items": [], "summary": {"total": 0, "match": 0, "mismatch": 0, "not_found": 0}}
+
+        # 이지어드민은 S00000 형식이라 코드를 변환하고, 구역이 달라도 같은 상품이면 합산해 비교한다.
+        by_code: dict[str, dict] = {}
+        for r in rows:
+            ez_code = normalize_to_s5(r["code"]) or str(r["code"] or "").strip()
+            if not ez_code:
+                continue
+            item = by_code.setdefault(
+                ez_code, {"code": ez_code, "product_name": r["product_name"], "registered": 0, "zones": {}}
+            )
+            qty = int(r.get("qty") or 1)
+            item["registered"] += qty
+            item["zones"][r["zone"]] = item["zones"].get(r["zone"], 0) + qty
+
+        today = datetime.now(_KST).strftime("%Y-%m-%d")
+        codes = sorted(by_code)
+        ez_stock: dict[str, int] = {}
+        try:
+            async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+                for start in range(0, len(codes), 100):
+                    chunk = codes[start:start + 100]
+                    par = (
+                        "auto_search=&search_all_product=&multi_supply_group=&multi_supply=&str_supply_code=0"
+                        "&tags_string=&product_tag_include_type=1&query_type=product_id"
+                        f"&query_str={quote(','.join(chunk), safe='')}"
+                        "&stock_type=0&stock_start=&stock_end=&notrans_day=&notrans_cnt=&notrans_status=0&stock_status=0"
+                        f"&start_date={today}&start_hour=00%3A00%3A00&end_date={today}&end_hour=23%3A59%3A59"
+                        "&date_period_sel=1&work_type=stockin&work_start=&work_end=&inout_type=0&product_date="
+                        f"&start_date2={today}&end_date2={today}&date_period_sel2=1"
+                        "&products_sort=1&category=0&except_soldout=0&temp_soldout=0&location=0"
+                    )
+                    page, total_pages = 1, 1
+                    while page <= total_pages:
+                        resp = await client.post(
+                            f"{_EZADMIN_BASE}/function.htm",
+                            data={
+                                "_search": "false", "nd": str(int(datetime.now().timestamp() * 1000)),
+                                "rows": "100", "page": str(page), "sidx": "", "sord": "asc",
+                                "template": "I100", "action": "search", "page_code": "I100", "par": par,
+                            },
+                            cookies={"PHPSESSID": phpsessid},
+                            headers={
+                                "User-Agent": "Mozilla/5.0",
+                                "X-Requested-With": "XMLHttpRequest",
+                                "Referer": f"{_EZADMIN_BASE}/template35.htm?template=I100",
+                            },
+                        )
+                        try:
+                            obj = resp.json()
+                        except Exception:
+                            return {"ok": False, "need_session": True}
+                        if not isinstance(obj, dict) or "rows" not in obj:
+                            return {"ok": False, "need_session": True}
+                        for row in obj["rows"]:
+                            cell = row.get("cell") or {}
+                            key = normalize_to_s5(cell.get("key")) or str(cell.get("key") or "").strip()
+                            if key:
+                                ez_stock[key] = _ez_cell_int(cell.get("stock"))
+                        total_pages = int(obj.get("total") or 1)
+                        page += 1
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"이지어드민 조회 실패: {exc}")
+
+        items = []
+        summary = {"total": 0, "match": 0, "mismatch": 0, "not_found": 0}
+        for code in codes:
+            item = by_code[code]
+            ez = ez_stock.get(code)
+            if ez is None:
+                status = "not_found"
+            elif ez == item["registered"]:
+                status = "match"
+            else:
+                status = "mismatch"
+            summary["total"] += 1
+            summary[status] += 1
+            items.append({
+                "code": code,
+                "product_name": item["product_name"],
+                "registered": item["registered"],
+                "zones": item["zones"],
+                "ezadmin_stock": ez,
+                "diff": None if ez is None else ez - item["registered"],
+                "status": status,
+            })
+        # 확인이 필요한 것(불일치/미검색)을 위로 올린다.
+        order = {"mismatch": 0, "not_found": 1, "match": 2}
+        items.sort(key=lambda i: (order[i["status"]], i["code"]))
+        return {"ok": True, "items": items, "summary": summary}
+
+    @router.post("/barcode/bad-stock/ezadmin-check")
+    async def check_bad_stock_with_ezadmin(user: str = Depends(get_current_user)):
+        return await _compare_bad_stock_with_ezadmin()
+
+    @router.post("/barcode/bad-stock/ezadmin-normalize")
+    async def normalize_bad_stock_in_ezadmin(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        """이지어드민 정상재고가 악성재고 등록 수량보다 적은 상품을 부족분만큼 입고처리해 맞춘다.
+        codes에 상품코드를 주면 그 상품만, 비우면 부족한 전체를 처리한다. 수량은 클라이언트 값을 믿지 않고
+        이 시점에 다시 조회한 값으로 계산하므로 같은 요청이 겹쳐도 필요 이상으로 입고되지 않는다.
+        이지어드민 재고가 더 많은 상품은 출고하지 않고 그대로 둔다."""
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+        selected = {
+            normalize_to_s5(c) or str(c or "").strip() for c in (payload.get("codes") or []) if str(c or "").strip()
+        }
+
+        before = await _compare_bad_stock_with_ezadmin()
+        if not before.get("ok"):
+            return before
+        targets = [
+            i for i in before["items"]
+            if i["status"] == "mismatch" and i["diff"] < 0 and (not selected or i["code"] in selected)
+        ]
+
+        results = []
+        async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+            for t in targets:
+                qty = -t["diff"]
+                try:
+                    sr = await client.post(
+                        f"{_EZADMIN_BASE}/function.htm",
+                        data={
+                            "template": "I100", "action": "set_stock_data",
+                            "product_id": t["code"], "bad": "0", "type": "in",
+                            "stock_label": "", "move_warehouse": "0",
+                            "stock_unit": "stock_unit_ea", "qty": str(qty), "memo": "악성재고 정상화",
+                            "timeFlag": _ez_time_flag(datetime.now()),
+                        },
+                        cookies={"PHPSESSID": phpsessid}, headers=_ez_invoice_headers(),
+                    )
+                    if _looks_like_ez_session_error(sr, (sr.text or "").strip()):
+                        return {"ok": False, "need_session": True, "results": results}
+                    results.append({"code": t["code"], "qty": qty, "ok": sr.status_code < 400})
+                except Exception as exc:
+                    results.append({"code": t["code"], "qty": qty, "ok": False, "error": str(exc)})
+
+        after = await _compare_bad_stock_with_ezadmin()
+        return {
+            "ok": all(r["ok"] for r in results),
+            "results": results,
+            "check": after if after.get("ok") else None,
+        }
 
     @router.get("/barcode/defect/export")
     def export_defects(user: str = Depends(get_current_user)):
@@ -2354,15 +2666,6 @@ def build_barcode_router(
         if not defect_counts:
             raise HTTPException(status_code=400, detail="불량 목록이 비어 있습니다.")
 
-        def normalize_s_code(value) -> str:
-            code = str(value or "").strip()
-            upper = code.upper()
-            if upper.startswith("YUSAS"):
-                return f"S{code[5:]}"
-            if upper.startswith("S"):
-                return f"S{code[1:]}"
-            return code
-
         conn = _get_wonbe_db()
         try:
             base_rows = conn.execute(
@@ -2371,17 +2674,17 @@ def build_barcode_router(
         finally:
             conn.close()
 
-        wonbe_by_s_code = {}
+        wonbe_by_code = {}
         for row in base_rows:
-            code = normalize_s_code(row["상품코드"])
-            if code and code not in wonbe_by_s_code:
-                wonbe_by_s_code[code] = row
+            code = normalize_to_s5(row["상품코드"]) or str(row["상품코드"] or "").strip()
+            if code and code not in wonbe_by_code:
+                wonbe_by_code[code] = row
 
         rows = []
         unmatched_codes = []
         for raw_code, qty in sorted(defect_counts.items()):
-            code = normalize_s_code(raw_code)
-            matched = wonbe_by_s_code.get(code)
+            code = normalize_to_s5(raw_code) or raw_code
+            matched = wonbe_by_code.get(code)
             if not matched:
                 unmatched_codes.append(code or str(raw_code or ""))
                 continue
@@ -2843,11 +3146,11 @@ def build_barcode_router(
         return {"ok": True}
 
     @router.get("/barcode/incoming/ezadmin-voucher-list")
-    async def incoming_ezadmin_voucher_list(user: str = Depends(get_current_user)):
+    async def incoming_ezadmin_voucher_list(date: str | None = None, user: str = Depends(get_current_user)):
         phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
         if not phpsessid:
             return {"ok": False, "need_session": True}
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = str(date or datetime.now().strftime("%Y-%m-%d"))
         _ez_client_kwargs = {"timeout": 20.0, "verify": False, "follow_redirects": True}
         cookies = {"PHPSESSID": phpsessid}
         try:
@@ -2924,48 +3227,53 @@ def build_barcode_router(
 
         _ez_client_kwargs = {"timeout": 20.0, "verify": False, "follow_redirects": True}
 
-        # 1) 전표 목록 조회
-        try:
-            async with httpx.AsyncClient(**_ez_client_kwargs) as client:
-                r = await client.post(
-                    f"{_EZADMIN_BASE}/function.htm",
-                    data={
-                        "_search": "false",
-                        "nd": str(int(datetime.now().timestamp() * 1000)),
-                        "rows": "9999",
-                        "page": "1",
-                        "sidx": "",
-                        "sord": "asc",
-                        "template": "IM00",
-                        "action": "get_IM00_grid",
-                        "par": (
-                            "template=IM00&action=&page_code=IM00&search=1"
-                            "&_sort=&sort_order=&date_type=crdate"
-                            f"&start_date={today}&end_date={today}"
-                            "&date_period_sel=0&query_option=title&query_str=&req_status=0"
-                        ),
-                    },
-                    cookies=cookies,
-                )
-        except Exception as exc:
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=f"EZAdmin 연결 실패: {exc}")
+        requested_sheets = [str(s).strip() for s in (payload.get("sheet_list") or []) if str(s).strip()]
 
-        try:
-            obj = r.json()
-        except Exception:
-            return {"ok": False, "need_session": True}
+        if requested_sheets:
+            sheet_list = requested_sheets
+        else:
+            # 1) 전표 목록 조회
+            try:
+                async with httpx.AsyncClient(**_ez_client_kwargs) as client:
+                    r = await client.post(
+                        f"{_EZADMIN_BASE}/function.htm",
+                        data={
+                            "_search": "false",
+                            "nd": str(int(datetime.now().timestamp() * 1000)),
+                            "rows": "9999",
+                            "page": "1",
+                            "sidx": "",
+                            "sord": "asc",
+                            "template": "IM00",
+                            "action": "get_IM00_grid",
+                            "par": (
+                                "template=IM00&action=&page_code=IM00&search=1"
+                                "&_sort=&sort_order=&date_type=crdate"
+                                f"&start_date={today}&end_date={today}"
+                                "&date_period_sel=0&query_option=title&query_str=&req_status=0"
+                            ),
+                        },
+                        cookies=cookies,
+                    )
+            except Exception as exc:
+                traceback.print_exc()
+                raise HTTPException(status_code=500, detail=f"EZAdmin 연결 실패: {exc}")
 
-        if "rows" not in obj:
-            return {"ok": False, "need_session": True}
+            try:
+                obj = r.json()
+            except Exception:
+                return {"ok": False, "need_session": True}
 
-        sheet_list = [
-            str(row["cell"]["sheet"])
-            for row in obj.get("rows", [])
-            if row.get("cell", {}).get("sheet")
-        ]
-        if not sheet_list:
-            return {"ok": False, "need_session": False, "detail": f"{today} 전표가 없습니다."}
+            if "rows" not in obj:
+                return {"ok": False, "need_session": True}
+
+            sheet_list = [
+                str(row["cell"]["sheet"])
+                for row in obj.get("rows", [])
+                if row.get("cell", {}).get("sheet")
+            ]
+            if not sheet_list:
+                return {"ok": False, "need_session": False, "detail": f"{today} 전표가 없습니다."}
 
         # 2) 다운로드 작업 등록
         par = (
@@ -3068,7 +3376,7 @@ def build_barcode_router(
             raise HTTPException(status_code=500, detail=f"파일 파싱 실패: {exc}")
 
         set_shared_incoming_counts(dict(counts))
-        return {"ok": True, "codes": len(counts), "total_qty": sum(counts.values())}
+        return {"ok": True, "date": today, "codes": len(counts), "total_qty": sum(counts.values())}
 
         suffix = ".xls"
         tmp_path = Path(tempfile.gettempdir()) / f"yusaek_ezadmin_incoming_{uuid.uuid4().hex}{suffix}"

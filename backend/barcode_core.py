@@ -14,6 +14,8 @@ QTY_COL = 11
 
 PATTERN_S5 = re.compile(r"S(\d{5})")
 PATTERN_YUSAS5 = re.compile(r"YUSAS(\d{5})")
+PATTERN_S5_CI = re.compile(r"S(\d{5})", re.IGNORECASE)
+PATTERN_YUSAS5_CI = re.compile(r"YUSAS(\d{5})", re.IGNORECASE)
 HEADER_ALIASES = {
     "code": ["상품코드", "바코드", "barcode", "code", "sku", "품번"],
     "name": ["상품명", "품명", "product", "name"],
@@ -82,6 +84,20 @@ def normalize_to_yusas(text: str | None) -> str:
     m1 = PATTERN_S5.search(s)
     if m1:
         return f"YUSAS{m1.group(1)}"
+    return ""
+
+
+def normalize_to_s5(text: str | None) -> str:
+    """대소문자 상관없이 'S'/'YUSAS' + 5자리 코드를 찾아 'S00000' 형식으로 정규화한다."""
+    if text is None:
+        return ""
+    s = str(text)
+    m2 = PATTERN_YUSAS5_CI.search(s)
+    if m2:
+        return f"S{m2.group(1)}"
+    m1 = PATTERN_S5_CI.search(s)
+    if m1:
+        return f"S{m1.group(1)}"
     return ""
 
 

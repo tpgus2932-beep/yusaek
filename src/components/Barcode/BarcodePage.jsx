@@ -35,6 +35,10 @@ const toEnglishKey = (text) => {
   return out.toUpperCase();
 };
 
+const BAD_STOCK_CATEGORIES = ["상의", "하의"];
+const BAD_STOCK_LETTERS = ["A", "B", "C", "D", "E"];
+const badStockZoneLabel = (zone) => `${zone.slice(0, 2)} ${zone.slice(2)}구역`;
+
 export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [file, setFile] = useState(null);
   const [uploadMsg, setUploadMsg] = useState("");
@@ -53,14 +57,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [, setLog] = useState([]);
   const [items, setItems] = useState([]);
   const [defectMode, setDefectMode] = useState(false);
-  const [showBadStockModal, setShowBadStockModal] = useState(false);
-  const [badStockZone, setBadStockZone] = useState("A");
-  const [badStockList, setBadStockList] = useState([]);
-  const [badStockScan, setBadStockScan] = useState("");
-  const [badStockQuery, setBadStockQuery] = useState("");
-  const [badStockRows, setBadStockRows] = useState([]);
-  const [badStockSearching, setBadStockSearching] = useState(false);
-  const [badStockMessage, setBadStockMessage] = useState("");
   const [showDefectList, setShowDefectList] = useState(false);
   const [defectList, setDefectList] = useState([]);
   const [defectSearchQuery, setDefectSearchQuery] = useState("");
@@ -88,13 +84,46 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [defectBaseSaving, setDefectBaseSaving] = useState(false);
   const [defectBaseMessage, setDefectBaseMessage] = useState("");
   const [showDefectBaseEditor, setShowDefectBaseEditor] = useState(false);
+  const [showAnomalyModal, setShowAnomalyModal] = useState(false);
+  const [anomalyList, setAnomalyList] = useState([]);
+  const [showBadStockModal, setShowBadStockModal] = useState(false);
+  const [badStockZone, setBadStockZone] = useState("상의A");
+  const [badStockList, setBadStockList] = useState([]);
+  const [badStockScan, setBadStockScan] = useState("");
+  const [badStockQuery, setBadStockQuery] = useState("");
+  const [badStockRows, setBadStockRows] = useState([]);
+  const [badStockSearching, setBadStockSearching] = useState(false);
+  const [badStockMessage, setBadStockMessage] = useState("");
+  const [badStockChecking, setBadStockChecking] = useState(false);
+  const [badStockCheck, setBadStockCheck] = useState(null);
+  const [badStockSelected, setBadStockSelected] = useState([]);
+  const [badStockFind, setBadStockFind] = useState("");
+  const [badStockNormalizing, setBadStockNormalizing] = useState(false);
+  const [anomalySearchQuery, setAnomalySearchQuery] = useState("");
+  const [anomalySearchRows, setAnomalySearchRows] = useState([]);
+  const [anomalySearchLoading, setAnomalySearchLoading] = useState(false);
+  const [anomalyMessage, setAnomalyMessage] = useState("");
+  const [anomalyForm, setAnomalyForm] = useState({
+    registered_date: new Date().toLocaleDateString("sv-SE"),
+    product_name: "",
+    qty: 1,
+    reason: "",
+    normalized: false,
+  });
+  const [anomalyEdit, setAnomalyEdit] = useState(null);
   const [ochuulLoading, setOchuulLoading] = useState(false);
   const [ochuulResult, setOchuulResult] = useState(null);
   const [ezadminLoading, setEzadminLoading] = useState(false);
   const [ezadminMsg, setEzadminMsg] = useState("");
+  const [incomingEzDate, setIncomingEzDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [incomingVoucherLoading, setIncomingVoucherLoading] = useState(false);
+  const [incomingVoucherList, setIncomingVoucherList] = useState([]);
+  const [showIncomingVoucherModal, setShowIncomingVoucherModal] = useState(false);
+  const [selectedIncomingSheets, setSelectedIncomingSheets] = useState([]);
   const [ezadminOrdersLoading, setEzadminOrdersLoading] = useState(false);
   const [ezadminOrdersMsg, setEzadminOrdersMsg] = useState("");
   const [ezadminOrdersTiming, setEzadminOrdersTiming] = useState(null);
+  const [ezadminOrdersDate, setEzadminOrdersDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [defectEzadminLoading, setDefectEzadminLoading] = useState(false);
   const [defectEzadminMsg, setDefectEzadminMsg] = useState("");
   const { openModal: openEzadminModal } = useEzadminSession();
@@ -208,20 +237,22 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     } finally { setLoadingIncoming(false); }
   };
 
-  const handleIncomingFromEzadmin = async () => {
+  const handleIncomingFromEzadmin = async (sheetList) => {
+    const sheets = Array.isArray(sheetList) ? sheetList.filter(Boolean) : [];
     try {
-      setEzadminLoading(true); setEzadminMsg("EZAdmin에서 불러오는 중... (최대 60초)");
+      setEzadminLoading(true);
+      setEzadminMsg(`EZAdmin에서 불러오는 중... (${incomingEzDate}${sheets.length ? `, 전표 ${sheets.length}건` : ""}, 최대 60초)`);
       setIncomingMsg(""); setIncomingCodes(null); setIncomingTotal(null);
       const res = await fetch(`${API}/barcode/incoming/upload-from-ezadmin`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ date: incomingEzDate, ...(sheets.length ? { sheet_list: sheets } : {}) }),
       });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (data?.need_session) {
         setEzadminMsg("");
-        openEzadminModal(handleIncomingFromEzadmin);
+        openEzadminModal(() => handleIncomingFromEzadmin(sheets));
         return;
       }
       if (!res.ok || !data?.ok) {
@@ -229,9 +260,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
         setIncomingMsg(msg); pushLog(msg);
         return;
       }
-      setIncomingMsg("EZAdmin 입고 데이터 로드 완료");
+      setIncomingMsg(`EZAdmin 입고 데이터 로드 완료 (${data.date ?? incomingEzDate})`);
       setIncomingCodes(data.codes ?? null); setIncomingTotal(data.total_qty ?? null);
-      pushLog(`EZAdmin 입고 로드 완료 (코드 ${data.codes ?? "-"} / 수량 ${data.total_qty ?? "-"})`);
+      pushLog(`EZAdmin 입고 로드 완료 (${data.date ?? incomingEzDate} · 코드 ${data.codes ?? "-"} / 수량 ${data.total_qty ?? "-"})`);
       await refreshStatus();
     } catch (err) {
       const msg = `EZAdmin 불러오기 실패: ${err.message || ""}`.trim();
@@ -239,16 +270,48 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     } finally { setEzadminLoading(false); setEzadminMsg(""); }
   };
 
+  const handleOpenIncomingVoucherPicker = async () => {
+    setIncomingVoucherLoading(true);
+    setIncomingMsg("");
+    try {
+      const res = await fetch(`${API}/barcode/incoming/ezadmin-voucher-list?date=${encodeURIComponent(incomingEzDate)}`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) {
+        openEzadminModal(handleOpenIncomingVoucherPicker);
+        return;
+      }
+      if (!res.ok || !data?.ok) throw new Error(data?.detail || data?.error || "입고전표 목록 조회 실패");
+      if (!data.vouchers?.length) {
+        setIncomingMsg(`${incomingEzDate} 입고전표가 없습니다.`);
+        return;
+      }
+      setIncomingVoucherList(data.vouchers);
+      setSelectedIncomingSheets(data.vouchers.map((v) => String(v.sheet)));
+      setShowIncomingVoucherModal(true);
+    } catch (err) {
+      setIncomingMsg(err.message || "입고전표 목록 조회 실패");
+    } finally {
+      setIncomingVoucherLoading(false);
+    }
+  };
+
+  const handleIncomingVoucherConfirm = async () => {
+    if (!selectedIncomingSheets.length) return;
+    setShowIncomingVoucherModal(false);
+    await handleIncomingFromEzadmin(selectedIncomingSheets);
+  };
+
   const handleUploadFromEzadminOrders = async () => {
     const startedAt = performance.now();
     try {
-      setEzadminOrdersLoading(true); setEzadminOrdersMsg("EZAdmin에서 주문 불러오는 중...");
+      setEzadminOrdersLoading(true); setEzadminOrdersMsg(`EZAdmin에서 주문 불러오는 중... (${ezadminOrdersDate})`);
       setEzadminOrdersTiming(null);
       setUploadMsg(""); setCount(null); setCodesTotal(null);
       const res = await fetch(`${API}/barcode/upload-from-ezadmin-orders`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ date: ezadminOrdersDate }),
       });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
@@ -324,6 +387,244 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     }
   };
 
+  const todayStr = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+
+  const fetchAnomalies = async () => {
+    try {
+      const res = await fetch(`${API}/barcode/anomaly/list`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "이상현상 불러오기 실패");
+      setAnomalyList(data.items ?? []);
+    } catch (err) {
+      setAnomalyMessage(err.message || "이상현상 불러오기 실패");
+    }
+  };
+
+  const fetchBadStock = async () => {
+    try {
+      const res = await fetch(`${API}/barcode/bad-stock/list`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "악성재고 불러오기 실패");
+      setBadStockList(data.items ?? []);
+    } catch (err) {
+      setBadStockMessage(err.message || "악성재고 불러오기 실패");
+    }
+  };
+
+  const openBadStockModal = () => {
+    setShowBadStockModal(true);
+    setBadStockMessage("");
+    fetchBadStock();
+  };
+
+  const callBadStockApi = async (path, body) => {
+    try {
+      const res = await fetch(`${API}/barcode/bad-stock/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify(body),
+      });
+      if (handleUnauthorized(res)) return null;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "악성재고 처리 실패");
+      setBadStockList(data.items ?? []);
+      return data;
+    } catch (err) {
+      setBadStockMessage(err.message || "악성재고 처리 실패");
+      return null;
+    }
+  };
+
+  const addBadStock = async (code, productName) => {
+    const data = await callBadStockApi("add", { zone: badStockZone, code, product_name: productName });
+    if (data) setBadStockMessage(`${badStockZoneLabel(badStockZone)} 추가: ${data.added?.product_name || code}`);
+    return !!data;
+  };
+
+  const checkBadStockWithEzadmin = async () => {
+    setBadStockChecking(true);
+    setBadStockMessage("");
+    try {
+      const res = await fetch(`${API}/barcode/bad-stock/ezadmin-check`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "이지어드민 재고 확인 실패");
+      if (data.need_session) {
+        setBadStockCheck(null);
+        setBadStockMessage("이지어드민 세션이 만료되었거나 없습니다. PHPSESSID를 다시 등록해주세요.");
+        return;
+      }
+      setBadStockCheck(data);
+      setBadStockSelected([]);
+    } catch (err) {
+      setBadStockMessage(err.message || "이지어드민 재고 확인 실패");
+    } finally {
+      setBadStockChecking(false);
+    }
+  };
+
+  // 이지어드민 정상재고가 등록 수량보다 적은 상품(부족분)만 입고처리 대상이다.
+  const badStockShortItems = (badStockCheck?.items ?? []).filter((i) => i.status === "mismatch" && i.diff < 0);
+
+  const normalizeBadStock = async (codes) => {
+    const targets = codes.length ? badStockShortItems.filter((i) => codes.includes(i.code)) : badStockShortItems;
+    if (!targets.length) {
+      setBadStockMessage("정상화할 부족 상품이 없습니다.");
+      return;
+    }
+    const totalQty = targets.reduce((s, i) => s + (-i.diff), 0);
+    if (!window.confirm(`${targets.length}종, 합계 ${totalQty}개를 이지어드민에 입고처리하여 악성재고 등록 수량에 맞춥니다.\n\n진행하시겠습니까?`)) return;
+    setBadStockNormalizing(true);
+    setBadStockMessage("");
+    try {
+      const res = await fetch(`${API}/barcode/bad-stock/ezadmin-normalize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ codes: targets.map((i) => i.code) }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "재고 정상화 실패");
+      if (data.need_session) {
+        setBadStockMessage("이지어드민 세션이 만료되었거나 없습니다. PHPSESSID를 다시 등록해주세요.");
+        return;
+      }
+      if (data.check) setBadStockCheck(data.check);
+      setBadStockSelected([]);
+      const failed = (data.results ?? []).filter((r) => !r.ok);
+      setBadStockMessage(
+        failed.length
+          ? `정상화 ${data.results.length - failed.length}건 완료, 실패 ${failed.length}건: ${failed.map((r) => r.code).join(", ")}`
+          : `정상화 완료: ${data.results?.length ?? 0}종 입고처리`
+      );
+    } catch (err) {
+      setBadStockMessage(err.message || "재고 정상화 실패");
+    } finally {
+      setBadStockNormalizing(false);
+    }
+  };
+
+  const handleBadStockScan = async () => {
+    const code = badStockScan.trim();
+    if (!code) return;
+    await addBadStock(code, "");
+    setBadStockScan("");
+  };
+
+  const searchBadStock = async () => {
+    const query = badStockQuery.trim();
+    if (!query) {
+      setBadStockRows([]);
+      setBadStockMessage("검색어를 입력하세요.");
+      return;
+    }
+    try {
+      setBadStockSearching(true);
+      setBadStockMessage("");
+      const res = await fetch(`${API}/barcode/defect/search?q=${encodeURIComponent(query)}`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "상품 검색 실패");
+      setBadStockRows(data.rows || []);
+      setBadStockMessage((data.rows || []).length ? `${data.rows.length}건 검색됨` : "검색 결과가 없습니다.");
+    } catch (err) {
+      setBadStockRows([]);
+      setBadStockMessage(err.message || "상품 검색 실패");
+    } finally {
+      setBadStockSearching(false);
+    }
+  };
+
+  const openAnomalyModal = () => {
+    setShowAnomalyModal(true);
+    setAnomalyMessage("");
+    fetchAnomalies();
+  };
+
+  const searchAnomalyProducts = async () => {
+    const query = anomalySearchQuery.trim();
+    if (!query) {
+      setAnomalySearchRows([]);
+      setAnomalyMessage("검색어를 입력하세요.");
+      return;
+    }
+    try {
+      setAnomalySearchLoading(true);
+      setAnomalyMessage("");
+      const res = await fetch(`${API}/barcode/defect/search?q=${encodeURIComponent(query)}`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "상품 검색 실패");
+      setAnomalySearchRows(data.rows || []);
+      setAnomalyMessage((data.rows || []).length ? `${data.rows.length}건 검색됨` : "검색 결과가 없습니다.");
+    } catch (err) {
+      setAnomalySearchRows([]);
+      setAnomalyMessage(err.message || "상품 검색 실패");
+    } finally {
+      setAnomalySearchLoading(false);
+    }
+  };
+
+  const pickAnomalyProduct = (row) => {
+    const name = String(row.base_name || "");
+    const option = String(row.base_color || "");
+    setAnomalyForm((prev) => ({
+      ...prev,
+      product_name: option && !name.includes(option) ? `${name} ${option}` : name,
+    }));
+    setAnomalySearchRows([]);
+  };
+
+  const callAnomalyApi = async (path, body) => {
+    try {
+      const res = await fetch(`${API}/barcode/anomaly/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify(body),
+      });
+      if (handleUnauthorized(res)) return false;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "이상현상 처리 실패");
+      setAnomalyList(data.items ?? []);
+      return true;
+    } catch (err) {
+      setAnomalyMessage(err.message || "이상현상 처리 실패");
+      return false;
+    }
+  };
+
+  const addAnomaly = async () => {
+    if (!anomalyForm.product_name.trim()) {
+      setAnomalyMessage("상품을 검색해서 선택하세요.");
+      return;
+    }
+    if (await callAnomalyApi("add", anomalyForm)) {
+      setAnomalyForm({ registered_date: todayStr(), product_name: "", qty: 1, reason: "", normalized: false });
+      setAnomalyMessage("이상현상을 등록했습니다.");
+    }
+  };
+
+  const saveAnomalyEdit = async () => {
+    if (!anomalyEdit) return;
+    if (!anomalyEdit.product_name.trim()) {
+      setAnomalyMessage("상품명은 필수입니다.");
+      return;
+    }
+    const { id, registered_date, product_name, qty, reason } = anomalyEdit;
+    if (await callAnomalyApi("update", { id, registered_date, product_name, qty, reason })) {
+      setAnomalyEdit(null);
+      setAnomalyMessage("수정했습니다.");
+    }
+  };
+
   const addDefectFromSearch = async (row) => {
     const code = row?.code || row?.base_code;
     if (!code) return;
@@ -372,79 +673,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       setKimsungilLogMessage(err.message || "김승일 로그 조회 실패");
     } finally {
       setKimsungilLogLoading(false);
-    }
-  };
-
-  const fetchBadStock = async () => {
-    try {
-      const res = await fetch(`${API}/barcode/bad-stock/list`, { headers: getAuthHeaders() });
-      if (handleUnauthorized(res)) return;
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "악성재고 불러오기 실패");
-      setBadStockList(data.items ?? []);
-    } catch (err) {
-      setBadStockMessage(err.message || "악성재고 불러오기 실패");
-    }
-  };
-
-  const openBadStockModal = () => {
-    setShowBadStockModal(true);
-    setBadStockMessage("");
-    fetchBadStock();
-  };
-
-  const callBadStockApi = async (path, body) => {
-    try {
-      const res = await fetch(`${API}/barcode/bad-stock/${path}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify(body),
-      });
-      if (handleUnauthorized(res)) return null;
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "악성재고 처리 실패");
-      setBadStockList(data.items ?? []);
-      return data;
-    } catch (err) {
-      setBadStockMessage(err.message || "악성재고 처리 실패");
-      return null;
-    }
-  };
-
-  const addBadStock = async (code, productName) => {
-    const data = await callBadStockApi("add", { zone: badStockZone, code, product_name: productName });
-    if (data) setBadStockMessage(`${badStockZone}구역 추가: ${data.added?.product_name || code}`);
-    return !!data;
-  };
-
-  const handleBadStockScan = async () => {
-    const code = badStockScan.trim();
-    if (!code) return;
-    await addBadStock(code, "");
-    setBadStockScan("");
-  };
-
-  const searchBadStock = async () => {
-    const query = badStockQuery.trim();
-    if (!query) {
-      setBadStockRows([]);
-      setBadStockMessage("검색어를 입력하세요.");
-      return;
-    }
-    try {
-      setBadStockSearching(true);
-      setBadStockMessage("");
-      const res = await fetch(`${API}/barcode/defect/search?q=${encodeURIComponent(query)}`, { headers: getAuthHeaders() });
-      if (handleUnauthorized(res)) return;
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "상품 검색 실패");
-      setBadStockRows(data.rows || []);
-      setBadStockMessage((data.rows || []).length ? `${data.rows.length}건 검색됨` : "검색 결과가 없습니다.");
-    } catch (err) {
-      setBadStockRows([]);
-      setBadStockMessage(err.message || "상품 검색 실패");
-    } finally {
-      setBadStockSearching(false);
     }
   };
 
@@ -782,34 +1010,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     }
   };
 
-  const handleCompletedXlsDownload = async () => {
-    try {
-      const res = await fetch(`${API}/barcode/completed/export-xls`, { headers: getAuthHeaders() });
-      if (handleUnauthorized(res)) return;
-      if (!res.ok) {
-        let message = "완료목록 다운로드 실패";
-        try { const data = await res.json(); message = data?.detail || message; }
-        catch { const text = await res.text(); if (text) message = text; }
-        throw new Error(message);
-      }
-      const blob = await res.blob();
-      const fallback = `completed_products_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}.xls`;
-      const filename = getDownloadFilename(res, fallback);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-      pushLog(`완료목록 다운로드 완료: ${filename}`);
-    } catch (err) {
-      alert(err.message || "완료목록 다운로드 실패");
-      pushLog(`완료목록 다운로드 실패: ${err.message || ""}`.trim());
-    }
-  };
-
   const handleDefectPrint = async () => {
     if (defectList.length === 0) {
       alert("보낼 불량 목록이 없습니다.");
@@ -821,9 +1021,15 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
         ? defectList.filter((item) => !(item.kimsungil_summon_qty > 0))
         : defectList;
       const rows = sourceList
-        .map((item) => ({
+        .map((item) => {
+          // 상품명 앞 접두어(첫 단어)를 괄호로 묶어 거래처상품명 앞에 붙인다. 예: (휘민)코에셔츠
+          const product = String(item.base_product || "").trim();
+          const prefix = String(item.base_name || "").trim().split(/\s+/)[0] || "";
+          return { item, product, prefix };
+        })
+        .map(({ item, product, prefix }) => ({
           vendor: String(item.base_vendor || "").trim(),
-          name: String(item.base_product || "").trim(),
+          name: product && prefix ? `(${prefix})${product}` : product,
           color: String(item.base_color || "").trim(),
           qty: Number(item.count || 0),
           addr: String(item.base_addr || "").trim(),
@@ -1127,13 +1333,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     setInvoiceBulkRunning(false);
   };
 
-  const openDefectBaseEditor = async () => {
-    setShowDefectBaseEditor(true);
-    if (!defectBaseRows.length) {
-      await fetchDefectBase();
-    }
-  };
-
   const defectBaseRowsToShow = defectBaseRows
     .filter((row) => {
       const query = defectBaseQuery.trim().toLowerCase();
@@ -1181,6 +1380,13 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               </button>
             </div>
             <div className={styles.uploadRow}>
+              <input
+                type="date"
+                className={styles.dateInput}
+                value={ezadminOrdersDate}
+                onChange={(e) => setEzadminOrdersDate(e.target.value)}
+                disabled={loadingUpload || ezadminOrdersLoading}
+              />
               <button className={styles.secondaryBtn} style={{ flex: 1 }} onClick={handleUploadFromEzadminOrders} disabled={loadingUpload || ezadminOrdersLoading}>
                 {ezadminOrdersLoading ? "EZAdmin 불러오는 중..." : "EZAdmin에서 불러오기"}
               </button>
@@ -1221,8 +1427,20 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               </button>
             </div>
             <div className={styles.uploadRow}>
-              <button className={styles.secondaryBtn} style={{ flex: 1 }} onClick={handleIncomingFromEzadmin} disabled={loadingIncoming || ezadminLoading}>
-                {ezadminLoading ? "EZAdmin 불러오는 중..." : "EZAdmin에서 불러오기"}
+              <input
+                type="date"
+                className={styles.dateInput}
+                value={incomingEzDate}
+                onChange={(e) => setIncomingEzDate(e.target.value)}
+                disabled={loadingIncoming || ezadminLoading || incomingVoucherLoading}
+              />
+              <button
+                className={styles.secondaryBtn}
+                style={{ flex: 1 }}
+                onClick={handleOpenIncomingVoucherPicker}
+                disabled={loadingIncoming || ezadminLoading || incomingVoucherLoading}
+              >
+                {ezadminLoading ? "EZAdmin 불러오는 중..." : incomingVoucherLoading ? "전표 조회 중..." : "EZAdmin에서 불러오기"}
               </button>
             </div>
             {ezadminMsg && (
@@ -1248,9 +1466,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
             <div className={styles.headerActions}>
               <button className={styles.secondaryBtn} onClick={refreshStatus} title="새로고침">↺</button>
               <button className={styles.secondaryBtn} onClick={openInvoiceDeleteModal}>송장삭제</button>
-              <button className={styles.secondaryBtn} onClick={handleCompletedXlsDownload}>
-                완료목록 다운로드
-              </button>
               <button
                 className={`${styles.toggleBtn} ${defectMode ? styles.toggleOn : ""}`}
                 onClick={() => setDefectMode((v) => !v)}
@@ -1270,11 +1485,11 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                   <span className={styles.inlineTagIncoming} style={{ marginLeft: "0.35rem" }}>{kimsungilList.filter(i => (i.incoming_qty || 0) > 0).length}</span>
                 )}
               </button>
+              <button className={styles.secondaryBtn} onClick={openAnomalyModal}>
+                이상현상
+              </button>
               <button className={styles.secondaryBtn} onClick={openBadStockModal}>
                 악성재고
-              </button>
-              <button className={styles.secondaryBtn} onClick={openDefectBaseEditor}>
-                불량베이스 편집
               </button>
             </div>
           </div>
@@ -1598,30 +1813,92 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
       {showBadStockModal && (
         <div className={styles.modalOverlay} onClick={() => setShowBadStockModal(false)}>
-          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+          <div className={`${styles.modal} ${styles.modalWide}`} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHeader}>
               <h4 className={styles.modalTitle}>악성재고</h4>
               <div className={styles.modalActions}>
+                <button className={styles.secondaryBtn} onClick={checkBadStockWithEzadmin} disabled={badStockChecking}>
+                  {badStockChecking ? "확인 중..." : "이지어드민 재고 비교"}
+                </button>
                 <button className={styles.secondaryBtn} onClick={() => setShowBadStockModal(false)}>닫기</button>
               </div>
             </div>
-            <div className={styles.tabRow} style={{ marginBottom: "0.75rem" }}>
-              {["A", "B", "C"].map((zone) => (
-                <button
-                  key={zone}
-                  className={`${styles.tabBtn} ${badStockZone === zone ? styles.tabActive : ""}`}
-                  onClick={() => { setBadStockZone(zone); setBadStockRows([]); setBadStockMessage(""); }}
-                >
-                  {zone}구역 ({badStockList.filter((i) => i.zone === zone).length})
-                </button>
-              ))}
+            {BAD_STOCK_CATEGORIES.map((cat) => (
+              <div key={cat} className={styles.tabRow} style={{ marginBottom: "0.5rem" }}>
+                {BAD_STOCK_LETTERS.map((letter) => {
+                  const zone = `${cat}${letter}`;
+                  return (
+                    <button
+                      key={zone}
+                      className={`${styles.tabBtn} ${badStockZone === zone ? styles.tabActive : ""}`}
+                      onClick={() => { setBadStockZone(zone); setBadStockRows([]); setBadStockMessage(""); }}
+                    >
+                      {badStockZoneLabel(zone)} ({badStockList.filter((i) => i.zone === zone).reduce((s, i) => s + (Number(i.qty) || 1), 0)})
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+            <div className={styles.uploadRow} style={{ marginBottom: "0.5rem" }}>
+              <input
+                value={badStockFind}
+                onChange={(e) => setBadStockFind(e.target.value)}
+                placeholder="전체 구역에서 등록된 재고 찾기 (상품명 / 상품코드)"
+                className={styles.searchInput}
+              />
+              {badStockFind && (
+                <button className={styles.ghostBtn} onClick={() => setBadStockFind("")}>지우기</button>
+              )}
             </div>
+            {badStockFind.trim() && (() => {
+              const keyword = badStockFind.trim().toLowerCase();
+              const found = badStockList.filter((i) =>
+                `${i.code} ${i.product_name}`.toLowerCase().includes(keyword)
+              );
+              return (
+                <div style={{ marginBottom: "0.5rem" }}>
+                  {found.length === 0 ? (
+                    <div className={styles.empty}>전체 구역에 일치하는 등록 재고가 없습니다.</div>
+                  ) : (
+                    <table className={styles.table}>
+                      <thead>
+                        <tr>
+                          <th>구역</th>
+                          <th>상품코드</th>
+                          <th>상품명</th>
+                          <th>수량</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {found.map((item) => (
+                          <tr key={`badstock-find-${item.id}`}>
+                            <td style={{ fontWeight: 700 }}>{badStockZoneLabel(item.zone)}</td>
+                            <td>{item.code}</td>
+                            <td>{item.product_name}</td>
+                            <td style={{ fontWeight: 700 }}>{item.qty ?? 1}</td>
+                            <td>
+                              <button
+                                className={styles.ghostBtn}
+                                onClick={() => { setBadStockZone(item.zone); setBadStockRows([]); setBadStockMessage(""); }}
+                              >
+                                해당 구역 열기
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              );
+            })()}
             <div className={styles.uploadRow} style={{ marginBottom: "0.5rem" }}>
               <input
                 value={badStockScan}
                 onChange={(e) => setBadStockScan(toEnglishKey(e.target.value))}
                 onKeyDown={(e) => { if (e.key === "Enter") handleBadStockScan(); }}
-                placeholder={`${badStockZone}구역 상품 바코드 스캔 후 Enter`}
+                placeholder={`${badStockZoneLabel(badStockZone)} 상품 바코드 스캔 후 Enter`}
                 className={styles.searchInput}
                 autoFocus
               />
@@ -1643,6 +1920,80 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               {badStockMessage && (
                 <div className={styles.statusMsg}><strong>{badStockMessage}</strong></div>
               )}
+              {badStockCheck && (
+                <div style={{ marginBottom: "0.75rem" }}>
+                  <div className={styles.statusMsg}>
+                    <strong>
+                      이지어드민 비교: 전체 {badStockCheck.summary.total}종 / 일치 {badStockCheck.summary.match} / 불일치 {badStockCheck.summary.mismatch} / 미검색 {badStockCheck.summary.not_found}
+                    </strong>
+                    <button
+                      className={styles.primaryBtn}
+                      style={{ marginLeft: "0.75rem" }}
+                      disabled={badStockNormalizing || badStockSelected.length === 0}
+                      onClick={() => normalizeBadStock(badStockSelected)}
+                    >
+                      {badStockNormalizing ? "처리 중..." : `선택 정상화 (${badStockSelected.length})`}
+                    </button>
+                    <button
+                      className={styles.secondaryBtn}
+                      style={{ marginLeft: "0.4rem" }}
+                      disabled={badStockNormalizing || badStockShortItems.length === 0}
+                      onClick={() => normalizeBadStock([])}
+                    >
+                      전체 정상화 ({badStockShortItems.length}종)
+                    </button>
+                    <button className={styles.ghostBtn} style={{ marginLeft: "0.5rem" }} onClick={() => setBadStockCheck(null)}>닫기</button>
+                  </div>
+                  <div className={styles.inlineMeta} style={{ margin: "0.3rem 0" }}>
+                    정상화는 이지어드민 정상재고가 등록 수량보다 적은 상품(차이가 음수)을 부족분만큼 입고처리합니다. 이지어드민 재고가 더 많거나 미검색인 상품은 건드리지 않습니다.
+                  </div>
+                  <table className={styles.table}>
+                    <thead>
+                      <tr>
+                        <th style={{ width: "2rem" }}>
+                          <input
+                            type="checkbox"
+                            checked={badStockShortItems.length > 0 && badStockSelected.length === badStockShortItems.length}
+                            disabled={badStockShortItems.length === 0}
+                            onChange={(e) => setBadStockSelected(e.target.checked ? badStockShortItems.map((i) => i.code) : [])}
+                          />
+                        </th>
+                        <th>상품코드</th>
+                        <th>상품명</th>
+                        <th>구역별 등록</th>
+                        <th>등록 합계</th>
+                        <th>이지어드민 정상재고</th>
+                        <th>차이</th>
+                        <th>결과</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {badStockCheck.items.map((item) => (
+                        <tr key={`badstock-check-${item.code}`} style={item.status === "match" ? undefined : { background: "rgba(255, 90, 90, 0.12)" }}>
+                          <td>
+                            {item.status === "mismatch" && item.diff < 0 && (
+                              <input
+                                type="checkbox"
+                                checked={badStockSelected.includes(item.code)}
+                                onChange={(e) => setBadStockSelected((prev) => (
+                                  e.target.checked ? [...prev, item.code] : prev.filter((c) => c !== item.code)
+                                ))}
+                              />
+                            )}
+                          </td>
+                          <td>{item.code}</td>
+                          <td>{item.product_name}</td>
+                          <td>{Object.entries(item.zones).map(([z, q]) => `${badStockZoneLabel(z)} ${q}`).join(", ")}</td>
+                          <td style={{ fontWeight: 700 }}>{item.registered}</td>
+                          <td style={{ fontWeight: 700 }}>{item.ezadmin_stock ?? "-"}</td>
+                          <td>{item.diff == null ? "-" : item.diff > 0 ? `+${item.diff}` : item.diff}</td>
+                          <td>{item.status === "match" ? "일치" : item.status === "mismatch" ? "불일치" : "미검색"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
               {badStockRows.length > 0 && (
                 <div className={styles.defectList} style={{ marginBottom: "0.75rem" }}>
                   {badStockRows.map((row, idx) => (
@@ -1652,20 +2003,21 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                         {row.base_code && <span className={styles.inlineMeta} style={{ marginLeft: "0.4rem" }}>{row.base_code}</span>}
                       </span>
                       <button className={styles.ghostBtn} onClick={() => addBadStock(row.code, row.base_name)}>
-                        {badStockZone}구역에 추가
+                        {badStockZoneLabel(badStockZone)}에 추가
                       </button>
                     </div>
                   ))}
                 </div>
               )}
               {badStockList.filter((i) => i.zone === badStockZone).length === 0 ? (
-                <div className={styles.empty}>{badStockZone}구역에 등록된 상품이 없습니다.</div>
+                <div className={styles.empty}>{badStockZoneLabel(badStockZone)}에 등록된 상품이 없습니다.</div>
               ) : (
                 <table className={styles.table}>
                   <thead>
                     <tr>
                       <th>상품코드</th>
                       <th>상품명</th>
+                      <th>수량</th>
                       <th>등록일</th>
                       <th></th>
                     </tr>
@@ -1675,8 +2027,18 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                       <tr key={`badstock-${item.id}`}>
                         <td>{item.code}</td>
                         <td>{item.product_name}</td>
+                        <td style={{ fontWeight: 700 }}>{item.qty ?? 1}</td>
                         <td>{String(item.created_at || "").slice(0, 10)}</td>
                         <td>
+                          {(item.qty ?? 1) > 1 && (
+                            <button
+                              className={styles.ghostBtn}
+                              style={{ marginRight: "0.3rem" }}
+                              onClick={() => callBadStockApi("remove", { id: item.id, decrement: true })}
+                            >
+                              -1
+                            </button>
+                          )}
                           <button
                             className={styles.ghostBtn}
                             onClick={() => { if (window.confirm("삭제하시겠습니까?")) callBadStockApi("remove", { id: item.id }); }}
@@ -1686,6 +2048,190 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                         </td>
                       </tr>
                     ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td colSpan={2} style={{ fontWeight: 700 }}>{badStockZoneLabel(badStockZone)} 합계</td>
+                      <td style={{ fontWeight: 700 }}>
+                        {badStockList.filter((i) => i.zone === badStockZone).reduce((s, i) => s + (Number(i.qty) || 1), 0)}
+                      </td>
+                      <td colSpan={2}>
+                        ({badStockList.filter((i) => i.zone === badStockZone).length}종)
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAnomalyModal && (
+        <div className={styles.modalOverlay} onClick={() => setShowAnomalyModal(false)}>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <h4 className={styles.modalTitle}>이상현상</h4>
+              <div className={styles.modalActions}>
+                <button className={styles.secondaryBtn} onClick={() => setShowAnomalyModal(false)}>닫기</button>
+              </div>
+            </div>
+            <div className={styles.uploadRow}>
+              <input
+                value={anomalySearchQuery}
+                onChange={(e) => setAnomalySearchQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") searchAnomalyProducts(); }}
+                placeholder="G열 상품명 검색"
+                className={styles.searchInput}
+              />
+              <button className={styles.secondaryBtn} onClick={searchAnomalyProducts} disabled={anomalySearchLoading}>
+                {anomalySearchLoading ? "검색 중..." : "상품 검색"}
+              </button>
+            </div>
+            <div className={styles.modalBody}>
+              {anomalyMessage && (
+                <div className={styles.statusMsg}><strong>{anomalyMessage}</strong></div>
+              )}
+              {anomalySearchRows.length > 0 && (
+                <div className={styles.defectList} style={{ marginBottom: "0.75rem" }}>
+                  {anomalySearchRows.map((row, idx) => (
+                    <div key={`${row.code}-anomaly-${idx}`} className={styles.defectLine}>
+                      <span className={styles.defectText}>
+                        {row.base_name}
+                        {row.base_color && <span className={styles.inlineMeta} style={{ marginLeft: "0.4rem" }}>{row.base_color}</span>}
+                        {row.base_code && <span className={styles.inlineMeta} style={{ marginLeft: "0.4rem" }}>{row.base_code}</span>}
+                      </span>
+                      <button className={styles.ghostBtn} onClick={() => pickAnomalyProduct(row)}>선택</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className={styles.uploadRow} style={{ flexWrap: "wrap", marginBottom: "0.75rem" }}>
+                <input
+                  type="date"
+                  value={anomalyForm.registered_date}
+                  onChange={(e) => setAnomalyForm((p) => ({ ...p, registered_date: e.target.value }))}
+                  className={styles.searchInput}
+                  style={{ flex: "0 0 auto" }}
+                />
+                <input
+                  value={anomalyForm.product_name}
+                  onChange={(e) => setAnomalyForm((p) => ({ ...p, product_name: e.target.value }))}
+                  placeholder="상품명 + 옵션 (검색 후 선택)"
+                  className={styles.searchInput}
+                  style={{ flex: 2 }}
+                />
+                <input
+                  type="number"
+                  min="0"
+                  value={anomalyForm.qty}
+                  onChange={(e) => setAnomalyForm((p) => ({ ...p, qty: e.target.value }))}
+                  placeholder="개수"
+                  className={styles.searchInput}
+                  style={{ flex: "0 0 5rem" }}
+                />
+                <input
+                  value={anomalyForm.reason}
+                  onChange={(e) => setAnomalyForm((p) => ({ ...p, reason: e.target.value }))}
+                  onKeyDown={(e) => { if (e.key === "Enter") addAnomaly(); }}
+                  placeholder="사유"
+                  className={styles.searchInput}
+                  style={{ flex: 2 }}
+                />
+                <label style={{ display: "flex", alignItems: "center", gap: "0.3rem" }}>
+                  <input
+                    type="checkbox"
+                    checked={anomalyForm.normalized}
+                    onChange={(e) => setAnomalyForm((p) => ({ ...p, normalized: e.target.checked }))}
+                  />
+                  정상화
+                </label>
+                <button className={styles.primaryBtn} onClick={addAnomaly}>등록</button>
+              </div>
+              {anomalyList.length === 0 ? (
+                <div className={styles.empty}>등록된 이상현상이 없습니다.</div>
+              ) : (
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th>등록날짜</th>
+                      <th>상품명 + 옵션</th>
+                      <th>개수</th>
+                      <th>사유</th>
+                      <th>정상화</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {anomalyList.map((item) => {
+                      const editing = anomalyEdit?.id === item.id;
+                      const setEdit = (key) => (e) => setAnomalyEdit((p) => ({ ...p, [key]: e.target.value }));
+                      return (
+                      <tr key={`anomaly-${item.id}`}>
+                        <td>
+                          {editing ? (
+                            <input type="date" value={anomalyEdit.registered_date} onChange={setEdit("registered_date")} className={styles.searchInput} />
+                          ) : item.registered_date}
+                        </td>
+                        <td>
+                          {editing ? (
+                            <input value={anomalyEdit.product_name} onChange={setEdit("product_name")} className={styles.searchInput} />
+                          ) : item.product_name}
+                        </td>
+                        <td>
+                          {editing ? (
+                            <input type="number" min="0" value={anomalyEdit.qty} onChange={setEdit("qty")} className={styles.searchInput} style={{ width: "4.5rem" }} />
+                          ) : (item.qty ?? 1)}
+                        </td>
+                        <td>
+                          {editing ? (
+                            <input
+                              value={anomalyEdit.reason}
+                              onChange={setEdit("reason")}
+                              onKeyDown={(e) => { if (e.key === "Enter") saveAnomalyEdit(); }}
+                              className={styles.searchInput}
+                            />
+                          ) : item.reason}
+                        </td>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={!!item.normalized}
+                            onChange={(e) => callAnomalyApi("update", { id: item.id, normalized: e.target.checked })}
+                          />
+                        </td>
+                        <td>
+                          {editing ? (
+                            <>
+                              <button className={styles.primaryBtn} onClick={saveAnomalyEdit}>저장</button>
+                              <button className={styles.ghostBtn} onClick={() => setAnomalyEdit(null)}>취소</button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                className={styles.ghostBtn}
+                                onClick={() => setAnomalyEdit({
+                                  id: item.id,
+                                  registered_date: item.registered_date,
+                                  product_name: item.product_name,
+                                  qty: item.qty ?? 1,
+                                  reason: item.reason,
+                                })}
+                              >
+                                수정
+                              </button>
+                              <button
+                                className={styles.ghostBtn}
+                                onClick={() => { if (window.confirm("삭제하시겠습니까?")) callAnomalyApi("remove", { id: item.id }); }}
+                              >
+                                삭제
+                              </button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
@@ -2010,6 +2556,70 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showIncomingVoucherModal && (
+        <div className={styles.modalOverlay} onClick={() => setShowIncomingVoucherModal(false)}>
+          <div className={styles.modal} style={{ width: "min(480px, 92vw)" }} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <span className={styles.modalTitle}>입고전표 선택 ({incomingEzDate})</span>
+              <button type="button" className={styles.secondaryBtn} onClick={() => setShowIncomingVoucherModal(false)}>
+                닫기
+              </button>
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontWeight: 600, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={selectedIncomingSheets.length === incomingVoucherList.length && incomingVoucherList.length > 0}
+                onChange={(e) =>
+                  setSelectedIncomingSheets(e.target.checked ? incomingVoucherList.map((v) => String(v.sheet)) : [])
+                }
+              />
+              전체 선택 ({selectedIncomingSheets.length}/{incomingVoucherList.length})
+            </label>
+            <div
+              style={{
+                display: "flex", flexDirection: "column", gap: "0.1rem", maxHeight: 340, overflowY: "auto",
+                border: "1px solid var(--border-color)", borderRadius: "var(--radius-sm)", padding: "0.25rem",
+              }}
+            >
+              {incomingVoucherList.map((v) => {
+                const sheet = String(v.sheet);
+                const checked = selectedIncomingSheets.includes(sheet);
+                const c = v.cell || {};
+                const displayName = c.sheet_name || c.title || c.supply_name || "";
+                const subInfo = [c.crdate, c.req_qty ? `${c.req_qty}개` : null].filter(Boolean).join(" · ");
+                return (
+                  <label
+                    key={sheet}
+                    style={{ display: "flex", alignItems: "center", gap: "0.5rem", padding: "0.35rem 0.6rem", borderRadius: "var(--radius-sm)", cursor: "pointer" }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() =>
+                        setSelectedIncomingSheets((prev) => (checked ? prev.filter((s) => s !== sheet) : [...prev, sheet]))
+                      }
+                    />
+                    <span style={{ fontFamily: "monospace", fontSize: "0.82rem", color: "var(--text-muted)", minWidth: "4.5rem", flexShrink: 0 }}>
+                      {sheet}
+                    </span>
+                    <span style={{ fontSize: "0.9rem", flex: 1 }}>{displayName}</span>
+                    {subInfo && <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", flexShrink: 0 }}>{subInfo}</span>}
+                  </label>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              className={styles.primaryBtn}
+              onClick={handleIncomingVoucherConfirm}
+              disabled={!selectedIncomingSheets.length}
+            >
+              {selectedIncomingSheets.length}건 불러오기
+            </button>
           </div>
         </div>
       )}

@@ -144,6 +144,15 @@
   color: var(--text-primary);
 }
 
+.dateInput {
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
 .primaryBtn {
   background-color: var(--accent-black);
   color: var(--accent-white);
@@ -553,6 +562,11 @@
   gap: 1rem;
   max-height: 85vh;
   overflow: hidden;
+}
+
+.modalWide {
+  width: min(1400px, 96vw);
+  max-height: 92vh;
 }
 
 .modalBody {
