@@ -2201,6 +2201,15 @@ async def _start_anomaly_scheduler():
         run_anomaly_scheduler_loop(_ANOMALY_SCHEDULER_JOBS, _get_setting, _set_setting)
     )
 
+
+@app.on_event("startup")
+async def _start_ezadmin_autologin():
+    from sdk import ezadmin_login
+
+    ezadmin_login.register_setting_writer(_set_setting)
+    if ezadmin_login.autologin_enabled("ezadmin") or ezadmin_login.autologin_enabled("ezdesk"):
+        asyncio.create_task(ezadmin_login.keepalive_loop(_get_setting))
+
 app.include_router(
     build_daily_checklist_router(
         get_current_user=_get_current_user,

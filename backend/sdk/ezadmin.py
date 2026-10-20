@@ -8,6 +8,7 @@ import re
 import httpx
 import xlwt
 from . import config
+from . import ezadmin_login
 
 _WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -173,7 +174,16 @@ class EzAdminClient:
             return True
         return "login.htm" in lowered or "login_form" in lowered
 
-    async def post(self, template: str, action: str, *, data: dict[str, Any] | None = None, par: str | None = None, files=None, time_flag: str | None = "browser", extra_headers: dict[str, str] | None = None, require_json: bool = True) -> dict:
+    async def post(self, template: str, action: str, **kwargs) -> dict:
+        """세션 만료 시 자동 로그인(환경변수 설정 시)으로 PHPSESSID를 갱신하고 1회 재시도한다."""
+        try:
+            return await self._post_once(template, action, **kwargs)
+        except EzAdminSessionExpired:
+            if not await ezadmin_login.relogin("ezadmin"):
+                raise
+            return await self._post_once(template, action, **kwargs)
+
+    async def _post_once(self, template: str, action: str, *, data: dict[str, Any] | None = None, par: str | None = None, files=None, time_flag: str | None = "browser", extra_headers: dict[str, str] | None = None, require_json: bool = True) -> dict:
         """``require_json=False``: 성공해도 JSON을 안 돌려주는 액션용(예: I200 upload_new).
 
         기본 동작(``require_json=True``)은 "JSON이 아니면 세션 만료"로 간주하는데,
@@ -688,6 +698,14 @@ class EzAdminClient:
             raise EzAdminSessionExpired(f"DS00 set_batch_cs: non-JSON response: {set_body[:300]}") from exc
 
     async def _ezdesk_post(self, action: str, data: dict[str, Any], *, multipart: bool = False) -> dict:
+        try:
+            return await self._ezdesk_post_once(action, data, multipart=multipart)
+        except EzDeskSessionExpired:
+            if not await ezadmin_login.relogin("ezdesk"):
+                raise
+            return await self._ezdesk_post_once(action, data, multipart=multipart)
+
+    async def _ezdesk_post_once(self, action: str, data: dict[str, Any], *, multipart: bool = False) -> dict:
         """POST an EZDesk A100 action using the stored PHPSESSID.
 
         ``httpx`` owns the multipart boundary. Callers should only provide
