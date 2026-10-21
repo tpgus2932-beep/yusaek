@@ -33,6 +33,7 @@ _KST = ZoneInfo("Asia/Seoul")
 _INCOMING_VERIFY_EXCLUDED_CLIENTS = {"케이디지", "리자드스탠다드", "리마인드", "계란속노른자", "도매킴"}
 _SCHEDULE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+from services.defect_tab import bind_defect_tab
 from api.wonbe_routes import _get_wonbe_db as _get_wonbe_db, record_defect_process_logs
 from barcode_core import normalize_to_s5
 
@@ -62,7 +63,7 @@ def build_barcode_router(
     get_shared_db,
     get_db,
 ):
-    router = APIRouter()
+    router = APIRouter(dependencies=[Depends(bind_defect_tab)])
     _DEFECT_BASE_HEADERS = ["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]
     hapbae_target_shop = "에이블리(유색)"
     hapbae_checked_rows_key = "test_hapbae_checked_rows"

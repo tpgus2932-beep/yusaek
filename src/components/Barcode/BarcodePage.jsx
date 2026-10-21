@@ -4,6 +4,15 @@ import styles from "./BarcodePage.module.css";
 import { getDownloadFilename } from "../../lib/download";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
+const DEFECT_TABS = ["A", "B", "C"];
+const DEFECT_TAB_STORAGE_KEY = "barcodeDefectTab";
+const loadDefectTab = () => {
+  try {
+    const saved = localStorage.getItem(DEFECT_TAB_STORAGE_KEY);
+    return DEFECT_TABS.includes(saved) ? saved : "A";
+  } catch { return "A"; }
+};
+
 const HANGUL_BASE = 0xac00;
 const HANGUL_LAST = 0xd7a3;
 const HANGUL_L = ["r","R","s","e","E","f","a","q","Q","t","T","d","w","W","c","z","x","v","g"];
@@ -56,6 +65,10 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [invoiceDone, setInvoiceDone] = useState(false);
   const [, setLog] = useState([]);
   const [items, setItems] = useState([]);
+  // 불량 리스트/김승일 리스트는 탭(A/B/C)마다 따로 쌓인다 - 서버에는 X-Defect-Tab 헤더로 알린다.
+  const [defectTab, setDefectTab] = useState(loadDefectTab);
+  const defectTabRef = useRef(defectTab);
+  const tabHeaders = () => ({ ...getAuthHeaders(), "X-Defect-Tab": defectTabRef.current });
   const [defectMode, setDefectMode] = useState(false);
   const [showDefectList, setShowDefectList] = useState(false);
   const [defectList, setDefectList] = useState([]);
@@ -152,7 +165,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
   const refreshStatus = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/barcode/status`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/barcode/status`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json();
       if (data?.incoming_codes !== undefined) {
@@ -173,6 +186,29 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   }, []);
 
   useEffect(() => { refreshStatus(); setTimeout(() => scanRef.current?.focus(), 50); }, [refreshStatus]);
+
+  const switchDefectTab = (tab) => {
+    if (tab === defectTabRef.current) return;
+    defectTabRef.current = tab;
+    setDefectTab(tab);
+    try { localStorage.setItem(DEFECT_TAB_STORAGE_KEY, tab); } catch { /* ignore */ }
+    setDefectRecentCodes([]);
+    refreshStatus();
+  };
+
+  const renderDefectTabs = () => (
+    <div className={styles.tabRow} style={{ marginBottom: "0.75rem" }}>
+      {DEFECT_TABS.map((tab) => (
+        <button
+          key={tab}
+          className={`${styles.tabBtn} ${defectTab === tab ? styles.tabActive : ""}`}
+          onClick={() => switchDefectTab(tab)}
+        >
+          {tab}
+        </button>
+      ))}
+    </div>
+  );
 
   useEffect(() => {
     const makeAudio = (src) => {
@@ -201,7 +237,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     formData.append("file", file);
     try {
       setLoadingUpload(true); setUploadMsg(""); setCount(null); setCodesTotal(null);
-      const res = await fetch(`${API}/barcode/upload`, { method: "POST", headers: getAuthHeaders(), body: formData });
+      const res = await fetch(`${API}/barcode/upload`, { method: "POST", headers: tabHeaders(), body: formData });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "업로드 실패");
@@ -223,7 +259,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     formData.append("file", incomingFile);
     try {
       setLoadingIncoming(true); setIncomingMsg(""); setIncomingCodes(null); setIncomingTotal(null);
-      const res = await fetch(`${API}/barcode/incoming/upload`, { method: "POST", headers: getAuthHeaders(), body: formData });
+      const res = await fetch(`${API}/barcode/incoming/upload`, { method: "POST", headers: tabHeaders(), body: formData });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "입고 파일 업로드 실패");
@@ -245,7 +281,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       setIncomingMsg(""); setIncomingCodes(null); setIncomingTotal(null);
       const res = await fetch(`${API}/barcode/incoming/upload-from-ezadmin`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ date: incomingEzDate, ...(sheets.length ? { sheet_list: sheets } : {}) }),
       });
       if (handleUnauthorized(res)) return;
@@ -274,7 +310,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     setIncomingVoucherLoading(true);
     setIncomingMsg("");
     try {
-      const res = await fetch(`${API}/barcode/incoming/ezadmin-voucher-list?date=${encodeURIComponent(incomingEzDate)}`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/barcode/incoming/ezadmin-voucher-list?date=${encodeURIComponent(incomingEzDate)}`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (data?.need_session) {
@@ -310,7 +346,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       setUploadMsg(""); setCount(null); setCodesTotal(null);
       const res = await fetch(`${API}/barcode/upload-from-ezadmin-orders`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ date: ezadminOrdersDate }),
       });
       if (handleUnauthorized(res)) return;
@@ -350,7 +386,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     if (!value) return;
     try {
       const res = await fetch(`${API}/barcode/defect/add`, {
-        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        method: "POST", headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ code: value }),
       });
       if (handleUnauthorized(res)) return;
@@ -373,7 +409,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     try {
       setDefectSearchLoading(true);
       setDefectSearchMessage("");
-      const res = await fetch(`${API}/barcode/defect/search?q=${encodeURIComponent(query)}`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/barcode/defect/search?q=${encodeURIComponent(query)}`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "불량 검색 실패");
@@ -394,7 +430,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
   const fetchAnomalies = async () => {
     try {
-      const res = await fetch(`${API}/barcode/anomaly/list`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/barcode/anomaly/list`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "이상현상 불러오기 실패");
@@ -406,7 +442,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
   const fetchBadStock = async () => {
     try {
-      const res = await fetch(`${API}/barcode/bad-stock/list`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/barcode/bad-stock/list`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "악성재고 불러오기 실패");
@@ -426,7 +462,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     try {
       const res = await fetch(`${API}/barcode/bad-stock/${path}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify(body),
       });
       if (handleUnauthorized(res)) return null;
@@ -452,7 +488,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     try {
       const res = await fetch(`${API}/barcode/bad-stock/ezadmin-check`, {
         method: "POST",
-        headers: getAuthHeaders(),
+        headers: tabHeaders(),
       });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
@@ -487,7 +523,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     try {
       const res = await fetch(`${API}/barcode/bad-stock/ezadmin-normalize`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ codes: targets.map((i) => i.code) }),
       });
       if (handleUnauthorized(res)) return;
@@ -529,7 +565,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     try {
       setBadStockSearching(true);
       setBadStockMessage("");
-      const res = await fetch(`${API}/barcode/defect/search?q=${encodeURIComponent(query)}`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/barcode/defect/search?q=${encodeURIComponent(query)}`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "상품 검색 실패");
@@ -559,7 +595,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     try {
       setAnomalySearchLoading(true);
       setAnomalyMessage("");
-      const res = await fetch(`${API}/barcode/defect/search?q=${encodeURIComponent(query)}`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/barcode/defect/search?q=${encodeURIComponent(query)}`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "상품 검색 실패");
@@ -587,7 +623,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     try {
       const res = await fetch(`${API}/barcode/anomaly/${path}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify(body),
       });
       if (handleUnauthorized(res)) return false;
@@ -631,7 +667,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     try {
       const res = await fetch(`${API}/barcode/defect/add`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ code }),
       });
       if (handleUnauthorized(res)) return;
@@ -649,7 +685,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
   const fetchKimsungilList = async () => {
     try {
-      const res = await fetch(`${API}/barcode/kimsungil/list`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/barcode/kimsungil/list`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "김승일 목록 조회 실패");
@@ -662,7 +698,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       setKimsungilLogLoading(true);
       setKimsungilLogMessage("");
       const qs = code ? `?code=${encodeURIComponent(code)}` : "";
-      const res = await fetch(`${API}/barcode/kimsungil/log${qs}`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/barcode/kimsungil/log${qs}`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "김승일 로그 조회 실패");
@@ -692,7 +728,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     try {
       setKimsungilSearchLoading(true);
       setKimsungilSearchMessage("");
-      const res = await fetch(`${API}/barcode/kimsungil/search?q=${encodeURIComponent(query)}`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/barcode/kimsungil/search?q=${encodeURIComponent(query)}`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "김승일 검색 실패");
@@ -712,7 +748,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     try {
       const res = await fetch(`${API}/barcode/kimsungil/add`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ code }),
       });
       if (handleUnauthorized(res)) return;
@@ -739,7 +775,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
     try {
       const res = await fetch(url, {
-        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        method: "POST", headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ [key]: value }),
       });
       if (handleUnauthorized(res)) return;
@@ -810,7 +846,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
   const fetchDefectList = async () => {
     try {
-      const res = await fetch(`${API}/barcode/defect/list`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/barcode/defect/list`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "불량 리스트 조회 실패");
@@ -821,7 +857,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const handleDefectDec = async (code) => {
     try {
       const res = await fetch(`${API}/barcode/defect/dec`, {
-        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        method: "POST", headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ code }),
       });
       if (handleUnauthorized(res)) return;
@@ -833,7 +869,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const handleDefectRemove = async (code) => {
     try {
       const res = await fetch(`${API}/barcode/defect/remove`, {
-        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        method: "POST", headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ code }),
       });
       if (handleUnauthorized(res)) return;
@@ -845,7 +881,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const handleKimsungilDec = async (code) => {
     try {
       const res = await fetch(`${API}/barcode/kimsungil/dec`, {
-        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        method: "POST", headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ code }),
       });
       if (handleUnauthorized(res)) return;
@@ -857,7 +893,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const handleKimsungilRemove = async (code) => {
     try {
       const res = await fetch(`${API}/barcode/kimsungil/remove`, {
-        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        method: "POST", headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ code }),
       });
       if (handleUnauthorized(res)) return;
@@ -873,7 +909,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     try {
       setKimsungilSummonLoading(true);
       const res = await fetch(`${API}/barcode/kimsungil/summon-to-defect`, {
-        method: "POST", headers: getAuthHeaders(),
+        method: "POST", headers: tabHeaders(),
       });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
@@ -892,7 +928,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const handleDefectExport = async () => {
     if (defectList.length === 0) { alert("내보낼 불량 목록이 없습니다."); return; }
     try {
-      const res = await fetch(`${API}/barcode/defect/export`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/barcode/defect/export`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       if (!res.ok) {
         let message = "불량 목록 내보내기 실패";
@@ -919,7 +955,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     try {
       setDefectBaseLoading(true);
       setDefectBaseMessage("");
-      const res = await fetch(`${API}/barcode/defect/base`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/barcode/defect/base`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "불량베이스 불러오기 실패");
@@ -961,7 +997,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       setDefectBaseMessage("");
       const res = await fetch(`${API}/barcode/defect/base`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({
           rows: defectBaseRows.map((row) => ({
             values: Array.isArray(row.values) ? row.values.slice(0, 7) : ["", "", "", "", "", "", ""],
@@ -984,7 +1020,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
   const handleOrdersXlsDownload = async () => {
     try {
-      const res = await fetch(`${API}/barcode/orders/export-xls`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/barcode/orders/export-xls`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       if (!res.ok) {
         let message = "주문 목록 다운로드 실패";
@@ -1042,7 +1078,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
       const res = await fetch(`${API}/noye-kimsungil/bulyang/import`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ rows }),
       });
       if (handleUnauthorized(res)) return;
@@ -1075,7 +1111,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     try {
       const res = await fetch(`${API}/barcode/defect/purchase-manager-handoff`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ exclude_kimsungil_summon: excludeKimsungil }),
       });
       if (handleUnauthorized(res)) return;
@@ -1112,7 +1148,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       setDefectEzadminLoading(true); setDefectEzadminMsg("EZAdmin 출고처리 중...");
       const res = await fetch(`${API}/barcode/defect/export-to-ezadmin`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ exclude_kimsungil_summon: excludeKimsungil }),
       });
       if (handleUnauthorized(res)) return;
@@ -1139,7 +1175,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       setOchuulResult(null);
       const res = await fetch(`${API}/barcode/defect/ochuul-minus`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ exclude_kimsungil_summon: excludeKimsungil }),
       });
       if (handleUnauthorized(res)) return;
@@ -1158,7 +1194,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const invoicePostJson = async (url, body) => {
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      headers: { "Content-Type": "application/json", ...tabHeaders() },
       body: JSON.stringify(body),
     });
     if (handleUnauthorized(res)) throw Object.assign(new Error("인증 만료"), { silent: true });
@@ -1224,7 +1260,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     try {
       const res = await fetch(`${API}/barcode/invoice/preview`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ invoice_no: invoiceNo }),
       });
       if (handleUnauthorized(res)) return;
@@ -2244,7 +2280,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
         <div className={styles.modalOverlay} onClick={() => setShowDefectList(false)}>
           <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHeader}>
-              <h4 className={styles.modalTitle}>불량 리스트</h4>
+              <h4 className={styles.modalTitle}>불량 리스트 ({defectTab})</h4>
               <div className={styles.modalActions}>
                 <button className={styles.secondaryBtn} onClick={handleDefectExport}>내보내기</button>
                 <button className={styles.secondaryBtn} onClick={handleDefectPrint}>불량출력</button>
@@ -2262,6 +2298,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 <button className={styles.secondaryBtn} onClick={() => { setShowDefectList(false); setOchuulResult(null); }}>닫기</button>
               </div>
             </div>
+            {renderDefectTabs()}
             {defectEzadminMsg && (
               <div className={styles.statusMsg}>{defectEzadminMsg}</div>
             )}
@@ -2354,12 +2391,13 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
         <div className={styles.modalOverlay} onClick={() => setShowKimsungilList(false)}>
           <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHeader}>
-              <h4 className={styles.modalTitle}>김승일 리스트</h4>
+              <h4 className={styles.modalTitle}>김승일 리스트 ({defectTab})</h4>
               <div className={styles.modalActions}>
                 <span className={styles.pill}>합계 {getKimsungilTotalCount()}</span>
                 <button className={styles.secondaryBtn} onClick={() => setShowKimsungilList(false)}>닫기</button>
               </div>
             </div>
+            {renderDefectTabs()}
             <div className={styles.uploadRow}>
               <input
                 value={kimsungilSearchQuery}

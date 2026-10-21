@@ -45,6 +45,7 @@ from api.jeju_hapbae import router as jeju_hapbae_router
 from api.auth_admin_routes import build_auth_admin_router
 from api.collab_routes import build_collab_router
 from api.barcode_routes import build_barcode_router
+from services import defect_tab
 from api.inventory_dashboard_routes import build_inventory_dashboard_router, init_inventory_dashboard_tables
 from api.order_recommendation_routes import build_order_recommendation_router
 from services.order_recommendation_store import init_order_recommendation_tables
@@ -173,14 +174,14 @@ COST_BASE_CODE_COL = 0
 COST_BASE_MATCH_COL = 8
 COST_BASE_REQUIRED_COLS = COST_BASE_MATCH_COL + 1
 SHARED_INCOMING_COUNTS: dict[str, int] = {}
-SHARED_DEFECT_COUNTS: dict[str, int] = {}
+SHARED_DEFECT_COUNTS: dict[str, dict[str, int]] = {t: {} for t in defect_tab.DEFECT_TABS}  # 탭(A/B/C)별
 # SHARED_DEFECT_COUNTS 중 김승일 소환술(불량 이동)로 들어온 수량만 별도 추적 -
 # 불량 리스트에서 어떤 코드가 소환술로 추가됐는지 표시하고, 출고/오출/불량출력 같은
 # 후속 작업에서 그 코드들을 포함할지 선택할 수 있게 하기 위함.
-SHARED_DEFECT_SUMMON_COUNTS: dict[str, int] = {}
-SHARED_KIMSUNGIL_COUNTS: dict[str, int] = {}
+SHARED_DEFECT_SUMMON_COUNTS: dict[str, dict[str, int]] = {t: {} for t in defect_tab.DEFECT_TABS}
+SHARED_KIMSUNGIL_COUNTS: dict[str, dict[str, int]] = {t: {} for t in defect_tab.DEFECT_TABS}
 SHARED_AMOOD_EZADMIN_FILE: dict = {}
-_KIMSUNGIL_LOADED: bool = False
+_KIMSUNGIL_LOADED_TABS: set[str] = set()
 SHARED_BARCODE_DATA: dict = {
     "loaded": False,
     "mapping": None,
@@ -367,47 +368,64 @@ def _set_shared_incoming_counts(counts: dict[str, int] | None):
 
 
 def _get_shared_defect_counts() -> dict[str, int]:
-    return SHARED_DEFECT_COUNTS
+    return SHARED_DEFECT_COUNTS[defect_tab.current_tab()]
 
 
 def _set_shared_defect_counts(counts: dict[str, int] | None):
-    SHARED_DEFECT_COUNTS.clear()
+    target = SHARED_DEFECT_COUNTS[defect_tab.current_tab()]
+    target.clear()
     if counts:
-        SHARED_DEFECT_COUNTS.update(counts)
+        target.update(counts)
+
+
+def _get_all_tabs_defect_counts() -> dict[str, int]:
+    """전 탭 합산 - 탭과 무관하게 '불량이 있는지'만 보는 곳(아무드 등)용."""
+    total: dict[str, int] = {}
+    for counts in SHARED_DEFECT_COUNTS.values():
+        for code, qty in counts.items():
+            total[code] = total.get(code, 0) + qty
+    return total
 
 
 def _get_shared_defect_summon_counts() -> dict[str, int]:
-    return SHARED_DEFECT_SUMMON_COUNTS
+    return SHARED_DEFECT_SUMMON_COUNTS[defect_tab.current_tab()]
 
 
 def _set_shared_defect_summon_counts(counts: dict[str, int] | None):
-    SHARED_DEFECT_SUMMON_COUNTS.clear()
+    target = SHARED_DEFECT_SUMMON_COUNTS[defect_tab.current_tab()]
+    target.clear()
     if counts:
-        SHARED_DEFECT_SUMMON_COUNTS.update(counts)
+        target.update(counts)
+
+
+def _kimsungil_setting_key(tab: str) -> str:
+    # A탭은 탭 도입 전 데이터(kimsungil_counts)를 그대로 이어받는다.
+    return "kimsungil_counts" if tab == defect_tab.DEFAULT_DEFECT_TAB else f"kimsungil_counts_{tab}"
 
 
 def _get_shared_kimsungil_counts() -> dict[str, int]:
-    global _KIMSUNGIL_LOADED
-    if not _KIMSUNGIL_LOADED:
+    tab = defect_tab.current_tab()
+    if tab not in _KIMSUNGIL_LOADED_TABS:
         try:
-            val = _get_setting("kimsungil_counts")
+            val = _get_setting(_kimsungil_setting_key(tab))
             if val:
                 data = json.loads(val)
-                SHARED_KIMSUNGIL_COUNTS.update({k: int(v) for k, v in data.items()})
+                SHARED_KIMSUNGIL_COUNTS[tab].update({k: int(v) for k, v in data.items()})
         except Exception:
             pass
-        _KIMSUNGIL_LOADED = True
-    return SHARED_KIMSUNGIL_COUNTS
+        _KIMSUNGIL_LOADED_TABS.add(tab)
+    return SHARED_KIMSUNGIL_COUNTS[tab]
 
 
 def _set_shared_kimsungil_counts(counts: dict[str, int] | None):
-    global _KIMSUNGIL_LOADED
-    SHARED_KIMSUNGIL_COUNTS.clear()
+    tab = defect_tab.current_tab()
+    target = SHARED_KIMSUNGIL_COUNTS[tab]
+    target.clear()
     if counts:
-        SHARED_KIMSUNGIL_COUNTS.update(counts)
-    _KIMSUNGIL_LOADED = True
+        target.update(counts)
+    _KIMSUNGIL_LOADED_TABS.add(tab)
     try:
-        _set_setting("kimsungil_counts", json.dumps(SHARED_KIMSUNGIL_COUNTS, ensure_ascii=False))
+        _set_setting(_kimsungil_setting_key(tab), json.dumps(target, ensure_ascii=False))
     except Exception:
         pass
 
@@ -1868,7 +1886,7 @@ app.include_router(
         AMOOD_COL2_OUTPUT=AMOOD_COL2_OUTPUT,
         get_shared_incoming_counts=_get_shared_incoming_counts,
         set_shared_incoming_counts=_set_shared_incoming_counts,
-        get_shared_defect_counts=_get_shared_defect_counts,
+        get_shared_defect_counts=_get_all_tabs_defect_counts,
         set_shared_amood_ezadmin_file=_set_shared_amood_ezadmin_file,
         add_amood_ezadmin_history=_add_amood_ezadmin_history,
         list_amood_ezadmin_history=_list_amood_ezadmin_history,
