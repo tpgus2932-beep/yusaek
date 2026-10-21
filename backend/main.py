@@ -47,6 +47,7 @@ from api.collab_routes import build_collab_router
 from api.barcode_routes import build_barcode_router
 from services import defect_tab
 from api.inventory_dashboard_routes import build_inventory_dashboard_router, init_inventory_dashboard_tables
+from api.luna_order_routes import build_luna_order_router
 from api.order_recommendation_routes import build_order_recommendation_router
 from services.order_recommendation_store import init_order_recommendation_tables
 from services.order_recommendation_collect import register_collector
@@ -1679,6 +1680,12 @@ app.include_router(
         get_db=_get_order_recommendation_db,
         get_setting=_get_setting,
         set_setting=_set_setting,
+        get_shared_db=_get_shared_db,
+    )
+)
+app.include_router(
+    build_luna_order_router(
+        get_current_user=_get_current_user,
         get_shared_db=_get_shared_db,
     )
 )
