@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import styles from "./BarcodePage.module.css";
+import AmoodUnpackCard from "./AmoodUnpackCard";
 import { getDownloadFilename } from "../../lib/download";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
@@ -813,6 +814,8 @@ export default function AmoodBarcodePage({ headerExtra = null, onOpenTestTab = n
         </div>
       </div>
       <div className={styles.stack}>
+        <AmoodUnpackCard />
+
         {/* 선적바코드 발급 */}
         <section className={styles.card}>
           <div className={styles.cardHeader}>

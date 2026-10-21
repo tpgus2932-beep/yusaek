@@ -74,6 +74,7 @@ from api.return_special_notes_routes import build_return_special_notes_router
 from api.delivery_anomaly_routes import build_delivery_anomaly_router
 from api.client_cancel_soldout_routes import build_client_cancel_soldout_router
 from api.post_shipment_cancel_stock_sms_routes import build_post_shipment_cancel_stock_sms_router
+from api.amood_unpack_routes import build_amood_unpack_router
 from api.shipping_eta_routes import build_shipping_eta_router, init_shipping_eta_table
 from api.exchange_return_anomaly_routes import build_exchange_return_anomaly_router
 from api.return_anomaly_routes import build_return_anomaly_router
@@ -1811,6 +1812,13 @@ _ensure_post_shipment_cancel_stock_review_column(
 )
 _ensure_post_shipment_cancel_stock_review_column(
     "item_snos", "ALTER TABLE post_shipment_cancel_stock_review ADD COLUMN item_snos TEXT NOT NULL DEFAULT '[]'"
+)
+
+app.include_router(
+    build_amood_unpack_router(
+        get_current_user=_get_current_user,
+        get_setting=_get_setting,
+    )
 )
 
 app.include_router(

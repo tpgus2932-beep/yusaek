@@ -388,6 +388,30 @@ class EzAdminClient:
     async def cancel_trans(self, seq: str) -> dict:
         return await self.post("E900", "cancel_trans", data={"seq": seq, "content": ""}, time_flag="epoch_ms")
 
+    async def drop_pack(self, prd_seqs: list[str | int]) -> dict:
+        """E900 합포제외. 합포 안의 라인아이템(prd_seq)들을 합포에서 빼 단독 주문으로 분리한다.
+
+        ``checked_data``는 ``"<prd_seq>:1,"``를 이어붙인 문자열이다 - 실캡처(HAR)에서
+        ``688389%3A1%2C`` 한 건으로 확인됨 (뒤의 ``1``은 체크 표시로 보이며 수량 아님).
+        성공 시 ``{"error": 0, "drop_seq_list": "<분리된 seq,...>"}``."""
+        checked = "".join(f"{p}:1," for p in prd_seqs)
+        return await self.post("E900", "drop_pack", data={
+            "checked_data": checked,
+            "org_pack_lock": "0", "drop_pack_lock": "0",
+            "org_pre_trans": "0", "drop_pre_trans": "0",
+            "save_drop_pack_match": "0",
+            "org_hold_cancel": "0", "drop_hold_cancel": "0",
+            "cs_type": "", "content": "",
+        }, time_flag="epoch_ms")
+
+    async def cancel_hold(self, seq: str | int) -> dict:
+        """E900 보류해제. 성공 시 ``{"error": 0}``."""
+        return await self.post("E900", "cancel_hold", data={"seq": str(seq), "content": ""}, time_flag="epoch_ms")
+
+    async def confirm_trans(self, seq: str | int) -> dict:
+        """E900 배송처리(배송확인). 성공 시 ``{"error": 0}``."""
+        return await self.post("E900", "confirm_trans", data={"seq": str(seq), "trans_type": "", "trans_date": "", "cs_type": "", "content": ""}, time_flag="epoch_ms")
+
     async def delete_trans_no(self, seq: str) -> dict:
         return await self.post("E900", "delete_trans_no", data={"seq": seq, "content": ""}, time_flag="epoch_ms")
 
