@@ -23,6 +23,7 @@ import AttendancePage from './components/Attendance/AttendancePage';
 import AttendanceAdminPage from './components/Attendance/AttendanceAdminPage';
 import TestTabs from './components/Test/TestTabs';
 import GuidebookPage from './components/Guidebook/GuidebookPage';
+import CSPage from './components/CS/CSPage';
 import AmoodSettlement from './components/AmoodSettlement/AmoodSettlement';
 import DBManagerLayout from './components/DBManager/DBManagerLayout';
 import InventoryDashboardPage from './components/InventoryDashboard/InventoryDashboardPage';
@@ -39,6 +40,9 @@ const KNOWN_TABS = [
   'zigzag-upload', 'test', 'order', 'admin', 'settings', 'margin-calc',
 ];
 
+// 상단 메뉴 모드. 새로고침해도 보던 메뉴가 유지되도록 localStorage에 저장한다.
+const TOP_MODES = ['home', 'db-manager', 'inventory-dashboard', 'order-dashboard', 'timebox', 'worklog', 'cs'];
+
 const App = () => {
   const pathname = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
   const isMobileKimsungilRequestRoute = pathname === '/request-kimsungil';
@@ -49,7 +53,14 @@ const App = () => {
   const isPayrollRoute = pathname === '/payroll';
   const isGuidebookRoute = pathname === '/guidebook';
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'dashboard');
-  const [topMode, setTopMode] = useState('home'); // 'home' | 'db-manager' | 'inventory-dashboard' | 'order-dashboard' | 'timebox' | 'worklog'
+  const [topMode, setTopModeState] = useState(() => {
+    const saved = localStorage.getItem('topMode');
+    return TOP_MODES.includes(saved) ? saved : 'home';
+  });
+  const setTopMode = (mode) => {
+    setTopModeState(mode);
+    localStorage.setItem('topMode', mode);
+  };
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [token, setToken] = useState(localStorage.getItem('token'));
   const [authChecked, setAuthChecked] = useState(() => !localStorage.getItem('token'));
@@ -209,6 +220,7 @@ const App = () => {
 
   const handleLogout = () => {
     localStorage.removeItem('token');
+    localStorage.removeItem('topMode');
     localStorage.removeItem('displayName');
     localStorage.removeItem('username');
     localStorage.removeItem('isAdmin');
@@ -306,6 +318,7 @@ const App = () => {
         {topMode === 'order-dashboard' && <OrderRecommendationDashboardPage />}
         {topMode === 'timebox' && <TimeboxPage currentUser={username} />}
         {topMode === 'worklog' && <WorklogPage currentUser={username} />}
+        {topMode === 'cs' && <CSPage />}
 
         {topMode === 'home' && (
           <>

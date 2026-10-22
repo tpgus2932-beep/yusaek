@@ -1,0 +1,277 @@
+.wrap {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    max-width: 880px;
+    width: 100%;
+    margin: 0 auto;
+}
+
+.card {
+    margin-bottom: 12px;
+    padding: 16px 18px;
+    border-radius: 16px;
+    background: var(--cs-card);
+    box-shadow: var(--cs-shadow);
+}
+
+.card h3 {
+    margin: 0 0 10px;
+    font-size: 0.95rem;
+}
+
+.hint {
+    color: var(--cs-sub);
+    font-size: 0.78rem;
+    font-weight: 400;
+}
+
+.row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.grow {
+    flex: 1;
+    min-width: 160px;
+}
+
+.card input[type='text'],
+.card input:not([type]),
+.card input[type='search'] {
+    padding: 8px 12px;
+    border: 1px solid var(--cs-line);
+    border-radius: 10px;
+    background: var(--cs-bg);
+    color: var(--cs-text);
+    font-size: 0.85rem;
+    outline: none;
+}
+
+.card input:focus {
+    border-color: var(--cs-accent);
+}
+
+.muted {
+    color: var(--cs-sub);
+    font-size: 0.76rem;
+}
+
+.warn {
+    margin-top: 8px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: var(--cs-warn-soft);
+    color: var(--cs-warn);
+    font-size: 0.82rem;
+}
+
+.done {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--cs-ok-soft);
+    color: var(--cs-ok);
+    font-size: 0.82rem;
+    line-height: 1.6;
+}
+
+.empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--cs-sub);
+}
+
+.primary,
+.secondary,
+.danger {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 8px 16px;
+    border: none;
+    border-radius: 999px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.primary {
+    background: var(--cs-accent);
+    color: #fff;
+}
+
+.secondary {
+    background: var(--cs-accent-soft);
+    color: var(--cs-accent);
+}
+
+.danger {
+    background: var(--cs-warn);
+    color: #fff;
+}
+
+.primary:disabled,
+.secondary:disabled,
+.danger:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.pack {
+    display: block;
+    width: 100%;
+    margin-bottom: 8px;
+    padding: 12px 14px;
+    border: 2px solid transparent;
+    border-radius: 14px;
+    background: var(--cs-bg);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.pack:hover {
+    background: var(--cs-accent-soft);
+}
+
+.packOn,
+.packOn:hover {
+    border-color: var(--cs-accent);
+    background: var(--cs-accent-soft);
+}
+
+.packTop {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.packBody {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 0.84rem;
+}
+
+.addr {
+    font-weight: 600;
+}
+
+.shop,
+.tag,
+.tagWarn {
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 700;
+}
+
+.shop {
+    background: var(--cs-accent-soft);
+    color: var(--cs-accent);
+}
+
+.tag {
+    background: var(--cs-card);
+    color: var(--cs-sub);
+}
+
+.tagWarn {
+    background: var(--cs-warn-soft);
+    color: var(--cs-warn);
+}
+
+.current {
+    margin-bottom: 10px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: var(--cs-bg);
+    font-size: 0.84rem;
+}
+
+.results {
+    max-height: 220px;
+    margin-bottom: 10px;
+    overflow-y: auto;
+}
+
+.result {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    margin-bottom: 4px;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 10px;
+    background: var(--cs-bg);
+    color: inherit;
+    font: inherit;
+    font-size: 0.84rem;
+    text-align: left;
+    cursor: pointer;
+}
+
+.result:hover {
+    background: var(--cs-accent-soft);
+}
+
+.zip {
+    font-weight: 700;
+    color: var(--cs-accent);
+}
+
+.form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 10px 0;
+}
+
+.form label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--cs-sub);
+    font-size: 0.74rem;
+}
+
+.form input {
+    color: var(--cs-text);
+}
+
+.preview {
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--cs-bg);
+    font-size: 0.84rem;
+    line-height: 1.7;
+}
+
+.confirm {
+    margin-top: 6px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: var(--cs-warn-soft);
+    font-size: 0.84rem;
+}
+
+.confirm .row {
+    margin: 10px 0 0;
+}
+
+.check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    color: var(--cs-warn);
+    font-size: 0.8rem;
+}

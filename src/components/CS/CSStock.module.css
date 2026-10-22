@@ -1,0 +1,218 @@
+.box {
+    margin: 0 12px 12px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: var(--cs-bg);
+    font-size: 0.8rem;
+}
+
+.head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.muted {
+    color: var(--cs-sub);
+    font-size: 0.74rem;
+}
+
+.warn {
+    margin-top: 6px;
+    color: var(--cs-warn);
+    font-size: 0.76rem;
+}
+
+.btn {
+    margin-left: auto;
+    padding: 4px 12px;
+    border: none;
+    border-radius: 999px;
+    background: var(--cs-accent-soft);
+    color: var(--cs-accent);
+    font-size: 0.74rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.tableWrap {
+    max-height: 220px;
+    margin-top: 8px;
+    overflow: auto;
+    border-radius: 10px;
+    background: var(--cs-card);
+}
+
+.table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.78rem;
+}
+
+.table th {
+    position: sticky;
+    top: 0;
+    padding: 6px 10px;
+    background: var(--cs-card);
+    color: var(--cs-sub);
+    font-weight: 600;
+    text-align: left;
+}
+
+.table td {
+    padding: 6px 10px;
+    border-top: 1px solid var(--cs-line);
+}
+
+.num {
+    color: var(--cs-ok);
+    font-weight: 700;
+}
+
+.zero {
+    color: var(--cs-warn);
+    font-weight: 700;
+}
+
+.asked {
+    background: var(--cs-accent-soft);
+}
+
+.askedTag {
+    margin-left: 6px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--cs-accent);
+    color: #fff;
+    font-size: 0.64rem;
+    font-weight: 700;
+}
+
+.viewToggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 8px;
+}
+
+.link {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--cs-accent);
+    font-size: 0.76rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.inboundCell {
+    min-width: 150px;
+    line-height: 1.45;
+}
+
+.inboundDate {
+    color: var(--cs-accent);
+}
+
+.editRow td {
+    background: var(--cs-bg);
+}
+
+.editor {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.editor input {
+    padding: 5px 9px;
+    border: 1px solid var(--cs-line);
+    border-radius: 10px;
+    background: var(--cs-card);
+    color: var(--cs-text);
+    font-size: 0.78rem;
+    outline: none;
+}
+
+.noteInput {
+    flex: 1;
+    min-width: 160px;
+}
+
+.btnSmall {
+    padding: 4px 11px;
+    border: none;
+    border-radius: 999px;
+    background: var(--cs-accent-soft);
+    color: var(--cs-accent);
+    font-size: 0.74rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.btnSmall:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.rankBox {
+    margin-top: 8px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: var(--cs-card);
+}
+
+.rankLine {
+    margin-top: 6px;
+    line-height: 1.6;
+}
+
+.rankNum {
+    color: var(--cs-accent);
+    font-size: 1.05rem;
+}
+
+.paidAt {
+    color: var(--cs-text);
+    font-weight: 700;
+}
+
+.linkDanger {
+    margin-left: 8px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--cs-warn);
+    font-size: 0.76rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.confirmInline {
+    margin-left: 8px;
+    color: var(--cs-warn);
+    font-size: 0.74rem;
+}
+
+.title {
+    margin-bottom: 6px;
+    font-size: 0.84rem;
+    font-weight: 700;
+    line-height: 1.4;
+}
+
+.allBar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: 0 12px 8px;
+    font-size: 0.8rem;
+}
