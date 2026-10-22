@@ -23,7 +23,7 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Upload
 from fastapi.responses import FileResponse, Response
 import xlwt
 
-from api.wonbe_routes import _get_wonbe_db, _init_ably_stock_table
+from api.wonbe_routes import _get_wonbe_db, _init_ably_stock_table, load_wonbe_client_info_by_code, load_wonbe_pure_product_name_map
 
 ABLY_BASE     = "https://api.a-bly.com"
 ABLY_EMAIL    = "eostm1997@naver.com"
@@ -537,10 +537,21 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
     def _match_kdg_rows(rows: list[dict], base_map: dict[str, str]) -> tuple[list[dict], int]:
         out = []
         missing = 0
+        # 바코드 라벨(상품명/옵션/거래처상품명)용 정보를 매칭된 상품코드로 원가베이스유에서 같이 붙인다.
+        client_info = load_wonbe_client_info_by_code()
+        pure_names = load_wonbe_pure_product_name_map()
         for row in rows:
             key = _safe_str(row.get("A(변환품명)"))
             code = base_map.get(key, "")
-            merged = {**row, "원베_B": code}
+            info = client_info.get(_safe_str(code)) or {}
+            merged = {
+                **row,
+                "원베_B": code,
+                "거래처": info.get("거래처", ""),
+                "거래처상품명": info.get("거래처상품명", ""),
+                "라벨상품명": pure_names.get(_safe_str(code), ""),
+                "라벨옵션": " ".join(p for p in [info.get("색상", ""), info.get("사이즈", "")] if p),
+            }
             if _safe_str(code) == "":
                 missing += 1
             out.append(merged)

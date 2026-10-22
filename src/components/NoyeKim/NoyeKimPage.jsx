@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
+import { printProductLabels } from "../../lib/printProductLabels";
 
 function formatLocalDate(date = new Date()) {
   const year = date.getFullYear();
@@ -409,9 +410,9 @@ export default function NoyeKimPage() {
   const [kdgText, setKdgText] = useState("");
   const [kdgRows, setKdgRows] = useState([]);
   const [kdgMissing, setKdgMissing] = useState(0);
-  const [kdgLastSheetSeq, setKdgLastSheetSeq] = useState(null);
   const [kdgEzadminLoading, setKdgEzadminLoading] = useState(false);
   const [kdgBarcodePrintLoading, setKdgBarcodePrintLoading] = useState(false);
+  const [kdgSelected, setKdgSelected] = useState(() => new Set()); // 결과 표에서 체크한 행 인덱스 (결과는 이어붙기만 하므로 인덱스가 유지된다)
   const [baseStatus, setBaseStatus] = useState(null);
   const [baseFile, setBaseFile] = useState(null);
   const [showBaseEditor, setShowBaseEditor] = useState(false);
@@ -829,7 +830,6 @@ export default function NoyeKimPage() {
       const data = await res.json().catch(() => ({}));
       if (data?.need_session) { openEzadminModal(handleKdgCreateEzadminSheet); return; }
       if (!res.ok || !data?.ok) throw new Error(data?.error || data?.detail || "전표 생성 실패");
-      setKdgLastSheetSeq(data.sheet_seq);
       setMessage(`KDG 입고전표 생성 완료 (${data.uploaded_count ?? 0}건) - 전표번호: ${data.sheet_seq}`);
     } catch (err) {
       setMessage(err.message || "전표 생성 실패");
@@ -838,34 +838,57 @@ export default function NoyeKimPage() {
     }
   };
 
-  const handleKdgBarcodePrint = async () => {
-    if (!kdgLastSheetSeq || !kdgRows.length) return;
+  const toggleKdgSelected = (i) =>
+    setKdgSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+
+  // selectedOnly면 결과 표에서 체크한 행만 출력한다.
+  const handleKdgBarcodePrint = async (selectedOnly = false) => {
+    if (!kdgRows.length) return;
+    const printRows = selectedOnly ? kdgRows.filter((_, i) => kdgSelected.has(i)) : kdgRows;
+    if (!printRows.length) { setMessage("출력할 행을 선택하세요."); return; }
     setKdgBarcodePrintLoading(true);
     try {
-      const products = kdgRows
+      // 라벨 거래처 상품은 (거래처상품명)을 라벨에 함께 찍는다.
+      // 거래처/거래처상품명은 "이지어드민 변환(원베 매칭)" 때 행에 이미 붙어 있다.
+      // 라벨 거래처 목록 조회에 실패해도 출력은 막지 않고 기본 목록을 쓴다.
+      let labelSupplierSet = new Set(["리마인드", "케이디지", "리자드스탠다드", "계란속노른자", "위클리"]);
+      let prefixBySupplier = { 리마인드: "R", 케이디지: "K", 리자드스탠다드: "L" };
+      try {
+        const res = await fetch(`${API}/order/simple-receiving/label-suppliers`, { headers: getAuthHeaders() });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && Array.isArray(data?.suppliers)) {
+          labelSupplierSet = new Set(data.suppliers.map((s) => String(s).replace(/\s+/g, "")));
+          prefixBySupplier = Object.fromEntries(
+            Object.entries(data.prefixes || {}).map(([name, prefix]) => [name.replace(/\s+/g, ""), prefix]),
+          );
+        }
+      } catch {
+        // 기본 목록 사용
+      }
+      // EZAdmin 라벨 양식 대신 간단입고와 같은 자체 라벨(상품명 / 옵션 / (거래처상품명) / 바코드)로 출력한다.
+      const labels = printRows
         .filter((r) => r["원베_B"])
         .flatMap((r) => {
           const qty = Number(r["B(옵션번호)"]) || 1;
+          const supplier = String(r["거래처"] || "").replace(/\s+/g, "");
+          const clientProductName = String(r["거래처상품명"] || "").trim();
+          const clientLine = labelSupplierSet.has(supplier) && clientProductName ? `(${clientProductName})` : "";
+          // 케이디지가공2 라벨은 거래처 접두어(기본 K)를 상품명 앞에 붙인다. 거래처 정보가 없으면 K.
+          const prefix = supplier ? (prefixBySupplier[supplier] || "") : "K";
+          const baseTitle = r["라벨상품명"] || r["A(변환품명)"] || "";
           return Array.from({ length: qty }, () => ({
             code: r["원베_B"],
-            name: r["A(변환품명)"] || "",
-            option: "",
-            qty: 1,
+            title: prefix ? `${prefix} ${baseTitle}` : baseTitle,
+            option: r["라벨옵션"] || "",
+            clientLine,
           }));
         });
-      const res = await fetch(`${API}/returns/onebe/barcode-print`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ sheet_seq: kdgLastSheetSeq, products }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (data?.need_session) { openEzadminModal(handleKdgBarcodePrint); return; }
-      if (!data?.ok) { setMessage(`바코드 출력 오류: ${data?.error || "알 수 없는 오류"}`); return; }
-      const win = window.open("", "_blank", "width=900,height=700");
-      win.document.write(data.html);
-      win.document.close();
-      win.focus();
-      setTimeout(() => win.print(), 800);
+      if (!printProductLabels(labels)) setMessage("바코드 출력할 상품이 없거나 팝업이 차단되었습니다.");
     } catch (err) {
       setMessage(`바코드 출력 오류: ${err.message}`);
     } finally {
@@ -2911,12 +2934,12 @@ export default function NoyeKimPage() {
               </button>
               <button
                 className={styles.secondaryBtn}
-                onClick={handleKdgBarcodePrint}
-                disabled={loading || kdgBarcodePrintLoading || !kdgLastSheetSeq || !kdgRows.length}
-                title={kdgLastSheetSeq ? `전표 ${kdgLastSheetSeq} 바코드 출력` : "전표 생성 후 활성화"}
+                onClick={() => handleKdgBarcodePrint()}
+                disabled={loading || kdgBarcodePrintLoading || !kdgRows.length}
+                title="케이디지가공2 바코드 출력"
               >
                 <Zap size={13} />
-                {kdgBarcodePrintLoading ? "출력 중..." : `바코드 출력${kdgLastSheetSeq ? ` (${kdgLastSheetSeq})` : ""}`}
+                {kdgBarcodePrintLoading ? "출력 중..." : "바코드 출력"}
               </button>
               <button className={styles.secondaryBtn} onClick={copyKdgDate} disabled={loading}>
                 <Clipboard size={13} />날짜별 복사
@@ -2965,12 +2988,31 @@ export default function NoyeKimPage() {
                 <div className={`${styles.cardIcon} ${styles.cardIconSlate}`}><Table2 size={15} /></div>
                 <h3 className={styles.cardTitle}>결과</h3>
               </div>
-              <span className={styles.pill}>{kdgRows.length}건</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <button
+                  className={styles.secondaryBtn}
+                  onClick={() => handleKdgBarcodePrint(true)}
+                  disabled={loading || kdgBarcodePrintLoading || kdgSelected.size === 0}
+                  title="결과에서 체크한 행의 바코드만 출력"
+                >
+                  <Printer size={13} />
+                  {`선택 바코드 출력${kdgSelected.size ? ` (${kdgSelected.size}건)` : ""}`}
+                </button>
+                <span className={styles.pill}>{kdgRows.length}건</span>
+              </div>
             </div>
             <div className={`${styles.tableWrap} ${styles.registeredTableWrap}`}>
               <table className={styles.table}>
                 <thead>
                   <tr>
+                    <th>
+                      <input
+                        type="checkbox"
+                        title="전체 선택/해제"
+                        checked={kdgRows.length > 0 && kdgSelected.size === kdgRows.length}
+                        onChange={(e) => setKdgSelected(e.target.checked ? new Set(kdgRows.map((_, i) => i)) : new Set())}
+                      />
+                    </th>
                     <th>A(변환품명)</th>
                     <th>B(옵션번호)</th>
                     <th>원베_B</th>
@@ -2980,6 +3022,9 @@ export default function NoyeKimPage() {
                 <tbody>
                   {kdgRows.map((r, i) => (
                     <tr key={`${r["원본품명"] || ""}-${i}`}>
+                      <td>
+                        <input type="checkbox" checked={kdgSelected.has(i)} onChange={() => toggleKdgSelected(i)} />
+                      </td>
                       <td>{r["A(변환품명)"] || ""}</td>
                       <td>{r["B(옵션번호)"] || ""}</td>
                       <td>{r["원베_B"] || ""}</td>

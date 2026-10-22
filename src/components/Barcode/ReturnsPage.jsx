@@ -7,6 +7,9 @@ import { useEzadminSession } from '../../lib/EzadminSessionContext';
 
 import { LOCAL_API_BASE as API, getAuthHeaders } from '../../lib/api';
 
+// 이 PC에서 실행 중인 인쇄 에이전트 (backend/print_agent)
+const LOCAL_PRINT_AGENT = 'http://127.0.0.1:8765';
+
 const getTodayMmDd = () => {
     const now = new Date();
     const mm = String(now.getMonth() + 1).padStart(2, '0');
@@ -69,6 +72,20 @@ const ReturnsPage = () => {
     const lotteDateTo = new Date().toISOString().slice(0, 10);
     const [lotteAccount, setLotteAccount] = useState('348867');
     const [scanText, setScanText] = useState('');
+    const [serverPrint, setServerPrint] = useState(() => {
+        try { return localStorage.getItem('returns_server_print') === '1'; } catch { return false; }
+    });
+    const [printTarget, setPrintTarget] = useState(() => {
+        try { return localStorage.getItem('returns_print_target') === 'server' ? 'server' : 'local'; } catch { return 'local'; }
+    });
+    const [serverPrinter, setServerPrinter] = useState(() => {
+        try { return localStorage.getItem(`returns_printer_${localStorage.getItem('returns_print_target') === 'server' ? 'server' : 'local'}`) || ''; } catch { return ''; }
+    });
+    const [printerList, setPrinterList] = useState([]);
+    const [printerDefault, setPrinterDefault] = useState('');
+    const [autoPrintBarcode, setAutoPrintBarcode] = useState(() => {
+        try { return localStorage.getItem('returns_auto_print_barcode') === '1'; } catch { return false; }
+    });
     const [lastType, setLastType] = useState('-');
     const [onebeFormat, setOnebeFormat] = useState('xls');
     const [exportFormat, setExportFormat] = useState('xlsx');
@@ -80,6 +97,11 @@ const ReturnsPage = () => {
     const [selectedExchangeSeller, setSelectedExchangeSeller] = useState(new Set());
     const [selectedExchangeCustomer, setSelectedExchangeCustomer] = useState(new Set());
     const [deleteLoading, setDeleteLoading] = useState(false);
+    const [changeProductTarget, setChangeProductTarget] = useState(null);
+    const [changeProductQuery, setChangeProductQuery] = useState('');
+    const [changeProductRows, setChangeProductRows] = useState([]);
+    const [changeProductLoading, setChangeProductLoading] = useState(false);
+    const [changeProductMsg, setChangeProductMsg] = useState('');
     const [csLookupLoading, setCsLookupLoading] = useState(false);
     const [csDetailModal, setCsDetailModal] = useState(null);
     const [zoomImage, setZoomImage] = useState(null);
@@ -93,6 +115,7 @@ const ReturnsPage = () => {
     const [regatherExecuteLoading, setRegatherExecuteLoading] = useState(false);
     const [regatherItems, setRegatherItems] = useState([]);
     const [regatherLoading, setRegatherLoading] = useState(false);
+    const [regatherForm, setRegatherForm] = useState({ invoice: '', return_invoice: '', goods_name: '', buyer_tel: '' });
     const [specialNoteModalOpen, setSpecialNoteModalOpen] = useState(false);
     const [specialNoteList, setSpecialNoteList] = useState([]);
     const [specialNoteListLoading, setSpecialNoteListLoading] = useState(false);
@@ -690,10 +713,66 @@ const ReturnsPage = () => {
         return svg.outerHTML;
     };
 
+    // 출력 대상: local = 이 PC의 인쇄 에이전트(localhost), server = 백엔드 PC
+    const printEndpoint = (path) => (
+        printTarget === 'local'
+            ? { url: `${LOCAL_PRINT_AGENT}/${path}`, headers: {} }
+            : { url: `${API}/returns/${path}`, headers: getAuthHeaders() }
+    );
+
+    const fetchServerPrinters = useCallback(async () => {
+        try {
+            const ep = printTarget === 'local'
+                ? { url: `${LOCAL_PRINT_AGENT}/printers`, headers: {} }
+                : { url: `${API}/returns/printers`, headers: getAuthHeaders() };
+            const res = await fetch(ep.url, { headers: ep.headers }).catch(() => {
+                throw new Error(printTarget === 'local'
+                    ? '이 PC의 인쇄 에이전트에 연결할 수 없습니다. print_agent를 실행했는지 확인하세요.'
+                    : '프린터 목록 조회 실패');
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '프린터 목록 조회 실패');
+            setPrinterList(data.printers || []);
+            setPrinterDefault(data.default || '');
+        } catch (err) {
+            setMessage(err.message || '프린터 목록 조회 실패');
+        }
+    }, [printTarget]);
+
+    useEffect(() => {
+        if (serverPrint) fetchServerPrinters();
+    }, [serverPrint, fetchServerPrinters]);
+
     // 상품명 / [옵션] / 상품코드 바코드 라벨 인쇄 (image.png 레이아웃 참고)
     const printProductLabels = (labels) => {
         const valid = labels.filter((l) => l.code);
         if (!valid.length) return;
+        if (serverPrint) {
+            // 이 PC(에이전트) 또는 백엔드 PC의 프린터로 대화상자 없이 직접 출력, 실패하면 브라우저 인쇄로 대체
+            const ep = printEndpoint('print-labels');
+            fetch(ep.url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...ep.headers },
+                body: JSON.stringify({ labels: valid, printer: serverPrinter }),
+            })
+                .then(async (res) => {
+                    if (res.ok) return;
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data?.detail || '프린터 출력 실패');
+                })
+                .catch((err) => {
+                    const reason = err instanceof TypeError
+                        ? '이 PC의 인쇄 에이전트에 연결할 수 없습니다 (print_agent 실행 확인)'
+                        : err.message;
+                    setMessage(`${reason} — 브라우저 인쇄로 대체합니다.`);
+                    printProductLabelsInBrowser(valid);
+                });
+            return;
+        }
+        printProductLabelsInBrowser(valid);
+    };
+
+    const printProductLabelsInBrowser = (valid) => {
         const cardsHtml = valid.map((l) => `
             <div class="card">
                 <div class="title">${escapeHtml(l.title)}</div>
@@ -731,6 +810,71 @@ body { background: #fff; font-family: sans-serif; }
         win.focus();
         setTimeout(() => { win.print(); win.close(); }, 600);
     };
+
+    const openChangeProduct = (selectedIds, items) => {
+        if (selectedIds.size !== 1) {
+            setMessage('상품변경은 항목을 1건만 선택해서 진행하세요.');
+            return;
+        }
+        const target = items.find((i) => selectedIds.has(i.id));
+        if (!target) return;
+        setChangeProductTarget(target);
+        setChangeProductQuery('');
+        setChangeProductRows([]);
+        setChangeProductMsg('');
+    };
+
+    const searchChangeProduct = async () => {
+        const query = changeProductQuery.trim();
+        if (!query) {
+            setChangeProductRows([]);
+            setChangeProductMsg('검색어를 입력하세요.');
+            return;
+        }
+        try {
+            setChangeProductLoading(true);
+            setChangeProductMsg('');
+            const res = await fetch(`${API}/barcode/defect/search?q=${encodeURIComponent(query)}`, { headers: getAuthHeaders() });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '상품 검색 실패');
+            setChangeProductRows(data.rows || []);
+            setChangeProductMsg((data.rows || []).length ? `${data.rows.length}건 검색됨` : '검색 결과가 없습니다.');
+        } catch (err) {
+            setChangeProductRows([]);
+            setChangeProductMsg(err.message || '상품 검색 실패');
+        } finally {
+            setChangeProductLoading(false);
+        }
+    };
+
+    const applyChangeProduct = async (row) => {
+        if (!changeProductTarget) return;
+        try {
+            const res = await fetch(`${API}/returns/change-product`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({
+                    id: changeProductTarget.id,
+                    code: row.base_code || row.code,
+                    name: row.base_name,
+                    option: row.base_color || '',
+                }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data?.ok) throw new Error(data?.detail || '상품변경 실패');
+            if (data.queues) setQueues(normalizeQueues(data.queues));
+            setMessage(`상품변경 완료: ${row.base_name}`);
+            setChangeProductTarget(null);
+        } catch (err) {
+            setChangeProductMsg(err.message || '상품변경 실패');
+        }
+    };
+
+    const renderChangedMark = (item) => (item.product_changed ? (
+        <div style={{ fontSize: '0.8rem', color: '#2563eb', fontWeight: 600 }}>
+            🔄 상품변경됨 (원래: {item.changed_from_text || '-'})
+        </div>
+    ) : null);
 
     const handleEzadminReceiveStock = async (selectedItems, queue) => {
         if (!selectedItems || !selectedItems.length) return;
@@ -878,6 +1022,28 @@ body { background: #fff; font-family: sans-serif; }
             setRegatherItems([]);
         } finally {
             setRegatherLoading(false);
+        }
+    };
+
+    const handleAddRegather = async (e) => {
+        e.preventDefault();
+        const { invoice, return_invoice } = regatherForm;
+        if (!invoice.trim() && !return_invoice.trim()) {
+            setMessage('원송장번호 또는 반품송장번호를 입력하세요.');
+            return;
+        }
+        try {
+            const res = await fetch(`${API}/return-regathering/add`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify(regatherForm),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '추가 실패');
+            setRegatherForm({ invoice: '', return_invoice: '', goods_name: '', buyer_tel: '' });
+            fetchRegatherItems();
+        } catch (err) {
+            setMessage(err.message || '추가 실패');
         }
     };
 
@@ -1133,8 +1299,17 @@ body { background: #fff; font-family: sans-serif; }
         unlockAudio();
         try {
             const data = await scanBarcode(value);
-            setQueues(normalizeQueues(data.queues || queues));
+            const nextQueues = normalizeQueues(data.queues || queues);
+            setQueues(nextQueues);
             const nextType = data.last_type || '-';
+            if (autoPrintBarcode && !data.duplicate) {
+                const targetKey = nextType.includes('교환고객') ? 'exchange_customer' : (nextType === '고객' ? 'customer' : '');
+                if (targetKey) {
+                    const prevIds = new Set((queues[targetKey] || []).map((i) => i.id));
+                    const added = (nextQueues[targetKey] || []).filter((i) => !prevIds.has(i.id));
+                    if (added.length) handlePrintBarcodesOnly(added);
+                }
+            }
             setLastType(nextType);
             lastTypeRef.current = nextType;
             const nextTab = tabForType(nextType);
@@ -1348,6 +1523,7 @@ body { background: #fff; font-family: sans-serif; }
     };
 
     const [loadSnapshotModalOpen, setLoadSnapshotModalOpen] = useState(false);
+    const [snapshotMergeMode, setSnapshotMergeMode] = useState(false);
     const [snapshotList, setSnapshotList] = useState([]);
     const [snapshotListLoading, setSnapshotListLoading] = useState(false);
     const [snapshotAccounts, setSnapshotAccounts] = useState([]);
@@ -1396,7 +1572,8 @@ body { background: #fff; font-family: sans-serif; }
         fetchSnapshotsForAccount(username);
     };
 
-    const openLoadSnapshotModal = async () => {
+    const openLoadSnapshotModal = async (mergeMode = false) => {
+        setSnapshotMergeMode(mergeMode === true);
         setLoadSnapshotModalOpen(true);
         setSnapshotAccountsLoading(true);
         setSnapshotList([]);
@@ -1451,6 +1628,28 @@ body { background: #fff; font-family: sans-serif; }
         } finally {
             setEditingSnapshotId(null);
             setSnapshotNameDraft('');
+        }
+    };
+
+    const mergeSellerFromSnapshot = async (id) => {
+        try {
+            const res = await fetch(`${API}/returns/load-seller-merge`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ id }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '판매자 가져오기 실패');
+            setStatus(data.status || null);
+            setQueues(normalizeQueues(data.queues));
+            const a = data.added || {};
+            setMessage(
+                `판매자 가져오기 완료: 판매자 ${a.seller || 0}건, 교환판매자 ${a.exchange_seller || 0}건, 미매칭 ${a.unmatched || 0}건 추가`
+                + (data.skipped ? ` (중복 ${data.skipped}건 제외)` : '')
+            );
+            closeLoadSnapshotModal();
+        } catch (err) {
+            setMessage(err.message || '판매자 가져오기 실패');
         }
     };
 
@@ -1857,7 +2056,9 @@ body { background: #fff; font-family: sans-serif; }
                                 key={item.id}
                                 style={item.ably_refund_done
                                     ? { background: '#e5e7eb', color: '#9ca3af' }
-                                    : (selectedIds.has(item.id) ? { background: 'var(--bg-secondary)' } : undefined)}
+                                    : (selectedIds.has(item.id)
+                                        ? { background: 'var(--bg-secondary)' }
+                                        : (item.imported ? { background: 'rgba(245,158,11,0.15)', boxShadow: 'inset 3px 0 0 #f59e0b' } : undefined))}
                             >
                                 <td style={{ textAlign: 'center' }}>
                                     <input
@@ -1866,9 +2067,16 @@ body { background: #fff; font-family: sans-serif; }
                                         onChange={() => onToggleOne(item.id)}
                                     />
                                 </td>
-                                <td style={item.special_note ? { color: '#dc2626', fontWeight: 600 } : undefined}>{item.scan}</td>
+                                <td style={item.special_note ? { color: '#dc2626', fontWeight: 600 } : undefined}>
+                                    {item.imported && (
+                                        <span style={{ display: 'inline-block', marginRight: 6, padding: '0 6px', borderRadius: 999, background: '#f59e0b', color: '#fff', fontSize: '0.7rem', fontWeight: 700 }}>
+                                            가져옴
+                                        </span>
+                                    )}
+                                    {item.scan}
+                                </td>
                                 <td>{item.match}</td>
-                                <td>{item.item_text}</td>
+                                <td>{item.item_text}{renderChangedMark(item)}</td>
                                 <td>{item.qty}</td>
                                 <td>{item.type}</td>
                                 {hasSpecialNote && (
@@ -2091,7 +2299,7 @@ body { background: #fff; font-family: sans-serif; }
                         <button className={pageStyles.secondaryBtn} onClick={handleSaveSnapshot} disabled={loading}>
                             임시저장
                         </button>
-                        <button className={pageStyles.secondaryBtn} onClick={openLoadSnapshotModal} disabled={loading}>
+                        <button className={pageStyles.secondaryBtn} onClick={() => openLoadSnapshotModal(false)} disabled={loading}>
                             불러오기
                         </button>
                         <button className={pageStyles.secondaryBtn} onClick={handleReset}>
@@ -2113,6 +2321,14 @@ body { background: #fff; font-family: sans-serif; }
                                 verticalAlign: 'middle',
                                 background: scannedSpecialInvoices.size > 0 ? '#dc2626' : '#d1d5db',
                             }} />
+                        </button>
+                        <button
+                            type="button"
+                            className={pageStyles.secondaryBtn}
+                            onClick={() => openLoadSnapshotModal(true)}
+                            disabled={loading}
+                        >
+                            판매자 가져오기
                         </button>
                     </div>
                     {savedAt && <div className={pageStyles.metaLabel}>마지막 임시저장: {savedAt}</div>}
@@ -2152,6 +2368,72 @@ body { background: #fff; font-family: sans-serif; }
                             <button className={pageStyles.primaryBtn} onClick={handleScan}>
                                 매칭/대기
                             </button>
+                            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={autoPrintBarcode}
+                                    onChange={(e) => {
+                                        setAutoPrintBarcode(e.target.checked);
+                                        try { localStorage.setItem('returns_auto_print_barcode', e.target.checked ? '1' : '0'); } catch { /* ignore */ }
+                                        setTimeout(() => scanRef.current?.focus(), 0);
+                                    }}
+                                />
+                                바코드바로출력
+                            </label>
+                            <label
+                                title="켜면 인쇄 확인창 없이 선택한 PC의 프린터로 바로 출력합니다"
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                            >
+                                <input
+                                    type="checkbox"
+                                    role="switch"
+                                    checked={serverPrint}
+                                    onChange={(e) => {
+                                        setServerPrint(e.target.checked);
+                                        try { localStorage.setItem('returns_server_print', e.target.checked ? '1' : '0'); } catch { /* ignore */ }
+                                        setTimeout(() => scanRef.current?.focus(), 0);
+                                    }}
+                                />
+                                직접출력
+                            </label>
+                            {serverPrint && (
+                                <>
+                                    <select
+                                        value={printTarget}
+                                        onChange={(e) => {
+                                            const next = e.target.value;
+                                            setPrintTarget(next);
+                                            setPrinterList([]);
+                                            try {
+                                                localStorage.setItem('returns_print_target', next);
+                                                setServerPrinter(localStorage.getItem(`returns_printer_${next}`) || '');
+                                            } catch { setServerPrinter(''); }
+                                        }}
+                                        style={{ width: 'auto' }}
+                                    >
+                                        <option value="local">내 PC</option>
+                                        <option value="server">서버 PC</option>
+                                    </select>
+                                    <input
+                                        list="returns-server-printers"
+                                        value={serverPrinter}
+                                        placeholder={printerDefault ? `기본 프린터: ${printerDefault}` : '프린터 선택 (비우면 기본 프린터)'}
+                                        title="목록에서 고르거나 프린터 이름을 직접 입력"
+                                        onChange={(e) => {
+                                            setServerPrinter(e.target.value);
+                                            try { localStorage.setItem(`returns_printer_${printTarget}`, e.target.value); } catch { /* ignore */ }
+                                        }}
+                                        onBlur={() => setTimeout(() => scanRef.current?.focus(), 0)}
+                                        style={{ width: 240 }}
+                                    />
+                                    <datalist id="returns-server-printers">
+                                        {printerList.map((name) => <option key={name} value={name} />)}
+                                    </datalist>
+                                    <button type="button" className={pageStyles.secondaryBtn} onClick={fetchServerPrinters}>
+                                        프린터 새로고침
+                                    </button>
+                                </>
+                            )}
                         </div>
                     </div>
                 </section>
@@ -2243,6 +2525,14 @@ body { background: #fff; font-family: sans-serif; }
                                     >
                                         {regatherExecuteLoading ? '처리 중...' : `오회수 (${selectedSeller.size}건 선택)`}
                                     </button>
+                                    <button
+                                        type="button"
+                                        className={pageStyles.secondaryBtn}
+                                        onClick={() => openChangeProduct(selectedSeller, queues.seller)}
+                                        disabled={selectedSeller.size !== 1}
+                                    >
+                                        상품변경
+                                    </button>
                                 </>
                             ), true, 'seller')}
                             {activeTab === 'customer' && (() => {
@@ -2309,6 +2599,14 @@ body { background: #fff; font-family: sans-serif; }
                                             >
                                                 {regatherExecuteLoading ? '처리 중...' : `오회수 (${selectedCustomer.size}건 선택)`}
                                             </button>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.secondaryBtn}
+                                                onClick={() => openChangeProduct(selectedCustomer, items)}
+                                                disabled={selectedCustomer.size !== 1}
+                                            >
+                                                상품변경
+                                            </button>
                                         </div>
                                         <div className={pageStyles.tableWrap}>
                                         <table className={pageStyles.table}>
@@ -2345,7 +2643,9 @@ body { background: #fff; font-family: sans-serif; }
                                                         key={item.id}
                                                         style={item.ably_refund_done
                                                             ? { background: '#e5e7eb', color: '#9ca3af' }
-                                                            : (selectedCustomer.has(item.id) ? { background: 'var(--bg-secondary)' } : undefined)}
+                                                            : (selectedCustomer.has(item.id)
+                                                                ? { background: 'var(--bg-secondary)' }
+                                                                : (item.product_changed ? { background: 'rgba(37,99,235,0.08)' } : undefined))}
                                                     >
                                                         <td style={{ textAlign: 'center' }}>
                                                             <input
@@ -2362,7 +2662,7 @@ body { background: #fff; font-family: sans-serif; }
                                                         </td>
                                                         <td>{item.scan}</td>
                                                         <td>{item.match}</td>
-                                                        <td>{item.item_text}</td>
+                                                        <td>{item.item_text}{renderChangedMark(item)}</td>
                                                         <td>{item.qty}</td>
                                                         <td>{item.type}</td>
                                                         {hasDetailReason && <td>{item.detail_reason || ''}</td>}
@@ -2404,6 +2704,26 @@ body { background: #fff; font-family: sans-serif; }
                             })()}
                             {activeTab === 'regather' && (
                                 <div className={pageStyles.tableWrap}>
+                                    <form
+                                        onSubmit={handleAddRegather}
+                                        style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center', marginBottom: '0.6rem' }}
+                                    >
+                                        {[
+                                            ['invoice', '원송장번호'],
+                                            ['return_invoice', '반품송장번호'],
+                                            ['goods_name', '상품명'],
+                                            ['buyer_tel', '전화번호'],
+                                        ].map(([key, label]) => (
+                                            <input
+                                                key={key}
+                                                placeholder={label}
+                                                value={regatherForm[key]}
+                                                onChange={(e) => setRegatherForm((p) => ({ ...p, [key]: e.target.value }))}
+                                                style={{ padding: '0.35rem 0.5rem', width: key === 'goods_name' ? '180px' : '130px' }}
+                                            />
+                                        ))}
+                                        <button type="submit" className={pageStyles.primaryBtn}>리스트에 추가</button>
+                                    </form>
                                     {regatherLoading ? (
                                         <div className={pageStyles.empty}>불러오는 중...</div>
                                     ) : regatherItems.length === 0 ? (
@@ -2472,6 +2792,14 @@ body { background: #fff; font-family: sans-serif; }
                                             >
                                                 {labelPrintLoading ? '처리 중...' : `바코드 출력 (${selectedExchangeSeller.size}건 선택)`}
                                             </button>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.secondaryBtn}
+                                                onClick={() => openChangeProduct(selectedExchangeSeller, queues.exchange_seller)}
+                                                disabled={selectedExchangeSeller.size !== 1}
+                                            >
+                                                상품변경
+                                            </button>
                                         </>
                                     ), undefined, 'exchange_seller')}
                                     {queues.exchange_seller.length > 0 && (
@@ -2498,7 +2826,26 @@ body { background: #fff; font-family: sans-serif; }
                             )}
                             {activeTab === 'exchange_customer' && (
                                 <>
-                                    {renderQueueTab(queues.exchange_customer, selectedExchangeCustomer, setSelectedExchangeCustomer)}
+                                    {renderQueueTab(queues.exchange_customer, selectedExchangeCustomer, setSelectedExchangeCustomer, (
+                                        <>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.primaryBtn}
+                                                onClick={() => handleRegatherExecute(queues.exchange_customer.filter((i) => selectedExchangeCustomer.has(i.id)))}
+                                                disabled={regatherExecuteLoading || selectedExchangeCustomer.size === 0}
+                                            >
+                                                {regatherExecuteLoading ? '처리 중...' : `오회수 (${selectedExchangeCustomer.size}건 선택)`}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.secondaryBtn}
+                                                onClick={() => openChangeProduct(selectedExchangeCustomer, queues.exchange_customer)}
+                                                disabled={selectedExchangeCustomer.size !== 1}
+                                            >
+                                                상품변경
+                                            </button>
+                                        </>
+                                    ))}
                                     {queues.exchange_customer.length > 0 && (
                                         <div className={`${pageStyles.uploadRow} ${styles.compactActions}`}>
                                             <button
@@ -2959,6 +3306,48 @@ body { background: #fff; font-family: sans-serif; }
 
             </div>
 
+            {changeProductTarget && (
+                <div
+                    onClick={() => setChangeProductTarget(null)}
+                    style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ background: 'var(--bg-primary, #fff)', color: 'inherit', borderRadius: 8, padding: '1rem', width: 'min(720px, 92vw)', maxHeight: '80vh', overflow: 'auto' }}
+                    >
+                        <h4 style={{ margin: '0 0 0.5rem' }}>상품변경</h4>
+                        <div style={{ marginBottom: '0.75rem', fontSize: '0.9rem' }}>
+                            현재 상품: <strong>{changeProductTarget.item_text}</strong>
+                        </div>
+                        <div className={pageStyles.uploadRow}>
+                            <input
+                                value={changeProductQuery}
+                                onChange={(e) => setChangeProductQuery(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') searchChangeProduct(); }}
+                                placeholder="원가베이스 상품명 검색"
+                                autoFocus
+                                style={{ flex: 1 }}
+                            />
+                            <button type="button" className={pageStyles.secondaryBtn} onClick={searchChangeProduct} disabled={changeProductLoading}>
+                                {changeProductLoading ? '검색 중...' : '검색'}
+                            </button>
+                            <button type="button" className={pageStyles.secondaryBtn} onClick={() => setChangeProductTarget(null)}>닫기</button>
+                        </div>
+                        {changeProductMsg && <div style={{ margin: '0.5rem 0', fontWeight: 600 }}>{changeProductMsg}</div>}
+                        {changeProductRows.map((row, idx) => (
+                            <div key={`${row.base_code}-${idx}`} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.35rem 0', borderBottom: '1px solid rgba(128,128,128,0.2)' }}>
+                                <span style={{ flex: 1 }}>
+                                    {row.base_name}
+                                    {row.base_color && <span style={{ marginLeft: '0.4rem', opacity: 0.7 }}>{row.base_color}</span>}
+                                    {row.base_code && <span style={{ marginLeft: '0.4rem', opacity: 0.7 }}>{row.base_code}</span>}
+                                </span>
+                                <button type="button" className={pageStyles.primaryBtn} onClick={() => applyChangeProduct(row)}>선택</button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
             {zoomImage && (
                 <div
                     onClick={() => setZoomImage(null)}
@@ -3284,7 +3673,7 @@ body { background: #fff; font-family: sans-serif; }
                         }}
                     >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border-color, #e5e7eb)' }}>
-                            <strong>임시저장 불러오기</strong>
+                            <strong>{snapshotMergeMode ? '판매자 가져오기 (판매자·교환판매자·미매칭 추가)' : '임시저장 불러오기'}</strong>
                             <button type="button" onClick={closeLoadSnapshotModal} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>×</button>
                         </div>
                         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -3346,7 +3735,7 @@ body { background: #fff; font-family: sans-serif; }
                                                 <button
                                                     type="button"
                                                     className={pageStyles.secondaryBtn}
-                                                    onClick={() => loadSnapshotById(item.id)}
+                                                    onClick={() => (snapshotMergeMode ? mergeSellerFromSnapshot(item.id) : loadSnapshotById(item.id))}
                                                     style={{ flex: 1, textAlign: 'left' }}
                                                 >
                                                     {item.name || formatSnapshotTime(item.updated_at)}

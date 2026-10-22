@@ -6,7 +6,7 @@ import { useEzadminSession } from '../../lib/EzadminSessionContext';
 import ReceiptOcrPanel from './ReceiptOcrPanel';
 import {
   ArrowDownToLine, CheckCircle, ChevronDown, ChevronUp, Clipboard,
-  Database, Download, Eye, FileSpreadsheet, PackagePlus, Plus, RefreshCw, Save, Search, Trash2, Upload, XCircle,
+  Database, Download, Eye, FileSpreadsheet, PackagePlus, Plus, Printer, RefreshCw, Save, Search, Trash2, Upload, XCircle,
 } from 'lucide-react';
 
 const TOOL_TABS = [
@@ -47,6 +47,12 @@ const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
 ));
 
+// 이 거래처 상품은 바코드 라벨 상품명 옆에 (거래처상품명)을 함께 출력한다. (공백 제거 후 비교)
+// 목록은 간단입고 화면의 "라벨 거래처 관리"에서 편집하며, 서버 조회 전/실패 시 아래 기본값을 쓴다.
+const DEFAULT_LABEL_SUPPLIERS = ['리마인드', '케이디지', '리자드스탠다드', '계란속노른자', '위클리'];
+// 거래처별로 라벨 상품명 앞에 붙는 접두어(예: 리마인드 → "R 상품명"). 서버 조회 전/실패 시 기본값.
+const DEFAULT_LABEL_PREFIXES = { 리마인드: 'R', 케이디지: 'K', 리자드스탠다드: 'L' };
+
 function buildBarcodeSvgMarkup(text) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   try {
@@ -69,6 +75,7 @@ function printProductLabels(labels) {
   const cardsHtml = valid.map((l) => `
     <div class="card">
         <div class="title">${escapeHtml(l.title)}</div>
+        ${l.clientLine ? `<div class="client">${escapeHtml(l.clientLine)}</div>` : ''}
         <div class="option"${l.option ? '' : ' style="visibility:hidden"'}>${l.option ? escapeHtml(l.option) : '-'}</div>
         <div class="barcode">${buildBarcodeSvgMarkup(l.code)}</div>
     </div>
@@ -93,6 +100,7 @@ body { background: #fff; font-family: sans-serif; }
 .card:last-child { page-break-after: auto; break-after: auto; }
 .title { font-size: 9pt; font-weight: 700; line-height: 1.2; color: #111; }
 .option { font-size: 8pt; margin-top: 0.8mm; color: #111; }
+.client { font-size: 8pt; margin-top: 0.8mm; color: #111; line-height: 1.2; }
 .barcode { margin-top: 1.5mm; width: 100%; }
 .barcode svg { width: 100%; height: 8mm; display: block; }
 </style>
@@ -200,6 +208,62 @@ export default function CollaborationMenuPage() {
   const receivingMisongInputRefs = useRef({});
   const receivingMemoInputRefs = useRef({});
   const receivingBarcodePrintBtnRef = useRef(null);
+  // 바코드 라벨 3번째 줄에 (거래처상품명)을 같이 찍을 거래처 목록 - 서버(app_settings)에 저장된다.
+  const [labelSuppliers, setLabelSuppliers] = useState(DEFAULT_LABEL_SUPPLIERS);
+  const [labelPrefixes, setLabelPrefixes] = useState(DEFAULT_LABEL_PREFIXES);
+  const [labelSupplierInput, setLabelSupplierInput] = useState('');
+  const [labelSupplierMsg, setLabelSupplierMsg] = useState('');
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${LOCAL_API_BASE}/order/simple-receiving/label-suppliers`, {
+          headers: getAuthHeaders(),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data?.ok) {
+          setLabelSuppliers(data.suppliers || []);
+          setLabelPrefixes(data.prefixes || {});
+        }
+      } catch {
+        // 조회 실패 시 기본 목록으로 동작
+      }
+    })();
+  }, []);
+
+  const saveLabelSuppliers = async (next, nextPrefixes = labelPrefixes) => {
+    const prev = labelSuppliers;
+    const prevPrefixes = labelPrefixes;
+    setLabelSuppliers(next);
+    setLabelPrefixes(nextPrefixes);
+    setLabelSupplierMsg('');
+    try {
+      const res = await fetch(`${LOCAL_API_BASE}/order/simple-receiving/label-suppliers`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ suppliers: next, prefixes: nextPrefixes }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) throw new Error(data?.detail || '저장 실패');
+      setLabelSuppliers(data.suppliers || next);
+      setLabelPrefixes(data.prefixes || nextPrefixes);
+    } catch (err) {
+      setLabelSuppliers(prev);
+      setLabelPrefixes(prevPrefixes);
+      setLabelSupplierMsg(err.message || '저장 실패');
+    }
+  };
+
+  const addLabelSupplier = () => {
+    const name = labelSupplierInput.trim();
+    if (!name) return;
+    if (labelSuppliers.some((s) => s.replace(/\s+/g, '') === name.replace(/\s+/g, ''))) {
+      setLabelSupplierMsg('이미 등록된 거래처입니다.');
+      return;
+    }
+    setLabelSupplierInput('');
+    saveLabelSuppliers([...labelSuppliers, name]);
+  };
   const [receivingSearchQuery, setReceivingSearchQuery] = useState('');
   const [receivingSearchResults, setReceivingSearchResults] = useState([]);
   const [receivingSearchQtyEdits, setReceivingSearchQtyEdits] = useState({});
@@ -226,6 +290,8 @@ export default function CollaborationMenuPage() {
   const [receivingDraftSlotMeta, setReceivingDraftSlotMeta] = useState('');
   // 바코드 출력은 "현재 탭에서, 이번 검색으로 담은 것"만 대상으로 한다 - 새로 검색하면 비워지고,
   // 그 검색 결과에서 담을 때만 채워진다(이전 검색에서 담아둔 건 이번 출력에서 빠짐). 슬롯별로 분리한다.
+  // 입고 목록 표에서 체크박스로 직접 고른 행 - "선택 바코드 출력" 대상 (이번 검색 배치와는 별개)
+  const [receivingSelectedKeys, setReceivingSelectedKeys] = useState(() => new Set());
   const [receivingPrintBatchKeysBySlot, setReceivingPrintBatchKeysBySlot] = useState({});
   const receivingPrintBatchKeys = receivingPrintBatchKeysBySlot[receivingDraftSlot] || EMPTY_SET;
   const updatePrintBatchKeysForSlot = (slot, updater) => {
@@ -1024,6 +1090,7 @@ export default function CollaborationMenuPage() {
       return;
     }
     let nameByCode = {};
+    let clientByCode = {};
     try {
       const res = await fetch(`${LOCAL_API_BASE}/order/simple-receiving/resolve-product-names`, {
         method: 'POST',
@@ -1032,20 +1099,48 @@ export default function CollaborationMenuPage() {
       });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
-      if (res.ok && data?.ok) nameByCode = data.names || {};
+      if (res.ok && data?.ok) {
+        nameByCode = data.names || {};
+        clientByCode = data.clients || {};
+      }
     } catch {
       // 상품명 조회에 실패해도 출력 자체는 막지 않는다 - 아래에서 담긴 목록의 이름으로 대체한다.
     }
+    const labelSupplierSet = new Set(labelSuppliers.map((s) => s.replace(/\s+/g, '')));
+    const prefixBySupplier = Object.fromEntries(
+      Object.entries(labelPrefixes).map(([name, prefix]) => [name.replace(/\s+/g, ''), prefix]),
+    );
     const labels = batchItems.flatMap((item) => {
       const qty = Number(item.qty) || 0;
       if (qty <= 0) return [];
-      const title = nameByCode[item.code] || item.name || item.clientProductName || '';
+      const baseTitle = nameByCode[item.code] || item.name || item.clientProductName || '';
+      // 지정 거래처는 상품명 옆에 (거래처상품명)을 같이 적는다.
+      const clientInfo = clientByCode[item.code] || {};
+      const clientName = String(clientInfo['거래처'] || '').replace(/\s+/g, '');
+      const clientProductName = String(clientInfo['거래처상품명'] || item.clientProductName || '').trim();
+      // 거래처별 접두어(R/K/L 등)가 지정돼 있으면 상품명 앞에 공백 하나 두고 붙인다.
+      const prefix = prefixBySupplier[clientName] || '';
+      const title = prefix ? `${prefix} ${baseTitle}` : baseTitle;
+      const clientLine = labelSupplierSet.has(clientName) && clientProductName
+        ? `(${clientProductName})`
+        : '';
       // 라벨은 미송픽업 여부와 상관없이 일반 상품과 똑같이 나가야 하므로 "(미송픽업)" 표시는 지운다.
       const option = (item.options || '').replace(/\(?미송픽업\)?/g, '').replace(/\s+/g, ' ').trim();
-      return Array.from({ length: qty }, () => ({ title, option, code: item.code }));
+      return Array.from({ length: qty }, () => ({ title, option, clientLine, code: item.code }));
     });
     printProductLabels(labels);
   };
+
+  const toggleReceivingSelected = (key) =>
+    setReceivingSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
+  const handleSelectedBarcodePrint = () =>
+    handleSimpleReceivingBarcodePrint(receivingSelectedKeys, '입고 목록에서 출력할 상품을 선택하세요.');
 
   // 담아놓고 출력을 깜빡한 채 다른 걸 검색해버려서 이번 배치(receivingPrintBatchKeys)가
   // 비워졌을 때, 그 직전 배치를 다시 꺼내 출력한다.
@@ -1655,6 +1750,70 @@ export default function CollaborationMenuPage() {
         <div className={styles.heroIcon}><PackagePlus size={26} /></div>
       </section>
 
+      <section className={styles.card}>
+        <div className={styles.cardHeader}>
+          <div>
+            <h3 className={styles.cardTitle}>라벨 거래처 관리</h3>
+            <p className={styles.cardHint}>
+              여기 등록된 거래처 상품은 바코드 라벨의 상품명 바로 다음 줄에 (거래처상품명)이 같이 출력됩니다. 거래처 옆 칸에 글자를 넣으면 그 글자가 상품명 앞에 붙습니다(예: R → "R 상품명").
+            </p>
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.6rem' }}>
+          {labelSuppliers.map((name) => (
+            <span
+              key={name}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
+                padding: '0.2rem 0.55rem', borderRadius: '999px',
+                background: '#f3f4f6', border: '1px solid #e5e7eb', fontSize: '0.85rem',
+              }}
+            >
+              {name}
+              <input
+                defaultValue={labelPrefixes[name] || ''}
+                maxLength={3}
+                placeholder="접두"
+                title="라벨 상품명 앞에 붙일 글자 (비우면 없음)"
+                onBlur={(e) => {
+                  const value = e.target.value.trim();
+                  if (value === (labelPrefixes[name] || '')) return;
+                  const next = { ...labelPrefixes };
+                  if (value) next[name] = value; else delete next[name];
+                  saveLabelSuppliers(labelSuppliers, next);
+                }}
+                onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                style={{ width: '2.6rem', textAlign: 'center', fontSize: '0.8rem', padding: '0.1rem 0.2rem', border: '1px solid #d1d5db', borderRadius: '4px' }}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const next = { ...labelPrefixes };
+                  delete next[name];
+                  saveLabelSuppliers(labelSuppliers.filter((s) => s !== name), next);
+                }}
+                title="제외"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1, color: '#6b7280' }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+          {!labelSuppliers.length && <span className={styles.cardHint}>등록된 거래처가 없습니다.</span>}
+        </div>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <input
+            className={styles.textInput}
+            value={labelSupplierInput}
+            onChange={(e) => setLabelSupplierInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') addLabelSupplier(); }}
+            placeholder="추가할 거래처명 (원가베이스유 거래처와 동일하게)"
+          />
+          <button type="button" className={styles.primaryBtn} onClick={addLabelSupplier}>추가</button>
+        </div>
+        {labelSupplierMsg && <p className={styles.cardHint} style={{ marginTop: '0.4rem' }}>{labelSupplierMsg}</p>}
+      </section>
+
       <ReceiptOcrPanel
         onAdd={(row, qty, memo, receiptId) => {
           // 다른 사진(탭)에서 담기 시작하면 이번 출력 대상을 비워서 그 탭에서 담은 것만 출력되게 한다.
@@ -2030,6 +2189,15 @@ export default function CollaborationMenuPage() {
             </p>
           </div>
           <div className={styles.headerActions}>
+            <button
+              type="button"
+              className={styles.secondaryBtn}
+              onClick={handleSelectedBarcodePrint}
+              disabled={receivingSelectedKeys.size === 0}
+              title="입고 목록에서 체크한 상품의 바코드를 담긴 수량만큼 출력합니다"
+            >
+              <Printer size={14} />{`선택 바코드 출력${receivingSelectedKeys.size ? ` (${receivingSelectedKeys.size}건)` : ''}`}
+            </button>
             <input
               className={styles.textInput}
               value={receivingSheetTitle}
@@ -2094,6 +2262,16 @@ export default function CollaborationMenuPage() {
             <table className={styles.table}>
               <thead>
                 <tr>
+                  <th>
+                    <input
+                      type="checkbox"
+                      title="전체 선택/해제"
+                      checked={receivingDraft.length > 0 && receivingDraft.every((it) => receivingSelectedKeys.has(receivingDraftKey(it)))}
+                      onChange={(e) => setReceivingSelectedKeys(
+                        e.target.checked ? new Set(receivingDraft.map(receivingDraftKey)) : new Set(),
+                      )}
+                    />
+                  </th>
                   <th>상품코드</th>
                   <th>상품명</th>
                   <th>거래처상품명</th>
@@ -2107,6 +2285,13 @@ export default function CollaborationMenuPage() {
               <tbody>
                 {receivingDraft.map((item) => (
                   <tr key={receivingDraftKey(item)}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={receivingSelectedKeys.has(receivingDraftKey(item))}
+                        onChange={() => toggleReceivingSelected(receivingDraftKey(item))}
+                      />
+                    </td>
                     <td>{item.code}</td>
                     <td>
                       {item.name || '-'}{item.options ? ` (${item.options})` : ''}

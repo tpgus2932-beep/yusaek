@@ -1875,9 +1875,33 @@
       return legacySnapshot ? [legacySnapshot] : [];
     }
 
+    function saveHistoryToStorage(key, history) {
+      // localStorage 용량 초과 시 항목을 절반씩 줄여가며 재시도한다. 실패해도 예외를
+      // 던지지 않아야 이 함수를 호출한 초기화/저장 흐름(applyServerState 등)이
+      // 계속 진행될 수 있다.
+      let trimmed = history.slice(-UNDO_HISTORY_LIMIT);
+      while (trimmed.length > 0) {
+        try {
+          localStorage.setItem(key, JSON.stringify(trimmed));
+          return;
+        } catch (error) {
+          trimmed = trimmed.slice(Math.ceil(trimmed.length / 2));
+        }
+      }
+      try {
+        localStorage.removeItem(key);
+      } catch (error) {
+        // ignore
+      }
+    }
+
     function saveUndoHistory(history) {
-      localStorage.setItem(UNDO_STORAGE_KEY, JSON.stringify(history.slice(-UNDO_HISTORY_LIMIT)));
-      localStorage.removeItem(LEGACY_UNDO_STORAGE_KEY);
+      saveHistoryToStorage(UNDO_STORAGE_KEY, history);
+      try {
+        localStorage.removeItem(LEGACY_UNDO_STORAGE_KEY);
+      } catch (error) {
+        // ignore
+      }
       scheduleServerSave();
     }
 
@@ -1886,7 +1910,7 @@
     }
 
     function saveRedoHistory(history) {
-      localStorage.setItem(REDO_STORAGE_KEY, JSON.stringify(history.slice(-UNDO_HISTORY_LIMIT)));
+      saveHistoryToStorage(REDO_STORAGE_KEY, history);
       scheduleServerSave();
     }
 

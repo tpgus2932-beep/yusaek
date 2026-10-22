@@ -665,6 +665,66 @@ def build_returns_router(
             "scanned_count": len(state.scanned_barcodes),
         }
 
+    @router.post("/returns/load-seller-merge")
+    def returns_load_seller_merge(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """저장본의 판매자 대기/교환판매자/미매칭 대기를 현재 상태에 '추가'한다(기존 데이터는 유지).
+
+        저장본의 id는 현재 상태의 id와 겹칠 수 있어 next_id로 새로 부여하고, 같은 큐에 이미
+        같은 스캔송장이 있으면 중복으로 보고 건너뛴다.
+        """
+        snapshot_id = payload.get("id")
+        if snapshot_id is None:
+            raise HTTPException(status_code=400, detail="저장본을 선택하세요.")
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT payload FROM return_saved_snapshots WHERE id = ?",
+                (snapshot_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="임시저장 기록을 찾을 수 없습니다.")
+
+        stored = json.loads(row["payload"])
+        state = get_return_state(user)
+        stored_all = {it.get("id"): it for it in (stored.get("all_items") or [])}
+
+        added = {"seller": 0, "exchange_seller": 0, "unmatched": 0}
+        skipped = 0
+        for key, attr in (
+            ("seller", "queue_seller"),
+            ("exchange_seller", "queue_exchange_seller"),
+            ("unmatched", "queue_unmatched"),
+        ):
+            queue = getattr(state, attr)
+            existing_scans = {it.get("scan") for it in queue if it.get("scan")}
+            for src in stored.get(attr) or []:
+                scan = src.get("scan")
+                if scan and scan in existing_scans:
+                    skipped += 1
+                    continue
+                new_id = state.next_id
+                state.next_id += 1
+                item = dict(src)
+                item["id"] = new_id
+                item["imported"] = True
+                queue.append(item)
+                if src.get("id") in stored_all:
+                    state.all_items.append(item)
+                if scan:
+                    existing_scans.add(scan)
+                    state.scanned_barcodes.add(str(scan))
+                added[key] += 1
+
+        return {
+            "ok": True,
+            "added": added,
+            "skipped": skipped,
+            "status": return_status(state),
+            "queues": return_queue_payload(state),
+        }
+
     @router.post("/returns/excel1")
     def returns_upload_excel1(
         file: UploadFile = File(...),
@@ -2281,7 +2341,7 @@ def build_returns_router(
         for it in items:
             item_text = normalize_spaces(it.get("item_text", ""))
             match_key = normalize_key(item_text)
-            product_code = state.cost_map.get(match_key, "")
+            product_code = it.get("changed_product_code") or state.cost_map.get(match_key, "")
             matched_flag = "O" if product_code else "X"
 
             rows.append(
@@ -3102,6 +3162,48 @@ def build_returns_router(
 
         return {"results": results, "queues": return_queue_payload(state)}
 
+    @router.post("/returns/change-product")
+    def returns_change_product(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """고객대기/교환고객/판매자대기/교환판매자 항목 1건의 상품을 원가베이스유에서 고른 상품으로 바꾼다.
+
+        이지어드민 입고처리·바코드 출력(resolve-product-codes)은 item.option_code를,
+        원베양식 생성은 item.changed_product_code를 우선 사용하므로 두 값 모두 새 상품으로 맞춘다.
+        다시 바꿔도 원래 상품 정보(changed_from_*)는 최초 값을 유지한다.
+        """
+        item_id = payload.get("id")
+        code = str(payload.get("code") or "").strip()
+        name = str(payload.get("name") or "").strip()
+        option = str(payload.get("option") or "").strip()
+        if not item_id or not code or not name:
+            raise HTTPException(status_code=400, detail="변경할 항목과 상품을 선택하세요.")
+
+        state = get_return_state(user)
+        targets = [
+            it
+            for it in (
+                *state.queue_customer, *state.queue_exchange_customer,
+                *state.queue_seller, *state.queue_exchange_seller, *state.all_items,
+            )
+            if it.get("id") == item_id
+        ]
+        if not targets:
+            raise HTTPException(status_code=404, detail="항목을 찾을 수 없습니다.")
+
+        for it in targets:
+            if not it.get("product_changed"):
+                it["changed_from_text"] = it.get("item_text", "")
+            it["product_changed"] = True
+            it["changed_product_code"] = code
+            it["changed_product_name"] = name
+            it["item_text"] = name
+            it["goods_name"] = name
+            it["option_raw"] = option
+            it["option_code"] = code
+            it["original_option_sno"] = ""
+            for key in ("ezadmin_stockin_done", "ezadmin_stockin_product_id", "ezadmin_stockin_error"):
+                it.pop(key, None)
+        return {"ok": True, "queues": return_queue_payload(state)}
+
     @router.post("/returns/ezadmin-receive-stock")
     async def returns_ezadmin_receive_stock(
         payload: dict = Body(...),
@@ -3176,6 +3278,26 @@ def build_returns_router(
             results.append(result)
 
         return {"ok": True, "results": results, "queues": return_queue_payload(state)}
+
+    @router.get("/returns/printers")
+    async def returns_printers(user: str = Depends(get_current_user)):
+        """서버 PC에서 보이는 프린터 목록 (공유 프린터는 서버 PC에 연결돼 있어야 목록에 나온다)."""
+        try:
+            from services.label_printer import list_printers
+            return {"ok": True, **await asyncio.to_thread(list_printers)}
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"프린터 목록 조회 실패: {exc}")
+
+    @router.post("/returns/print-labels")
+    async def returns_print_labels(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """상품 바코드 라벨을 백엔드가 실행 중인 PC의 프린터로 대화상자 없이 바로 출력한다."""
+        labels = payload.get("labels", [])
+        try:
+            from services.label_printer import print_labels
+            printed = await asyncio.to_thread(print_labels, labels, str(payload.get("printer") or ""))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"서버 프린터 출력 실패: {exc}")
+        return {"ok": True, "printed": printed}
 
     @router.post("/returns/resolve-product-codes")
     async def returns_resolve_product_codes(payload: dict = Body(...), user: str = Depends(get_current_user)):

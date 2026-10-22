@@ -136,6 +136,36 @@ def build_return_regathering_router(
             response["need_ezdesk_session"] = True
         return response
 
+    # EZAdmin 회수등록/문자 발송 없이 오회수 목록에만 수동으로 항목을 추가한다.
+    @router.post("/add")
+    def add_regathering(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        invoice = str(payload.get("invoice") or "").strip()
+        return_invoice = str(payload.get("return_invoice") or "").strip()
+        if not invoice and not return_invoice:
+            raise HTTPException(status_code=400, detail="원송장번호 또는 반품송장번호를 입력하세요.")
+        conn = get_shared_db()
+        try:
+            conn.execute(
+                """INSERT INTO return_regathering
+                   (invoice, return_invoice, buyer_tel, goods_name, requested_by, requested_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    invoice,
+                    return_invoice,
+                    _clean_phone(payload.get("buyer_tel")),
+                    str(payload.get("goods_name") or "").strip(),
+                    user,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True}
+
     @router.post("/{regathering_id}/complete")
     def complete_regathering(regathering_id: int, user: str = Depends(get_current_user)):
         conn = get_shared_db()

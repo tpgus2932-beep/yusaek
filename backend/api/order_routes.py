@@ -1543,12 +1543,87 @@ def build_order_router(
     # ── 간단입고 바코드 출력용 상품명 조회 (원가베이스유 상품코드 → 순수 상품명) ──
     # 미송픽업 검색결과는 발주내역의 product_name/client_product_name이 실제 상품명이 아니라
     # 미송관리 쪽 표시용 값이라 코드로 원가베이스유를 찾아야 정확한 상품명이 나온다.
+    # 바코드 라벨 3번째 줄에 (거래처상품명)을 같이 찍을 거래처 목록 - app_settings에 JSON으로 저장.
+    _LABEL_SUPPLIERS_KEY = "simple_receiving_label_suppliers"
+    _LABEL_SUPPLIERS_DEFAULT = ["리마인드", "케이디지", "리자드스탠다드", "계란속노른자", "위클리"]
+
+    def _load_label_suppliers() -> list[str]:
+        raw = get_setting(_LABEL_SUPPLIERS_KEY)
+        if raw is None:
+            return list(_LABEL_SUPPLIERS_DEFAULT)
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return list(_LABEL_SUPPLIERS_DEFAULT)
+        return [str(s).strip() for s in data if str(s).strip()] if isinstance(data, list) else []
+
+    # 거래처별 라벨 상품명 앞 접두어(예: 리마인드 → R) - app_settings에 {거래처: 접두어} JSON으로 저장.
+    _LABEL_PREFIXES_KEY = "simple_receiving_label_prefixes"
+    _LABEL_PREFIXES_DEFAULT = {"리마인드": "R", "케이디지": "K", "리자드스탠다드": "L"}
+
+    def _load_label_prefixes() -> dict[str, str]:
+        raw = get_setting(_LABEL_PREFIXES_KEY)
+        if raw is None:
+            return dict(_LABEL_PREFIXES_DEFAULT)
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return dict(_LABEL_PREFIXES_DEFAULT)
+        if not isinstance(data, dict):
+            return {}
+        return {str(k).strip(): str(v).strip() for k, v in data.items() if str(k).strip() and str(v).strip()}
+
+    @router.get("/order/simple-receiving/label-suppliers")
+    def simple_receiving_get_label_suppliers(admin: str = Depends(require_admin)):
+        return {"ok": True, "suppliers": _load_label_suppliers(), "prefixes": _load_label_prefixes()}
+
+    @router.put("/order/simple-receiving/label-suppliers")
+    def simple_receiving_set_label_suppliers(payload: dict = Body(...), admin: str = Depends(require_admin)):
+        suppliers: list[str] = []
+        for s in payload.get("suppliers") or []:
+            name = str(s or "").strip()
+            if name and name not in suppliers:
+                suppliers.append(name)
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (_LABEL_SUPPLIERS_KEY, json.dumps(suppliers, ensure_ascii=False)),
+            )
+            if isinstance(payload.get("prefixes"), dict):
+                prefixes = {
+                    str(k).strip(): str(v).strip()
+                    for k, v in payload["prefixes"].items()
+                    if str(k).strip() and str(v).strip()
+                }
+                conn.execute(
+                    "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (_LABEL_PREFIXES_KEY, json.dumps(prefixes, ensure_ascii=False)),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "suppliers": suppliers, "prefixes": _load_label_prefixes()}
+
     @router.post("/order/simple-receiving/resolve-product-names")
     def simple_receiving_resolve_product_names(payload: dict = Body(...), admin: str = Depends(require_admin)):
         codes = {str(c or "").strip() for c in (payload.get("codes") or []) if str(c or "").strip()}
         if not codes:
-            return {"ok": True, "names": {}}
+            return {"ok": True, "names": {}, "clients": {}}
         name_map = load_wonbe_pure_product_name_map()
-        return {"ok": True, "names": {code: name_map.get(code, "") for code in codes}}
+        client_info = _client_info_by_code()
+        return {
+            "ok": True,
+            "names": {code: name_map.get(code, "") for code in codes},
+            "clients": {
+                code: {
+                    "거래처": (client_info.get(code) or {}).get("거래처", ""),
+                    "거래처상품명": (client_info.get(code) or {}).get("거래처상품명", ""),
+                }
+                for code in codes
+            },
+        }
 
     return router
