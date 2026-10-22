@@ -1282,23 +1282,24 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
         if not base_rows:
             return {"ok": False, "error": "입고대기 테이블에 데이터가 없습니다."}
 
-        out_wb = xlwt.Workbook()
-        out_ws = out_wb.add_sheet("Sheet1")
-        out_ws.write(0, 0, "상품코드")
-        out_ws.write(0, 1, "입고수량")
+        matched_count = sum(1 for r in base_rows if r["상품코드"] in qty_by_code)
 
-        matched_count = 0
-        for ri, r in enumerate(base_rows, start=1):
-            code = r["상품코드"]
-            cell_val = qty_by_code.get(code, r["입고수량"])
-            out_ws.write(ri, 0, code)
-            out_ws.write(ri, 1, cell_val)
-            if code in qty_by_code:
-                matched_count += 1
+        # EZAdmin 업로드는 10,000줄 이하만 허용 -> 청크로 나눠 업로드/확정을 반복한다.
+        def _build_xls(chunk_rows) -> bytes:
+            out_wb = xlwt.Workbook()
+            out_ws = out_wb.add_sheet("Sheet1")
+            out_ws.write(0, 0, "상품코드")
+            out_ws.write(0, 1, "입고수량")
+            for ri, r in enumerate(chunk_rows, start=1):
+                code = r["상품코드"]
+                out_ws.write(ri, 0, code)
+                out_ws.write(ri, 1, qty_by_code.get(code, r["입고수량"]))
+            buf = io.BytesIO()
+            out_wb.save(buf)
+            return buf.getvalue()
 
-        buf = io.BytesIO()
-        out_wb.save(buf)
-        xls_bytes = buf.getvalue()
+        chunk_size = 5000
+        chunks = [base_rows[i:i + chunk_size] for i in range(0, len(base_rows), chunk_size)]
 
         cookies = {"PHPSESSID": phpsessid}
         ez_headers = {
@@ -1307,44 +1308,60 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
             "X-Requested-With": "XMLHttpRequest",
         }
         base_url = f"{_EZADMIN_BASE}/function.htm"
-        ts_ms = str(int(datetime.now().timestamp() * 1000))
-
+        apply_data = None
         try:
             async with httpx.AsyncClient(timeout=600.0, verify=False, follow_redirects=True) as client:
-                upload_r = await client.post(
-                    base_url,
-                    data={"template": "I200", "action": "upload_new"},
-                    files={"_file": (f"ingodaegi_{ts_ms}.xls", xls_bytes, "application/vnd.ms-excel")},
-                    cookies=cookies, headers=ez_headers,
-                )
-                if upload_r.status_code >= 400:
-                    return {"ok": False, "error": f"업로드 실패 (HTTP {upload_r.status_code})"}
+                for chunk in chunks:
+                    ts_ms = str(int(datetime.now().timestamp() * 1000))
+                    upload_r = await client.post(
+                        base_url,
+                        data={"template": "I200", "action": "upload_new"},
+                        files={"_file": (f"ingodaegi_{ts_ms}.xls", _build_xls(chunk), "application/vnd.ms-excel")},
+                        cookies=cookies, headers=ez_headers,
+                    )
+                    if upload_r.status_code >= 400:
+                        return {"ok": False, "error": f"업로드 실패 (HTTP {upload_r.status_code})"}
+                    # 업로드 거부(줄 수 초과 등)는 HTTP 200 + alert 스크립트로 돌아온다.
+                    if "alert(" in (upload_r.text or ""):
+                        return {"ok": False, "error": f"EZAdmin 업로드 거부: {upload_r.text.strip()[:300]}"}
 
-                preview_r = await client.post(
-                    base_url,
-                    data={"_search": "false", "nd": ts_ms, "rows": "2000", "page": "1",
-                          "sidx": "", "sord": "asc", "template": "I200",
-                          "action": "load_template_data_new"},
-                    cookies=cookies, headers=ez_headers,
-                )
-                try:
-                    preview_r.json()
-                except Exception:
-                    return {"ok": False, "need_session": True}
+                    preview_r = await client.post(
+                        base_url,
+                        data={"_search": "false", "nd": ts_ms, "rows": "2000", "page": "1",
+                              "sidx": "", "sord": "asc", "template": "I200",
+                              "action": "load_template_data_new"},
+                        cookies=cookies, headers=ez_headers,
+                    )
+                    try:
+                        preview_data = preview_r.json()
+                    except Exception:
+                        return {"ok": False, "need_session": True}
+                    # EZAdmin 미리보기는 행이 있어도 total이 항상 0이라 rows로 판단한다.
+                    if not preview_data.get("rows"):
+                        return {
+                            "ok": False,
+                            "error": (
+                                f"EZAdmin 미리보기가 비어 있습니다(업로드가 반영되지 않음). "
+                                f"[{chunks.index(chunk) + 1}/{len(chunks)}번째 묶음, {len(chunk)}줄] "
+                                f"upload={upload_r.text.strip()[:200]!r} preview={str(preview_data)[:200]}"
+                            ),
+                        }
 
-                time_flag = datetime.now().strftime("%a %b %d %Y %H:%M:%S GMT+0900 (한국 표준시)")
-                apply_r = await client.post(
-                    base_url,
-                    data={"template": "I200", "action": "apply_new",
-                          "bad": "reserve_qty", "type": "arrange",
-                          "move_warehouse": "0", "save_stock": "0",
-                          "stock_tag": "", "timeFlag": time_flag},
-                    cookies=cookies, headers=ez_headers,
-                )
-                try:
-                    apply_data = apply_r.json()
-                except Exception:
-                    return {"ok": False, "error": f"입고처리 응답 파싱 실패: {apply_r.text[:500]}"}
+                    time_flag = datetime.now().strftime("%a %b %d %Y %H:%M:%S GMT+0900 (한국 표준시)")
+                    apply_r = await client.post(
+                        base_url,
+                        data={"template": "I200", "action": "apply_new",
+                              "bad": "reserve_qty", "type": "arrange",
+                              "move_warehouse": "0", "save_stock": "0",
+                              "stock_tag": "", "timeFlag": time_flag},
+                        cookies=cookies, headers=ez_headers,
+                    )
+                    try:
+                        apply_data = apply_r.json()
+                    except Exception:
+                        return {"ok": False, "error": f"입고처리 응답 파싱 실패: {apply_r.text[:500]}"}
+                    if str(apply_data.get("error")) not in ("0", ""):
+                        return {"ok": False, "error": apply_data.get("msg") or "입고처리 실패", "apply_response": apply_data}
 
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

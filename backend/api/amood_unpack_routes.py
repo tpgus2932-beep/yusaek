@@ -52,11 +52,11 @@ def build_amood_unpack_router(*, get_current_user, get_setting):
             target = [it for it in items if str(it.get("order_id") or "").strip() == order_id]
             if not target:
                 return {"ok": False, "order_id": order_id, "error": f"합포 {pack} 안에서 해당 주문번호를 찾지 못했습니다.", "steps": []}
-            target_seqs = {str(it.get("seq")) for it in target}
-            if len(target_seqs) != 1:
-                return {"ok": False, "order_id": order_id, "error": f"주문번호가 여러 seq에 걸려 있어 중단합니다: {sorted(target_seqs)}", "steps": []}
-            target_seq = next(iter(target_seqs))
-            remaining = [it for it in items if str(it.get("seq")) != target_seq]
+            # 한 주문번호가 상품 여러 개로 여러 seq에 걸릴 수 있다(실캡처: 704623, 704624).
+            # 배송취소는 합포 단위라 seq 하나로 한 번만 호출하고, 합포제외는 전 상품을 한 번에 넘긴다.
+            target_seqs = sorted({str(it.get("seq")) for it in target})
+            cancel_seq = target_seqs[0]
+            remaining = [it for it in items if str(it.get("seq")) not in target_seqs]
             if not remaining:
                 return {"ok": False, "order_id": order_id, "error": "합포가 아닌 단독 주문입니다 (제외할 대상이 없음).", "steps": []}
             remaining_order_id = str(remaining[0].get("order_id") or "").strip()
@@ -64,19 +64,19 @@ def build_amood_unpack_router(*, get_current_user, get_setting):
             if not prd_seqs or not remaining_order_id:
                 return {"ok": False, "order_id": order_id, "error": "상품(prd_seq) 정보를 읽지 못해 중단합니다.", "steps": []}
 
-            res = await ez.cancel_trans(target_seq)
+            res = await ez.cancel_trans(cancel_seq)
             if not _is_ok(res):
                 return fail("배송취소", str(res))
-            steps.append({"step": "배송취소", "ok": True, "detail": f"seq {target_seq}"})
+            steps.append({"step": "배송취소", "ok": True, "detail": f"seq {cancel_seq}"})
 
             res = await ez.drop_pack(prd_seqs)
             if not _is_ok(res):
                 return fail("합포제외", str(res))
             steps.append({"step": "합포제외", "ok": True, "detail": f"분리된 seq {res.get('drop_seq_list')}"})
 
-            # 처음 조회해 둔 합포번호(pack)로 재검색한다. 대상이 합포 대표(seq == pack)였다면
+            # 처음 조회해 둔 합포번호(pack)로 재검색한다. 대상 중에 합포 대표(seq == pack)가 있었다면
             # 제외 후 합포번호가 바뀌므로 그때만 남은 주문번호로 검색한다.
-            search_key = remaining_order_id if target_seq == str(pack) else str(pack)
+            search_key = remaining_order_id if str(pack) in target_seqs else str(pack)
             rows = await ez.query_orders(search_key, start_date=start_date, end_date=end_date, rows=10)
             cell = ((rows[0].get("cell") if rows and isinstance(rows[0], dict) else None) or {}) if rows else {}
             new_pack = str(cell.get("pack") or "").strip()
@@ -101,6 +101,6 @@ def build_amood_unpack_router(*, get_current_user, get_setting):
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"이지어드민 처리 실패: {exc} (진행: {[s['step'] for s in steps]})")
 
-        return {"ok": True, "order_id": order_id, "target_seq": target_seq, "pack": new_pack, "steps": steps}
+        return {"ok": True, "order_id": order_id, "target_seqs": target_seqs, "pack": new_pack, "steps": steps}
 
     return router

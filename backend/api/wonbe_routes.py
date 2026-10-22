@@ -330,14 +330,21 @@ def _set_event_pre_discount_shipping_fee(conn: sqlite3.Connection, value: float)
     return value
 
 
+_EVENT_PRE_DISCOUNT_COST_RATIO_FLOOR = 0.55  # 원가율(원가/판매가) 상한 55% 보장용 하한 배수
+
+
 def _event_pre_discount_price(cost: float, *, margin_percent: float, shipping_fee: float) -> int:
     """원가로 이벤트전 할인가(P)를 역산한다.
     P - P×수수료율 - P×목표순마진율 = 원가×1.10 + 택배비
-    → P = (원가×1.10 + 택배비) ÷ (1 − 수수료율 − 목표순마진율), 10원 단위 올림."""
+    → P = (원가×1.10 + 택배비) ÷ (1 − 수수료율 − 목표순마진율)
+    단, 원가율이 55%를 넘지 않도록 P ≥ 원가 ÷ 0.55 를 하한으로 보장하고, 10원 단위 올림."""
     denominator = 1 - _EVENT_PRE_DISCOUNT_FEE_RATE - margin_percent / 100
     if denominator <= 0:
         raise ValueError("수수료율 + 목표순마진율이 100% 이상이라 계산할 수 없습니다.")
-    price = (cost * 1.10 + shipping_fee) / denominator
+    price = max(
+        (cost * 1.10 + shipping_fee) / denominator,
+        cost / _EVENT_PRE_DISCOUNT_COST_RATIO_FLOOR,
+    )
     return math.ceil(price / 10) * 10
 
 
@@ -2669,6 +2676,10 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 for i, c in enumerate(COLUMNS)
             )
             conn.execute(f"CREATE TABLE IF NOT EXISTS wonbe ({col_defs})")
+            existing_cols = {r["name"] for r in conn.execute("PRAGMA table_info(wonbe)").fetchall()}
+            for col in COLUMNS:
+                if col not in existing_cols:
+                    conn.execute(f"ALTER TABLE wonbe ADD COLUMN {_qcol(col)} TEXT")
             insert_sql = f"INSERT OR REPLACE INTO wonbe ({_qcols(COLUMNS)}) VALUES ({', '.join(['?'] * len(COLUMNS))})"
             batch_size = 300
             pushed = 0

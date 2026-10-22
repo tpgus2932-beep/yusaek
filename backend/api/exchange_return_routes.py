@@ -737,11 +737,19 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
             }
             for ex in pickup_exchanges
         ]}
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            approve_res = await client.post(
-                f"{ABLY_BASE}/seller/exchanges/approve/",
-                headers=_ably_headers(token),
-                json=approve_body,
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                approve_res = await client.post(
+                    f"{ABLY_BASE}/seller/exchanges/approve/",
+                    headers=_ably_headers(token),
+                    json=approve_body,
+                )
+        except httpx.TimeoutException:
+            # EZAdmin 회수신청은 이미 끝난 상태 - 에이블리 승인 여부는 알 수 없다.
+            raise HTTPException(
+                status_code=504,
+                detail="에이블리 교환승인 응답 시간 초과 (EZAdmin 회수신청은 이미 등록됨). "
+                       "에이블리에서 승인 상태를 확인한 뒤 재실행하세요 (재실행 시 EZAdmin 중복 등록 주의).",
             )
         return approve_res.status_code
 
