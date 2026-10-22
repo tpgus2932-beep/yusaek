@@ -1,8 +1,19 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { RefreshCw, Warehouse } from "lucide-react";
 import styles from "./InventoryDashboardPage.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
+
+const COLUMNS = [
+  { key: "code", label: "상품코드" },
+  { key: "product_name", label: "상품명" },
+  { key: "options", label: "옵션" },
+  { key: "supply_name", label: "공급처" },
+  { key: "stock_qty", label: "재고수량", numeric: true },
+  { key: "stock_in_standby", label: "입고대기", numeric: true },
+  { key: "before_trans", label: "전송전", numeric: true },
+  { key: "trans_ready", label: "배송준비", numeric: true },
+];
 
 function TodayStockCheckCard() {
   const [loading, setLoading] = useState(false);
@@ -11,7 +22,26 @@ function TodayStockCheckCard() {
   const [fetchedAt, setFetchedAt] = useState(null);
   const [canRefresh, setCanRefresh] = useState(true);
   const [rawUnexpected, setRawUnexpected] = useState(null);
+  const [sort, setSort] = useState({ key: null, dir: "asc" });
   const { openModal } = useEzadminSession();
+
+  // 같은 열을 누르면 오름차순 → 내림차순 → 원래 순서 순으로 전환
+  const toggleSort = (key) =>
+    setSort((prev) => {
+      if (prev.key !== key) return { key, dir: "asc" };
+      if (prev.dir === "asc") return { key, dir: "desc" };
+      return { key: null, dir: "asc" };
+    });
+
+  const sortedItems = useMemo(() => {
+    if (!sort.key) return items;
+    const col = COLUMNS.find((c) => c.key === sort.key);
+    const sign = sort.dir === "asc" ? 1 : -1;
+    return [...items].sort((a, b) => {
+      if (col.numeric) return ((Number(a[col.key]) || 0) - (Number(b[col.key]) || 0)) * sign;
+      return String(a[col.key] ?? "").localeCompare(String(b[col.key] ?? ""), "ko") * sign;
+    });
+  }, [items, sort]);
 
   const loadSaved = async () => {
     try {
@@ -91,18 +121,20 @@ function TodayStockCheckCard() {
         <table className={styles.table}>
           <thead>
             <tr>
-              <th>상품코드</th>
-              <th>상품명</th>
-              <th>옵션</th>
-              <th>공급처</th>
-              <th>재고수량</th>
-              <th>입고대기</th>
-              <th>전송전</th>
-              <th>배송준비</th>
+              {COLUMNS.map((col) => (
+                <th
+                  key={col.key}
+                  onClick={() => toggleSort(col.key)}
+                  style={{ cursor: "pointer", userSelect: "none" }}
+                >
+                  {col.label}
+                  {sort.key === col.key && (sort.dir === "asc" ? " ▲" : " ▼")}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
-            {items.map((row) => (
+            {sortedItems.map((row) => (
               <tr key={row.code}>
                 <td>{row.code}</td>
                 <td>{row.product_name}</td>

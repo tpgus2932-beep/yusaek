@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Copy, Download, FileText, Filter, RefreshCw, Search } from "lucide-react";
+import { Copy, Download, FileText, Filter, Link2, RefreshCw, Search, Unlink } from "lucide-react";
 import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
@@ -24,6 +24,18 @@ function currentMonth() {
   return new Date().toISOString().slice(0, 7);
 }
 
+const vendorName = (r) => String(r.거래처명 || "").trim();
+const groupsStorageKey = (m) => `invoice-manage-groups-${m}`;
+
+function loadGroups(m) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(groupsStorageKey(m)) || "[]");
+    return Array.isArray(parsed) ? parsed.filter((g) => Array.isArray(g) && g.length >= 2) : [];
+  } catch {
+    return [];
+  }
+}
+
 // 헤더 클릭 시 뜨는 엑셀 스타일 체크리스트 필터. 여러 컬럼에 동시에 걸어도(이중필터)
 // AND 조건으로 결합되도록, 옵션 목록은 "다른 컬럼에 이미 걸린 필터"를 통과한 행 기준으로 계산한다.
 function ColumnFilterHeader({ col, center, filters, rowsForOptions, onApply, onClear }) {
@@ -34,13 +46,17 @@ function ColumnFilterHeader({ col, center, filters, rowsForOptions, onApply, onC
 
   const options = useMemo(() => {
     const counts = new Map();
+    const aliases = new Map(); // 묶인 거래처명도 필터 검색에 걸리도록 대표 값에 붙여둔다
     for (const row of rowsForOptions) {
       const v = col.getValue(row);
       counts.set(v, (counts.get(v) || 0) + 1);
+      if (col.key === "거래처명" && row._all) {
+        aliases.set(v, row._all.map((x) => String(x.거래처명 || "")).join(" "));
+      }
     }
     return Array.from(counts.entries())
       .sort((a, b) => a[0].localeCompare(b[0], "ko"))
-      .map(([value, count]) => ({ value, count }));
+      .map(([value, count]) => ({ value, count, alias: aliases.get(value) || "" }));
   }, [rowsForOptions, col]);
 
   const isActive = Boolean(filters[col.key]);
@@ -56,7 +72,7 @@ function ColumnFilterHeader({ col, center, filters, rowsForOptions, onApply, onC
   const close = () => setOpen(false);
 
   const visibleOptions = search.trim()
-    ? options.filter((o) => o.value.toLowerCase().includes(search.trim().toLowerCase()))
+    ? options.filter((o) => `${o.value} ${o.alias}`.toLowerCase().includes(search.trim().toLowerCase()))
     : options;
 
   const toggleValue = (v) => {
@@ -146,6 +162,10 @@ export default function InvoiceManageTable() {
   const [editingMemo, setEditingMemo] = useState(null); // { id, value }
   const [loadDiff, setLoadDiff] = useState(null); // { new: Set<거래처명>, updated: Set<거래처명> }
   const [accountMap, setAccountMap] = useState({}); // { 거래처명: { B: 은행코드, C: 계좌번호 } }
+  const [groups, setGroups] = useState([]); // [[대표 거래처명, ...묶인 거래처명]] — 월별로 localStorage에 저장
+  const [binding, setBinding] = useState(false);
+  const [bindSearch, setBindSearch] = useState("");
+  const [bindPicked, setBindPicked] = useState([]); // 먼저 추가한 거래처가 대표(계좌정보 기준)
   const searchInputRef = useRef(null);
   const memoInputRef = useRef(null);
 
@@ -205,8 +225,63 @@ export default function InvoiceManageTable() {
     setSearchedQuery("");
     setMatchIndex(0);
     setLoadDiff(null);
+    setGroups(loadGroups(month));
+    setBinding(false);
+    setBindSearch("");
+    setBindPicked([]);
     fetchRows(month);
   }, [month, fetchRows]);
+
+  const saveGroups = (next) => {
+    setGroups(next);
+    try { localStorage.setItem(groupsStorageKey(month), JSON.stringify(next)); } catch { /* ignore */ }
+  };
+
+  // 묶음의 대표 행(첫 번째 거래처)에 입금액을 합산하고, 나머지 행은 표에서 숨긴다.
+  const displayRows = useMemo(() => {
+    const byName = new Map(rows.map((r) => [vendorName(r), r]));
+    const hidden = new Set();
+    const primaries = new Map();
+    for (const g of groups) {
+      const present = g.filter((n) => byName.has(n));
+      if (present.length < 2) continue;
+      primaries.set(present[0], present.map((n) => byName.get(n)));
+      present.slice(1).forEach((n) => hidden.add(n));
+    }
+    return rows
+      .filter((r) => !hidden.has(vendorName(r)))
+      .map((r) => {
+        const all = primaries.get(vendorName(r));
+        if (!all) return r;
+        const merged = { ...r, 입금액: all.reduce((sum, x) => sum + (Number(x.입금액) || 0), 0), _all: all };
+        for (const f of FLAG_COLS) merged[f.key] = all.every((x) => Number(x[f.key]) === 1) ? 1 : 0;
+        return merged;
+      });
+  }, [rows, groups]);
+
+  const groupedNames = useMemo(() => new Set(groups.flat()), [groups]);
+
+  const bindCandidates = useMemo(() => {
+    const q = bindSearch.trim().toLowerCase();
+    if (!q) return [];
+    return rows
+      .filter((r) => {
+        const n = vendorName(r);
+        return n && !groupedNames.has(n) && !bindPicked.includes(n) && n.toLowerCase().includes(q);
+      })
+      .slice(0, 20);
+  }, [rows, bindSearch, groupedNames, bindPicked]);
+
+  const confirmBind = () => {
+    if (bindPicked.length < 2) return;
+    saveGroups([...groups, bindPicked]);
+    setBinding(false);
+    setBindSearch("");
+    setBindPicked([]);
+    setMessage(`${bindPicked.join(", ")} 거래처를 묶었습니다. (대표: ${bindPicked[0]})`);
+  };
+
+  const unbind = (primaryName) => saveGroups(groups.filter((g) => g[0] !== primaryName));
 
   const handleMonthChange = (e) => setMonth(e.target.value);
 
@@ -255,17 +330,27 @@ export default function InvoiceManageTable() {
   };
 
   const toggleFlag = async (row, col) => {
-    const nextValue = !row[col];
-    setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, [col]: nextValue ? 1 : 0 } : r)));
+    const nextValue = Number(row[col]) !== 1;
+    const targets = row._all || [row]; // 묶음이면 묶인 거래처 전체에 적용
+    const ids = new Set(targets.map((t) => t.id));
+    setRows((prev) => prev.map((r) => (ids.has(r.id) ? { ...r, [col]: nextValue ? 1 : 0 } : r)));
     try {
-      const res = await fetch(`${API}/wonbe/invoice-manage/row`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ id: row.id, col, value: nextValue }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) throw new Error(data?.detail || "수정 실패");
-      setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, ...data.row } : r)));
+      const results = await Promise.all(
+        targets.map(async (t) => {
+          const res = await fetch(`${API}/wonbe/invoice-manage/row`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+            body: JSON.stringify({ id: t.id, col, value: nextValue }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) throw new Error(data?.detail || "수정 실패");
+          return data.row;
+        })
+      );
+      setRows((prev) => prev.map((r) => {
+        const updated = results.find((u) => u?.id === r.id);
+        return updated ? { ...r, ...updated } : r;
+      }));
     } catch (err) {
       setMessage(err.message);
       fetchRows(month);
@@ -306,7 +391,7 @@ export default function InvoiceManageTable() {
   // 컬럼별 옵션 목록은 "다른 컬럼에 걸린 필터"만 통과한 행 기준으로 계산해 이중(다중) 필터를 지원한다.
   const rowsForColumn = useCallback(
     (excludeKey) =>
-      rows.filter((row) =>
+      displayRows.filter((row) =>
         FILTERABLE_COLS.every((c) => {
           if (c.key === excludeKey) return true;
           const set = filters[c.key];
@@ -314,19 +399,19 @@ export default function InvoiceManageTable() {
           return set.has(c.getValue(row));
         })
       ),
-    [rows, filters]
+    [displayRows, filters]
   );
 
   const filteredRows = useMemo(
     () =>
-      rows.filter((row) =>
+      displayRows.filter((row) =>
         FILTERABLE_COLS.every((c) => {
           const set = filters[c.key];
           if (!set) return true;
           return set.has(c.getValue(row));
         })
       ),
-    [rows, filters]
+    [displayRows, filters]
   );
 
   const applyFilter = (key, valueSet) => setFilters((prev) => ({ ...prev, [key]: valueSet }));
@@ -404,7 +489,7 @@ export default function InvoiceManageTable() {
     const q = raw.toLowerCase();
     const qDigits = raw.replace(/,/g, "");
     return filteredRows.filter((r) => {
-      if (String(r.거래처명 || "").toLowerCase().includes(q)) return true;
+      if ((r._all || [r]).some((x) => String(x.거래처명 || "").toLowerCase().includes(q))) return true;
       if (qDigits && /^\d+$/.test(qDigits)) {
         return String(Number(r.입금액) || 0).includes(qDigits);
       }
@@ -440,7 +525,7 @@ export default function InvoiceManageTable() {
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return; // 메모/검색창 등 입력 중엔 원래 복사 동작 유지
       if (!selectedRowId) return;
       if (window.getSelection && window.getSelection().toString()) return; // 일반 텍스트 선택 복사는 그대로 둔다
-      const row = rows.find((r) => r.id === selectedRowId);
+      const row = displayRows.find((r) => r.id === selectedRowId);
       if (!row) return;
       e.preventDefault();
       const monthNum = parseInt(String(month).split("-")[1], 10);
@@ -451,7 +536,7 @@ export default function InvoiceManageTable() {
     };
     window.addEventListener("keydown", handleCopy);
     return () => window.removeEventListener("keydown", handleCopy);
-  }, [selectedRowId, rows, month]);
+  }, [selectedRowId, displayRows, month]);
 
   // ── 행 선택 후 위/아래 화살표로 다음/이전 행 선택 ──
   useEffect(() => {
@@ -508,10 +593,10 @@ export default function InvoiceManageTable() {
             이체파일에서 월별 거래처를 유니크하게 뽑아 입금금액을 합산 · 부가세 거래처 여부는 노예김승일 부가세 거래처 목록 기준 · 헤더의 깔때기 아이콘으로 엑셀처럼 필터링
           </div>
         </div>
-        <span className={styles.pill}>{filteredRows.length}/{rows.length}개 거래처</span>
+        <span className={styles.pill}>{filteredRows.length}/{displayRows.length}개 거래처</span>
       </div>
 
-      {rows.length > 0 && (
+      {displayRows.length > 0 && (
         <div style={{ display: "flex", gap: "0.6rem", marginBottom: "0.6rem" }}>
           <span className={`${styles.badge} ${styles.badgeNew}`} style={{ fontSize: "0.82rem", padding: "0.35rem 0.7rem" }}>
             완료금액 {completedAmount.toLocaleString()}원 ({completedCount}개 거래처)
@@ -569,6 +654,14 @@ export default function InvoiceManageTable() {
         >
           <Copy size={13} />이체 일괄복사
         </button>
+        <button
+          className={`${styles.btn} ${styles.btnSecondary}`}
+          onClick={() => { setBinding((v) => !v); setBindSearch(""); setBindPicked([]); }}
+          disabled={!rows.length}
+          title="여러 거래처를 하나로 묶어 입금액을 합산합니다 (계좌정보는 먼저 추가한 거래처 기준)"
+        >
+          <Link2 size={13} />묶기
+        </button>
         {activeFilterCount > 0 && (
           <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={clearAllFilters}>
             필터 초기화 ({activeFilterCount})
@@ -615,6 +708,66 @@ export default function InvoiceManageTable() {
           ))}
         </select>
       </div>
+
+      {binding && (
+        <div className={styles.controls} style={{ flexDirection: "column", alignItems: "stretch", gap: "0.4rem" }}>
+          <div className={styles.searchBox}>
+            <Search size={13} aria-hidden="true" />
+            <input
+              className={styles.searchInput}
+              placeholder="묶을 거래처명 검색 후 클릭해서 추가 (먼저 추가한 거래처가 대표)"
+              value={bindSearch}
+              onChange={(e) => setBindSearch(e.target.value)}
+              autoFocus
+              aria-label="묶을 거래처 검색"
+            />
+          </div>
+          {bindCandidates.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem" }}>
+              {bindCandidates.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  className={`${styles.btn} ${styles.btnSecondary}`}
+                  onClick={() => { setBindPicked((p) => [...p, vendorName(r)]); setBindSearch(""); }}
+                >
+                  {vendorName(r)} ({(Number(r.입금액) || 0).toLocaleString()}원)
+                </button>
+              ))}
+            </div>
+          )}
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap", fontSize: "0.8rem" }}>
+            <span>선택됨:</span>
+            {bindPicked.length === 0 && <span style={{ color: "var(--text-muted)" }}>없음</span>}
+            {bindPicked.map((n, i) => (
+              <span key={n} className={`${styles.badge} ${styles.badgeNew}`}>
+                {i === 0 ? "대표 · " : ""}{n}
+                <button
+                  type="button"
+                  onClick={() => setBindPicked((p) => p.filter((x) => x !== n))}
+                  style={{ marginLeft: "0.3rem", border: "none", background: "none", cursor: "pointer" }}
+                  aria-label={`${n} 제거`}
+                >×</button>
+              </span>
+            ))}
+            <button
+              type="button"
+              className={`${styles.btn} ${styles.btnPrimary}`}
+              onClick={confirmBind}
+              disabled={bindPicked.length < 2}
+            >
+              묶기 확인
+            </button>
+            <button
+              type="button"
+              className={`${styles.btn} ${styles.btnSecondary}`}
+              onClick={() => { setBinding(false); setBindSearch(""); setBindPicked([]); }}
+            >
+              취소
+            </button>
+          </div>
+        </div>
+      )}
 
       {message && <div className={styles.message}>{message}</div>}
 
@@ -675,6 +828,21 @@ export default function InvoiceManageTable() {
               >
                 <td>
                   {row.거래처명}
+                  {row._all && (
+                    <>
+                      <span className={`${styles.badge} ${styles.badgeVat}`} style={{ marginLeft: "0.4rem" }}>
+                        묶음 +{row._all.slice(1).map((x) => x.거래처명).join(", ")}
+                      </span>
+                      <button
+                        type="button"
+                        title="묶기 해제"
+                        onClick={(e) => { e.stopPropagation(); unbind(vendorName(row)); }}
+                        style={{ marginLeft: "0.3rem", border: "none", background: "none", cursor: "pointer", verticalAlign: "middle" }}
+                      >
+                        <Unlink size={12} />
+                      </button>
+                    </>
+                  )}
                   {loadDiff?.new.has(row.거래처명) && (
                     <span className={`${styles.badge} ${styles.badgeNew}`} style={{ marginLeft: "0.4rem" }}>신규</span>
                   )}
@@ -727,7 +895,7 @@ export default function InvoiceManageTable() {
         </table>
         {!filteredRows.length && !loading && (
           <div className={styles.empty}>
-            {!rows.length
+            {!displayRows.length
               ? (month ? `${month} 계산서 데이터가 없습니다. "계산서 불러오기"를 눌러 이체파일에서 불러오세요.` : "월을 선택하세요.")
               : "필터 조건에 맞는 거래처가 없습니다."}
           </div>

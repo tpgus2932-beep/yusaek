@@ -18,6 +18,7 @@ export default function HapbaePreMatch() {
   });
   const [stockBulkLoading, setStockBulkLoading] = useState(false);
   const [checkedRows, setCheckedRows] = useState({});
+  const [sortBasis, setSortBasis] = useState({});
   const [stats, setStats] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [incomingLoaded, setIncomingLoaded] = useState(false);
@@ -92,10 +93,11 @@ export default function HapbaePreMatch() {
   const getRowKey = (row, sectionKey) =>
     `${sectionKey}::${row.productName || ""}::${row.optionName || ""}`;
 
+  // 체크 시 행이 즉시 이동하면 모바일에서 화면이 튀므로, 정렬은 조회(새로고침) 시점의 체크 상태 기준으로 고정
   const sortCheckedRowsToBottom = (targetRows, sectionKey) =>
     [...targetRows].sort((a, b) => {
-      const aChecked = checkedRows[getRowKey(a, sectionKey)] ? 1 : 0;
-      const bChecked = checkedRows[getRowKey(b, sectionKey)] ? 1 : 0;
+      const aChecked = sortBasis[getRowKey(a, sectionKey)] ? 1 : 0;
+      const bChecked = sortBasis[getRowKey(b, sectionKey)] ? 1 : 0;
       return aChecked - bChecked;
     });
 
@@ -118,6 +120,7 @@ export default function HapbaePreMatch() {
       const checkedData = await checkedRes.json().catch(() => ({}));
       if (checkedRes.ok && checkedData && typeof checkedData.checked_rows === "object") {
         setCheckedRows(checkedData.checked_rows || {});
+        setSortBasis(checkedData.checked_rows || {});
       }
       setRows(data.rows || []);
       setStockRows(data.stock_rows || []);
