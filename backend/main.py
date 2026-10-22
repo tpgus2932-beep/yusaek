@@ -68,6 +68,8 @@ from api.return_automation_routes import build_return_automation_router
 from api.exchange_return_routes import build_exchange_return_router
 from api.pastelco_routes import build_pastelco_router
 from api.ably_minus_routes import build_ably_minus_router
+from api.cs_routes import build_cs_router
+from services.cs_store import init_cs_tables
 from api.accident_cargo_routes import build_accident_cargo_router
 from api.return_regathering_routes import build_return_regathering_router
 from api.return_processing_log_routes import build_return_processing_log_router
@@ -1740,6 +1742,17 @@ app.include_router(
         get_current_user=_get_current_user,
     )
 )
+
+app.include_router(
+    build_cs_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        get_setting=_get_setting,
+        normalize_to_yusas=normalize_to_yusas,
+        allow_live_stock=not _IS_RENDER,
+    )
+)
+init_cs_tables(_get_shared_db)
 
 def _init_client_cancel_soldout_logs():
     conn = _get_shared_db()
