@@ -638,6 +638,7 @@ def build_barcode_router(
                     "code": code,
                     "count": count,
                     "kimsungil_summon_qty": summon_qty,
+                    "normal_qty": max(0, count - summon_qty),
                     "name": det.get("name", ""),
                     "option": det.get("option", ""),
                     "base_vendor": base_row.get("c", ""),
@@ -2220,6 +2221,53 @@ def build_barcode_router(
             "kimsungil": _get_kimsungil_list(state),
         }
 
+    @router.post("/barcode/kimsungil/revert-from-defect")
+    def revert_summon_to_kimsungil(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """소환술로 불량에 들어온 수량(현재 탭 기준)만 다시 김승일 리스트로 되돌린다.
+        직접 찍은 불량 수량은 그대로 둔다."""
+        state = get_barcode_state(user)
+        raw = (payload.get("code") or "").strip()
+        if not raw:
+            raise HTTPException(status_code=400, detail="code is required")
+
+        code = normalize_to_yusas(raw) or raw
+        summon_counts = dict(get_shared_defect_summon_counts())
+        qty = int(summon_counts.get(code, 0) or 0)
+        if qty <= 0:
+            raise HTTPException(status_code=400, detail="소환술로 이동된 수량이 없습니다.")
+
+        defect_counts = dict(get_shared_defect_counts())
+        remaining = defect_counts.get(code, 0) - qty
+        if remaining > 0:
+            defect_counts[code] = remaining
+        else:
+            defect_counts.pop(code, None)
+        summon_counts.pop(code, None)
+
+        kimsungil_counts = dict(get_shared_kimsungil_counts())
+        kimsungil_counts[code] = kimsungil_counts.get(code, 0) + qty
+
+        set_shared_defect_counts(defect_counts)
+        set_shared_defect_summon_counts(summon_counts)
+        set_shared_kimsungil_counts(kimsungil_counts)
+        _log_kimsungil_event(
+            code=code,
+            name=_kimsungil_display_name(state, code),
+            action="revert",
+            method="김승일 되돌리기(불량에서 복귀)",
+            count_after=kimsungil_counts[code],
+            user=user,
+        )
+
+        inv = state.get("current_invoice")
+        return {
+            "ok": True,
+            "reverted_qty": qty,
+            "defects": _get_defect_list(state),
+            "kimsungil": _get_kimsungil_list(state),
+            "items": _get_all_items(state, inv) if inv else [],
+        }
+
     @router.get("/barcode/kimsungil/log")
     def list_kimsungil_log(code: str = "", limit: int = 200, user: str = Depends(get_current_user)):
         conditions = []
@@ -2255,11 +2303,18 @@ def build_barcode_router(
             """
         )
         # 기존 테이블에는 개수 컬럼이 없으므로 한 번 추가한다(이미 있으면 에러 → 무시).
-        try:
-            conn.execute("ALTER TABLE barcode_anomalies ADD COLUMN qty INTEGER NOT NULL DEFAULT 1")
-            conn.commit()
-        except Exception:
-            pass
+        for ddl in (
+            "ALTER TABLE barcode_anomalies ADD COLUMN qty INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE barcode_anomalies ADD COLUMN completed INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE barcode_anomalies ADD COLUMN completed_at TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE barcode_anomalies ADD COLUMN completed_memo TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE barcode_anomalies ADD COLUMN completed_by TEXT NOT NULL DEFAULT ''",
+        ):
+            try:
+                conn.execute(ddl)
+                conn.commit()
+            except Exception:
+                pass
         return conn
 
     def _anomaly_qty(value) -> int:
@@ -2273,11 +2328,41 @@ def build_barcode_router(
         conn = _anomaly_conn()
         try:
             rows = conn.execute(
-                "SELECT * FROM barcode_anomalies ORDER BY registered_date DESC, id DESC"
+                "SELECT * FROM barcode_anomalies WHERE completed = 0 ORDER BY registered_date DESC, id DESC"
             ).fetchall()
         finally:
             conn.close()
         return {"ok": True, "items": [dict(row) for row in rows]}
+
+    @router.get("/barcode/anomaly/completed")
+    def list_completed_anomalies(user: str = Depends(get_current_user)):
+        conn = _anomaly_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM barcode_anomalies WHERE completed = 1 ORDER BY completed_at DESC, id DESC"
+            ).fetchall()
+        finally:
+            conn.close()
+        return {"ok": True, "items": [dict(row) for row in rows]}
+
+    @router.post("/barcode/anomaly/complete")
+    def complete_anomaly(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        try:
+            anomaly_id = int(payload.get("id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="id is required")
+        memo = str(payload.get("memo") or "").strip()
+        conn = _anomaly_conn()
+        try:
+            conn.execute(
+                "UPDATE barcode_anomalies SET completed = 1, completed_at = ?, completed_memo = ?, completed_by = ?"
+                " WHERE id = ?",
+                (datetime.now(_KST).isoformat(), memo, user, anomaly_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return list_anomalies(user)
 
     @router.post("/barcode/anomaly/add")
     def add_anomaly(payload: dict = Body(...), user: str = Depends(get_current_user)):
@@ -4083,8 +4168,9 @@ def build_barcode_router(
         conn = get_db()
         try:
             rows = conn.execute(
-                "SELECT date, seq, invoice_no, shop, manager, ship_time, cancel_time, "
-                "product_name, carrier, fetched_at FROM post_shipment_cancel ORDER BY id"
+                "SELECT id, date, seq, invoice_no, shop, manager, ship_time, cancel_time, "
+                "product_name, carrier, fetched_at, COALESCE(manual, 0) AS manual "
+                "FROM post_shipment_cancel ORDER BY id"
             ).fetchall()
         finally:
             conn.close()
@@ -4192,7 +4278,11 @@ def build_barcode_router(
         fetched_at = datetime.now(_KST).isoformat()
         conn = get_db()
         try:
-            conn.execute("DELETE FROM post_shipment_cancel")
+            # 수동 추가분(manual=1)은 새로고침해도 보존한다.
+            # 단, 지난 날짜의 수동 추가분은 정리한다.
+            conn.execute(
+                "DELETE FROM post_shipment_cancel WHERE COALESCE(manual, 0) = 0 OR date <> ?", (today,)
+            )
             conn.executemany(
                 "INSERT INTO post_shipment_cancel "
                 "(date, seq, invoice_no, shop, manager, ship_time, cancel_time, product_name, carrier, fetched_at) "
@@ -4207,7 +4297,56 @@ def build_barcode_router(
         finally:
             conn.close()
 
-        return {"ok": True, "date": today, "fetched_at": fetched_at, "count": len(items), "items": items}
+        all_rows = _post_shipment_cancel_rows()
+        return {"ok": True, "date": today, "fetched_at": fetched_at, "count": len(all_rows), "items": all_rows}
+
+    @router.post("/barcode/post-shipment-cancel/add")
+    async def post_shipment_cancel_add(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """배송후취소 목록에 송장번호를 수동으로 추가한다 (새로고침해도 유지, 당일 한정)."""
+        invoice_no = str(payload.get("invoice_no") or "").strip()
+        if not invoice_no:
+            raise HTTPException(status_code=400, detail="송장번호를 입력해주세요.")
+        today = datetime.now(_KST).strftime("%Y-%m-%d")
+        now_iso = datetime.now(_KST).isoformat()
+        conn = get_db()
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM post_shipment_cancel WHERE invoice_no = ? LIMIT 1", (invoice_no,)
+            ).fetchone()
+            if exists:
+                raise HTTPException(status_code=409, detail="이미 목록에 있는 송장번호입니다.")
+            conn.execute(
+                "INSERT INTO post_shipment_cancel "
+                "(date, seq, invoice_no, shop, manager, ship_time, cancel_time, product_name, carrier, fetched_at, manual) "
+                "VALUES (?, NULL, ?, ?, ?, '', ?, ?, ?, ?, 1)",
+                (
+                    today, invoice_no,
+                    str(payload.get("shop") or "").strip(),
+                    str(payload.get("manager") or "").strip() or str(user),
+                    now_iso[11:19],
+                    str(payload.get("product_name") or "").strip(),
+                    str(payload.get("carrier") or "").strip(),
+                    now_iso,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        rows = _post_shipment_cancel_rows()
+        return {"ok": True, "date": today, "count": len(rows), "items": rows}
+
+    @router.post("/barcode/post-shipment-cancel/delete")
+    async def post_shipment_cancel_delete(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """수동 추가한 배송후취소 건만 삭제한다."""
+        row_id = payload.get("id")
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM post_shipment_cancel WHERE id = ? AND COALESCE(manual, 0) = 1", (row_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        rows = _post_shipment_cancel_rows()
+        return {"ok": True, "count": len(rows), "items": rows}
 
     @router.post("/barcode/incoming/verify-trans-in")
     async def barcode_incoming_verify_trans_in(user: str = Depends(get_current_user)):

@@ -56,6 +56,8 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [message, setMessage] = useState("");
+  const [manualForm, setManualForm] = useState({ invoice_no: "" });
+  const [manualSaving, setManualSaving] = useState(false);
   const [scanText, setScanText] = useState("");
   const [matchedInvoices, setMatchedInvoices] = useState(new Set());
   const [lastScan, setLastScan] = useState(null);
@@ -508,6 +510,48 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
     }
   }, [replyDrafts]);
 
+  const handleManualAdd = useCallback(async () => {
+    const invoice_no = manualForm.invoice_no.trim();
+    if (!invoice_no) return;
+    setManualSaving(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/barcode/post-shipment-cancel/add`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify(manualForm),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "수동 추가 실패");
+      setItems(data.items ?? []);
+      setDate(data.date ?? "");
+      setManualForm({ invoice_no: "" });
+      setMessage(`${invoice_no} 수동 추가 완료`);
+    } catch (err) {
+      setMessage(err.message || "수동 추가 실패");
+    } finally {
+      setManualSaving(false);
+    }
+  }, [manualForm]);
+
+  const handleManualDelete = useCallback(async (id) => {
+    if (!window.confirm("수동 추가한 이 건을 목록에서 삭제할까요?")) return;
+    try {
+      const res = await fetch(`${API}/barcode/post-shipment-cancel/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ id }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "삭제 실패");
+      setItems(data.items ?? []);
+    } catch (err) {
+      setMessage(err.message || "삭제 실패");
+    }
+  }, []);
+
   const handleScan = () => {
     const value = scanText.trim();
     if (!value) return;
@@ -568,6 +612,23 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
             />
           </div>
 
+          <div className={pageStyles.scanRow} style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+            <input
+              className={pageStyles.scanInput}
+              placeholder="송장번호만 입력해서 수동 추가"
+              value={manualForm.invoice_no}
+              onChange={(e) => setManualForm((prev) => ({ ...prev, invoice_no: e.target.value }))}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleManualAdd(); } }}
+            />
+            <button
+              className={pageStyles.primaryBtn}
+              onClick={handleManualAdd}
+              disabled={manualSaving || !manualForm.invoice_no.trim()}
+            >
+              {manualSaving ? "추가 중..." : "수동 추가"}
+            </button>
+          </div>
+
           {lastScan && (
             <div
               className={pageStyles.statusMsg}
@@ -595,12 +656,13 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                   <th>택배사</th>
                   <th>발송시각</th>
                   <th>취소시각</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
                 {items.map((item) => (
                   <tr
-                    key={item.seq || item.invoice_no}
+                    key={item.id || item.seq || item.invoice_no}
                     className={matchedInvoices.has(item.invoice_no) ? pageStyles.checkedTableRow : ""}
                   >
                     <td>{item.invoice_no}</td>
@@ -610,11 +672,18 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                     <td>{item.carrier}</td>
                     <td>{item.ship_time}</td>
                     <td>{item.cancel_time}</td>
+                    <td>
+                      {item.manual ? (
+                        <button className={pageStyles.secondaryBtn} onClick={() => handleManualDelete(item.id)}>
+                          수동·삭제
+                        </button>
+                      ) : null}
+                    </td>
                   </tr>
                 ))}
                 {items.length === 0 && !loading && (
                   <tr>
-                    <td colSpan={7}>저장된 배송후취소 목록이 없습니다. 새로고침을 눌러주세요.</td>
+                    <td colSpan={8}>저장된 배송후취소 목록이 없습니다. 새로고침을 눌러주세요.</td>
                   </tr>
                 )}
               </tbody>

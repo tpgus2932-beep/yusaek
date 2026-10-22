@@ -68,6 +68,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   // 불량 리스트/김승일 리스트는 탭(A/B/C)마다 따로 쌓인다 - 서버에는 X-Defect-Tab 헤더로 알린다.
   const [defectTab, setDefectTab] = useState(loadDefectTab);
   const defectTabRef = useRef(defectTab);
+  const [summonedByTab, setSummonedByTab] = useState([]);
   const tabHeaders = () => ({ ...getAuthHeaders(), "X-Defect-Tab": defectTabRef.current });
   const [defectMode, setDefectMode] = useState(false);
   const [showDefectList, setShowDefectList] = useState(false);
@@ -125,6 +126,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     normalized: false,
   });
   const [anomalyEdit, setAnomalyEdit] = useState(null);
+  const [anomalyComplete, setAnomalyComplete] = useState(null); // { id, memo }
+  const [showAnomalyDone, setShowAnomalyDone] = useState(false);
+  const [anomalyDoneList, setAnomalyDoneList] = useState([]);
   const [ochuulLoading, setOchuulLoading] = useState(false);
   const [ochuulResult, setOchuulResult] = useState(null);
   const [ezadminLoading, setEzadminLoading] = useState(false);
@@ -166,9 +170,11 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
   const refreshStatus = useCallback(async () => {
     try {
+      const tab = defectTabRef.current;
       const res = await fetch(`${API}/barcode/status`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json();
+      if (tab !== defectTabRef.current) return; // 응답이 오는 사이 탭이 바뀌었으면 버린다
       if (data?.incoming_codes !== undefined) {
         setIncomingCodes(data.incoming_codes);
         setIncomingTotal(data.incoming_total ?? 0);
@@ -194,7 +200,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     setDefectTab(tab);
     try { localStorage.setItem(DEFECT_TAB_STORAGE_KEY, tab); } catch { /* ignore */ }
     setDefectRecentCodes([]);
+    // 이전 탭 목록이 남아 보이지 않게 비우고, 바코드 파일 로드 여부와 무관하게 새 탭 목록을 직접 가져온다
+    setDefectList([]);
+    setKimsungilList([]);
     refreshStatus();
+    fetchDefectList();
+    fetchKimsungilList();
   };
 
   const renderDefectTabs = () => (
@@ -441,6 +452,33 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     }
   };
 
+  const fetchCompletedAnomalies = async () => {
+    try {
+      const res = await fetch(`${API}/barcode/anomaly/completed`, { headers: tabHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "완료 내역 불러오기 실패");
+      setAnomalyDoneList(data.items ?? []);
+    } catch (err) {
+      setAnomalyMessage(err.message || "완료 내역 불러오기 실패");
+    }
+  };
+
+  const toggleAnomalyDone = () => {
+    const next = !showAnomalyDone;
+    setShowAnomalyDone(next);
+    setAnomalyComplete(null);
+    if (next) fetchCompletedAnomalies();
+  };
+
+  const saveAnomalyComplete = async () => {
+    if (!anomalyComplete) return;
+    if (await callAnomalyApi("complete", { id: anomalyComplete.id, memo: anomalyComplete.memo })) {
+      setAnomalyComplete(null);
+      setAnomalyMessage("완료 처리했습니다. (완료 내역에서 확인)");
+    }
+  };
+
   const fetchBadStock = async () => {
     try {
       const res = await fetch(`${API}/barcode/bad-stock/list`, { headers: tabHeaders() });
@@ -664,7 +702,28 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const openAnomalyModal = () => {
     setShowAnomalyModal(true);
     setAnomalyMessage("");
+    setInvoiceStockOutEnabled(true);
+    setInvoiceStockOutMemo("");
+    setInvoiceNoInput("");
+    setInvoicePreview(null);
+    setInvoicePreviewError("");
+    setInvoiceSteps([]);
+    setShowAnomalyDone(false);
+    setAnomalyComplete(null);
     fetchAnomalies();
+  };
+
+  // 조회된 송장의 첫 상품을 이상현상 등록 폼에 채운다 (송장삭제 후 바로 등록 가능)
+  const fillAnomalyFormFromInvoice = () => {
+    const products = invoicePreview?.products || [];
+    if (!products.length) return;
+    const p = products[0];
+    const option = [p.color, p.size].filter(Boolean).join(" ");
+    setAnomalyForm((prev) => ({
+      ...prev,
+      product_name: [p.name || p.product_id, option].filter(Boolean).join(" "),
+      qty: products.reduce((sum, x) => sum + (Number(x.qty) || 0), 0) || 1,
+    }));
   };
 
   const searchAnomalyProducts = async () => {
@@ -767,10 +826,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
   const fetchKimsungilList = async () => {
     try {
+      const tab = defectTabRef.current;
       const res = await fetch(`${API}/barcode/kimsungil/list`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "김승일 목록 조회 실패");
+      if (tab !== defectTabRef.current) return; // 응답이 오는 사이 탭이 바뀌었으면 버린다
       setKimsungilList(data.kimsungil ?? []);
     } catch { /* ignore */ }
   };
@@ -928,10 +989,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
   const fetchDefectList = async () => {
     try {
+      const tab = defectTabRef.current;
       const res = await fetch(`${API}/barcode/defect/list`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "불량 리스트 조회 실패");
+      if (tab !== defectTabRef.current) return; // 응답이 오는 사이 탭이 바뀌었으면 버린다
       setDefectList(data.defects ?? []);
     } catch { /* ignore */ }
   };
@@ -982,6 +1045,47 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "김승일 삭제 실패");
       setKimsungilList(data.kimsungil ?? []); setItems(data.items ?? items);    } catch (err) { pushLog(`김승일 삭제 실패: ${err.message || ""}`.trim()); }
+  };
+
+  // 소환술로 불량에 들어온 항목을 A/B/C 탭 전체에서 모아 탭별·코드 오름차순으로 보여준다.
+  const fetchSummonedAllTabs = async () => {
+    try {
+      const results = await Promise.all(DEFECT_TABS.map(async (tab) => {
+        const res = await fetch(`${API}/barcode/defect/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": tab } });
+        if (handleUnauthorized(res)) return { tab, rows: [] };
+        const data = await res.json().catch(() => ({}));
+        const rows = (data.defects ?? [])
+          .filter((d) => (d.kimsungil_summon_qty || 0) > 0)
+          .sort((a, b) => String(a.code || "").localeCompare(String(b.code || "")));
+        return { tab, rows };
+      }));
+      setSummonedByTab(results);
+    } catch { /* ignore */ }
+  };
+
+  useEffect(() => {
+    if (showDefectList) fetchSummonedAllTabs();
+  }, [showDefectList, defectList]);
+
+  const handleKimsungilRevert = async (tab, code) => {
+    if (!window.confirm(`${tab}탭 ${code} 소환 수량을 김승일 리스트로 되돌릴까요?`)) return;
+    try {
+      const res = await fetch(`${API}/barcode/kimsungil/revert-from-defect`, {
+        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders(), "X-Defect-Tab": tab },
+        body: JSON.stringify({ code }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "김승일 되돌리기 실패");
+      if (tab === defectTabRef.current) {
+        setDefectList(data.defects ?? []);
+        setKimsungilList(data.kimsungil ?? []);
+      }
+      pushLog(`김승일 되돌리기(${tab}탭): ${code} ${data.reverted_qty}개`);
+      fetchSummonedAllTabs();
+    } catch (err) {
+      alert(err.message || "김승일 되돌리기 실패");
+    }
   };
 
   const handleKimsungilSummon = async () => {
@@ -2191,13 +2295,79 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
       {showAnomalyModal && (
         <div className={styles.modalOverlay} onClick={() => setShowAnomalyModal(false)}>
-          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+          <div className={styles.modal} style={{ width: "min(1100px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHeader}>
               <h4 className={styles.modalTitle}>이상현상</h4>
               <div className={styles.modalActions}>
+                <button className={styles.secondaryBtn} onClick={toggleAnomalyDone}>
+                  {showAnomalyDone ? "진행중 목록" : "완료 내역"}
+                </button>
                 <button className={styles.secondaryBtn} onClick={() => setShowAnomalyModal(false)}>닫기</button>
               </div>
             </div>
+            <div className={styles.uploadRow}>
+              <input
+                value={invoiceNoInput}
+                onChange={(e) => setInvoiceNoInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleInvoicePreview(); }}
+                placeholder="송장번호 입력 (송장삭제)"
+                className={styles.searchInput}
+                disabled={invoicePreviewLoading || invoiceExecuting}
+              />
+              <button className={styles.primaryBtn} onClick={handleInvoicePreview} disabled={invoicePreviewLoading || invoiceExecuting}>
+                {invoicePreviewLoading ? "조회 중..." : "송장 조회"}
+              </button>
+              <label style={{ display: "flex", alignItems: "center", gap: "0.3rem", fontSize: "0.85rem", whiteSpace: "nowrap" }}>
+                <input
+                  type="checkbox"
+                  checked={invoiceStockOutEnabled}
+                  onChange={(e) => setInvoiceStockOutEnabled(e.target.checked)}
+                  disabled={invoiceExecuting}
+                />
+                재고 출고처리 포함
+              </label>
+            </div>
+            {invoiceStockOutEnabled && (
+              <input
+                value={invoiceStockOutMemo}
+                onChange={(e) => setInvoiceStockOutMemo(e.target.value)}
+                placeholder="재고 출고 메모 (선택)"
+                className={styles.searchInput}
+                disabled={invoiceExecuting}
+                style={{ width: "100%", margin: "0.5rem 0", boxSizing: "border-box" }}
+              />
+            )}
+            {invoicePreviewError && (
+              <div className={styles.statusMsg} style={{ color: "#dc3545" }}>{invoicePreviewError}</div>
+            )}
+            {invoicePreview && (
+              <div style={{ margin: "0.5rem 0 0.75rem", fontSize: "0.85rem" }}>
+                <div>
+                  송장번호 <strong>{invoicePreview.invoice_no}</strong>
+                  {" · "}{invoicePreview.ably_found ? "✔" : "✘"} 에이블리
+                  {" · "}{invoicePreview.ezadmin_found ? "✔" : "✘"} 이지어드민
+                </div>
+                {(invoicePreview.products || []).map((p) => (
+                  <div key={p.product_id} style={{ color: "#666" }}>
+                    - {p.product_id}{p.name ? ` (${p.name})` : ""} · {[p.color, p.size].filter(Boolean).join(" / ") || "옵션 없음"} · 수량 {p.qty}
+                  </div>
+                ))}
+                {invoiceSteps.map((s) => (
+                  <div key={s.label}>
+                    {s.status === "done" ? "✔" : s.status === "error" ? "✘" : s.status === "running" ? "⏳" : "▫"} {s.label}
+                    {s.status === "error" && s.detail && <span style={{ color: "#dc3545" }}> ({s.detail})</span>}
+                  </div>
+                ))}
+                <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.4rem" }}>
+                  <button className={styles.secondaryBtn} onClick={fillAnomalyFormFromInvoice} disabled={invoiceExecuting}>
+                    등록 폼에 채우기
+                  </button>
+                  <button className={styles.primaryBtn} onClick={handleInvoiceExecute} disabled={invoiceExecuting}>
+                    {invoiceExecuting ? "처리 중..." : "송장삭제 실행"}
+                  </button>
+                </div>
+              </div>
+            )}
             <div className={styles.uploadRow}>
               <input
                 value={anomalySearchQuery}
@@ -2270,7 +2440,38 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 </label>
                 <button className={styles.primaryBtn} onClick={addAnomaly}>등록</button>
               </div>
-              {anomalyList.length === 0 ? (
+              {showAnomalyDone ? (
+                anomalyDoneList.length === 0 ? (
+                  <div className={styles.empty}>완료된 이상현상이 없습니다.</div>
+                ) : (
+                  <table className={styles.table}>
+                    <thead>
+                      <tr>
+                        <th>등록날짜</th>
+                        <th>상품명 + 옵션</th>
+                        <th>개수</th>
+                        <th>사유</th>
+                        <th>완료메모</th>
+                        <th>완료일시</th>
+                        <th>처리자</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {anomalyDoneList.map((item) => (
+                        <tr key={`anomaly-done-${item.id}`}>
+                          <td>{item.registered_date}</td>
+                          <td>{item.product_name}</td>
+                          <td>{item.qty ?? 1}</td>
+                          <td>{item.reason}</td>
+                          <td>{item.completed_memo}</td>
+                          <td>{String(item.completed_at || "").replace("T", " ").slice(0, 16)}</td>
+                          <td>{item.completed_by}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )
+              ) : anomalyList.length === 0 ? (
                 <div className={styles.empty}>등록된 이상현상이 없습니다.</div>
               ) : (
                 <table className={styles.table}>
@@ -2328,6 +2529,19 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                               <button className={styles.primaryBtn} onClick={saveAnomalyEdit}>저장</button>
                               <button className={styles.ghostBtn} onClick={() => setAnomalyEdit(null)}>취소</button>
                             </>
+                          ) : anomalyComplete?.id === item.id ? (
+                            <>
+                              <input
+                                autoFocus
+                                value={anomalyComplete.memo}
+                                onChange={(e) => setAnomalyComplete((p) => ({ ...p, memo: e.target.value }))}
+                                onKeyDown={(e) => { if (e.key === "Enter") saveAnomalyComplete(); }}
+                                placeholder="완료 메모"
+                                className={styles.searchInput}
+                              />
+                              <button className={styles.primaryBtn} onClick={saveAnomalyComplete}>확인</button>
+                              <button className={styles.ghostBtn} onClick={() => setAnomalyComplete(null)}>취소</button>
+                            </>
                           ) : (
                             <>
                               <button
@@ -2347,6 +2561,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                                 onClick={() => { if (window.confirm("삭제하시겠습니까?")) callAnomalyApi("remove", { id: item.id }); }}
                               >
                                 삭제
+                              </button>
+                              <button
+                                className={styles.ghostBtn}
+                                onClick={() => setAnomalyComplete({ id: item.id, memo: "" })}
+                              >
+                                완료
                               </button>
                             </>
                           )}
@@ -2452,16 +2672,37 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               <div className={styles.empty}>등록된 불량이 없습니다.</div>
             ) : (
               <div className={styles.defectList}>
-                {defectList.map((item, idx) => (
+                {defectList.filter((item) => (item.normal_qty ?? item.count) > 0).map((item, idx) => (
                   <div key={`${item.code}-defect-${idx}`} className={styles.defectLine}>
                     <span className={styles.defectText}>{renderDefectLabel(item)}</span>
-                    <span className={styles.inlineTagDanger}>불량 {item.count}</span>
-                    {item.kimsungil_summon_qty > 0 && (
-                      <span className={styles.inlineTagIncoming}>김승일 소환 {item.kimsungil_summon_qty}</span>
-                    )}
+                    <span className={styles.inlineTagDanger}>불량 {item.normal_qty ?? item.count}</span>
                     <div className={styles.defectActions}>
                       <button className={styles.ghostBtn} onClick={() => handleDefectDec(item.code)}>-1</button>
                       <button className={styles.ghostBtn} onClick={() => handleDefectRemove(item.code)}>삭제</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {summonedByTab.some((g) => g.rows.length > 0) && (
+              <div style={{ marginTop: "1rem", borderTop: "2px solid var(--border-color)", paddingTop: "0.75rem" }}>
+                <h4 className={styles.modalTitle} style={{ marginBottom: "0.5rem" }}>김승일 소환술 항목</h4>
+                {summonedByTab.filter((g) => g.rows.length > 0).map((g) => (
+                  <div key={`summon-group-${g.tab}`} style={{ marginBottom: "0.75rem" }}>
+                    <div style={{ fontWeight: 700, marginBottom: "0.3rem" }}>
+                      <span className={styles.pill}>{g.tab}탭</span>
+                    </div>
+                    <div className={styles.defectList}>
+                      {g.rows.map((item) => (
+                        <div key={`${g.tab}-${item.code}-summon`} className={styles.defectLine}>
+                          <span className={styles.defectText}>{renderDefectLabel(item)}</span>
+                          <span className={styles.inlineTagIncoming}>김승일 소환 {item.kimsungil_summon_qty}</span>
+                          <span className={styles.inlineMeta}>{g.tab}탭</span>
+                          <div className={styles.defectActions}>
+                            <button className={styles.ghostBtn} onClick={() => handleKimsungilRevert(g.tab, item.code)}>김승일로 되돌리기</button>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 ))}

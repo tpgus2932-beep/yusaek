@@ -185,3 +185,25 @@ def test_purchase_manager_handoff_includes_summoned_codes_by_default(monkeypatch
     res = client.post("/barcode/defect/purchase-manager-handoff", json={})
     assert res.status_code == 200
     assert "S1" in res.json()["unmatched_codes"]
+
+
+def test_revert_moves_only_summoned_qty_back_to_kimsungil(monkeypatch):
+    client, _keep_alive = _make_client(monkeypatch, incoming={"S1": 3})
+    client.post("/barcode/kimsungil/add", json={"code": "S1"})
+    client.post("/barcode/kimsungil/add", json={"code": "S1"})
+    client.post("/barcode/kimsungil/summon-to-defect")
+    client.post("/barcode/defect/add", json={"code": "S1"})  # 직접 찍은 불량 1개
+
+    defects = client.get("/barcode/defect/list").json()["defects"]
+    assert defects[0]["count"] == 3
+    assert defects[0]["normal_qty"] == 1
+
+    res = client.post("/barcode/kimsungil/revert-from-defect", json={"code": "S1"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["reverted_qty"] == 2
+    assert data["defects"][0]["count"] == 1
+    assert data["defects"][0]["kimsungil_summon_qty"] == 0
+    assert data["kimsungil"][0]["count"] == 2
+
+    assert client.post("/barcode/kimsungil/revert-from-defect", json={"code": "S1"}).status_code == 400
