@@ -112,6 +112,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [badStockSelected, setBadStockSelected] = useState([]);
   const [badStockFind, setBadStockFind] = useState("");
   const [badStockNormalizing, setBadStockNormalizing] = useState(false);
+  const [badStockRenaming, setBadStockRenaming] = useState(false);
   const [anomalySearchQuery, setAnomalySearchQuery] = useState("");
   const [anomalySearchRows, setAnomalySearchRows] = useState([]);
   const [anomalySearchLoading, setAnomalySearchLoading] = useState(false);
@@ -545,6 +546,87 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       setBadStockMessage(err.message || "재고 정상화 실패");
     } finally {
       setBadStockNormalizing(false);
+    }
+  };
+
+  // 확장주문검색에 올라온 주문에 악성재고 상품이 있으면 주문 수량만큼 악성재고에서 차감/삭제한다.
+  const deductShippedBadStock = async () => {
+    setBadStockMessage("");
+    const preview = await callBadStockApi("deduct-shipped", { dry_run: true });
+    if (!preview) return;
+    if (!preview.deducted_items?.length) {
+      setBadStockMessage("확장주문검색 주문에 해당하는 악성재고 상품이 없습니다.");
+      return;
+    }
+    const lines = preview.deducted_items.slice(0, 15).map((i) => `${i.product_name || i.code} : -${i.deducted}`).join("\n");
+    const more = preview.deducted_items.length > 15 ? `\n... 외 ${preview.deducted_items.length - 15}종` : "";
+    const restoreList = preview.restored_items ?? [];
+    const restoreText = restoreList.length
+      ? `\n\n[이지어드민 상품명 원복 ${restoreList.length}종]\n${restoreList.slice(0, 8).map((r) => `${r.renamed_name} → ${r.original_name}`).join("\n")}${restoreList.length > 8 ? `\n... 외 ${restoreList.length - 8}종` : ""}`
+      : "";
+    if (!window.confirm(`${preview.deducted_items.length}종, 합계 ${preview.deducted_total}개를 악성재고에서 차감합니다. (0이 되면 삭제)\n\n${lines}${more}${restoreText}\n\n진행하시겠습니까?`)) return;
+    const data = await callBadStockApi("deduct-shipped", {});
+    if (!data) return;
+    const restored = (data.restored_items ?? []).filter((r) => r.status === "done");
+    const restoreFailed = (data.restored_items ?? []).filter((r) => r.status === "failed");
+    setBadStockMessage(
+      `출고상품 차감 완료: ${data.deducted_items.length}종 ${data.deducted_total}개`
+      + (restored.length ? `, 상품명 원복 ${restored.length}종` : "")
+      + (restoreFailed.length ? `, 원복 실패 ${restoreFailed.length}종: ${restoreFailed.slice(0, 3).map((r) => `${r.renamed_name}(${r.message})`).join(", ")}` : "")
+    );
+  };
+
+  // 악성재고 상품의 이지어드민 상품명 앞에 구역 접두어(A구역 ZA, B구역 ZB ...)를 붙인다.
+  const renameBadStockProducts = async () => {
+    const call = async (dryRun) => {
+      const res = await fetch(`${API}/barcode/bad-stock/rename-products`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...tabHeaders() },
+        body: JSON.stringify({ dry_run: dryRun }),
+      });
+      if (handleUnauthorized(res)) return null;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "상품명 변경 실패");
+      if (data.need_session) throw new Error("이지어드민 세션이 만료되었거나 없습니다. PHPSESSID를 다시 등록해주세요.");
+      return data;
+    };
+    setBadStockRenaming(true);
+    setBadStockMessage("이지어드민에서 상품명 확인 중...");
+    try {
+      const preview = await call(true);
+      if (!preview) return;
+      const targets = preview.items.filter((i) => i.status === "rename");
+      const skipped = preview.items.length - targets.length;
+      const conflictItems = preview.items.filter((i) => i.status === "conflict");
+      const conflictText = (list) => list.slice(0, 8).map((i) => `${i.old_name || i.code} [${(i.zones ?? []).map(badStockZoneLabel).join(", ")}]`).join("\n")
+        + (list.length > 8 ? `\n... 외 ${list.length - 8}종` : "");
+      if (!targets.length) {
+        setBadStockMessage(
+          `변경할 상품이 없습니다. (이미 변경 ${preview.summary?.skip ?? 0} / 충돌 ${conflictItems.length} / 오류 ${preview.summary?.error ?? 0})`
+          + (conflictItems.length ? ` 구역 충돌: ${conflictText(conflictItems).replace(/\n/g, " / ")}` : "")
+        );
+        return;
+      }
+      const lines = targets.slice(0, 12).map((i) => `${i.old_name}\n  → ${i.new_name}${i.message ? `  (${i.message})` : ""}`).join("\n");
+      const more = targets.length > 12 ? `\n... 외 ${targets.length - 12}종` : "";
+      if (!window.confirm(`${targets.length}종의 이지어드민 상품명을 변경합니다. (제외 ${skipped}종)\n\n${lines}${more}${conflictItems.length ? `\n\n[구역 충돌 - 서로 다른 A~E 구역에 걸쳐 있어 제외 ${conflictItems.length}종]\n${conflictText(conflictItems)}` : ""}\n\n진행하시겠습니까?`)) {
+        setBadStockMessage("");
+        return;
+      }
+      setBadStockMessage(`상품명 변경 중... (${targets.length}종)`);
+      const data = await call(false);
+      if (!data) return;
+      const failed = data.items.filter((i) => i.status === "failed" || i.status === "error");
+      const conflicts = data.items.filter((i) => i.status === "conflict");
+      setBadStockMessage(
+        `상품명 변경 완료 ${data.summary?.done ?? 0}종`
+        + (failed.length ? `, 실패 ${failed.length}종: ${failed.slice(0, 5).map((i) => `${i.code}(${i.message})`).join(", ")}` : "")
+        + (conflicts.length ? `, 구역 충돌로 제외 ${conflicts.length}종: ${conflicts.slice(0, 5).map((i) => `${i.old_name || i.code} [${(i.zones ?? []).map(badStockZoneLabel).join(", ")}]`).join(" / ")}` : "")
+      );
+    } catch (err) {
+      setBadStockMessage(err.message || "상품명 변경 실패");
+    } finally {
+      setBadStockRenaming(false);
     }
   };
 
@@ -1855,6 +1937,10 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               <div className={styles.modalActions}>
                 <button className={styles.secondaryBtn} onClick={checkBadStockWithEzadmin} disabled={badStockChecking}>
                   {badStockChecking ? "확인 중..." : "이지어드민 재고 비교"}
+                </button>
+                <button className={styles.secondaryBtn} onClick={deductShippedBadStock}>출고상품삭제</button>
+                <button className={styles.secondaryBtn} onClick={renameBadStockProducts} disabled={badStockRenaming}>
+                  {badStockRenaming ? "처리 중..." : "악성재고 상품명 변경"}
                 </button>
                 <button className={styles.secondaryBtn} onClick={() => setShowBadStockModal(false)}>닫기</button>
               </div>

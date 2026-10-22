@@ -19,6 +19,7 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, Upl
 from openpyxl import load_workbook
 
 from sdk.ably import AblyClient
+from services import ezadmin_product_rename as ez_product_rename
 from services.easyadmin_product import process_easyadmin_product_from_api
 from services.order_history_store import init_order_history_table
 from services.pastelco_utils import pastelco_login
@@ -2380,6 +2381,19 @@ def build_barcode_router(
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS barcode_bad_stock_renamed (
+                product_id TEXT PRIMARY KEY,
+                codes TEXT NOT NULL DEFAULT '',
+                original_name TEXT NOT NULL DEFAULT '',
+                renamed_name TEXT NOT NULL DEFAULT '',
+                letter TEXT NOT NULL DEFAULT '',
+                renamed_at TEXT NOT NULL DEFAULT '',
+                username TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
         # 기존 테이블에는 수량 컬럼이 없으므로 한 번 추가한다(이미 있으면 에러 → 무시).
         try:
             conn.execute("ALTER TABLE barcode_bad_stock ADD COLUMN qty INTEGER NOT NULL DEFAULT 1")
@@ -2454,6 +2468,321 @@ def build_barcode_router(
         finally:
             conn.close()
         return list_bad_stock(user)
+
+    # ---- 이지어드민 상품명 접두어(ZA/ZB...) 변경 기록 -------------------------------------------------
+    def _load_renamed() -> dict:
+        conn = _bad_stock_conn()
+        try:
+            rows = [dict(r) for r in conn.execute("SELECT * FROM barcode_bad_stock_renamed").fetchall()]
+        finally:
+            conn.close()
+        return {r["product_id"]: r for r in rows}
+
+    def _save_renamed(product_id: str, codes, original_name: str, renamed_name: str, letter: str, user: str):
+        """기록이 있으면 원래 이름(original_name)은 처음 값을 유지하고 코드 목록·현재 이름·접두어만 갱신한다."""
+        conn = _bad_stock_conn()
+        try:
+            old = conn.execute(
+                "SELECT codes, original_name FROM barcode_bad_stock_renamed WHERE product_id = ?", (product_id,)
+            ).fetchone()
+            merged = set(codes)
+            if old:
+                merged |= set(filter(None, (old["codes"] or "").split(",")))
+            conn.execute(
+                "INSERT OR REPLACE INTO barcode_bad_stock_renamed"
+                " (product_id, codes, original_name, renamed_name, letter, renamed_at, username)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (product_id, ",".join(sorted(merged)), (old["original_name"] if old else original_name),
+                 renamed_name, letter, datetime.now(_KST).isoformat(), user),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _delete_renamed(product_id: str):
+        conn = _bad_stock_conn()
+        try:
+            conn.execute("DELETE FROM barcode_bad_stock_renamed WHERE product_id = ?", (product_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def _ez_read_product(client, cookies, ez_code):
+        from urllib.parse import quote
+
+        resp = await client.get(
+            f"{_EZADMIN_BASE}/popup35.htm?template=C208&id={quote(ez_code, safe='')}",
+            cookies=cookies, headers={"User-Agent": "Mozilla/5.0"},
+        )
+        html = resp.content.decode("utf-8", errors="replace")
+        return ez_product_rename.parse_product_form(html), ("myform" in html)
+
+    async def _ez_save_product_name(client, cookies, product_id: str, parts, new_name: str) -> tuple[bool, str]:
+        """상품수정 폼 전체를 다시 보내 상품명만 바꾸고, 다시 읽어 바뀌었는지 확인한다."""
+        from urllib.parse import quote
+
+        dup = await client.post(
+            f"{_EZADMIN_BASE}/function.htm",
+            data={"template": "C200", "action": "check_all", "product_id": product_id, "name": new_name},
+            cookies=cookies, headers=_ez_invoice_headers(),
+        )
+        if dup.json().get("is_dup"):
+            return False, "이지어드민에 같은 상품명이 이미 있습니다"
+        grid = await client.post(
+            f"{_EZADMIN_BASE}/function.htm",
+            data={"_search": "false", "rows": "500", "page": "1", "sidx": "", "sord": "asc",
+                  "readonly": "T", "template": "C200", "action": "get_option_list",
+                  "product_id": "", "options": "", "barcode": "", "id": product_id},
+            cookies=cookies, headers=_ez_invoice_headers(),
+        )
+        option_rows = ez_product_rename.parse_option_rows(grid.json())
+        if not option_rows:
+            return False, "옵션 정보를 읽지 못했습니다"
+        fields = ez_product_rename.build_modify_fields(parts, option_rows, new_name)
+        multipart = [(n, ("", b"", "application/octet-stream") if v is None else (None, v)) for n, v in fields]
+        save = await client.post(
+            f"{_EZADMIN_BASE}/popup35.htm?template=C208&is_reg_new=1&id={quote(option_rows[0]['id'], safe='')}",
+            files=multipart, cookies=cookies,
+            headers={"User-Agent": "Mozilla/5.0", "Referer": f"{_EZADMIN_BASE}/popup35.htm?template=C208&id={product_id}"},
+        )
+        # 저장 응답은 화면 HTML 이라 성공 여부를 알 수 없으므로 다시 읽어 상품명으로 확인한다.
+        check_parts, _ = await _ez_read_product(client, cookies, option_rows[0]["id"])
+        ok = save.status_code < 400 and ez_product_rename.get_form_value(check_parts, "name").strip() == new_name
+        return ok, "" if ok else "저장 후 확인에서 상품명이 바뀌지 않았습니다"
+
+    _PREFIX_RE = re.compile(r"^Z[A-E]\s+")
+
+    def _zone_rank(zone: str) -> tuple:
+        """구역 우선순위: 알파벳(A→E) 먼저, 같은 알파벳이면 상의→하의."""
+        category = zone[:-1]
+        return (zone[-1:], _BAD_STOCK_CATEGORIES.index(category) if category in _BAD_STOCK_CATEGORIES else 9)
+
+    async def _restore_renamed_products(records: list, dry_run: bool) -> list:
+        """악성재고에서 모두 빠진 상품의 이지어드민 상품명을 원래 이름으로 되돌린다. 성공하면 기록을 지운다."""
+        results = []
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        for rec in records:
+            base = {"product_id": rec["product_id"], "original_name": rec["original_name"], "renamed_name": rec["renamed_name"]}
+            if dry_run:
+                results.append({**base, "status": "restore"})
+                continue
+            if not phpsessid:
+                results.append({**base, "status": "failed", "message": "이지어드민 세션이 없어 원복하지 못했습니다"})
+                continue
+            try:
+                cookies = {"PHPSESSID": phpsessid}
+                async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+                    parts, has_form = await _ez_read_product(client, cookies, rec["product_id"])
+                    if not parts:
+                        results.append({**base, "status": "failed",
+                                        "message": "상품 정보를 읽지 못했습니다" if has_form else "이지어드민 세션이 만료되었습니다"})
+                        continue
+                    current = ez_product_rename.get_form_value(parts, "name").strip()
+                    if not _PREFIX_RE.match(current):
+                        # 이미 접두어가 없으면(누가 직접 되돌림) 기록만 정리한다.
+                        _delete_renamed(rec["product_id"])
+                        results.append({**base, "status": "done", "message": "이미 원래 이름입니다"})
+                        continue
+                    ok, message = await _ez_save_product_name(client, cookies, rec["product_id"], parts, rec["original_name"])
+                if ok:
+                    _delete_renamed(rec["product_id"])
+                results.append({**base, "status": "done" if ok else "failed", "message": message})
+            except Exception as exc:
+                results.append({**base, "status": "failed", "message": str(exc)})
+        return results
+
+    @router.post("/barcode/bad-stock/deduct-shipped")
+    async def deduct_shipped_bad_stock(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        """확장주문검색(업로드된 주문)에 악성재고 상품이 있으면 주문 수량만큼 악성재고에서 차감한다.
+        수량이 0이 되면 행을 삭제하고, 주문 수량이 등록 수량보다 많으면 등록 수량까지만 차감한다.
+        같은 상품이 여러 구역에 있으면 앞 구역(A→E, 같은 알파벳은 상의→하의)부터 차감한다. dry_run=true면 계산만 한다.
+        악성재고에서 완전히 빠진 상품은 이지어드민 상품명(ZA/ZB 접두어)을 원래 이름으로 되돌린다."""
+        state = get_barcode_state(user)
+        if not state["loaded"]:
+            raise HTTPException(status_code=400, detail="확장주문검색 데이터를 먼저 불러오세요")
+        dry_run = bool(payload.get("dry_run"))
+
+        ordered: dict[str, int] = {}
+        for code_map in (state.get("original_mapping") or {}).values():
+            for raw, qty in code_map.items():
+                code = normalize_to_yusas(raw) or str(raw or "").strip()
+                if code:
+                    ordered[code] = ordered.get(code, 0) + int(qty or 0)
+
+        conn = _bad_stock_conn()
+        try:
+            rows = [dict(r) for r in conn.execute("SELECT * FROM barcode_bad_stock ORDER BY id ASC").fetchall()]
+            rows.sort(key=lambda r: (_zone_rank(r["zone"]), r["id"]))
+            remaining = dict(ordered)
+            changes: dict[str, dict] = {}
+            still_in_stock: set = set()
+            for row in rows:
+                need = remaining.get(row["code"], 0)
+                have = int(row["qty"] or 1)
+                take = min(have, need) if need > 0 else 0
+                remaining[row["code"]] = need - take if need > 0 else need
+                if take < have:
+                    still_in_stock.add(normalize_to_s5(row["code"]) or str(row["code"] or "").strip())
+                if take <= 0:
+                    continue
+                change = changes.setdefault(
+                    row["code"], {"code": row["code"], "product_name": row["product_name"], "deducted": 0, "deleted_rows": 0}
+                )
+                change["deducted"] += take
+                if take >= have:
+                    change["deleted_rows"] += 1
+                    if not dry_run:
+                        conn.execute("DELETE FROM barcode_bad_stock WHERE id = ?", (row["id"],))
+                elif not dry_run:
+                    conn.execute("UPDATE barcode_bad_stock SET qty = ? WHERE id = ?", (have - take, row["id"]))
+            if not dry_run:
+                conn.commit()
+        finally:
+            conn.close()
+        items = sorted(changes.values(), key=lambda c: c["code"])
+
+        # 차감 결과 악성재고에 하나도 안 남은 상품은 상품명을 원복한다(원복 실패가 차감을 막지는 않는다).
+        to_restore = [
+            rec for rec in _load_renamed().values()
+            if not (set(filter(None, (rec["codes"] or "").split(","))) & still_in_stock)
+        ]
+        restored = await _restore_renamed_products(to_restore, dry_run)
+        return {
+            **list_bad_stock(user),
+            "dry_run": dry_run,
+            "deducted_items": items,
+            "deducted_total": sum(c["deducted"] for c in items),
+            "restored_items": restored,
+        }
+
+    @router.post("/barcode/bad-stock/rename-products")
+    async def rename_bad_stock_products(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        """악성재고 상품의 이지어드민 상품명 앞에 구역 접두어를 붙인다. A구역(상의A/하의A)은 'ZA ', B구역은 'ZB '.
+        같은 상품이 서로 다른 알파벳 구역에 걸쳐 있으면 건드리지 않고 충돌로 알린다.
+        변경한 상품은 기록해 두었다가 다음 실행에서는 새로 추가된 상품만 이지어드민에서 확인/변경한다.
+        dry_run=true면 이지어드민에서 현재 상품명만 읽어 변경 예정 목록을 돌려준다(이미 변경된 상품은 기록만 보정)."""
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+        dry_run = bool(payload.get("dry_run"))
+
+        conn = _bad_stock_conn()
+        try:
+            rows = [dict(r) for r in conn.execute("SELECT * FROM barcode_bad_stock").fetchall()]
+        finally:
+            conn.close()
+        letters_by_code: dict[str, set] = {}
+        zones_by_code: dict[str, set] = {}
+        for r in rows:
+            ez_code = normalize_to_s5(r["code"]) or str(r["code"] or "").strip()
+            if ez_code and r["zone"]:
+                letters_by_code.setdefault(ez_code, set()).add(r["zone"][-1])
+                zones_by_code.setdefault(ez_code, set()).add(r["zone"])
+        if not letters_by_code:
+            return {"ok": True, "items": [], "need_session": False}
+
+        # 기록에 있고 접두어(알파벳)가 그대로인 코드는 이지어드민을 다시 읽지 않는다.
+        records = _load_renamed()
+        record_by_code = {c: rec for rec in records.values() for c in filter(None, (rec["codes"] or "").split(","))}
+        items = []
+        known_products: set = set()
+        to_fetch = []
+        for ez_code in sorted(letters_by_code):
+            rec = record_by_code.get(ez_code)
+            # 같은 상품의 옵션 코드가 여러 구역에 있으면 앞 알파벳 구역이 기준이다.
+            rec_letters = set().union(*(
+                letters_by_code.get(c, set()) for c in filter(None, (rec["codes"] or "").split(","))
+            )) if rec else set()
+            if rec and rec_letters and min(rec_letters) == rec["letter"]:
+                if rec["product_id"] not in known_products:
+                    known_products.add(rec["product_id"])
+                    items.append({"code": rec["codes"], "product_id": rec["product_id"], "old_name": rec["original_name"],
+                                  "new_name": rec["renamed_name"], "status": "skip", "message": "기록됨"})
+            else:
+                to_fetch.append(ez_code)
+
+        cookies = {"PHPSESSID": phpsessid}
+        session_lost = False
+        try:
+            async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+                sem = asyncio.Semaphore(5)
+
+                async def load(ez_code):
+                    async with sem:
+                        try:
+                            return ez_code, await _ez_read_product(client, cookies, ez_code), None
+                        except Exception as exc:
+                            return ez_code, None, str(exc)
+
+                loaded = await asyncio.gather(*[load(c) for c in to_fetch])
+
+                # 옵션 코드가 아니라 상품(product_id) 단위로 묶어 한 번만 바꾼다.
+                products: dict[str, dict] = {}
+                for ez_code, result, error in loaded:
+                    if error or not result or not result[0]:
+                        if result and not result[1]:
+                            session_lost = True
+                        items.append({"code": ez_code, "status": "error", "message": error or "상품 정보를 읽지 못했습니다"})
+                        continue
+                    parts = result[0]
+                    product_id = ez_product_rename.get_form_value(parts, "product_id")
+                    prod = products.setdefault(product_id, {
+                        "product_id": product_id, "parts": parts, "codes": [], "letters": set(), "zones": set(),
+                        "old_name": ez_product_rename.get_form_value(parts, "name").strip(),
+                    })
+                    prod["codes"].append(ez_code)
+                    prod["letters"] |= letters_by_code[ez_code]
+                    prod["zones"] |= zones_by_code[ez_code]
+
+                for prod in products.values():
+                    # 기록된 같은 상품의 다른 옵션 코드도 구역 판단에 포함한다.
+                    rec = records.get(prod["product_id"])
+                    for c in filter(None, ((rec or {}).get("codes") or "").split(",")):
+                        if c in letters_by_code and c not in prod["codes"]:
+                            prod["letters"] |= letters_by_code[c]
+                            prod["zones"] |= zones_by_code[c]
+                    base = {"code": ",".join(prod["codes"]), "product_id": prod["product_id"], "old_name": prod["old_name"]}
+                    # 여러 구역에 걸쳐 있으면 앞 구역(A가 B보다 앞)의 접두어를 쓴다.
+                    letter = min(prod["letters"])
+                    if len(prod["letters"]) > 1:
+                        zones = sorted(prod["zones"], key=_zone_rank)
+                        base["zones"] = zones
+                        base["message"] = f"{', '.join(zones)} 구역에 걸쳐 있어 Z{letter} 기준"
+                    stripped = _PREFIX_RE.sub("", prod["old_name"])
+                    new_name = f"Z{letter} {stripped}"
+                    prod["letter"], prod["stripped"], prod["new_name"] = letter, stripped, new_name
+                    if prod["old_name"] == new_name:
+                        # 이미 바뀐 상품(예: 기록 도입 전에 변경한 것)은 기록만 남긴다.
+                        _save_renamed(prod["product_id"], prod["codes"], stripped, new_name, letter, user)
+                        items.append({**base, "old_name": stripped, "new_name": new_name, "status": "skip", "message": "이미 변경됨"})
+                        continue
+                    items.append({**base, "new_name": new_name, "status": "pending", "_prod": prod})
+
+                for item in items:
+                    prod = item.pop("_prod", None)
+                    if prod is None:
+                        continue
+                    if dry_run:
+                        item["status"] = "rename"
+                        continue
+                    try:
+                        ok, message = await _ez_save_product_name(client, cookies, prod["product_id"], prod["parts"], prod["new_name"])
+                        if ok:
+                            _save_renamed(prod["product_id"], prod["codes"], prod["stripped"], prod["new_name"], prod["letter"], user)
+                        item.update(status="done" if ok else "failed", message=message)
+                    except Exception as exc:
+                        item.update(status="failed", message=str(exc))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"이지어드민 요청 실패: {exc}")
+
+        if session_lost and to_fetch and not any(i["status"] not in ("error", "skip") for i in items):
+            return {"ok": False, "need_session": True}
+        order = {"failed": 0, "error": 1, "conflict": 2, "rename": 3, "done": 4, "skip": 5}
+        items.sort(key=lambda i: (order.get(i["status"], 9), i["code"]))
+        summary: dict[str, int] = {}
+        for i in items:
+            summary[i["status"]] = summary.get(i["status"], 0) + 1
+        return {"ok": True, "dry_run": dry_run, "items": items, "summary": summary}
 
     _EZ_TAG_RE = re.compile(r"<[^>]+>")
 
