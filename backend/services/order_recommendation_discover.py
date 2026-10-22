@@ -9,6 +9,7 @@ from services.misong_lookup import load_misong_qty_by_code
 from services.order_recommendation_calc import (
     DEFAULT_SAFETY_STOCK_QTY,
     _setting_float,
+    apply_recommended_percent,
     calc_expected_sales_for_coverage,
     calc_expected_sales_today_for_date,
     calc_recommended_qty,
@@ -70,7 +71,8 @@ async def _fetch_stock_and_pending(get_setting, codes: list[str]) -> tuple[dict[
 
 
 async def discover_missed_reorder_candidates(
-    get_db, get_setting, get_shared_db, *, days: int = DEFAULT_DISCOVER_DAYS, limit: int = DEFAULT_DISCOVER_LIMIT
+    get_db, get_setting, get_shared_db, *, days: int = DEFAULT_DISCOVER_DAYS, limit: int = DEFAULT_DISCOVER_LIMIT,
+    percent: float | None = None,
 ) -> dict:
     """재고가 아직 있어서 오늘 IO30 수집에 안 잡힌(=오늘자 행이 없는) 상품 중,
     최근 판매 속도가 빨라서 발주가 필요해지고 있는 후보를 찾는다.
@@ -106,9 +108,12 @@ async def discover_missed_reorder_candidates(
         )
 
         items = []
+        lookup_failed_count = 0
+        zero_confirmed_count = 0
         for code, avg_sales in candidates:
             stock_and_pending = stock_pending_by_code.get(code)
             if stock_and_pending is None:
+                lookup_failed_count += 1
                 continue
             stock_qty = stock_and_pending["stock"]
             pending_qty = stock_and_pending["pending"]
@@ -127,12 +132,14 @@ async def discover_missed_reorder_candidates(
             recommended_qty = calc_recommended_qty(coverage_period_expected_sales, safety_stock_qty)
             if expected_sales_today is not None and expected_sales_today < 3:
                 recommended_qty = 0
+            recommended_qty = apply_recommended_percent(recommended_qty, percent)
             # pending_qty(접수)는 EZAdmin IO30 요청수량과 달리 재고/미송을 감안 안 한
             # 값이라, 여기서는 stock_qty/incoming_qty(misong)를 직접 넘겨서 빼야 한다.
             confirmed_qty = default_confirmed_qty_for_row(
                 expected_sales_today, recommended_qty, pending_qty, stock_qty, incoming_qty
             )
             if not confirmed_qty:
+                zero_confirmed_count += 1
                 continue
 
             client_info = client_info_by_code.get(code) or {}
@@ -157,6 +164,7 @@ async def discover_missed_reorder_candidates(
             "date": today,
             "days": days, "limit": limit, "candidate_count": len(candidates),
             "need_ezadmin_session": need_ezadmin_session, "items": items,
+            "lookup_failed_count": lookup_failed_count, "zero_confirmed_count": zero_confirmed_count,
         }
     finally:
         conn.close()

@@ -10,6 +10,7 @@ import OrderRecommendationDiscoverSection from './OrderRecommendationDiscoverSec
 import OrderRecommendationTop90Section from './OrderRecommendationTop90Section';
 import OrderRecommendationExcelOrderSection from './OrderRecommendationExcelOrderSection';
 import DailyTableRow from './DailyTableRow';
+import BulkConfirmedQtyControl from './BulkConfirmedQtyControl';
 import { DAILY_TABLE_COLUMNS, DAILY_TABLE_LABEL_COLUMN_COUNT } from './dailyTableColumns';
 import { useDailyRowEdits } from './useDailyRowEdits';
 import { useDiscoverMissedReorders } from './useDiscoverMissedReorders';
@@ -35,6 +36,8 @@ const ACTIONS = [
   { key: 'evaluate', label: '수요예측 정확도 평가', path: '/order-recommendation/evaluate', needsSession: false },
   { key: 'evaluate-performance', label: '발주성과 평가', path: '/order-recommendation/evaluate-order-performance', needsSession: false },
 ];
+
+const PERCENT_STORAGE_KEY = 'order_recommendation_run_percent';
 
 function extractCount(data) {
   if (Array.isArray(data.updated_codes)) return data.updated_codes.length;
@@ -117,7 +120,25 @@ function CombinedRunButton({ onSuccess, discover }) {
   const [loading, setLoading] = useState(false);
   const [stepLabel, setStepLabel] = useState('');
   const [message, setMessage] = useState('');
+  const [percent, setPercent] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem(PERCENT_STORAGE_KEY));
+      return Number.isFinite(saved) && saved > 0 ? saved : 100;
+    } catch {
+      return 100;
+    }
+  });
   const { openModal } = useEzadminSession();
+
+  const changePercent = (e) => {
+    const value = e.target.value === '' ? '' : Number(e.target.value);
+    setPercent(value);
+    try {
+      if (value !== '') localStorage.setItem(PERCENT_STORAGE_KEY, String(value));
+    } catch {
+      // 저장 실패는 무시 - 이번 세션에서만 유지된다
+    }
+  };
 
   // EZAdmin 세션이 없으면 모달을 띄우고, 모달에서 세션을 저장하면 같은 단계를 자동으로
   // 재시도한다 - 세션은 한 번 저장되면 서버에 공유 저장되므로, 뒤 단계에서 또 필요해도
@@ -145,6 +166,7 @@ function CombinedRunButton({ onSuccess, discover }) {
     });
 
   const run = async () => {
+    const pct = percent === '' ? 100 : Math.max(0, Number(percent));
     setLoading(true);
     setMessage('');
     try {
@@ -155,10 +177,10 @@ function CombinedRunButton({ onSuccess, discover }) {
       await postWithSession('/non-ably-order/collect');
 
       setStepLabel('예상발주 계산 중...');
-      await postWithSession('/order-recommendation/compute');
+      await postWithSession(`/order-recommendation/compute?percent=${pct}`);
 
       setStepLabel('추가된 상품 조회 중...');
-      await discover.run();
+      await discover.run(pct);
 
       setMessage('전체 완료');
       onSuccess?.();
@@ -172,6 +194,19 @@ function CombinedRunButton({ onSuccess, discover }) {
 
   return (
     <div className={styles.actionCard}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, fontSize: 13 }}>
+        추천발주량 비율
+        <input
+          type="number"
+          min="0"
+          step="1"
+          value={percent}
+          onChange={changePercent}
+          disabled={loading}
+          style={{ width: 70 }}
+        />
+        %
+      </label>
       <button className={styles.actionBtn} onClick={run} disabled={loading}>
         <RefreshCw size={13} className={loading ? styles.spinning : undefined} />
         {loading ? stepLabel || '실행 중...' : '전체 실행 (재고수집→계산→추가상품)'}
@@ -254,6 +289,7 @@ function DailyDataTable({ date, items }) {
           onChange={(e) => setSearch(e.target.value)}
         />
         <span className={styles.dailyTableCount}>{sorted.length}건</span>
+        <BulkConfirmedQtyControl items={sorted} edits={edits} />
         <button
           type="button"
           className={styles.rowSaveBtn}

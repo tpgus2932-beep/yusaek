@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { LOCAL_API_BASE as API, getAuthHeaders } from '../../lib/api';
+import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
 function defaultConfirmedQty(item) {
   return item.confirmed_qty ?? '';
@@ -38,6 +38,20 @@ export function useDailyRowEdits(date, initialConfirmedQty = defaultConfirmedQty
     }));
   }, [fieldsFromItem]);
 
+  // items 전체의 확정수량을 compute(item, 현재 확정수량 필드값)가 돌려준 값으로 한 번에 바꾼다.
+  // 서버에 저장하지는 않고 편집 상태만 바꾼다 — 이후 "일괄저장"으로 저장한다.
+  const setConfirmedQtyForAll = useCallback((items, compute) => {
+    setValues((prev) => {
+      const next = { ...prev };
+      items.forEach((item) => {
+        const current = prev[item.yusas_code] || fieldsFromItem(item);
+        const qty = compute(item, current.confirmedQty);
+        next[item.yusas_code] = { ...current, confirmedQty: qty == null ? '' : String(qty) };
+      });
+      return next;
+    });
+  }, [fieldsFromItem]);
+
   const isDirty = useCallback(
     (item) => {
       const current = values[item.yusas_code];
@@ -50,7 +64,11 @@ export function useDailyRowEdits(date, initialConfirmedQty = defaultConfirmedQty
 
   const markSaved = useCallback(
     (item) => {
-      setSaved((prev) => ({ ...prev, [item.yusas_code]: getFields(item) }));
+      // 확정수량을 비워두고 저장하면 0으로 저장되므로 화면에도 0으로 맞춘다.
+      const fields = getFields(item);
+      const normalized = fields.confirmedQty === '' ? { ...fields, confirmedQty: '0' } : fields;
+      setValues((prev) => ({ ...prev, [item.yusas_code]: normalized }));
+      setSaved((prev) => ({ ...prev, [item.yusas_code]: normalized }));
     },
     [getFields]
   );
@@ -60,7 +78,7 @@ export function useDailyRowEdits(date, initialConfirmedQty = defaultConfirmedQty
       const fields = getFields(item);
       return {
         yusas_code: item.yusas_code,
-        confirmed_qty: fields.confirmedQty === '' ? null : Number(fields.confirmedQty),
+        confirmed_qty: fields.confirmedQty === '' ? 0 : Number(fields.confirmedQty),
         override_reason: fields.reason || null,
       };
     },
@@ -78,6 +96,7 @@ export function useDailyRowEdits(date, initialConfirmedQty = defaultConfirmedQty
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ confirmed_qty: payload.confirmed_qty, override_reason: payload.override_reason }),
         });
+        if (handleUnauthorized(res)) return;
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.ok === false) throw new Error(data?.detail || '저장 실패');
         markSaved(item);
@@ -108,6 +127,7 @@ export function useDailyRowEdits(date, initialConfirmedQty = defaultConfirmedQty
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ items: payloadItems }),
         });
+        if (handleUnauthorized(res)) return;
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.ok === false) throw new Error(data?.detail || '일괄저장 실패');
         dirtyItems.forEach(markSaved);
@@ -126,6 +146,7 @@ export function useDailyRowEdits(date, initialConfirmedQty = defaultConfirmedQty
   return {
     getFields,
     setField,
+    setConfirmedQtyForAll,
     isDirty,
     dirtyCount,
     saveOne,

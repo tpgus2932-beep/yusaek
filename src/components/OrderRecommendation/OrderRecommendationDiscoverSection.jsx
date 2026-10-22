@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import styles from './OrderRecommendationDashboardPage.module.css';
 import DailyTableRow from './DailyTableRow';
+import BulkConfirmedQtyControl from './BulkConfirmedQtyControl';
 import { DAILY_TABLE_COLUMNS, DAILY_TABLE_LABEL_COLUMN_COUNT } from './dailyTableColumns';
 import { useDailyRowEdits } from './useDailyRowEdits';
 import { sumValues, formatSum } from './tableSums';
@@ -85,6 +86,7 @@ export default function OrderRecommendationDiscoverSection({ discover }) {
           <>
             <div className={styles.dailyTableToolbar}>
               <span className={styles.dailyTableCount}>{sorted.length}건</span>
+              <BulkConfirmedQtyControl items={sorted} edits={edits} />
               <button
                 type="button"
                 className={styles.rowSaveBtn}

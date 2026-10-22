@@ -228,4 +228,6 @@ export const ORDER_EXCEL_VENDORS = [
   { key: '리마인드', label: '리마인드 발주', build: buildRemindWorkbook },
   { key: '계란속노른자', label: '계란속노른자 발주', build: buildEggYolkWorkbook },
   { key: '도매킴', label: '도매킴 발주', build: buildDomaeKimWorkbook },
+  // 고정 양식(backend/assets)에 서버가 채워서 내려준다 - OrderRecommendationExcelOrderSection의 downloadLunaExcel 참고.
+  { key: '루나앤솔', label: '루나앤솔 발주', lunaTemplate: true },
 ];

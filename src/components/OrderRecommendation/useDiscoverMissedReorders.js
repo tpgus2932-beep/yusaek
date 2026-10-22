@@ -36,23 +36,28 @@ export function useDiscoverMissedReorders() {
     return () => { cancelled = true; };
   }, []);
 
-  const run = async () => {
+  // percent: 전체 실행에서 넘기는 추천발주량 비율(%). 직접 조회 버튼은 인자 없이 호출(=100).
+  const run = async (percent) => {
     setLoading(true);
     setMessage('');
     try {
       const params = new URLSearchParams({ days: String(days), limit: String(limit) });
+      if (typeof percent === 'number') params.set('percent', String(percent));
       const res = await fetch(`${API}/order-recommendation/discover-missed-reorders?${params}`, {
         headers: getAuthHeaders(),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) throw new Error(data?.detail || '조회 실패');
       if (data.need_ezadmin_session) {
-        openModal(run);
+        openModal(() => run(percent));
         setMessage('이지어드민 세션이 없습니다. 설정 후 다시 시도해주세요.');
         return;
       }
       setResult(data);
-      setMessage(`조회 완료: 후보 ${data.candidate_count}개 중 ${data.items.length}개`);
+      setMessage(
+        `조회 완료: 후보 ${data.candidate_count}개 중 ${data.items.length}개`
+        + ` (재고조회 실패 ${data.lookup_failed_count ?? 0}, 확정수량 0 제외 ${data.zero_confirmed_count ?? 0})`
+      );
     } catch (err) {
       setMessage(err.message || '조회 실패');
     } finally {

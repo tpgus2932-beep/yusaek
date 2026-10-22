@@ -165,6 +165,15 @@ def calc_recommended_qty(coverage_period_expected_sales, safety_stock_qty: float
     return math.ceil(coverage_period_expected_sales + safety_stock_qty)
 
 
+def apply_recommended_percent(recommended_qty, percent):
+    """전체 실행 시 사용자가 정한 비율(%)만큼만 추천발주량을 쓴다(예: 100개, 30% → 30개).
+    100(기본)이면 그대로 둔다. 올림 시 부동소수점 오차(30.000000004 → 31)를 피하려고
+    아주 작은 값을 빼고 올린다."""
+    if recommended_qty is None or percent is None or percent == 100:
+        return recommended_qty
+    return max(0, math.ceil(recommended_qty * percent / 100 - 1e-9))
+
+
 def calc_change_and_rate(today_value, previous_value):
     if today_value is None or previous_value is None:
         return None, None
@@ -306,7 +315,7 @@ def default_confirmed_qty_for_row(
     return max(0, total)
 
 
-def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
+def compute_row(conn, yusas_code: str, date: str, get_setting, percent: float | None = None) -> None:
     row = get_row(conn, date, yusas_code)
     if row is None:
         return
@@ -335,6 +344,7 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
     recommended_qty = calc_recommended_qty(coverage_period_expected_sales, safety_stock_qty)
     if signals["expected_sales_today"] is not None and signals["expected_sales_today"] < 3:
         recommended_qty = 0
+    recommended_qty = apply_recommended_percent(recommended_qty, percent)
 
     confirmed_qty_default = default_confirmed_qty_for_row(
         signals["expected_sales_today"], recommended_qty, row["ezadmin_lack_qty"],
@@ -388,7 +398,7 @@ def compute_row(conn, yusas_code: str, date: str, get_setting) -> None:
     conn.commit()
 
 
-def compute_all(get_db, date: str, get_setting) -> int:
+def compute_all(get_db, date: str, get_setting, percent: float | None = None) -> int:
     conn = get_db()
     try:
         codes = [
@@ -398,7 +408,7 @@ def compute_all(get_db, date: str, get_setting) -> int:
             ).fetchall()
         ]
         for code in codes:
-            compute_row(conn, code, date, get_setting)
+            compute_row(conn, code, date, get_setting, percent)
         return len(codes)
     finally:
         conn.close()

@@ -801,3 +801,12 @@ def test_compute_row_default_confirmed_qty_at_least_3_uses_lack_plus_recommended
     # 확정수량 = 요청수량(ezadmin_lack_qty) + 추천발주량 (재고/미송은 EZAdmin이 이미 감안했다고 보고 안 뺌)
     assert row["confirmed_qty"] == 10 + row["recommended_qty"]
     conn.close()
+
+
+def test_apply_recommended_percent_scales_and_keeps_none():
+    from services.order_recommendation_calc import apply_recommended_percent
+    assert apply_recommended_percent(100, 30) == 30
+    assert apply_recommended_percent(7, 50) == 4
+    assert apply_recommended_percent(100, 100) == 100
+    assert apply_recommended_percent(100, None) == 100
+    assert apply_recommended_percent(None, 30) is None

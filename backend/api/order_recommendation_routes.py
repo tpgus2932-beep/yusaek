@@ -110,10 +110,11 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
     async def discover_missed_reorders(
         days: int = DEFAULT_DISCOVER_DAYS,
         limit: int = DEFAULT_DISCOVER_LIMIT,
+        percent: float = 100,
         user: str = Depends(get_current_user),
     ):
         result = await discover_missed_reorder_candidates(
-            get_db, get_setting, get_shared_db, days=days, limit=limit
+            get_db, get_setting, get_shared_db, days=days, limit=limit, percent=max(0.0, percent)
         )
         try:
             save_discover_snapshot(
@@ -127,9 +128,9 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
         return {"ok": True, **result}
 
     @router.post("/compute")
-    def compute(date: str | None = None, user: str = Depends(get_current_user)):
+    def compute(date: str | None = None, percent: float = 100, user: str = Depends(get_current_user)):
         target_date = date or today_kst()
-        count = compute_all(get_db, target_date, get_setting)
+        count = compute_all(get_db, target_date, get_setting, max(0.0, percent))
         return {"ok": True, "date": target_date, "computed": count}
 
     @router.get("/daily")
@@ -253,6 +254,15 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
                 "FROM order_recommendation_daily WHERE date = ? AND confirmed_qty > 0",
                 (date,),
             ).fetchall()
+            # 일별 데이터에서 확정수량을 0으로 직접 저장한 상품 - 발주 대상은 아니지만,
+            # discover 스냅샷에 남은 예전 확정수량으로 되살아나면 안 된다(일별 쪽이 우선).
+            daily_zero_codes = {
+                r["yusas_code"]
+                for r in conn.execute(
+                    "SELECT yusas_code FROM order_recommendation_daily WHERE date = ? AND confirmed_qty = 0",
+                    (date,),
+                ).fetchall()
+            }
             non_ably_by_code = {
                 r["yusas_code"]: dict(r)
                 for r in conn.execute(
@@ -306,7 +316,7 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
         for d in (discover_snapshot["items"] if discover_snapshot else []):
             code = d.get("yusas_code")
             confirmed_qty = d.get("confirmed_qty")
-            if not code or code in seen_codes or not confirmed_qty:
+            if not code or code in seen_codes or code in daily_zero_codes or not confirmed_qty:
                 continue
             seen_codes.add(code)
             item = _build_item(

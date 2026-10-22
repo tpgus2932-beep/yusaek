@@ -4,6 +4,7 @@ import DailyTableRow from './DailyTableRow';
 import { DAILY_TABLE_COLUMNS } from './dailyTableColumns';
 import { useDailyRowEdits } from './useDailyRowEdits';
 import { ORDER_EXCEL_VENDORS } from './orderExcelTemplates';
+import LunaMappingPanel from './LunaMappingPanel';
 import { LOCAL_API_BASE as API, getAuthHeaders } from '../../lib/api';
 
 // 확정수량이 아직 없으면 추천발주량(에이블리) 또는 비에이블리 부족수량을 기본값으로 보여준다
@@ -41,6 +42,7 @@ export default function OrderRecommendationExcelOrderSection({ daily, discover }
   const [sortKey, setSortKey] = useState(null);
   const [sortDir, setSortDir] = useState('desc');
   const [downloadMessage, setDownloadMessage] = useState('');
+  const [lunaUnmatched, setLunaUnmatched] = useState(null);
   const edits = useDailyRowEdits(daily?.date, excelDefaultConfirmedQty);
 
   const selectVendor = (key) => {
@@ -49,6 +51,7 @@ export default function OrderRecommendationExcelOrderSection({ daily, discover }
     setSearchQuery('');
     setSearchResults([]);
     setSearchMessage('');
+    setLunaUnmatched(null);
   };
 
   const searchWonbe = async () => {
@@ -150,21 +153,7 @@ export default function OrderRecommendationExcelOrderSection({ daily, discover }
 
   const dirtyCount = edits.dirtyCount(vendorItems);
 
-  const downloadExcel = async () => {
-    const vendor = ORDER_EXCEL_VENDORS.find((v) => v.key === activeVendor);
-    if (!vendor || vendorItems.length === 0) return;
-    setDownloadMessage('');
-    const rows = vendorItems.map((item) => {
-      const fields = edits.getFields(item);
-      return {
-        productName: item.client_product_name || '',
-        options: item.options || '',
-        qty: fields.confirmedQty === '' ? 0 : Number(fields.confirmedQty),
-        internalName: item.product_name || '',
-      };
-    });
-    vendor.build(rows);
-
+  const recordOrderHistory = async () => {
     const historyItems = vendorItems
       .map((item) => {
         const fields = edits.getFields(item);
@@ -196,6 +185,81 @@ export default function OrderRecommendationExcelOrderSection({ daily, discover }
       setDownloadMessage(`⚠ 엑셀 다운로드는 완료됐지만 발주내역 저장에 실패했습니다 (${err.message || ''}).`);
     }
   };
+
+  // 루나앤솔: 고정 양식 E열에 주문수량을 채운다. 저장된 매칭만 자동 적용하고, 매칭이 없는 상품이
+  // 있으면 다운로드 대신 수동 매칭 패널을 띄운다(매칭 후 다시 다운로드).
+  const downloadLunaExcel = async () => {
+    const luna = vendorItems
+      .map((item) => {
+        const fields = edits.getFields(item);
+        return {
+          yusas_code: item.yusas_code,
+          name: item.client_product_name || item.product_name || '',
+          options: item.options || '',
+          qty: fields.confirmedQty === '' ? 0 : Number(fields.confirmedQty),
+        };
+      })
+      .filter((i) => i.qty > 0);
+    if (luna.length === 0) {
+      setDownloadMessage('확정수량이 있는 상품이 없습니다.');
+      return;
+    }
+    try {
+      const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() };
+      const resolveRes = await fetch(`${API}/luna-order/resolve`, {
+        method: 'POST', headers, body: JSON.stringify({ items: luna }),
+      });
+      const resolved = await resolveRes.json().catch(() => ({}));
+      if (!resolveRes.ok || resolved.ok === false) throw new Error(resolved?.detail || '매칭 조회 실패');
+      if (resolved.unmatched.length > 0) {
+        setLunaUnmatched(resolved.unmatched);
+        return;
+      }
+      const res = await fetch(`${API}/luna-order/export`, {
+        method: 'POST', headers, body: JSON.stringify({ items: luna }),
+      });
+      if (!res.ok) throw new Error('엑셀 생성 실패');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `루나앤솔_주문_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setLunaUnmatched(null);
+      await recordOrderHistory();
+    } catch (err) {
+      setDownloadMessage(err.message || '엑셀 다운로드 실패');
+    }
+  };
+
+  const downloadExcel = async () => {
+    const vendor = ORDER_EXCEL_VENDORS.find((v) => v.key === activeVendor);
+    if (!vendor || vendorItems.length === 0) return;
+    setDownloadMessage('');
+    if (vendor.lunaTemplate) {
+      await downloadLunaExcel();
+      return;
+    }
+    const rows = vendorItems.map((item) => {
+      const fields = edits.getFields(item);
+      return {
+        productName: item.client_product_name || '',
+        options: item.options || '',
+        qty: fields.confirmedQty === '' ? 0 : Number(fields.confirmedQty),
+        internalName: item.product_name || '',
+      };
+    });
+    vendor.build(rows);
+    await recordOrderHistory();
+  };
+
+  const nameByCode = useMemo(
+    () => Object.fromEntries(
+      vendorItems.map((i) => [i.yusas_code, `${i.client_product_name || i.product_name || ''} ${i.options || ''}`.trim()])
+    ),
+    [vendorItems]
+  );
 
   return (
     <div>
@@ -290,6 +354,15 @@ export default function OrderRecommendationExcelOrderSection({ daily, discover }
                 </span>
               ))}
             </div>
+          )}
+
+          {ORDER_EXCEL_VENDORS.find((v) => v.key === activeVendor)?.lunaTemplate && (
+            <LunaMappingPanel
+              unmatchedItems={lunaUnmatched || []}
+              nameByCode={nameByCode}
+              onResolved={(code) => setLunaUnmatched((prev) => (prev || []).filter((i) => i.yusas_code !== code))}
+              onRetry={lunaUnmatched ? downloadLunaExcel : null}
+            />
           )}
 
           {vendorItems.length === 0 ? (

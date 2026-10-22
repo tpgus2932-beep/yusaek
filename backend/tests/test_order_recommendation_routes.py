@@ -819,7 +819,7 @@ def test_discover_missed_reorders_endpoint_passes_query_params_and_returns_resul
     assert res.status_code == 200
     assert res.json() == {"ok": True, **fake_result}
     _args, kwargs = mocked.call_args
-    assert kwargs == {"days": 5, "limit": 10}
+    assert kwargs == {"days": 5, "limit": 10, "percent": 100.0}
 
 
 def test_discover_missed_reorders_endpoint_uses_defaults_when_no_params():
@@ -837,7 +837,7 @@ def test_discover_missed_reorders_endpoint_uses_defaults_when_no_params():
 
     assert res.status_code == 200
     _args, kwargs = mocked.call_args
-    assert kwargs == {"days": 3, "limit": 150}
+    assert kwargs == {"days": 3, "limit": 150, "percent": 100.0}
 
 
 def test_discover_missed_reorders_endpoint_saves_snapshot_for_that_date():
@@ -1043,3 +1043,32 @@ def test_coverage_check_aggregates_mae_wape_bias_hit_rate():
     assert body["wape"] == pytest.approx(4 / 20)
     assert body["bias"] == pytest.approx(0 / 20)
     assert body["hit_rate_20pct"] == pytest.approx(1.0)
+
+
+def test_top90_items_daily_zero_confirmed_overrides_discover_snapshot():
+    """추가된 상품 표에서 확정수량을 0으로 저장하면(일별 행 confirmed_qty=0 생성) 스냅샷에
+    남은 예전 확정수량으로 TOP90에 되살아나면 안 된다."""
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    ensure_row(conn, "2026-07-29", "S28282")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET confirmed_qty = 0 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-29", "S28282"),
+    )
+    conn.commit()
+    conn.close()
+
+    save_discover_snapshot(
+        client._get_shared_db,
+        date="2026-07-29", days=3, limit=150, candidate_count=1,
+        items=[{"yusas_code": "S28282", "confirmed_qty": 39}],
+        need_ezadmin_session=False, updated_by="tester",
+    )
+
+    with patch(
+        "api.order_recommendation_routes.load_wonbe_client_info_by_code",
+        return_value={"S28282": {"거래처": "동대문상회", "거래처상품명": "티셔츠"}},
+    ):
+        res = client.get("/order-recommendation/2026-07-29/top90-items")
+
+    assert res.json()["count"] == 0
