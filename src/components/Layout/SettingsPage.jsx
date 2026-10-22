@@ -15,6 +15,7 @@ const defaultMenuLabels = {
   "zigzag-upload": "지그재그 업로드",
   test: "테스트",
   "margin-calc": "마진계산",
+  ai: "사내 AI",
   order: "발주",
   admin: "관리자",
 };
@@ -43,6 +44,7 @@ const SettingsPage = ({ hiddenTabs, setHiddenTabs, menuLabels, setMenuLabels, is
       "zigzag-upload",
       "test",
       "margin-calc",
+      "ai",
     ];
     if (isAdmin) {
       base.push("order", "admin");

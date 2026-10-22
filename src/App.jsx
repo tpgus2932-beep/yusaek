@@ -31,13 +31,14 @@ import ZigzagUploadPage from './components/Zigzag/ZigzagUploadPage';
 import OrderRecommendationDashboardPage from './components/OrderRecommendation/OrderRecommendationDashboardPage';
 import TimeboxPage from './components/Timebox/TimeboxPage';
 import WorklogPage from './components/Worklog/WorklogPage';
+import AIChatPage from './components/AI/AIChatPage';
 import { COLLAB_API_BASE } from './lib/api';
 
 
 const KNOWN_TABS = [
   'dashboard', 'barcode', 'returns', 'barcode-product-upload',
   'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'hapbae-management',
-  'zigzag-upload', 'test', 'order', 'admin', 'settings', 'margin-calc',
+  'zigzag-upload', 'test', 'order', 'admin', 'settings', 'margin-calc', 'ai',
 ];
 
 // 상단 메뉴 모드. 새로고침해도 보던 메뉴가 유지되도록 localStorage에 저장한다.
@@ -215,7 +216,7 @@ const App = () => {
 
   // viewer 역할이면 hiddenTabs 무시하고 대시보드만 허용
   const effectiveHiddenTabs = role === 'viewer'
-    ? ['barcode', 'returns', 'barcode-product-upload', 'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'order', 'admin', 'settings', 'hapbae-management', 'zigzag-upload', 'test', 'margin-calc']
+    ? ['barcode', 'returns', 'barcode-product-upload', 'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'order', 'admin', 'settings', 'hapbae-management', 'zigzag-upload', 'test', 'margin-calc', 'ai']
     : hiddenTabs;
 
   const handleLogout = () => {
@@ -340,6 +341,7 @@ const App = () => {
             )}
             {visibleActiveTab === 'zigzag-upload' && !effectiveHiddenTabs.includes('zigzag-upload') && <ZigzagUploadPage />}
             {visibleActiveTab === 'test' && !effectiveHiddenTabs.includes('test') && <TestTabs />}
+            {visibleActiveTab === 'ai' && !effectiveHiddenTabs.includes('ai') && <AIChatPage />}
             {visibleActiveTab === 'order' && isAdmin && !effectiveHiddenTabs.includes('order') && <OrderPage />}
             {visibleActiveTab === 'admin' && isAdmin && !effectiveHiddenTabs.includes('admin') && <AdminUsers currentUser={username} />}
             {visibleActiveTab === 'margin-calc' && !effectiveHiddenTabs.includes('margin-calc') && <AmoodSettlement />}

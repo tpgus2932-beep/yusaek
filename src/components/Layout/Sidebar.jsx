@@ -19,6 +19,7 @@ import {
     FlaskConical,
     TrendingUp,
     Zap,
+    Bot,
 } from 'lucide-react';
 import styles from './Sidebar.module.css';
 import ServerStatsModal from '../Admin/ServerStatsModal';
@@ -144,6 +145,16 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                 >
                     <TrendingUp size={20} />
                     {label('margin-calc', '마진계산')}
+                </div>
+                )}
+
+                {!isHidden('ai') && (
+                <div
+                    className={`${styles.navItem} ${activeTab === 'ai' ? styles.active : ''}`}
+                    onClick={() => setActiveTab('ai')}
+                >
+                    <Bot size={20} />
+                    {label('ai', '사내 AI')}
                 </div>
                 )}
 

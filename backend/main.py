@@ -95,6 +95,7 @@ from services.anomaly_scheduler import run_anomaly_scheduler_loop
 from api.collaboration_tools_routes import build_collaboration_tools_router
 from api.attendance_routes import build_attendance_router
 from api.guidebook_routes import build_guidebook_router
+from api.ai_routes import build_ai_router
 from api.amood_settlement_routes import build_amood_settlement_router
 from api.ably_settlement_routes import build_ably_settlement_router
 from services.easyadmin_product import _content_disposition, _process_easyadmin_product_upload
@@ -1114,6 +1115,10 @@ def _init_post_shipment_cancel():
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_post_shipment_cancel_invoice ON post_shipment_cancel(invoice_no)"
     )
+    try:
+        conn.execute("ALTER TABLE post_shipment_cancel ADD COLUMN manual INTEGER DEFAULT 0")
+    except Exception:
+        pass  # 이미 컬럼이 있음
     conn.commit()
     conn.close()
 
@@ -2269,6 +2274,14 @@ app.include_router(
         get_db=_get_db,
         get_current_user=_get_current_user,
         guidebook_upload_base=BASE_DIR / "uploads" / "guidebook_images",
+    )
+)
+app.include_router(
+    build_ai_router(
+        get_db=_get_db,
+        get_current_user=_get_current_user,
+        is_admin=_is_admin,
+        db_path=DB_PATH,
     )
 )
 

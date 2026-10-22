@@ -330,6 +330,7 @@ def build_auth_admin_router(
 
     @router.get("/admin/users/{target}/menu-visibility")
     def admin_get_user_menu_visibility(target: str, admin: str = Depends(require_admin)):
+        _apply_default_hidden(target)
         raw = get_setting(f"menu_hidden_tabs:{target}") or "[]"
         try:
             hidden_tabs = json.loads(raw)
@@ -422,8 +423,28 @@ def build_auth_admin_router(
             "end": end,
         }
 
+    # 새로 추가된 메뉴 중 기본 숨김으로 시작해야 하는 탭. 사용자별로 최초 1회만 숨김 목록에 넣는다.
+    DEFAULT_HIDDEN_NEW_TABS = ("ai",)
+
+    def _apply_default_hidden(username: str) -> None:
+        marker = f"menu_default_hidden_applied:{username}"
+        if get_setting(marker):
+            return
+        try:
+            current = json.loads(get_setting(f"menu_hidden_tabs:{username}") or "[]")
+        except Exception:
+            current = []
+        if not isinstance(current, list):
+            current = []
+        for tab in DEFAULT_HIDDEN_NEW_TABS:
+            if tab not in current:
+                current.append(tab)
+        set_setting(f"menu_hidden_tabs:{username}", json.dumps(current, ensure_ascii=False))
+        set_setting(marker, "1")
+
     @router.get("/settings/menu-visibility")
     def get_menu_visibility(user: str = Depends(get_current_user)):
+        _apply_default_hidden(user)
         raw = get_setting(f"menu_hidden_tabs:{user}") or "[]"
         try:
             hidden_tabs = json.loads(raw)
