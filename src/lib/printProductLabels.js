@@ -29,8 +29,8 @@ export function printProductLabels(labels) {
   const cardsHtml = valid.map((l) => `
     <div class="card">
         <div class="title">${escapeHtml(l.title)}</div>
-        <div class="option"${l.option ? '' : ' style="visibility:hidden"'}>${l.option ? escapeHtml(l.option) : '-'}</div>
         ${l.clientLine ? `<div class="client">${escapeHtml(l.clientLine)}</div>` : ''}
+        <div class="option"${l.option ? '' : ' style="visibility:hidden"'}>${l.option ? escapeHtml(l.option) : '-'}</div>
         <div class="barcode">${buildBarcodeSvgMarkup(l.code)}</div>
     </div>
   `).join('\n');

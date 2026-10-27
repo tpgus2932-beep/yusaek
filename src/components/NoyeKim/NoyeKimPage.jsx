@@ -11,6 +11,7 @@ import {
 
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 import { printProductLabels } from "../../lib/printProductLabels";
+import { decorateLabels } from "../../lib/decorateLabels";
 
 function formatLocalDate(date = new Date()) {
   const year = date.getFullYear();
@@ -853,41 +854,20 @@ export default function NoyeKimPage() {
     if (!printRows.length) { setMessage("출력할 행을 선택하세요."); return; }
     setKdgBarcodePrintLoading(true);
     try {
-      // 라벨 거래처 상품은 (거래처상품명)을 라벨에 함께 찍는다.
-      // 거래처/거래처상품명은 "이지어드민 변환(원베 매칭)" 때 행에 이미 붙어 있다.
-      // 라벨 거래처 목록 조회에 실패해도 출력은 막지 않고 기본 목록을 쓴다.
-      let labelSupplierSet = new Set(["리마인드", "케이디지", "리자드스탠다드", "계란속노른자", "위클리"]);
-      let prefixBySupplier = { 리마인드: "R", 케이디지: "K", 리자드스탠다드: "L" };
-      try {
-        const res = await fetch(`${API}/order/simple-receiving/label-suppliers`, { headers: getAuthHeaders() });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && Array.isArray(data?.suppliers)) {
-          labelSupplierSet = new Set(data.suppliers.map((s) => String(s).replace(/\s+/g, "")));
-          prefixBySupplier = Object.fromEntries(
-            Object.entries(data.prefixes || {}).map(([name, prefix]) => [name.replace(/\s+/g, ""), prefix]),
-          );
-        }
-      } catch {
-        // 기본 목록 사용
-      }
-      // EZAdmin 라벨 양식 대신 간단입고와 같은 자체 라벨(상품명 / 옵션 / (거래처상품명) / 바코드)로 출력한다.
-      const labels = printRows
+      // EZAdmin 라벨 양식 대신 간단입고와 같은 자체 라벨(상품명 / (거래처상품명) / 옵션 / 바코드)로 출력한다.
+      // 접두어(R/K/L)와 (거래처상품명)은 라벨 거래처 관리 설정대로 decorateLabels가 붙인다 - 거래처 설정이 없으면 아무것도 안 붙는다.
+      const rawLabels = printRows
         .filter((r) => r["원베_B"])
         .flatMap((r) => {
           const qty = Number(r["B(옵션번호)"]) || 1;
-          const supplier = String(r["거래처"] || "").replace(/\s+/g, "");
-          const clientProductName = String(r["거래처상품명"] || "").trim();
-          const clientLine = labelSupplierSet.has(supplier) && clientProductName ? `(${clientProductName})` : "";
-          // 케이디지가공2 라벨은 거래처 접두어(기본 K)를 상품명 앞에 붙인다. 거래처 정보가 없으면 K.
-          const prefix = supplier ? (prefixBySupplier[supplier] || "") : "K";
-          const baseTitle = r["라벨상품명"] || r["A(변환품명)"] || "";
           return Array.from({ length: qty }, () => ({
             code: r["원베_B"],
-            title: prefix ? `${prefix} ${baseTitle}` : baseTitle,
+            title: r["라벨상품명"] || r["A(변환품명)"] || "",
             option: r["라벨옵션"] || "",
-            clientLine,
+            clientLine: "",
           }));
         });
+      const labels = await decorateLabels(rawLabels);
       if (!printProductLabels(labels)) setMessage("바코드 출력할 상품이 없거나 팝업이 차단되었습니다.");
     } catch (err) {
       setMessage(`바코드 출력 오류: ${err.message}`);
@@ -1867,7 +1847,15 @@ export default function NoyeKimPage() {
     }
   };
 
-  const handleIngodaegiEzadmin = async () => {
+  const handleIngodaegiEzadmin = async (skipLockCheck) => {
+    if (skipLockCheck !== true) try {
+      const todayStr = formatLocalDate();
+      const lockRes = await fetch(`${API}/noye-kimsungil/misong/move-lock?date=${encodeURIComponent(todayStr)}`, { headers: getAuthHeaders() });
+      const lockData = lockRes.ok ? await lockRes.json().catch(() => null) : null;
+      if (lockData && !lockData.locked) {
+        if (!window.confirm(`오늘(${todayStr}) 미송관리 이동을 누르지 않았습니다.\n그래도 입고대기설정을 진행하시겠습니까?`)) return;
+      }
+    } catch { /* 잠금 확인 실패 시 그대로 진행 */ }
     try {
       setIngodaegiLoading(true); setIngodaegiMsg("입고대기설정 중...");
       const res = await fetch(`${API}/noye-kimsungil/misong/waiting-base/export-to-ezadmin`, {
@@ -1877,7 +1865,7 @@ export default function NoyeKimPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (data?.need_session) {
-        openEzadminModal(handleIngodaegiEzadmin);
+        openEzadminModal(() => handleIngodaegiEzadmin(true));
         return;
       }
       if (!data?.ok) { setIngodaegiMsg(data?.error || "입고대기설정 실패"); return; }

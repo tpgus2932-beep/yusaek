@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import styles from "./BarcodePage.module.css";
+import LabelReprintPage from "./LabelReprintPage";
 import { getDownloadFilename } from "../../lib/download";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
@@ -85,6 +86,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [kimsungilSearchLoading, setKimsungilSearchLoading] = useState(false);
   const [kimsungilSearchMessage, setKimsungilSearchMessage] = useState("");
   const [kimsungilSummonLoading, setKimsungilSummonLoading] = useState(false);
+  const [unifiedQuery, setUnifiedQuery] = useState("");
+  const [unifiedRows, setUnifiedRows] = useState(null); // null = 아직 검색 안 함
+  const [unifiedLoading, setUnifiedLoading] = useState(false);
   const [showKimsungilLog, setShowKimsungilLog] = useState(false);
   const [kimsungilLogCode, setKimsungilLogCode] = useState("");
   const [kimsungilLogRows, setKimsungilLogRows] = useState([]);
@@ -143,14 +147,22 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [ezadminOrdersTiming, setEzadminOrdersTiming] = useState(null);
   const [ezadminOrdersDate, setEzadminOrdersDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [defectEzadminLoading, setDefectEzadminLoading] = useState(false);
+  const [defectOchuulDoneAt, setDefectOchuulDoneAt] = useState(() => {
+    try {
+      const v = localStorage.getItem("defectExportOchuulDoneAt");
+      return v && v.slice(0, 10) === new Date().toLocaleDateString("sv-SE") ? v : "";
+    } catch { return ""; }
+  });
   const [defectEzadminMsg, setDefectEzadminMsg] = useState("");
   const { openModal: openEzadminModal } = useEzadminSession();
   const soundsRef = useRef(null);
 
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [showLabelReprint, setShowLabelReprint] = useState(false);
   const [invoiceBulkMode, setInvoiceBulkMode] = useState(false);
   const [invoiceStockOutEnabled, setInvoiceStockOutEnabled] = useState(true);
   const [invoiceStockOutMemo, setInvoiceStockOutMemo] = useState("");
+  const [invoiceCancelProcessEnabled, setInvoiceCancelProcessEnabled] = useState(false);
   const [invoiceNoInput, setInvoiceNoInput] = useState("");
   const [invoicePreview, setInvoicePreview] = useState(null);
   const [invoicePreviewLoading, setInvoicePreviewLoading] = useState(false);
@@ -160,11 +172,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [invoiceBulkInput, setInvoiceBulkInput] = useState("");
   const [invoiceBulkResults, setInvoiceBulkResults] = useState([]);
   const [invoiceBulkRunning, setInvoiceBulkRunning] = useState(false);
-  const getInvoiceStepLabels = (includeStockOut) => (
-    includeStockOut
-      ? ["거래취소 · 송장번호 삭제", "재고 출고처리", "에이블리 발송관리 롤백"]
-      : ["거래취소 · 송장번호 삭제", "에이블리 발송관리 롤백"]
-  );
+  const getInvoiceStepLabels = (includeStockOut, includeCancelProcess) => [
+    "거래취소 · 송장번호 삭제",
+    ...(includeCancelProcess ? ["주문 취소처리"] : []),
+    ...(includeStockOut ? ["재고 출고처리"] : []),
+    "에이블리 발송관리 롤백",
+  ];
 
   const pushLog = (msg) => setLog((prev) => [msg, ...prev]);
 
@@ -702,6 +715,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const openAnomalyModal = () => {
     setShowAnomalyModal(true);
     setAnomalyMessage("");
+    setInvoiceCancelProcessEnabled(false);
     setInvoiceStockOutEnabled(true);
     setInvoiceStockOutMemo("");
     setInvoiceNoInput("");
@@ -834,6 +848,53 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (tab !== defectTabRef.current) return; // 응답이 오는 사이 탭이 바뀌었으면 버린다
       setKimsungilList(data.kimsungil ?? []);
     } catch { /* ignore */ }
+  };
+
+  // A·B·C 탭에 등록된 불량관리 상품을 한 번에 검색한다 (상품명/옵션/코드, 공백은 AND).
+  const searchUnified = async () => {
+    const keywords = unifiedQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (!keywords.length) { setUnifiedRows(null); return; }
+    setUnifiedLoading(true);
+    try {
+      const lists = await Promise.all(DEFECT_TABS.map(async (tab) => {
+        try {
+          const res = await fetch(`${API}/barcode/kimsungil/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": tab } });
+          const data = await res.json().catch(() => ({}));
+          return (data.kimsungil ?? []).map((item) => ({ ...item, tab }));
+        } catch { return []; }
+      }));
+      setUnifiedRows(lists.flat().filter((item) => {
+        const text = `${renderDefectLabel(item)} ${item.code || ""}`.toLowerCase();
+        return keywords.every((kw) => text.includes(kw));
+      }));
+    } finally {
+      setUnifiedLoading(false);
+    }
+  };
+
+  // 잘못 들어간 항목을 다른 탭으로 옮긴다: 대상 탭에 수량만큼 추가한 뒤 원래 탭에서 제거.
+  const moveUnifiedItem = async (item, toTab) => {
+    const qty = Number(item.count) || 0;
+    if (!item.code || qty <= 0 || toTab === item.tab) return;
+    if (!window.confirm(`${renderDefectLabel(item)}\n${item.tab}탭 ${qty}개 → ${toTab}탭으로 옮길까요?`)) return;
+    const post = (path, tab) => fetch(`${API}/barcode/kimsungil/${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeaders(), "X-Defect-Tab": tab },
+      body: JSON.stringify({ code: item.code }),
+    });
+    try {
+      for (let i = 0; i < qty; i += 1) {
+        const res = await post("add", toTab);
+        if (!res.ok) throw new Error("대상 탭 추가 실패");
+      }
+      const res = await post("remove", item.tab);
+      if (!res.ok) throw new Error("원래 탭 제거 실패 (대상 탭에는 이미 추가됨)");
+      setKimsungilSearchMessage(`${item.tab}탭 → ${toTab}탭 이동 완료 (${qty}개)`);
+    } catch (err) {
+      setKimsungilSearchMessage(err.message || "탭 이동 실패");
+    }
+    await searchUnified();
+    fetchKimsungilList();
   };
 
   const fetchKimsungilLog = async (code) => {
@@ -1233,15 +1294,41 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   };
 
   const handleDefectPrint = async () => {
-    if (defectList.length === 0) {
-      alert("보낼 불량 목록이 없습니다.");
-      return;
-    }
-    const excludeKimsungil = askExcludeKimsungil();
     try {
-      const sourceList = excludeKimsungil
-        ? defectList.filter((item) => !(item.kimsungil_summon_qty > 0))
-        : defectList;
+      // A/B/C 탭 전체에서 김승일 소환술 항목만 모아, 같은 코드는 수량을 합친다.
+      const perTab = await Promise.all(DEFECT_TABS.map(async (tab) => {
+        const res = await fetch(`${API}/barcode/defect/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": tab } });
+        if (handleUnauthorized(res)) return null;
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.detail || "불량 리스트 조회 실패");
+        return data.defects ?? [];
+      }));
+      if (perTab.some((list) => list === null)) return;
+      const merged = new Map();
+      perTab.flat().forEach((item) => {
+        const qty = Number(item.kimsungil_summon_qty) || 0;
+        if (qty <= 0) return;
+        const prev = merged.get(item.code);
+        if (prev) prev.count += qty;
+        else merged.set(item.code, { ...item, count: qty });
+      });
+      let sourceList = [...merged.values()];
+      if (sourceList.length === 0) {
+        // 소환술 항목이 없으면 불량 목록 전체를 코드별로 합산해서 보낸다.
+        const allMerged = new Map();
+        perTab.flat().forEach((item) => {
+          const qty = Number(item.count) || 0;
+          if (qty <= 0) return;
+          const prev = allMerged.get(item.code);
+          if (prev) prev.count += qty;
+          else allMerged.set(item.code, { ...item, count: qty });
+        });
+        sourceList = [...allMerged.values()];
+      }
+      if (sourceList.length === 0) {
+        alert("보낼 불량 항목이 없습니다.");
+        return;
+      }
       const rows = sourceList
         .map((item) => {
           // 상품명 앞 접두어(첫 단어)를 괄호로 묶어 거래처상품명 앞에 붙인다. 예: (휘민)코에셔츠
@@ -1289,16 +1376,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   };
 
   const handleDefectPurchaseManager = async () => {
-    if (defectList.length === 0) {
-      alert("보낼 불량 목록이 없습니다.");
-      return;
-    }
-    const excludeKimsungil = askExcludeKimsungil();
     try {
+      // A/B/C 전 탭의 김승일 소환술 항목만 코드별로 합산해서 보낸다 (서버에서 합산)
       const res = await fetch(`${API}/barcode/defect/purchase-manager-handoff`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...tabHeaders() },
-        body: JSON.stringify({ exclude_kimsungil_summon: excludeKimsungil }),
+        body: JSON.stringify({ summoned_all_tabs: true }),
       });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
@@ -1369,6 +1452,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (!res.ok) throw new Error(data?.detail || "오출내리기 실패");
       setOchuulResult(data);
       pushLog(`오출내리기 완료: ${data.matched}건 차감`);
+      const doneAt = new Date().toLocaleString("sv-SE").slice(0, 16);
+      setDefectOchuulDoneAt(doneAt);
+      try { localStorage.setItem("defectExportOchuulDoneAt", doneAt); } catch { /* ignore */ }
     } catch (err) {
       alert(err.message || "오출내리기 실패");
       pushLog(`오출내리기 실패: ${err.message || ""}`.trim());
@@ -1398,12 +1484,21 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   };
 
   // 조회(preview) 이후: 거래취소·송장삭제 → (선택) 재고출고 → 에이블리 롤백
-  const runInvoicePipeline = async (preview, includeStockOut, stockOutMemo, onStep) => {
+  const runInvoicePipeline = async (preview, includeStockOut, stockOutMemo, includeCancelProcess, onStep) => {
     onStep?.(0, "running");
     await invoicePostJson(`${API}/barcode/invoice/cancel`, { pack: preview.pack });
     onStep?.(0, "done");
 
     let idx = 1;
+    if (includeCancelProcess) {
+      onStep?.(idx, "running");
+      await invoicePostJson(`${API}/barcode/invoice/cancel-pack`, {
+        pack: preview.pack,
+        prd_seqs: preview.prd_seqs || [],
+      });
+      onStep?.(idx, "done");
+      idx += 1;
+    }
     if (includeStockOut) {
       onStep?.(idx, "running");
       const stockData = await invoicePostJson(`${API}/barcode/invoice/stock-out`, {
@@ -1425,6 +1520,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     setInvoiceBulkMode(false);
     setInvoiceStockOutEnabled(true);
     setInvoiceStockOutMemo("");
+    setInvoiceCancelProcessEnabled(false);
     setInvoiceNoInput("");
     setInvoicePreview(null);
     setInvoicePreviewError("");
@@ -1464,11 +1560,11 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const handleInvoiceExecute = async () => {
     if (!invoicePreview) return;
     if (!window.confirm(
-      `송장번호 ${invoicePreview.invoice_no}를 삭제${invoiceStockOutEnabled ? "하고 재고를 출고처리" : ""}한 뒤 발송상태를 되돌리겠습니까?`
+      `송장번호 ${invoicePreview.invoice_no}를 삭제${invoiceCancelProcessEnabled ? "하고 주문을 취소처리" : ""}${invoiceStockOutEnabled ? "하고 재고를 출고처리" : ""}한 뒤 발송상태를 되돌리겠습니까?`
     )) return;
 
     setInvoiceExecuting(true);
-    const labels = getInvoiceStepLabels(invoiceStockOutEnabled);
+    const labels = getInvoiceStepLabels(invoiceStockOutEnabled, invoiceCancelProcessEnabled);
     setInvoiceSteps(labels.map((label) => ({ label, status: "pending" })));
 
     const setStepStatus = (idx, status, detail) => {
@@ -1477,7 +1573,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
     let failedIdx = -1;
     try {
-      await runInvoicePipeline(invoicePreview, invoiceStockOutEnabled, invoiceStockOutMemo, (idx, status, detail) => {
+      await runInvoicePipeline(invoicePreview, invoiceStockOutEnabled, invoiceStockOutMemo, invoiceCancelProcessEnabled, (idx, status, detail) => {
         failedIdx = idx;
         setStepStatus(idx, status, detail);
       });
@@ -1507,12 +1603,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     const invoiceNos = parseBulkInvoiceNos(invoiceBulkInput);
     if (!invoiceNos.length) { setInvoicePreviewError("송장번호를 한 줄에 하나씩(또는 쉼표로 구분) 입력하세요."); return; }
     if (!window.confirm(
-      `송장번호 ${invoiceNos.length}건을 일괄 삭제${invoiceStockOutEnabled ? "(재고 출고처리 포함)" : "(재고 출고처리 제외)"}하시겠습니까?`
+      `송장번호 ${invoiceNos.length}건을 일괄 삭제${invoiceStockOutEnabled ? "(재고 출고처리 포함)" : "(재고 출고처리 제외)"}${invoiceCancelProcessEnabled ? "(취소처리 포함)" : ""}하시겠습니까?`
     )) return;
 
     setInvoicePreviewError("");
     setInvoiceBulkRunning(true);
-    const labels = getInvoiceStepLabels(invoiceStockOutEnabled);
+    const labels = getInvoiceStepLabels(invoiceStockOutEnabled, invoiceCancelProcessEnabled);
     const localResults = invoiceNos.map((no) => ({
       invoice_no: no,
       status: "pending",
@@ -1536,7 +1632,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       setResult(invoiceNo, "running");
       try {
         const preview = await fetchInvoicePreview(invoiceNo);
-        await runInvoicePipeline(preview, invoiceStockOutEnabled, invoiceStockOutMemo, (idx, status, detail) => {
+        await runInvoicePipeline(preview, invoiceStockOutEnabled, invoiceStockOutMemo, invoiceCancelProcessEnabled, (idx, status, detail) => {
           setStepResult(invoiceNo, idx, status, detail);
         });
         setResult(invoiceNo, "done");
@@ -1686,8 +1782,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
           <div className={styles.cardHeader}>
             <h3 className={styles.cardTitle}>스캔</h3>
             <div className={styles.headerActions}>
-              <button className={styles.secondaryBtn} onClick={refreshStatus} title="새로고침">↺</button>
               <button className={styles.secondaryBtn} onClick={openInvoiceDeleteModal}>송장삭제</button>
+              <button className={styles.secondaryBtn} onClick={() => setShowLabelReprint(true)}>라벨 재출력</button>
               <button
                 className={`${styles.toggleBtn} ${defectMode ? styles.toggleOn : ""}`}
                 onClick={() => setDefectMode((v) => !v)}
@@ -1702,7 +1798,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 )}
               </button>
               <button className={styles.secondaryBtn} onClick={() => { setShowKimsungilList(true); fetchKimsungilList(); }}>
-                김승일
+                불량관리
                 {kimsungilList.filter(i => (i.incoming_qty || 0) > 0).length > 0 && (
                   <span className={styles.inlineTagIncoming} style={{ marginLeft: "0.35rem" }}>{kimsungilList.filter(i => (i.incoming_qty || 0) > 0).length}</span>
                 )}
@@ -1836,6 +1932,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
 
 
+      {showLabelReprint && <LabelReprintPage onClose={() => setShowLabelReprint(false)} />}
+
       {/* 불량 리스트 모달 */}
       {showInvoiceModal && (
         <div className={styles.modalOverlay} onClick={() => { if (!invoiceExecuting && !invoiceBulkRunning) setShowInvoiceModal(false); }}>
@@ -1874,6 +1972,15 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                   disabled={invoiceExecuting || invoiceBulkRunning}
                 />
                 재고 출고처리 포함
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: "0.3rem", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={invoiceCancelProcessEnabled}
+                  onChange={(e) => setInvoiceCancelProcessEnabled(e.target.checked)}
+                  disabled={invoiceExecuting || invoiceBulkRunning}
+                />
+                취소처리
               </label>
             </div>
 
@@ -2326,6 +2433,15 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 />
                 재고 출고처리 포함
               </label>
+              <label style={{ display: "flex", alignItems: "center", gap: "0.3rem", fontSize: "0.85rem", whiteSpace: "nowrap" }}>
+                <input
+                  type="checkbox"
+                  checked={invoiceCancelProcessEnabled}
+                  onChange={(e) => setInvoiceCancelProcessEnabled(e.target.checked)}
+                  disabled={invoiceExecuting}
+                />
+                취소처리
+              </label>
             </div>
             {invoiceStockOutEnabled && (
               <input
@@ -2596,10 +2712,10 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                   onClick={handleKimsungilSummon}
                   disabled={kimsungilSummonLoading || kimsungilList.filter((i) => (i.incoming_qty || 0) > 0).length === 0}
                 >
-                  {kimsungilSummonLoading ? "소환 중..." : "김승일 소환술"}
+                  {kimsungilSummonLoading ? "불러오는 중..." : "불량 불러오기"}
                 </button>
                 <button className={styles.secondaryBtn} onClick={() => handleDefectExportAndOchuul()} disabled={defectEzadminLoading || ochuulLoading || defectList.length === 0}>
-                  {defectEzadminLoading ? "출고 중..." : ochuulLoading ? "오출 중..." : "출고+오출"}
+                  {defectEzadminLoading ? "출고 중..." : ochuulLoading ? "오출 중..." : defectOchuulDoneAt && defectOchuulDoneAt.slice(0, 10) === new Date().toLocaleDateString("sv-SE") ? `출고+오출 완료 (${defectOchuulDoneAt})` : "출고+오출"}
                 </button>
                 <button className={styles.secondaryBtn} onClick={() => { setShowDefectList(false); setOchuulResult(null); }}>닫기</button>
               </div>
@@ -2718,12 +2834,41 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
         <div className={styles.modalOverlay} onClick={() => setShowKimsungilList(false)}>
           <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHeader}>
-              <h4 className={styles.modalTitle}>김승일 리스트 ({defectTab})</h4>
+              <h4 className={styles.modalTitle}>불량관리 리스트 ({defectTab})</h4>
               <div className={styles.modalActions}>
                 <span className={styles.pill}>합계 {getKimsungilTotalCount()}</span>
                 <button className={styles.secondaryBtn} onClick={() => setShowKimsungilList(false)}>닫기</button>
               </div>
             </div>
+            <div className={styles.uploadRow}>
+              <input
+                value={unifiedQuery}
+                onChange={(e) => setUnifiedQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") searchUnified(); }}
+                placeholder="A·B·C 통합검색 (등록된 상품명/코드)"
+                className={styles.searchInput}
+              />
+              <button className={styles.secondaryBtn} onClick={searchUnified} disabled={unifiedLoading}>
+                {unifiedLoading ? "검색 중..." : "통합검색"}
+              </button>
+            </div>
+            {unifiedRows && (
+              <div className={styles.defectList} style={{ marginBottom: "0.75rem" }}>
+                {unifiedRows.length === 0 ? (
+                  <div className={styles.empty}>통합검색 결과가 없습니다.</div>
+                ) : unifiedRows.map((item, idx) => (
+                  <div key={`${item.tab}-${item.code}-${idx}`} className={styles.defectLine}>
+                    <span className={styles.inlineTagDanger}>{item.tab}탭</span>
+                    <span className={styles.defectText}>{renderDefectLabel(item)}</span>
+                    <span style={{ fontSize:"0.75rem", fontWeight:700 }}>추가 {item.count}</span>
+                    {DEFECT_TABS.filter((t) => t !== item.tab).map((t) => (
+                      <button key={t} className={styles.ghostBtn} onClick={() => moveUnifiedItem(item, t)}>→{t}탭</button>
+                    ))}
+                    <button className={styles.ghostBtn} onClick={() => switchDefectTab(item.tab)}>{item.tab}탭 보기</button>
+                  </div>
+                ))}
+              </div>
+            )}
             {renderDefectTabs()}
             <div className={styles.uploadRow}>
               <input

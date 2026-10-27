@@ -649,6 +649,7 @@ function JanggiListView() {
         targets,
         createdAt: new Date().toISOString(),
       }));
+      localStorage.setItem("topMode", "home");
       localStorage.setItem("activeTab", "noye-kimsungil");
       localStorage.setItem("noye-kimsungil-active-tab", "purchase");
       window.location.reload();
@@ -1007,6 +1008,7 @@ function JanggiTopComparison() {
   });
   const [topDate, setTopDate] = useState(null);
   const [topShops, setTopShops] = useState([]);
+  const [topNotes, setTopNotes] = useState({});
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [dbLoaded, setDbLoaded] = useState(() => {
@@ -1256,6 +1258,7 @@ function JanggiTopComparison() {
     setDbLoaded(false);
     setTopLoaded(false);
     setTopShops([]);
+    setTopNotes({});
     setTopDate(null);
     setDismissed(new Set());
     localStorage.removeItem("janggi_top_dismissed");
@@ -1289,6 +1292,7 @@ function JanggiTopComparison() {
       if (!res.ok || !data.ok) throw new Error(data?.detail || "TOP90 조회 실패");
       setTopDate(data.date);
       setTopShops(data.shops || []);
+      setTopNotes(data.notes || {});
       setTopLoaded(true);
       setMessage("");
     } catch (err) {
@@ -1611,6 +1615,17 @@ function JanggiTopComparison() {
                               <button className={topStyles.confirmBtn} onClick={() => dismiss("top", s)}>숨기기</button>
                             </span>
                           )}
+                          {!matched && (topNotes[s] || []).map((n, i) => (
+                            <div key={i} style={{ marginTop: "0.3rem", fontSize: "0.85em", lineHeight: 1.4 }}>
+                              {n.reply && (
+                                <div>
+                                  <b>{n.reply}</b>
+                                  <span style={{ color: "var(--text-muted)" }}> {n.time} | 매장답변</span>
+                                </div>
+                              )}
+                              {n.question && <div style={{ color: "var(--text-muted)" }}>{n.question}</div>}
+                            </div>
+                          ))}
                         </td>
                       </tr>
                     );

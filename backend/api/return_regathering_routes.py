@@ -166,6 +166,24 @@ def build_return_regathering_router(
             conn.close()
         return {"ok": True}
 
+    @router.post("/{regathering_id}/resend-invoice")
+    def set_resend_invoice(
+        regathering_id: int,
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        resend_invoice = str(payload.get("resend_invoice") or "").strip()
+        conn = get_shared_db()
+        try:
+            conn.execute(
+                "UPDATE return_regathering SET resend_invoice = ? WHERE id = ?",
+                (resend_invoice, regathering_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True}
+
     @router.post("/{regathering_id}/complete")
     def complete_regathering(regathering_id: int, user: str = Depends(get_current_user)):
         conn = get_shared_db()

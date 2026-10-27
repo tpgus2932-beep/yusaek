@@ -47,6 +47,7 @@ def build_order_router(
     get_shared_db,
     get_user_display,
     is_render: bool = False,
+    get_current_user=None,
 ):
     router = APIRouter()
     COST_BASE_CODE_COL = 0
@@ -1606,6 +1607,29 @@ def build_order_router(
         finally:
             conn.close()
         return {"ok": True, "suppliers": suppliers, "prefixes": _load_label_prefixes()}
+
+    # 반품/교환/간단입고 등 라벨을 찍는 모든 화면이 같은 접두어·(거래처상품명) 규칙을 쓰도록 코드별로 계산해 준다.
+    @router.post("/order/label-decorations")
+    def label_decorations(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user or require_admin),
+    ):
+        codes = {str(c or "").strip() for c in (payload.get("codes") or []) if str(c or "").strip()}
+        if not codes:
+            return {"ok": True, "decorations": {}}
+        supplier_set = {s.replace(" ", "") for s in _load_label_suppliers()}
+        prefix_by_supplier = {k.replace(" ", ""): v for k, v in _load_label_prefixes().items()}
+        client_info = _client_info_by_code()
+        decorations = {}
+        for code in codes:
+            info = client_info.get(code) or {}
+            supplier = str(info.get("거래처") or "").replace(" ", "")
+            client_product = str(info.get("거래처상품명") or "").strip()
+            decorations[code] = {
+                "prefix": prefix_by_supplier.get(supplier, ""),
+                "clientLine": f"({client_product})" if supplier in supplier_set and client_product else "",
+            }
+        return {"ok": True, "decorations": decorations}
 
     @router.post("/order/simple-receiving/resolve-product-names")
     def simple_receiving_resolve_product_names(payload: dict = Body(...), admin: str = Depends(require_admin)):

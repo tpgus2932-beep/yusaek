@@ -81,7 +81,75 @@ JANGGI_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\날짜별장끼�
 INGODAEGI_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\입고대기.xlsx")
 ZIGZAG_PRICE_TEMPLATE_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\지그재그_판매가수정_템플릿.xlsx")
 
-COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가", "지그재그상품번호", "아이디"]
+COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가", "지그재그상품번호", "아이디", "대표상품코드", "카테고리"]
+
+CATEGORY_CHOICES = ("상의", "하의", "아우터", "악세사리")
+_CATEGORY_BY_LAST_WORD = {
+    "맨투맨": "상의", "니트": "상의", "가디건": "상의", "티셔츠": "상의",
+    "셔츠": "상의", "블라우스": "상의", "슬리브리스": "상의",
+    "반팔티": "상의", "원피스": "상의", "반팔": "상의",
+    "탑": "상의", "나시": "상의", "후드집업": "상의",
+    "팬츠": "하의", "스커트": "하의", "숏팬츠": "하의", "데님팬츠": "하의", "반바지": "하의",
+    "점퍼": "아우터", "패딩": "아우터", "코트": "아우터",
+    "목걸이": "악세사리",
+}
+
+
+CATEGORY_LETTER = {"상의": "A", "하의": "B", "아우터": "C", "악세사리": "D"}
+COLOR_LETTERS = ("A", "B", "C", "D")
+
+
+def _suggest_category(name: str) -> str:
+    """상품명 마지막 단어로 카테고리 기본값을 추정한다. 해당 없으면 빈 문자열."""
+    words = str(name or "").split()
+    return _CATEGORY_BY_LAST_WORD.get(words[-1], "") if words else ""
+
+
+def _parse_top90_shop_replies(tr) -> list[dict]:
+    """TOP90 완료 상세의 매장 행에서 문의를 {reply, time, question}으로 뽑는다.
+
+    "매장답변"이 달린 문의는 두 가지 배치가 섞여 있다: "답변<small>시각</small> | 매장답변" 다음에
+    문의가 오는 경우와, 문의 다음에 "답변 <small>시각</small> - 매장답변"이 오는 경우.
+    답변이 없는 문의나 주문 상품 줄은 reply/time이 빈 문자열로 나간다.
+    """
+    block = tr.select_one("td.info-order .order-text")
+    if block is None:
+        return []
+    tokens: list[dict] = []
+    for node in block.descendants:
+        if getattr(node, "name", None) == "span" and "text-danger" in (node.get("class") or []):
+            if "매장답변" not in node.get_text():
+                continue
+            small = node.find("small")
+            time_text = small.get_text(strip=True) if small else ""
+            full = node.get_text(" ", strip=True)
+            reply = full.replace(time_text, "", 1) if time_text else full
+            reply = re.sub(r"\s*[|\-]\s*매장답변\s*$", "", reply).strip()
+            reply_first = "|" in full.split("매장답변")[0][-3:]
+            tokens.append({"kind": "reply", "reply": reply, "time": time_text, "reply_first": reply_first})
+        elif isinstance(node, str) and node.find_parent("span") is None:
+            text = re.sub(r"\s+", " ", node).strip()
+            if text:
+                tokens.append({"kind": "text", "text": text, "used": False})
+
+    results: list[dict] = []
+    for i, tok in enumerate(tokens):
+        if tok["kind"] != "reply":
+            continue
+        neighbor = tokens[i + 1] if tok["reply_first"] and i + 1 < len(tokens) else (
+            tokens[i - 1] if not tok["reply_first"] and i > 0 else None
+        )
+        question = ""
+        if neighbor and neighbor["kind"] == "text":
+            neighbor["used"] = True
+            question = neighbor["text"]
+        results.append({"reply": tok["reply"], "time": tok["time"], "question": question})
+
+    for tok in tokens:
+        if tok["kind"] != "text" or tok["used"]:
+            continue
+        results.append({"reply": "", "time": "", "question": tok["text"]})
+    return results
 
 
 def _qcol(col: str) -> str:
@@ -192,6 +260,10 @@ def _init_wonbe_table(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE wonbe ADD COLUMN 지그재그상품번호 TEXT")
     if "아이디" not in wonbe_cols:
         conn.execute("ALTER TABLE wonbe ADD COLUMN 아이디 TEXT")
+    if "대표상품코드" not in wonbe_cols:
+        conn.execute("ALTER TABLE wonbe ADD COLUMN 대표상품코드 TEXT")
+    if "카테고리" not in wonbe_cols:
+        conn.execute("ALTER TABLE wonbe ADD COLUMN 카테고리 TEXT")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS wonbe_meta (
             key   TEXT PRIMARY KEY,
@@ -2186,7 +2258,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 # 문자열로 LIKE 검색해서 "글로우 검정"이 정확히 그 순서로 붙어있어야 했고,
                 # 색상/사이즈 칼럼은 검색 대상에 아예 빠져 있었다.
                 tokens = q.split()
-                search_columns = ["상품코드", "상품명합", "거래처합", "거래처", "색상", "사이즈"]
+                search_columns = ["상품코드", "상품명합", "거래처합", "거래처", "거래처상품명", "색상", "사이즈"]
                 token_params = []
                 token_clauses = []
                 for token in tokens:
@@ -2461,6 +2533,377 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             headers={"Content-Disposition": _content_disposition("원가베이스유.xls")},
         )
 
+    @router.post("/category-match/auto-apply")
+    def wonbe_category_match_auto_apply(user: str = Depends(get_current_user)):
+        """마지막 단어 규칙(맨투맨/니트/가디건/티셔츠=상의, 팬츠=하의, 점퍼/패딩=아우터)에 걸리는
+        카테고리 미지정 행을 바로 채운다. 이미 카테고리가 있는 행은 건드리지 않는다."""
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            rows = conn.execute(
+                """SELECT rowid AS rid, 상품명 FROM wonbe
+                   WHERE TRIM(COALESCE(상품명, '')) != '' AND COALESCE(카테고리, '') NOT IN ('상의','하의','아우터','악세사리')"""
+            ).fetchall()
+            updates = [(cat, r["rid"]) for r in rows if (cat := _suggest_category(r["상품명"]))]
+            conn.executemany("UPDATE wonbe SET 카테고리 = ? WHERE rowid = ?", updates)
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "rows": len(updates)}
+
+    @router.get("/category-match/names")
+    def wonbe_category_match_names(user: str = Depends(get_current_user)):
+        """카테고리 매칭이 안 된 행이 남아있는 유니크 상품명 목록. 마지막 단어 기준 기본값이 있으면 함께 돌려준다."""
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            rows = conn.execute(
+                """SELECT 상품명, COUNT(*) AS cnt,
+                          MAX(CASE WHEN 카테고리 IN ('상의','하의','아우터','악세사리') THEN 카테고리 END) AS cat
+                   FROM wonbe WHERE TRIM(COALESCE(상품명, '')) != ''
+                   GROUP BY 상품명
+                   HAVING SUM(CASE WHEN 카테고리 IN ('상의','하의','아우터','악세사리') THEN 0 ELSE 1 END) > 0
+                   ORDER BY 상품명"""
+            ).fetchall()
+        finally:
+            conn.close()
+        return {
+            "ok": True,
+            "items": [
+                {"name": r["상품명"], "count": r["cnt"], "saved": r["cat"] or "", "category": r["cat"] or _suggest_category(r["상품명"])}
+                for r in rows
+            ],
+        }
+
+    @router.post("/category-match/apply")
+    def wonbe_category_match_apply(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        items = payload.get("items") or []
+        updates = []
+        for it in items:
+            name = str((it or {}).get("name") or "")
+            cat = str((it or {}).get("category") or "")
+            if name and cat in CATEGORY_CHOICES:
+                updates.append((cat, name))
+        if not updates:
+            raise HTTPException(status_code=400, detail="적용할 카테고리가 없습니다.")
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            affected = 0
+            for u in updates:
+                affected += conn.execute(
+                    # 동시에 여러 명이 작업해도 먼저 매칭된 값을 덮어쓰지 않도록 미지정 행만 채운다.
+                    "UPDATE wonbe SET 카테고리 = ? WHERE 상품명 = ? AND COALESCE(카테고리, '') NOT IN ('상의','하의','아우터','악세사리')",
+                    u,
+                ).rowcount
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "names": len(updates), "rows": affected}
+
+    def _ensure_color_map(conn):
+        # 컬러 글자는 카테고리(상의/하의/아우터/악세사리)별로 따로 저장한다.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS wonbe_color_map2 (카테고리 TEXT NOT NULL, 색상 TEXT NOT NULL, letter TEXT NOT NULL, PRIMARY KEY (카테고리, 색상))"
+        )
+
+    def _load_label_prefixes() -> dict[str, str]:
+        """간단입고 라벨 거래처 관리의 {거래처: 접두어} (order_routes와 같은 app_settings 키·기본값)."""
+        default = {"리마인드": "R", "케이디지": "K", "리자드스탠다드": "L"}
+        raw = get_setting("simple_receiving_label_prefixes") if get_setting else None
+        if raw is None:
+            data = default
+        else:
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                data = default
+        if not isinstance(data, dict):
+            return {}
+        return {re.sub(r"\s+", "", str(k)): str(v).strip() for k, v in data.items() if str(k).strip() and str(v).strip()}
+
+    def _build_rename_plan(conn, categories=None, force=False):
+        """대표상품코드별 새 상품명 계산. 새 상품명 = 카테고리글자 + 컬러글자 + ' ' + 상품명."""
+        _init_wonbe_table(conn)
+        _ensure_color_map(conn)
+        cats = [c for c in (categories or CATEGORY_CHOICES) if c in CATEGORY_CHOICES]
+        cmap = {(r["카테고리"], r["색상"]): r["letter"] for r in conn.execute("SELECT 카테고리, 색상, letter FROM wonbe_color_map2").fetchall()}
+        # 라벨 거래처 관리(간단입고)에 접두어가 지정된 거래처 상품은 새 상품명 맨 앞에 그 접두어를 붙인다.
+        prefix_by_supplier = _load_label_prefixes()
+        rows = conn.execute(
+            """SELECT 대표상품코드, 상품명, 색상, 카테고리, 거래처 FROM wonbe
+               WHERE TRIM(COALESCE(대표상품코드, '')) != '' AND 카테고리 IN ('상의','하의','아우터','악세사리')
+                 AND TRIM(COALESCE(상품명, '')) != ''"""
+        ).fetchall()
+        no_rep_or_cat = conn.execute(
+            """SELECT COUNT(*) FROM wonbe WHERE TRIM(COALESCE(상품명, '')) != ''
+               AND (TRIM(COALESCE(대표상품코드, '')) = '' OR 카테고리 NOT IN ('상의','하의','아우터','악세사리') OR 카테고리 IS NULL)"""
+        ).fetchone()[0]
+        unmatched: set[tuple[str, str]] = set()
+        no_color = 0
+        names: dict[str, set[str]] = {}
+        old_names: dict[str, str] = {}
+        for r in rows:
+            if r["카테고리"] not in cats:
+                continue
+            base = str(r["상품명"]).strip()
+            supplier = re.sub(r"\s+", "", str(r["거래처"] or ""))
+            label_prefix = prefix_by_supplier.get(supplier, "")
+            if label_prefix:
+                # 라벨 거래처 관리에 접두어가 설정된 거래처는 카테고리/컬러 글자(BA 등) 없이 접두어만 붙인다 (예: "K 상품명").
+                # 접두어가 없는 거래처는 아래 기존 규칙(BA 등)을 따른다.
+                new = f"{label_prefix} {base}"
+            else:
+                color = str(r["색상"] or "").strip()
+                if not color:
+                    no_color += 1
+                    continue
+                letter = cmap.get((r["카테고리"], color))
+                if not letter:
+                    unmatched.add((r["카테고리"], color))
+                    continue
+                new = f"{CATEGORY_LETTER[r['카테고리']]}{letter} {base}"
+            rep = str(r["대표상품코드"]).strip()
+            names.setdefault(rep, set()).add(new)
+            old_names[rep] = base
+        items, conflicts = [], []
+        for rep, ns in names.items():
+            if len(ns) == 1:
+                items.append({"code": rep, "old": old_names[rep], "new": next(iter(ns))})
+            else:
+                conflicts.append(rep)
+        items.sort(key=lambda x: x["code"])
+        # 이미 같은 이름으로 EZAdmin에 올린 상품은 건너뛴다(변경분·신규만). force면 전부 다시 올린다.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS wonbe_name_rename_applied (code TEXT PRIMARY KEY, new_name TEXT, applied_at TEXT)"
+        )
+        applied = {r[0]: r[1] for r in conn.execute("SELECT code, new_name FROM wonbe_name_rename_applied").fetchall()}
+        already_applied = 0
+        if not force:
+            pending = [it for it in items if applied.get(it["code"]) != it["new"]]
+            already_applied = len(items) - len(pending)
+            items = pending
+        return {
+            "already_applied": already_applied,
+            "items": items, "conflicts": conflicts, "unmatched_colors": [{"category": c, "color": col} for c, col in sorted(unmatched)],
+            "no_color_rows": no_color, "skipped_no_rep_or_category": no_rep_or_cat,
+        }
+
+    @router.get("/name-rename/plan")
+    def wonbe_name_rename_plan(categories: str = "", force: bool = False, user: str = Depends(get_current_user)):
+        conn = _get_wonbe_db()
+        try:
+            plan = _build_rename_plan(conn, [c for c in categories.split(",") if c] or None, force=force)
+        finally:
+            conn.close()
+        return {"ok": True, **plan, "color_letters": list(COLOR_LETTERS), "categories": list(CATEGORY_CHOICES)}
+
+    @router.post("/name-rename/color-map")
+    def wonbe_name_rename_color_map(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        category = str(payload.get("category") or "").strip()
+        color = str(payload.get("color") or "").strip()
+        letter = str(payload.get("letter") or "").strip().upper()
+        if category not in CATEGORY_CHOICES or not color or letter not in COLOR_LETTERS:
+            raise HTTPException(status_code=400, detail="카테고리, 컬러와 A~D 중 하나를 지정해주세요.")
+        conn = _get_wonbe_db()
+        try:
+            _ensure_color_map(conn)
+            conn.execute("INSERT OR REPLACE INTO wonbe_color_map2 (카테고리, 색상, letter) VALUES (?, ?, ?)", (category, color, letter))
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True}
+
+    @router.post("/name-rename/upload")
+    async def wonbe_name_rename_upload(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        """계산된 새 상품명을 EZAdmin C620(상품일괄선택수정)에 엑셀로 업로드한다. A열=대표상품코드, B열=상품명."""
+        if not get_setting:
+            raise HTTPException(status_code=500, detail="get_setting 미설정")
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+        conn = _get_wonbe_db()
+        try:
+            plan = _build_rename_plan(conn, payload.get("categories") or None, force=bool(payload.get("force")))
+        finally:
+            conn.close()
+        if plan["unmatched_colors"]:
+            raise HTTPException(
+                status_code=400,
+                detail="매칭되지 않은 컬러가 있습니다: " + ", ".join(f"{u['category']} {u['color']}" for u in plan["unmatched_colors"]),
+            )
+        items = plan["items"]
+        # 진행도 표시를 위해 프론트가 코드 묶음(chunk)으로 나눠 올릴 수 있다 - codes가 있으면 그 상품만 올린다.
+        only_codes = payload.get("codes")
+        if only_codes:
+            wanted = {str(c) for c in only_codes}
+            items = [it for it in items if str(it["code"]) in wanted]
+        if not items:
+            raise HTTPException(status_code=400, detail="변경할 상품이 없습니다.")
+
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("Sheet1")
+        sheet.write(0, 0, "상품코드")
+        sheet.write(0, 1, "상품명")
+        for ri, it in enumerate(items, start=1):
+            sheet.write(ri, 0, it["code"])
+            sheet.write(ri, 1, it["new"])
+        buf = io.BytesIO()
+        book.save(buf)
+
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Origin": _EZADMIN_BASE,
+            "Referer": f"{_EZADMIN_BASE}/template40.htm?template=C620",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=300.0, verify=False, follow_redirects=True, cookies={"PHPSESSID": phpsessid}) as client:
+                await client.get(f"{_EZADMIN_BASE}/template40.htm", params={"template": "C620"}, headers=headers)
+                r = await client.post(
+                    f"{_EZADMIN_BASE}/template40.htm?template=C620",
+                    data={"page": "1", "action": "update2", "template": "C620", "total": "0", "status": "6"},
+                    files={"_file": ("name_rename.xls", buf.getvalue(), "application/vnd.ms-excel")},
+                    headers=headers,
+                )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"EZAdmin 업로드 실패: {exc}")
+
+        body = r.content.decode("euc-kr", errors="replace")
+        m = re.search(r"err_cnt=(\d+)", body)
+        if not m:
+            return {"ok": False, "need_session": True, "raw_preview": body[:500]}
+        err_cnt = int(m.group(1))
+        if err_cnt == 0:
+            # 오류 없이 올라간 상품은 기록해 둬서 다음번엔 변경·신규분만 올린다.
+            conn = _get_wonbe_db()
+            try:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                conn.executemany(
+                    "INSERT OR REPLACE INTO wonbe_name_rename_applied (code, new_name, applied_at) VALUES (?, ?, ?)",
+                    [(it["code"], it["new"], now) for it in items],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return {"ok": err_cnt == 0, "uploaded": len(items), "err_cnt": err_cnt, "conflicts": len(plan["conflicts"])}
+
+    rep_job: dict = {"running": False}
+
+    @router.get("/fill-rep-code/status")
+    def wonbe_fill_rep_code_status(user: str = Depends(get_current_user)):
+        return dict(rep_job)
+
+    async def _run_rep_code_job(targets: list[str], phpsessid: str):
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        sem = asyncio.Semaphore(6)
+        conn = _get_wonbe_db()
+
+        async def lookup(client: httpx.AsyncClient, code: str):
+            if rep_job["session_expired"]:
+                return
+            par = (
+                f"page=1&str_category=&template=C200&id=&action=&china_db=&s_group_id="
+                f"&multi_supply_group=&multi_supply=&str_supply_code=0&string_type=id"
+                f"&string={urllib.parse.quote(code, safe='')}&date_type=&start_date={today_str}&end_date={today_str}"
+                f"&date_period_sel=0&stock_manage=-1&e_stock=-1&e_sale=0&temp_soldout=0&tags_string="
+                f"&product_tag_include_type=1&location=-1&sync=0&pack_disable=&sel_sort=0&category=0"
+            )
+            data = {
+                "_search": "false", "nd": str(int(datetime.now().timestamp() * 1000)),
+                "rows": "100", "page": "1", "sidx": "", "sord": "asc", "readonly": "T",
+                "template": "C200", "action": "search", "par": par, "page_code": "C200",
+            }
+            try:
+                async with sem:
+                    r = await client.post(f"{_EZADMIN_BASE}/function.htm", data=data)
+                obj = r.json()
+            except ValueError:
+                rep_job["session_expired"] = True
+                return
+            except Exception:
+                rep_job["not_found"] += 1
+                return
+            finally:
+                rep_job["done"] += 1
+            ids = []
+            for row in (obj.get("rows") or []) if isinstance(obj, dict) else []:
+                pid = str((row.get("cell") or {}).get("product_id") or "").strip()
+                if pid and pid not in ids:
+                    ids.append(pid)
+            if len(ids) == 1:
+                # 아이디는 숫자 상품ID여야 한다. I100 동기화가 링크(HTML)나 빈 값을 넣어둔 행은 같이 바로잡는다.
+                conn.execute(
+                    """UPDATE wonbe SET 대표상품코드 = ?,
+                       아이디 = CASE WHEN 아이디 GLOB '[0-9]*' AND 아이디 NOT GLOB '*[^0-9]*' THEN 아이디 ELSE ? END
+                       WHERE 상품코드 = ?""",
+                    (ids[0], ids[0], code),
+                )
+                conn.commit()
+                rep_job["filled"] += 1
+            elif ids:
+                rep_job["ambiguous"] += 1
+            else:
+                rep_job["not_found"] += 1
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=60.0, verify=False, follow_redirects=True,
+                cookies={"PHPSESSID": phpsessid},
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": f"{_EZADMIN_BASE}/template40.htm?template=C200",
+                },
+            ) as client:
+                await asyncio.gather(*(lookup(client, c) for c in targets))
+        except Exception as exc:
+            rep_job["error"] = str(exc)
+        finally:
+            conn.close()
+            rep_job["running"] = False
+
+    @router.post("/fill-rep-code")
+    async def wonbe_fill_rep_code(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        """상품코드(옵션 단위)로 EZAdmin 상품조회(C200)를 검색해 대표상품코드(product_id)를 채운다.
+        백그라운드로 돌리며 진행률은 GET /fill-rep-code/status 로 조회한다.
+        payload.codes가 있으면 해당 상품코드만, 없으면 대표상품코드가 빈 행 전체가 대상."""
+        if not get_setting:
+            raise HTTPException(status_code=500, detail="get_setting 미설정")
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+        if rep_job.get("running"):
+            return {"ok": True, "already_running": True, **rep_job}
+
+        req_codes = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            if req_codes:
+                placeholders = ",".join(["?"] * len(req_codes))
+                rows = conn.execute(
+                    f"SELECT 상품코드 FROM wonbe WHERE 상품코드 IN ({placeholders})", req_codes
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT 상품코드 FROM wonbe WHERE TRIM(상품코드) != '' AND (대표상품코드 IS NULL OR 대표상품코드 = '') ORDER BY rowid DESC"
+                ).fetchall()
+        finally:
+            conn.close()
+        targets = [r["상품코드"] for r in rows]
+
+        rep_job.clear()
+        rep_job.update(
+            running=bool(targets), total=len(targets), done=0, filled=0,
+            not_found=0, ambiguous=0, session_expired=False, error="",
+        )
+        if targets:
+            asyncio.create_task(_run_rep_code_job(targets, phpsessid))
+        return {"ok": True, **rep_job}
+
     @router.post("/sync-from-ezadmin")
     async def wonbe_sync_ezadmin(
         payload: dict = Body(default={}),
@@ -2535,6 +2978,8 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             supplier_product = brand_parts[1] if len(brand_parts) > 1 else ""
             option_no = str(c.get("option_extra_column1") or "").strip()
             ezadmin_id = str(c.get("product_id") or "").strip()
+            if not ezadmin_id.isdigit():
+                ezadmin_id = ""  # I100이 숫자 대신 링크(HTML)를 주는 상품은 비워두고, 대표상품코드 채우기에서 숫자로 채운다
             supplier_combined = " ".join(p for p in [supplier_product, color, size] if p)
             name_combined = " ".join(p for p in [product_name, color, size] if p)
             data_rows.append((code, product_name, color, size, org_price, supplier, supplier_product, supplier_combined, name_combined, option_no, ezadmin_id))
@@ -3573,6 +4018,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
 
                 seen: set[str] = set()
                 shops: list[str] = []
+                notes: dict[str, list[dict]] = {}
                 for it in today_items:
                     detail_res = await client.get(
                         f"{_TOP90_BASE}/inquiry/done_detail/{it['c_idx']}/{it['l_idx']}",
@@ -3590,8 +4036,12 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                             if name and name not in seen:
                                 seen.add(name)
                                 shops.append(name)
+                            if name:
+                                found = _parse_top90_shop_replies(tr)
+                                if found:
+                                    notes.setdefault(name, []).extend(found)
 
-                return {"ok": True, "date": today, "shops": shops}
+                return {"ok": True, "date": today, "shops": shops, "notes": notes}
         except HTTPException:
             raise
         except Exception as exc:
@@ -4275,7 +4725,7 @@ def build_wonbe_read_router(*, get_current_user, get_shared_db):
                 else:
                     # 로컬 /search와 동일하게 단어별 AND 매칭 + 색상/사이즈 칼럼 포함.
                     tokens = q.split()
-                    search_columns = ["상품코드", "상품명합", "거래처합", "거래처", "색상", "사이즈"]
+                    search_columns = ["상품코드", "상품명합", "거래처합", "거래처", "거래처상품명", "색상", "사이즈"]
                     base_params = []
                     token_clauses = []
                     for token in tokens:

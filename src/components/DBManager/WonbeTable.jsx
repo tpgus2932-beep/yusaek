@@ -6,7 +6,7 @@ import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 const DEFAULT_PAGE_SIZE = 50;
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500];
 const EDITABLE_COLS = ["상품명합", "거래처합", "거래처", "거래처상품명", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"];
-const ALL_COLS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가", "지그재그상품번호", "아이디"];
+const ALL_COLS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가", "지그재그상품번호", "아이디", "대표상품코드", "카테고리"];
 const VISIBLE_COLS_STORAGE_KEY = "wonbe_visible_cols";
 const PAGE_SIZE_STORAGE_KEY = "wonbe_page_size";
 
@@ -26,6 +26,18 @@ export default function WonbeTable() {
   const [deletingByDate, setDeletingByDate] = useState(false);
   const [snoSyncing, setSnoSyncing] = useState(false);
   const [zigzagSyncing, setZigzagSyncing] = useState(false);
+  const [repCodeSyncing, setRepCodeSyncing] = useState(false);
+  const [catOpen, setCatOpen] = useState(false);
+  const [catItems, setCatItems] = useState([]);
+  const [catSaving, setCatSaving] = useState(false);
+  const [catIdx, setCatIdx] = useState(0);
+  const [catReverse, setCatReverse] = useState(false);
+  const [rnOpen, setRnOpen] = useState(false);
+  const [rnPlan, setRnPlan] = useState(null);
+  const [rnBusy, setRnBusy] = useState(false);
+  const [rnProgress, setRnProgress] = useState(null); // { done, total }
+  const [rnForce, setRnForce] = useState(false); // true면 이미 올린 상품도 전부 다시 올린다
+  const [rnCats, setRnCats] = useState(["상의", "하의", "아우터", "악세사리"]);
   const [regDateSyncing, setRegDateSyncing] = useState(false);
   const [countrySyncing, setCountrySyncing] = useState(false);
   const [countryProgress, setCountryProgress] = useState(null); // { total, done, matched }
@@ -281,6 +293,10 @@ export default function WonbeTable() {
     });
   };
 
+  // 카테고리 매칭 창은 현재 위치 근처만 그려서 수천 개 상품명에서도 가볍게 유지한다.
+  const catCur = Math.min(catIdx, Math.max(catItems.length - 1, 0));
+  const catWinStart = Math.max(0, catCur - 5);
+  const catWinEnd = Math.min(catItems.length, catCur + 40);
   const displayCols = useMemo(() => ALL_COLS.filter((c) => visibleCols.has(c)), [visibleCols]);
 
   const handleSort = (col) => {
@@ -906,6 +922,219 @@ export default function WonbeTable() {
     }
   };
 
+  const handleFillRepCode = async () => {
+    const codes = Array.from(selectedCodes);
+    setRepCodeSyncing(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/fill-rep-code`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify(codes.length ? { codes } : {}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) { setMessage("이지어드민 세션이 없습니다. EZAdmin 설정에서 PHPSESSID를 먼저 등록해주세요."); return; }
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "대표상품코드 채우기 실패");
+      const scopeNote = codes.length ? ` (체크한 ${codes.length}건 대상)` : "";
+      let st = data;
+      while (st.running) {
+        setMessage(`대표상품코드 채우는 중${scopeNote}: ${st.done}/${st.total} (${Math.round((st.done / Math.max(st.total, 1)) * 100)}%) · 채움 ${st.filled} · 미조회 ${st.not_found} · 중복 ${st.ambiguous}`);
+        await new Promise((r) => setTimeout(r, 1000));
+        const sr = await fetch(`${API}/wonbe/fill-rep-code/status`, { headers: getAuthHeaders() });
+        st = await sr.json().catch(() => ({ running: false }));
+      }
+      if (st.error) throw new Error(`대표상품코드 채우기 오류: ${st.error}`);
+      setMessage(
+        `대표상품코드 채우기 완료${scopeNote}: ${st.total}건 중 ${st.filled}건 채움 · 미조회 ${st.not_found} · 중복 ${st.ambiguous}` +
+        (st.session_expired ? " · 세션 만료로 중단됨(PHPSESSID 재등록 필요)" : "")
+      );
+      await fetchRows(query, offset, emptyCol);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setRepCodeSyncing(false);
+    }
+  };
+
+  const loadCategoryItems = async (reverse) => {
+    const res = await fetch(`${API}/wonbe/category-match/names`, { headers: getAuthHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data?.detail || "상품명 목록 조회 실패");
+    setCatItems(reverse ? [...data.items].reverse() : data.items);
+    setCatIdx(0);
+  };
+
+  const openCategoryMatch = async () => {
+    setMessage("");
+    try {
+      // 마지막 단어 규칙으로 정해지는 상품명은 먼저 자동 저장하고, 사람이 골라야 할 것만 목록에 띄운다.
+      await fetch(`${API}/wonbe/category-match/auto-apply`, { method: "POST", headers: getAuthHeaders() });
+      await loadCategoryItems(catReverse);
+      setCatOpen(true);
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  // 다른 사람이 이미 매칭한 상품명을 빼고 목록을 다시 불러온다 (동시 작업용).
+  const refreshCategoryItems = async (reverse = catReverse) => {
+    try {
+      await loadCategoryItems(reverse);
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const setCatOf = (name, category) =>
+    setCatItems((prev) => prev.map((it) => (it.name === name ? { ...it, category: it.category === category ? "" : category } : it)));
+
+  const applyCategoryMatch = useCallback(async () => {
+    const idx = Math.min(catIdx, catItems.length - 1);
+    const cur = catItems[idx];
+    if (!cur) { setCatOpen(false); return; }
+    if (!cur.category) { setMessage(`"${cur.name}"의 카테고리를 먼저 선택해주세요.`); return; }
+    setCatSaving(true);
+    try {
+      const res = await fetch(`${API}/wonbe/category-match/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ items: [{ name: cur.name, category: cur.category }] }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "카테고리 매칭 실패");
+      setMessage(data.rows ? `카테고리 매칭: "${cur.name}" → ${cur.category} (${data.rows}행 반영)` : `"${cur.name}"은(는) 이미 다른 곳에서 매칭돼 건너뜁니다.`);
+      const rest = catItems.filter((it) => it.name !== cur.name);
+      setCatItems(rest);
+      setCatIdx(Math.min(idx, Math.max(rest.length - 1, 0)));
+      if (!rest.length) {
+        setCatOpen(false);
+        await fetchRows(query, offset, emptyCol);
+      }
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setCatSaving(false);
+    }
+  }, [catItems, catIdx, fetchRows, query, offset, emptyCol]);
+
+  const closeCategoryMatch = () => {
+    setCatOpen(false);
+    fetchRows(query, offset, emptyCol);
+  };
+
+  useEffect(() => {
+    if (!catOpen) return undefined;
+    const onKey = (e) => {
+      if (e.key === "F9") { e.preventDefault(); if (!catSaving) applyCategoryMatch(); }
+      else if (e.key === "Escape") closeCategoryMatch();
+      else if (e.key === "ArrowDown") { e.preventDefault(); setCatIdx((i) => Math.min(i + 1, Math.max(catItems.length - 1, 0))); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); setCatIdx((i) => Math.max(i - 1, 0)); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [catOpen, catSaving, applyCategoryMatch, catItems.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadRenamePlan = async (cats = rnCats, force = rnForce) => {
+    const res = await fetch(`${API}/wonbe/name-rename/plan?categories=${encodeURIComponent(cats.join(","))}&force=${force}`, { headers: getAuthHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data?.detail || "상품명 변경 계산 실패");
+    setRnPlan(data);
+  };
+
+  const openRename = async () => {
+    setMessage("");
+    try {
+      await loadRenamePlan();
+      setRnOpen(true);
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const toggleRnCat = async (cat) => {
+    const next = rnCats.includes(cat) ? rnCats.filter((c) => c !== cat) : [...rnCats, cat];
+    setRnCats(next);
+    if (!next.length) return;
+    setRnBusy(true);
+    try {
+      await loadRenamePlan(next);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setRnBusy(false);
+    }
+  };
+
+  const toggleRnForce = async () => {
+    const next = !rnForce;
+    setRnForce(next);
+    setRnBusy(true);
+    try {
+      await loadRenamePlan(rnCats, next);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setRnBusy(false);
+    }
+  };
+
+  const setColorLetter = async (category, color, letter) => {
+    setRnBusy(true);
+    try {
+      const res = await fetch(`${API}/wonbe/name-rename/color-map`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ category, color, letter }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "컬러 매칭 저장 실패");
+      await loadRenamePlan();
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setRnBusy(false);
+    }
+  };
+
+  const uploadRename = async () => {
+    if (!rnPlan?.items?.length) return;
+    if (!window.confirm(`[${rnCats.join(", ")}] EZAdmin 상품 ${rnPlan.items.length}개의 상품명을 변경합니다. (실제 상품명이 바뀝니다)
+진행하시겠습니까?`)) return;
+    setRnBusy(true);
+    const codes = rnPlan.items.map((it) => it.code);
+    const chunkSize = 200;
+    let uploaded = 0;
+    let errCnt = 0;
+    setRnProgress({ done: 0, total: codes.length });
+    try {
+      for (let i = 0; i < codes.length; i += chunkSize) {
+        const res = await fetch(`${API}/wonbe/name-rename/upload`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+          body: JSON.stringify({ categories: rnCats, codes: codes.slice(i, i + chunkSize), force: rnForce }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (data?.need_session) {
+          setMessage(`이지어드민 세션이 없거나 만료됐습니다. EZAdmin 설정에서 PHPSESSID를 등록해주세요. (${uploaded}/${codes.length}개 업로드됨)`);
+          return;
+        }
+        if (!res.ok) throw new Error(`${data?.detail || "상품명 일괄변경 실패"} (${uploaded}/${codes.length}개 업로드됨)`);
+        uploaded += data.uploaded || 0;
+        errCnt += data.err_cnt || 0;
+        setRnProgress({ done: Math.min(i + chunkSize, codes.length), total: codes.length });
+      }
+      setMessage(errCnt === 0
+        ? `상품명 일괄변경 완료: ${uploaded}개 업로드 · EZAdmin 오류 0건`
+        : `상품명 일괄변경 업로드됨(${uploaded}개) · EZAdmin 오류 ${errCnt}건 — C620 화면에서 확인해주세요`);
+      if (errCnt === 0) setRnOpen(false);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setRnBusy(false);
+      setRnProgress(null);
+    }
+  };
+
   const handleSyncRegistrationDate = async () => {
     const codes = Array.from(selectedCodes);
     setRegDateSyncing(true);
@@ -1368,6 +1597,15 @@ export default function WonbeTable() {
         <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncZigzagId} disabled={loading || zigzagSyncing} title={selectedCodes.size ? `체크한 ${selectedCodes.size}건만 동기화합니다` : "상품명으로 지그재그 상품과 매칭해 지그재그상품번호를 채웁니다 (체크하면 체크한 건만 진행)"}>
           <RefreshCcw size={13} />{zigzagSyncing ? "동기화 중..." : "지그재그상품번호 채우기"}
         </button>
+        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleFillRepCode} disabled={loading || repCodeSyncing} title={selectedCodes.size ? `체크한 ${selectedCodes.size}건만 채웁니다` : "대표상품코드가 비어있는 전체 상품을 EZAdmin에서 조회해 채웁니다 (체크하면 체크한 건만 진행)"}>
+          <RefreshCcw size={13} />{repCodeSyncing ? "채우는 중..." : "대표상품코드 채우기"}
+        </button>
+        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={openRename} disabled={loading} title="카테고리(상의 A/하의 B/아우터 C)+컬러 글자를 상품명 앞에 붙여 EZAdmin 상품명을 일괄 변경합니다">
+          상품명 일괄변경
+        </button>
+        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={openCategoryMatch} disabled={loading} title="유니크한 상품명을 상의/하의/아우터로 분류해 카테고리를 채웁니다 (F9로 적용)">
+          카테고리 매칭
+        </button>
         <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncRegistrationDate} disabled={loading || regDateSyncing} title={selectedCodes.size ? `체크한 ${selectedCodes.size}건만 채웁니다` : "전체 상품을 대상으로 채웁니다 (체크하면 체크한 건만 진행)"}>
           <RefreshCcw size={13} />{regDateSyncing ? "채우는 중..." : "등록일 채우기"}
         </button>
@@ -1560,6 +1798,109 @@ export default function WonbeTable() {
           </select>
         </div>
       </div>
+      {catOpen && (
+        <div className={styles.catOverlay} onClick={closeCategoryMatch}>
+          <div className={styles.catModal} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.catHeader}>
+              <strong>카테고리 매칭</strong>
+              <span>남은 상품명 {catItems.length}개 · 체크 후 F9 = 적용하고 다음 상품으로 · ↑↓ 이동 · Esc 닫기</span>
+              <span>
+                <label><input type="checkbox" checked={catReverse} onChange={(e) => { setCatReverse(e.target.checked); refreshCategoryItems(e.target.checked); }} /> 밑에서부터(역순)</label>
+                {" "}<button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => refreshCategoryItems()}>새로고침</button>
+              </span>
+            </div>
+            <div className={styles.catList}>
+              {catItems.length === 0 && <div className={styles.catEmpty}>매칭할 상품명이 없습니다.</div>}
+              {catWinStart > 0 && <div className={styles.catEmpty}>위에 {catWinStart}개 더 있음 (↑로 이동)</div>}
+              {catItems.slice(catWinStart, catWinEnd).map((it, k) => {
+                const i = catWinStart + k;
+                return (
+                <div key={it.name} className={`${styles.catRow} ${i === catCur ? styles.catRowCur : ""}`} onClick={() => setCatIdx(i)} ref={i === catCur ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}>
+                  <span className={styles.catName}>{it.name} <em>({it.count})</em></span>
+                  {["상의", "하의", "아우터", "악세사리"].map((c) => (
+                    <label key={c} className={styles.catOpt}>
+                      <input type="checkbox" checked={it.category === c} onChange={() => setCatOf(it.name, c)} />{c}
+                    </label>
+                  ))}
+                </div>
+                );
+              })}
+              {catWinEnd < catItems.length && <div className={styles.catEmpty}>아래에 {catItems.length - catWinEnd}개 더 있음 (↓로 이동)</div>}
+            </div>
+            <div className={styles.catFooter}>
+              <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={closeCategoryMatch}>닫기</button>
+              <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={applyCategoryMatch} disabled={catSaving}>
+                {catSaving ? "적용 중..." : "적용하고 다음 (F9)"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {rnOpen && rnPlan && (
+        <div className={styles.catOverlay} onClick={() => setRnOpen(false)}>
+          <div className={styles.catModal} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.catHeader}>
+              <strong>상품명 일괄변경</strong>
+              <span>
+                변경할 카테고리:{" "}
+                {["상의", "하의", "아우터", "악세사리"].map((c) => (
+                  <label key={c} style={{ marginRight: 10 }}>
+                    <input type="checkbox" checked={rnCats.includes(c)} disabled={rnBusy} onChange={() => toggleRnCat(c)} /> {c}
+                  </label>
+                ))}
+              </span>
+              <label>
+                <input type="checkbox" checked={rnForce} disabled={rnBusy} onChange={toggleRnForce} /> 이미 올린 상품도 전부 다시 올리기
+              </label>
+              <span>
+                변경 대상 {rnPlan.items.length}개 · 이미 반영 {rnPlan.already_applied || 0}개 제외 · 컬러 미매칭 {rnPlan.unmatched_colors.length}개 · 충돌 {rnPlan.conflicts.length}개 ·
+                제외(대표상품코드/카테고리 없음) {rnPlan.skipped_no_rep_or_category}행
+              </span>
+            </div>
+            <div className={styles.catList}>
+              {rnPlan.unmatched_colors.length > 0 ? (
+                <>
+                  <div className={styles.catEmpty}>매칭 안 된 컬러를 먼저 A~D로 지정해주세요. 카테고리별로 따로 지정하며, 한 번 지정하면 같은 카테고리의 같은 컬러는 모두 같은 글자가 됩니다.</div>
+                  {rnPlan.unmatched_colors.map((u) => (
+                    <div key={`${u.category}|${u.color}`} className={styles.catRow}>
+                      <span className={styles.catName}>[{u.category}] {u.color}</span>
+                      {rnPlan.color_letters.map((l) => (
+                        <button key={l} className={`${styles.btn} ${styles.btnSecondary}`} disabled={rnBusy} onClick={() => setColorLetter(u.category, u.color, l)}>{l}</button>
+                      ))}
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <>
+                  {rnPlan.items.length === 0 && <div className={styles.catEmpty}>{rnPlan.already_applied > 0 ? "변경·신규 상품이 없습니다. (모두 이미 반영됨)" : "변경할 상품이 없습니다. (대표상품코드/카테고리를 먼저 채워주세요)"}</div>}
+                  {rnPlan.items.slice(0, 200).map((it) => (
+                    <div key={it.code} className={styles.catRow}>
+                      <span className={styles.catName}>{it.code} · {it.old} → <strong>{it.new}</strong></span>
+                    </div>
+                  ))}
+                  {rnPlan.items.length > 200 && <div className={styles.catEmpty}>... 외 {rnPlan.items.length - 200}개</div>}
+                </>
+              )}
+            </div>
+            <div className={styles.catFooter}>
+              {rnProgress && (
+                <div style={{ flex: 1, minWidth: 160 }}>
+                  <div style={{ fontSize: 12, marginBottom: 4 }}>
+                    업로드 중 {rnProgress.done} / {rnProgress.total}개 ({Math.round((rnProgress.done / rnProgress.total) * 100)}%)
+                  </div>
+                  <div style={{ height: 8, borderRadius: 4, background: "rgba(128,128,128,0.25)", overflow: "hidden" }}>
+                    <div style={{ width: `${(rnProgress.done / rnProgress.total) * 100}%`, height: "100%", background: "#2563eb", transition: "width 0.3s" }} />
+                  </div>
+                </div>
+              )}
+              <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setRnOpen(false)} disabled={rnBusy}>닫기</button>
+              <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={uploadRename} disabled={rnBusy || !rnCats.length || rnPlan.unmatched_colors.length > 0 || rnPlan.items.length === 0}>
+                {rnBusy ? "처리 중..." : "EZAdmin에 업로드"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

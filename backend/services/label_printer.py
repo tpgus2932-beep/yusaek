@@ -128,7 +128,7 @@ def _wrap(draw, text: str, font, max_w: float) -> list[str]:
     return lines
 
 
-def render_label(title: str, option: str, code: str) -> Image.Image:
+def render_label(title: str, option: str, code: str, client_line: str = "") -> Image.Image:
     """바코드 인쇄.pdf(39.88x29.97mm) 레이아웃을 pt 좌표 그대로 재현한다."""
     s = RENDER_DPI / 72  # pt -> px
     w, h = round(PAGE_W_PT * s), round(PAGE_H_PT * s)
@@ -146,13 +146,20 @@ def render_label(title: str, option: str, code: str) -> Image.Image:
     bar_h = BAR_VIEW_H * scale
     bar_w = modules * BAR_UNIT * scale
 
+    client_lines = _wrap(d, client_line, f_opt, inner_w * s) if client_line else []
+    client_block = len(client_lines) * OPTION_LINE_PT + (OPTION_GAP_PT if client_lines else 0)
     opt_block = (OPTION_GAP_PT + OPTION_LINE_PT) if option else 0
-    block_h = len(title_lines) * TITLE_LINE_PT + opt_block + BARCODE_GAP_PT + bar_h
+    block_h = len(title_lines) * TITLE_LINE_PT + client_block + opt_block + BARCODE_GAP_PT + bar_h
     y = (PAGE_H_PT - block_h) / 2  # 세로 가운데 정렬 (flex center)
 
     for line in title_lines:
         d.text((w / 2, y * s), line, font=f_title, fill=0, anchor="ma")
         y += TITLE_LINE_PT
+    if client_lines:
+        y += OPTION_GAP_PT
+        for line in client_lines:
+            d.text((w / 2, y * s), line, font=f_opt, fill=0, anchor="ma")
+            y += OPTION_LINE_PT
     if option:
         y += OPTION_GAP_PT
         d.text((w / 2, y * s), option, font=f_opt, fill=0, anchor="ma")
@@ -199,7 +206,7 @@ def print_labels(labels: list[dict], printer: str = "") -> int:
         ph = dc.GetDeviceCaps(win32con.VERTRES)
         dc.StartDoc("상품 바코드 라벨")
         for l in valid:
-            img = render_label(str(l.get("title") or ""), str(l.get("option") or ""), str(l["code"]))
+            img = render_label(str(l.get("title") or ""), str(l.get("option") or ""), str(l["code"]), str(l.get("clientLine") or ""))
             img = img.resize((pw, ph), Image.LANCZOS).convert("RGB")
             dc.StartPage()
             ImageWin.Dib(img).draw(dc.GetHandleOutput(), (0, 0, pw, ph))

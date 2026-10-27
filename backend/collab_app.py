@@ -205,6 +205,7 @@ app.include_router(
         get_shared_db=_get_shared_db,
         get_user_display=_get_user_display,
         is_render=bool(os.environ.get("RENDER", "")),
+        get_current_user=_get_current_user,
     )
 )
 

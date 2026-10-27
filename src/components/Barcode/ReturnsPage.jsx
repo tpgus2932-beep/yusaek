@@ -6,6 +6,7 @@ import { getDownloadFilename } from '../../lib/download';
 import { useEzadminSession } from '../../lib/EzadminSessionContext';
 
 import { LOCAL_API_BASE as API, getAuthHeaders } from '../../lib/api';
+import { decorateLabels } from '../../lib/decorateLabels';
 
 // 이 PC에서 실행 중인 인쇄 에이전트 (backend/print_agent)
 const LOCAL_PRINT_AGENT = 'http://127.0.0.1:8765';
@@ -38,6 +39,8 @@ const EMPTY_QUEUES = {
     all: [],
 };
 
+const DEFECT_TABS = ['A', 'B', 'C'];
+
 const normalizeQueues = (queues) => ({ ...EMPTY_QUEUES, ...(queues || {}) });
 
 const PROCESSING_LOG_ACTIONS = [
@@ -45,7 +48,7 @@ const PROCESSING_LOG_ACTIONS = [
     ['reason_change_sms', '일반사유변경(문자)'],
     ['reason_change_no_sms', '일반사유변경(문자없이)'],
     ['ezadmin_stockin', '이지어드민 입고처리'],
-    ['kimsungil_send', '김승일보내기'],
+    ['kimsungil_send', '불량관리보내기'],
     ['exchange_change_product', '교환처리 실행'],
     ['delete', '선택삭제'],
 ];
@@ -112,6 +115,7 @@ const ReturnsPage = () => {
     const [stockinLoading, setStockinLoading] = useState(false);
     const [stockinResults, setStockinResults] = useState(null);
     const [kimsungilSendLoading, setKimsungilSendLoading] = useState(false);
+    const [defectTabPicker, setDefectTabPicker] = useState(null); // { counts, resolve }
     const [regatherExecuteLoading, setRegatherExecuteLoading] = useState(false);
     const [regatherItems, setRegatherItems] = useState([]);
     const [regatherLoading, setRegatherLoading] = useState(false);
@@ -744,8 +748,9 @@ const ReturnsPage = () => {
     }, [serverPrint, fetchServerPrinters]);
 
     // 상품명 / [옵션] / 상품코드 바코드 라벨 인쇄 (image.png 레이아웃 참고)
-    const printProductLabels = (labels) => {
-        const valid = labels.filter((l) => l.code);
+    const printProductLabels = async (rawLabels) => {
+        // 라벨 거래처 관리의 접두어·(거래처상품명)을 반품/교환 라벨에도 똑같이 적용한다.
+        const valid = (await decorateLabels(rawLabels)).filter((l) => l.code);
         if (!valid.length) return;
         if (serverPrint) {
             // 이 PC(에이전트) 또는 백엔드 PC의 프린터로 대화상자 없이 직접 출력, 실패하면 브라우저 인쇄로 대체
@@ -776,6 +781,7 @@ const ReturnsPage = () => {
         const cardsHtml = valid.map((l) => `
             <div class="card">
                 <div class="title">${escapeHtml(l.title)}</div>
+                ${l.clientLine ? `<div class="client">${escapeHtml(l.clientLine)}</div>` : ''}
                 <div class="option"${l.option ? '' : ' style="visibility:hidden"'}>${l.option ? escapeHtml(l.option) : '-'}</div>
                 <div class="barcode">${buildBarcodeSvgMarkup(l.code)}</div>
             </div>
@@ -800,6 +806,7 @@ body { background: #fff; font-family: sans-serif; }
 .card:last-child { page-break-after: auto; break-after: auto; }
 .title { font-size: 9pt; font-weight: 700; line-height: 1.2; color: #111; }
 .option { font-size: 8pt; margin-top: 0.8mm; color: #111; }
+.client { font-size: 8pt; margin-top: 0.8mm; color: #111; line-height: 1.2; }
 .barcode { margin-top: 1.5mm; width: 100%; }
 .barcode svg { width: 100%; height: 8mm; display: block; }
 </style>
@@ -960,15 +967,43 @@ body { background: #fff; font-family: sans-serif; }
         });
     };
 
+    // 불량관리로 보낼 탭(A/B/C)을 고르는 모달 - 탭별 현재 수량을 함께 보여준다.
+    const pickDefectTab = async () => {
+        const counts = { A: null, B: null, C: null };
+        const resolverBox = {};
+        const promise = new Promise((resolve) => { resolverBox.resolve = resolve; });
+        setDefectTabPicker({ counts: { ...counts }, resolve: resolverBox.resolve });
+        await Promise.all(DEFECT_TABS.map(async (tab) => {
+            try {
+                const res = await fetch(`${API}/barcode/kimsungil/list`, {
+                    headers: { ...getAuthHeaders(), 'X-Defect-Tab': tab },
+                });
+                const data = await res.json().catch(() => ({}));
+                counts[tab] = (data.kimsungil || []).reduce((sum, i) => sum + (Number(i.count) || 0), 0);
+            } catch {
+                counts[tab] = '?';
+            }
+            setDefectTabPicker((prev) => (prev ? { ...prev, counts: { ...counts } } : prev));
+        }));
+        return promise;
+    };
+
+    const closeDefectTabPicker = (tab) => {
+        defectTabPicker?.resolve(tab);
+        setDefectTabPicker(null);
+    };
+
     const handleSendToKimsungil = async (selectedItems, queue) => {
         if (!selectedItems || !selectedItems.length) return;
+        const defectTab = await pickDefectTab();
+        if (!defectTab) return;
         setKimsungilSendLoading(true);
         setMessage('');
         try {
             const codeMap = await resolveProductCodes(selectedItems);
             const entries = Object.entries(codeMap).filter(([, code]) => code);
             if (!entries.length) {
-                setMessage('상품코드를 찾지 못해 김승일보내기를 할 수 없습니다.');
+                setMessage('상품코드를 찾지 못해 불량관리보내기를 할 수 없습니다.');
                 return;
             }
             let sent = 0;
@@ -980,7 +1015,7 @@ body { background: #fff; font-family: sans-serif; }
                 const src = selectedItems.find((i) => i.id === id) || {};
                 const res = await fetch(`${API}/barcode/kimsungil/add`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders(), 'X-Defect-Tab': defectTab },
                     body: JSON.stringify({ code }),
                 });
                 if (res.ok) {
@@ -1001,12 +1036,12 @@ body { background: #fff; font-family: sans-serif; }
             }
             applyItemFlags(flagsById);
             if (queue === 'seller' || queue === 'exchange_seller') {
-                logProcessingActions(queue, 'kimsungil_send', '김승일보내기', logEntries);
+                logProcessingActions(queue, 'kimsungil_send', '불량관리보내기', logEntries);
             }
             if (labels.length) printProductLabels(labels);
-            setMessage(`김승일보내기 완료: ${sent}/${entries.length}건`);
+            setMessage(`불량관리보내기 완료: ${sent}/${entries.length}건`);
         } catch (err) {
-            setMessage(err.message || '김승일보내기 실패');
+            setMessage(err.message || '불량관리보내기 실패');
         } finally {
             setKimsungilSendLoading(false);
         }
@@ -1045,6 +1080,41 @@ body { background: #fff; font-family: sans-serif; }
         } catch (err) {
             setMessage(err.message || '추가 실패');
         }
+    };
+
+    const formatRegatherTime = (iso) => {
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return iso || '';
+        const p = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    };
+
+    const resendSaveTimers = useRef({});
+
+    const saveResendInvoice = async (id, value) => {
+        try {
+            const res = await fetch(`${API}/return-regathering/${id}/resend-invoice`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ resend_invoice: value.trim() }),
+            });
+            if (!res.ok) throw new Error('반송송장 저장 실패');
+        } catch (err) {
+            setMessage(err.message || '반송송장 저장 실패');
+        }
+    };
+
+    const handleResendInvoiceChange = (id, value) => {
+        setRegatherItems((prev) => prev.map((r) => (r.id === id ? { ...r, resend_invoice: value } : r)));
+        clearTimeout(resendSaveTimers.current[id]);
+        resendSaveTimers.current[id] = setTimeout(() => saveResendInvoice(id, value), 500);
+    };
+
+    const flushResendInvoice = (id, value) => {
+        if (!resendSaveTimers.current[id]) return;
+        clearTimeout(resendSaveTimers.current[id]);
+        delete resendSaveTimers.current[id];
+        saveResendInvoice(id, value);
     };
 
     const handleCompleteRegather = async (id) => {
@@ -1466,9 +1536,11 @@ body { background: #fff; font-family: sans-serif; }
                 .map((p) => ({ item, product: p }))
         );
         if (!entries.length) {
-            setMessage('상품코드를 찾지 못해 김승일보내기를 할 수 없습니다. 먼저 "CS 조회"를 실행하세요.');
+            setMessage('상품코드를 찾지 못해 불량관리보내기를 할 수 없습니다. 먼저 "CS 조회"를 실행하세요.');
             return;
         }
+        const defectTab = await pickDefectTab();
+        if (!defectTab) return;
         setKimsungilSendLoading(true);
         setMessage('');
         try {
@@ -1479,7 +1551,7 @@ body { background: #fff; font-family: sans-serif; }
                 const code = product.product_id;
                 const res = await fetch(`${API}/barcode/kimsungil/add`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders(), 'X-Defect-Tab': defectTab },
                     body: JSON.stringify({ code }),
                 });
                 const optionRaw = [product.color, product.size].filter(Boolean).join('/');
@@ -1498,9 +1570,9 @@ body { background: #fff; font-family: sans-serif; }
             }
             applyItemFlags(flagsById);
             if (labels.length) printProductLabels(labels);
-            setMessage(`김승일보내기 완료: ${sent}/${entries.length}건`);
+            setMessage(`불량관리보내기 완료: ${sent}/${entries.length}건`);
         } catch (err) {
-            setMessage(err.message || '김승일보내기 실패');
+            setMessage(err.message || '불량관리보내기 실패');
         } finally {
             setKimsungilSendLoading(false);
         }
@@ -2507,7 +2579,7 @@ body { background: #fff; font-family: sans-serif; }
                                         onClick={() => handleSendToKimsungil(queues.seller.filter((i) => selectedSeller.has(i.id)), 'seller')}
                                         disabled={kimsungilSendLoading || selectedSeller.size === 0}
                                     >
-                                        {kimsungilSendLoading ? '처리 중...' : `김승일보내기 (${selectedSeller.size}건 선택)`}
+                                        {kimsungilSendLoading ? '처리 중...' : `불량관리보내기 (${selectedSeller.size}건 선택)`}
                                     </button>
                                     <button
                                         type="button"
@@ -2577,7 +2649,7 @@ body { background: #fff; font-family: sans-serif; }
                                                 onClick={() => handleSendToKimsungil(items.filter((i) => selectedCustomer.has(i.id)))}
                                                 disabled={kimsungilSendLoading || selectedCustomer.size === 0}
                                             >
-                                                {kimsungilSendLoading ? '처리 중...' : `김승일보내기 (${selectedCustomer.size}건 선택)`}
+                                                {kimsungilSendLoading ? '처리 중...' : `불량관리보내기 (${selectedCustomer.size}건 선택)`}
                                             </button>
                                             <button
                                                 type="button"
@@ -2737,6 +2809,7 @@ body { background: #fff; font-family: sans-serif; }
                                                     <th>상품명</th>
                                                     <th>전화번호</th>
                                                     <th>신청일시</th>
+                                                    <th>반송송장</th>
                                                     <th>완료처리</th>
                                                 </tr>
                                             </thead>
@@ -2747,7 +2820,17 @@ body { background: #fff; font-family: sans-serif; }
                                                         <td>{r.return_invoice}</td>
                                                         <td>{r.goods_name}</td>
                                                         <td>{r.buyer_tel}</td>
-                                                        <td>{r.requested_at}</td>
+                                                        <td>{formatRegatherTime(r.requested_at)}</td>
+                                                        <td>
+                                                            <input
+                                                                placeholder="반송송장 입력"
+                                                                value={r.resend_invoice || ''}
+                                                                onChange={(e) => handleResendInvoiceChange(r.id, e.target.value)}
+                                                                onBlur={(e) => flushResendInvoice(r.id, e.target.value)}
+                                                                onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                                                                style={{ padding: '0.3rem 0.5rem', width: '140px' }}
+                                                            />
+                                                        </td>
                                                         <td>
                                                             <button
                                                                 type="button"
@@ -2782,7 +2865,7 @@ body { background: #fff; font-family: sans-serif; }
                                                 onClick={() => handleSendToKimsungil(queues.exchange_seller.filter((i) => selectedExchangeSeller.has(i.id)), 'exchange_seller')}
                                                 disabled={kimsungilSendLoading || selectedExchangeSeller.size === 0}
                                             >
-                                                {kimsungilSendLoading ? '처리 중...' : `김승일보내기 (${selectedExchangeSeller.size}건 선택)`}
+                                                {kimsungilSendLoading ? '처리 중...' : `불량관리보내기 (${selectedExchangeSeller.size}건 선택)`}
                                             </button>
                                             <button
                                                 type="button"
@@ -2895,7 +2978,7 @@ body { background: #fff; font-family: sans-serif; }
                                         onClick={() => handleUnmatchedSendToKimsungil(selectedUnmatched)}
                                         disabled={kimsungilSendLoading || selectedUnmatched.size === 0}
                                     >
-                                        {kimsungilSendLoading ? '처리 중...' : `김승일보내기 (${selectedUnmatched.size})`}
+                                        {kimsungilSendLoading ? '처리 중...' : `불량관리보내기 (${selectedUnmatched.size})`}
                                     </button>
                                     <button
                                         type="button"
@@ -3367,6 +3450,38 @@ body { background: #fff; font-family: sans-serif; }
                         alt="확대 사진"
                         style={{ maxWidth: '90vw', maxHeight: '90vh', objectFit: 'contain', borderRadius: 8 }}
                     />
+                </div>
+            )}
+
+            {defectTabPicker && (
+                <div
+                    onClick={() => closeDefectTabPicker(null)}
+                    style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ background: 'var(--bg-primary, #fff)', borderRadius: 8, width: 'min(420px, 90vw)', padding: 16 }}
+                    >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                            <strong>불량관리 탭 선택</strong>
+                            <button type="button" onClick={() => closeDefectTabPicker(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>×</button>
+                        </div>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                            {DEFECT_TABS.map((tab) => (
+                                <button
+                                    key={tab}
+                                    type="button"
+                                    onClick={() => closeDefectTabPicker(tab)}
+                                    style={{ flex: 1, padding: '14px 8px', borderRadius: 8, border: '1px solid var(--border-color, #d1d5db)', background: 'var(--bg-secondary, #f9fafb)', cursor: 'pointer', fontWeight: 700 }}
+                                >
+                                    <div style={{ fontSize: 18 }}>{tab}탭</div>
+                                    <div style={{ fontSize: 13, fontWeight: 500, marginTop: 4 }}>
+                                        {defectTabPicker.counts[tab] === null ? '조회 중...' : `${defectTabPicker.counts[tab]}개`}
+                                    </div>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
                 </div>
             )}
 

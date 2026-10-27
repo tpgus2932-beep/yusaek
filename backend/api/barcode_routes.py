@@ -63,6 +63,8 @@ def build_barcode_router(
     get_user_display,
     get_shared_db,
     get_db,
+    get_all_tabs_defect_summon_counts=None,
+    get_all_tabs_defect_counts=None,
 ):
     router = APIRouter(dependencies=[Depends(bind_defect_tab)])
     _DEFECT_BASE_HEADERS = ["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]
@@ -1423,6 +1425,15 @@ def build_barcode_router(
             return {"ok": False, "need_session": True}
 
         ezadmin_found = bool(packlist_data.get("rows"))
+        prd_seqs: list[str] = []
+        for row in (packlist_data.get("rows") or []):
+            try:
+                row_data = json.loads((row.get("cell") or {}).get("data_row") or "{}")
+            except (TypeError, ValueError):
+                continue
+            prd_seq = str(row_data.get("prd_seq") or "").strip()
+            if prd_seq and prd_seq not in prd_seqs:
+                prd_seqs.append(prd_seq)
         items, product_qty = _extract_ably_order_items(packlist_data)
         sno_list = [item["sno"] for item in items]
         ably_found = bool(sno_list)
@@ -1460,7 +1471,83 @@ def build_barcode_router(
             "ably_found": ably_found,
             "products": products,
             "sno_list": sno_list,
+            "prd_seqs": prd_seqs,
         }
+
+    @router.post("/barcode/invoice/cancel-pack")
+    async def barcode_invoice_cancel_pack(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        """E900 주문 상품 취소처리 (cancel_pack). 상품 줄(prd_seq)마다 보관위치를 조회한 뒤 취소한다."""
+        seq = str(payload.get("pack") or payload.get("seq") or "").strip()
+        prd_seqs = [str(p).strip() for p in (payload.get("prd_seqs") or []) if str(p).strip()]
+        if not seq or not prd_seqs:
+            raise HTTPException(status_code=400, detail="pack과 prd_seqs 값이 필요합니다.")
+
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        cookies = {"PHPSESSID": phpsessid}
+        ez_headers = _ez_invoice_headers()
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        results = []
+        async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+            for prd_seq in prd_seqs:
+                try:
+                    loc_res = await client.post(
+                        f"{_EZADMIN_BASE}/function.htm",
+                        data={
+                            "template": "E900", "action": "find_multilocation",
+                            "prd_seq": prd_seq, "timeFlag": _ez_time_flag_ms(datetime.now()),
+                        },
+                        cookies=cookies, headers=ez_headers,
+                    )
+                    if _looks_like_ez_session_error(loc_res, (loc_res.text or "").strip()):
+                        return {"ok": False, "need_session": True}
+                    try:
+                        loc_data = loc_res.json()
+                    except Exception:
+                        loc_data = {}
+                    location = str(loc_data.get("location") or "")
+                    expire_date = str(loc_data.get("expire_date") or today)
+
+                    cancel_res = await client.post(
+                        f"{_EZADMIN_BASE}/function.htm",
+                        data={
+                            "template": "E900", "action": "cancel_pack",
+                            "seq": seq, "prdSeq": prd_seq, "cs_reason": "",
+                            "restockin": "0", "restockin_ex": "0", "restockin_bad": "0",
+                            "return_comp": "0", "site_p": "", "envelop_p": "", "account_p": "",
+                            "notget_p": "", "notget_p2": "0", "trans_corp": "30079", "trans_no": "",
+                            "memo": "", "trans_price": "", "content": "", "do_complete": "0",
+                            "callid": "", "confirm_refund": "0", "send_msg": "0",
+                            "multi_location": location, "expire_date": expire_date,
+                            "auto_expire_date": "1",
+                            "timeFlag": _ez_time_flag_ms(datetime.now()),
+                        },
+                        cookies=cookies, headers=ez_headers,
+                    )
+                    body = (cancel_res.text or "").strip()
+                    if _looks_like_ez_session_error(cancel_res, body):
+                        return {"ok": False, "need_session": True}
+                    try:
+                        cancel_data = cancel_res.json()
+                    except Exception:
+                        cancel_data = {}
+                    error_code = cancel_data.get("error") if isinstance(cancel_data, dict) else None
+                    ok = cancel_res.status_code < 400 and str(error_code) in ("0", "None")
+                    results.append({"prd_seq": prd_seq, "ok": ok, "error": None if ok else body[:200]})
+                except Exception as exc:
+                    results.append({"prd_seq": prd_seq, "ok": False, "error": str(exc)})
+
+        all_ok = all(r["ok"] for r in results)
+        detail = None if all_ok else "취소처리 실패: " + ", ".join(
+            f"{r['prd_seq']}({r['error']})" for r in results if not r["ok"]
+        )
+        return {"ok": all_ok, "results": results, "detail": detail}
 
     @router.post("/barcode/invoice/cancel")
     async def barcode_invoice_cancel(
@@ -1643,20 +1730,28 @@ def build_barcode_router(
             if _normalize_text(row.get("duplicateKey")) and counts_by_key[_normalize_text(row.get("duplicateKey"))] >= 2
         ]
         result_rows = []
+        # 코드별 입고 수량을 합포 주문 수량만큼 순서대로 배정하고, 모자란 만큼은 입고없음(incomingQty=0)으로 분리한다.
+        incoming_remaining: dict[str, int] = {}
         for row in duplicate_rows:
             code = row.get("code") or ""
             order_qty = to_int(row.get("orderQty"), default=0)
             if order_qty <= 0:
                 continue
-            result_rows.append({
+            incoming_total = int(incoming_counts.get(code, 0) or 0)
+            remaining = incoming_remaining.setdefault(code, incoming_total)
+            covered_qty = min(order_qty, max(remaining, 0))
+            incoming_remaining[code] = remaining - covered_qty
+            base_row = {
                 "rowNumber": row.get("rowNumber"),
                 "duplicateKey": row.get("duplicateKey", ""),
                 "code": code,
                 "productName": row.get("productName", ""),
                 "optionName": row.get("optionName", ""),
-                "orderQty": order_qty,
-                "incomingQty": int(incoming_counts.get(code, 0) or 0),
-            })
+            }
+            if covered_qty > 0:
+                result_rows.append({**base_row, "orderQty": covered_qty, "incomingQty": incoming_total})
+            if order_qty - covered_qty > 0:
+                result_rows.append({**base_row, "orderQty": order_qty - covered_qty, "incomingQty": 0})
 
         def _group_hapbae_rows(target: list[dict]) -> list[dict]:
             grouped_rows = []
@@ -3074,12 +3169,20 @@ def build_barcode_router(
         payload: dict = Body(default={}),
         user: str = Depends(get_current_user),
     ):
-        defect_counts = get_shared_defect_counts()
-        if payload.get("exclude_kimsungil_summon"):
-            summon_counts = get_shared_defect_summon_counts()
-            defect_counts = {c: q for c, q in defect_counts.items() if not summon_counts.get(c)}
-        if not defect_counts:
-            raise HTTPException(status_code=400, detail="불량 목록이 비어 있습니다.")
+        if payload.get("summoned_all_tabs") and get_all_tabs_defect_summon_counts:
+            # A/B/C 전 탭의 김승일 소환술 수량만 코드별로 합산, 소환술이 없으면 전 탭 불량 전체로 대체
+            defect_counts = {c: q for c, q in get_all_tabs_defect_summon_counts().items() if q > 0}
+            if not defect_counts and get_all_tabs_defect_counts:
+                defect_counts = {c: q for c, q in get_all_tabs_defect_counts().items() if q > 0}
+            if not defect_counts:
+                raise HTTPException(status_code=400, detail="불량 목록이 비어 있습니다.")
+        else:
+            defect_counts = get_shared_defect_counts()
+            if payload.get("exclude_kimsungil_summon"):
+                summon_counts = get_shared_defect_summon_counts()
+                defect_counts = {c: q for c, q in defect_counts.items() if not summon_counts.get(c)}
+            if not defect_counts:
+                raise HTTPException(status_code=400, detail="불량 목록이 비어 있습니다.")
 
         conn = _get_wonbe_db()
         try:
@@ -3623,6 +3726,9 @@ def build_barcode_router(
                         clean[k] = stripped
                 elif v is not None and v != "":
                     clean[k] = v
+            # IM00 목록에는 req_qty가 없고 총 수량이 total_product_qty로 온다. 화면들이 req_qty를 읽으므로 맞춰준다.
+            if not clean.get("req_qty") and clean.get("total_product_qty"):
+                clean["req_qty"] = clean["total_product_qty"]
             vouchers.append({"sheet": sheet_no, "cell": clean})
         return {"ok": True, "date": today, "vouchers": vouchers}
 

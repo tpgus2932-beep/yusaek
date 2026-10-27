@@ -80,6 +80,7 @@ from api.post_shipment_cancel_stock_sms_routes import build_post_shipment_cancel
 from api.amood_unpack_routes import build_amood_unpack_router
 from api.shipping_eta_routes import build_shipping_eta_router, init_shipping_eta_table
 from api.lead_time_routes import build_lead_time_router, init_lead_time_tables
+from api.invoice_print_routes import build_invoice_print_router, init_invoice_print_tables
 from api.exchange_return_anomaly_routes import build_exchange_return_anomaly_router
 from api.return_anomaly_routes import build_return_anomaly_router
 from api.daily_checklist_routes import build_daily_checklist_router
@@ -388,6 +389,15 @@ def _get_all_tabs_defect_counts() -> dict[str, int]:
     """전 탭 합산 - 탭과 무관하게 '불량이 있는지'만 보는 곳(아무드 등)용."""
     total: dict[str, int] = {}
     for counts in SHARED_DEFECT_COUNTS.values():
+        for code, qty in counts.items():
+            total[code] = total.get(code, 0) + qty
+    return total
+
+
+def _get_all_tabs_defect_summon_counts() -> dict[str, int]:
+    """전 탭 합산 - 김승일 소환술로 들어온 수량만."""
+    total: dict[str, int] = {}
+    for counts in SHARED_DEFECT_SUMMON_COUNTS.values():
         for code, qty in counts.items():
             total[code] = total.get(code, 0) + qty
     return total
@@ -1663,6 +1673,8 @@ app.include_router(
         set_shared_defect_counts=_set_shared_defect_counts,
         get_shared_defect_summon_counts=_get_shared_defect_summon_counts,
         set_shared_defect_summon_counts=_set_shared_defect_summon_counts,
+        get_all_tabs_defect_summon_counts=_get_all_tabs_defect_summon_counts,
+        get_all_tabs_defect_counts=_get_all_tabs_defect_counts,
         get_shared_kimsungil_counts=_get_shared_kimsungil_counts,
         set_shared_kimsungil_counts=_set_shared_kimsungil_counts,
         set_shared_barcode_data=_set_shared_barcode_data,
@@ -1861,6 +1873,15 @@ app.include_router(
     )
 )
 
+init_invoice_print_tables(_get_shared_db)
+app.include_router(
+    build_invoice_print_router(
+        get_current_user=_get_current_user,
+        get_setting=_get_setting,
+        get_db=_get_shared_db,
+    )
+)
+
 init_shipping_eta_table(_get_shared_db)
 app.include_router(
     build_shipping_eta_router(
@@ -1979,6 +2000,7 @@ app.include_router(
         get_shared_db=_get_shared_db,
         get_user_display=_get_user_display,
         is_render=_IS_RENDER,
+        get_current_user=_get_current_user,
     )
 )
 app.include_router(
@@ -2114,6 +2136,8 @@ def _init_return_regathering():
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(return_regathering)").fetchall()}
     if "return_invoice" not in cols:
         conn.execute("ALTER TABLE return_regathering ADD COLUMN return_invoice TEXT NOT NULL DEFAULT ''")
+    if "resend_invoice" not in cols:
+        conn.execute("ALTER TABLE return_regathering ADD COLUMN resend_invoice TEXT NOT NULL DEFAULT ''")
     conn.commit()
     conn.close()
 

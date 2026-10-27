@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import Counter
 from datetime import date as date_cls, datetime, timedelta
@@ -16,6 +17,8 @@ _EZ_EXTRA_COOKIES = {"ezdomain": "yusaek", "ezuserid": "yusaek", "ezsave": "on"}
 # 주문 조회는 건수에 비례해 느리다 (실측: 770건 약 40초, 2005건 약 100초)
 _EZ_TIMEOUT = 300.0
 _KST = ZoneInfo("Asia/Seoul")
+# 실제 출퇴근 기록은 배포 근태 서버에 쌓인다. 이 앱이 읽는 DB에 오늘 기록이 없을 때 여기서 오늘 기록을 가져온다.
+_ATTENDANCE_REMOTE_BASE = (os.environ.get("ATTENDANCE_REMOTE_BASE") or "https://seungilsaiteu.onrender.com").rstrip("/")
 _BULK_MIN_COUNT = 10
 _LOOKBACK_DAYS = 60  # 과거 약 2개월까지만 찾는다
 _MAX_COUNT_DIFF = 0.10  # 오늘 건수 대비 건수 차이가 이 비율 이내인 날만 유사일로 인정한다
@@ -223,9 +226,37 @@ def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
             records.append({"name": r["member_name"], "time": kst.isoformat()})
         return records
 
-    def _save_attendance(conn, work_date: str, edge: str, user: str) -> None:
-        column = _ATTENDANCE_COLUMNS[edge]
+    async def _fetch_remote_attendance(work_date: str, edge: str) -> list[dict]:
+        """배포 근태 서버의 /attendance/records/today(공개)에서 오늘 출근/퇴근 기록을 KST [{name, time}]로 가져온다."""
+        try:
+            # Render 무료 서버는 잠들어 있다 깨어나는 데 오래 걸릴 수 있다
+            async with httpx.AsyncClient(timeout=70.0, follow_redirects=True) as client:
+                r = await client.get(f"{_ATTENDANCE_REMOTE_BASE}/attendance/records/today")
+            rows = r.json() if r.status_code == 200 else []
+        except Exception:
+            return []
+        records = []
+        for row in rows if isinstance(rows, list) else []:
+            if row.get("type") != _ATTENDANCE_TYPES[edge] or row.get("date") != work_date:
+                continue
+            dt = _parse_dt(row.get("timestamp"))
+            if dt is None:
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+            kst = dt.astimezone(_KST).replace(tzinfo=None, microsecond=0)
+            records.append({"name": row.get("name") or "", "time": kst.isoformat()})
+        records.sort(key=lambda x: x["time"])
+        return records
+
+    async def _load_attendance(conn, work_date: str, edge: str) -> list[dict]:
         records = _fetch_attendance(conn, work_date, edge)
+        if records or work_date != _now().date().isoformat():
+            return records
+        return await _fetch_remote_attendance(work_date, edge)
+
+    def _save_attendance(conn, work_date: str, edge: str, user: str, records: list[dict]) -> None:
+        column = _ATTENDANCE_COLUMNS[edge]
         conn.execute(
             f"INSERT INTO shipping_eta_log (work_date, {column}, updated_by, updated_at) VALUES (?, ?, ?, ?) "
             f"ON CONFLICT(work_date) DO UPDATE SET {column}=excluded.{column}, "
@@ -383,7 +414,7 @@ def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
                 "updated_by=excluded.updated_by, updated_at=excluded.updated_at",
                 (work_date, totals["bulk"], totals["single"], totals["combo"], user, _now().isoformat()),
             )
-            _save_attendance(conn, work_date, "checkin", user)  # 불러온 시점의 출근 인원(몇 시에 몇 명)도 같이 저장
+            _save_attendance(conn, work_date, "checkin", user, await _load_attendance(conn, work_date, "checkin"))  # 불러온 시점의 출근 인원(몇 시에 몇 명)도 같이 저장
             conn.commit()
         finally:
             conn.close()
@@ -397,7 +428,7 @@ def build_shipping_eta_router(*, get_current_user, get_setting, get_db):
             raise HTTPException(status_code=400, detail="알 수 없는 근태 종류입니다.")
         conn = get_db()
         try:
-            _save_attendance(conn, work_date, edge, user)
+            _save_attendance(conn, work_date, edge, user, await _load_attendance(conn, work_date, edge))
             conn.commit()
         finally:
             conn.close()
