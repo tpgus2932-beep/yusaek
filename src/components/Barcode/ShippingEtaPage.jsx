@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import pageStyles from "./BarcodePage.module.css";
 import styles from "./ShippingEtaPage.module.css";
+import LeadTimeCard from "./LeadTimeCard";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
 function todayStr() {
@@ -336,6 +337,8 @@ export default function ShippingEtaPage({ headerExtra = null }) {
             <span className={styles.etaHint}>출력차수를 분류하면 출근 인원이 함께 저장됩니다. 퇴근은 버튼으로 불러오세요.</span>
           )}
         </section>
+
+        <LeadTimeCard date={date} attendance={attendance} nowMs={serverNowMs} />
 
         <section className={pageStyles.card}>
           <div className={pageStyles.cardHeader}>
