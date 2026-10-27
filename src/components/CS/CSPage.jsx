@@ -25,12 +25,16 @@ const fmtTime = (iso) => {
     return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
-const SYNC_INTERVAL_MS = 60000;
 const PAGE_SIZE = 100;
 
-const apiCall = async (path, params, method = 'GET') => {
+const apiCall = async (path, params, method = 'GET', body) => {
     const qs = params ? `?${new URLSearchParams(params)}` : '';
-    const res = await fetch(`${LOCAL_API_BASE}/cs${path}${qs}`, { method, headers: getAuthHeaders() });
+    const headers = body ? { ...getAuthHeaders(), 'Content-Type': 'application/json' } : getAuthHeaders();
+    const res = await fetch(`${LOCAL_API_BASE}/cs${path}${qs}`, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+    });
     if (handleUnauthorized(res)) throw new Error('로그인이 만료되었습니다.');
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.detail || '요청 실패');
@@ -67,6 +71,8 @@ const CSPage = () => {
     const [detail, setDetail] = useState(null);
     const [detailLoading, setDetailLoading] = useState(false);
     const [templates, setTemplates] = useState([]);
+    const [draft, setDraft] = useState('');
+    const [acting, setActing] = useState(false);
 
     useEffect(() => {
         try {
@@ -108,16 +114,10 @@ const CSPage = () => {
         }
     }, [loadRooms]);
 
-    // 저장된 목록은 즉시 보여주고, 새 문의만 백그라운드로 가져온다.
+    // 저장된 목록만 즉시 보여준다. 새 문의 동기화는 '새로고침' 버튼을 눌렀을 때만 한다.
     useEffect(() => {
         loadRooms();
     }, [loadRooms]);
-
-    useEffect(() => {
-        syncRooms();
-        const timer = setInterval(syncRooms, SYNC_INTERVAL_MS);
-        return () => clearInterval(timer);
-    }, [syncRooms]);
 
     useEffect(() => {
         apiGet('/templates')
@@ -167,6 +167,37 @@ const CSPage = () => {
     };
 
     const copyText = (text) => navigator.clipboard?.writeText(text).catch(() => {});
+
+    // 답변/완료 후: 상세를 새 내용으로 교체하고 목록(상태)도 다시 읽는다.
+    const runAction = async (path, body) => {
+        if (!selected || acting) return false;
+        setActing(true);
+        setError('');
+        try {
+            const data = await apiCall(`/rooms/${selected}${path}`, null, 'POST', body);
+            const room = data.detail?.contact_room;
+            if (room) {
+                detailCache.current.set(`${selected}:${room.updated_latest_message_at}`, data.detail);
+                setDetail(data.detail);
+            }
+            await loadRooms(true);
+            setSyncTick((t) => t + 1);
+            return true;
+        } catch (err) {
+            setError(err.message || '요청 실패');
+            return false;
+        } finally {
+            setActing(false);
+        }
+    };
+
+    const replyRoom = async (content) => {
+        const ok = await runAction('/reply', { content });
+        if (ok) setDraft('');
+        return ok;
+    };
+    const completeRoom = () => runAction('/complete');
+    const conversationProps = { selected, preview, detail, detailLoading, draft, setDraft, acting, onReply: replyRoom, onComplete: completeRoom };
 
     return (
         <div className={styles.page}>
@@ -223,7 +254,7 @@ const CSPage = () => {
                 </button>
                 <span className={styles.count}>
                     {view === 'inbox' && totalCount != null ? `총 ${totalCount}건` : ''}
-                    {lastSyncAt ? ` · 마지막 동기화 ${fmtTime(lastSyncAt)}` : ''}
+                    {lastSyncAt ? ` · 마지막 새로고침 ${fmtTime(lastSyncAt)}` : ''}
                 </span>
             </header>
             {error && <div className={styles.error}>{error}</div>}
@@ -249,7 +280,7 @@ const CSPage = () => {
                     selectedRoomSno={selected}
                     onSelectRoom={openRoom}
                     conversation={
-                        <CSConversation selected={selected} preview={preview} detail={detail} detailLoading={detailLoading} />
+                        <CSConversation {...conversationProps} splitInfo />
                     }
                 />
             )}
@@ -286,20 +317,26 @@ const CSPage = () => {
                     )}
                 </aside>
 
-                <main className={styles.detail}>
-                    <CSConversation selected={selected} preview={preview} detail={detail} detailLoading={detailLoading} />
-                </main>
-
-                <aside className={styles.templates}>
-                    <h3>답변 템플릿</h3>
-                    <p className={styles.hint}>클릭하면 복사됩니다.</p>
-                    {templates.map((t) => (
-                        <button type="button" key={t.sno} className={styles.tpl} onClick={() => copyText(t.content)}>
-                            <div className={styles.tplTitle}><Copy size={12} /> {t.title}</div>
-                            <div className={styles.tplBody}>{t.content}</div>
-                        </button>
-                    ))}
-                </aside>
+                <CSConversation
+                    {...conversationProps}
+                    splitInfo
+                    extraTabs={[{
+                        key: 'templates',
+                        label: '템플릿',
+                        content: (
+                            <section className={styles.sideSec}>
+                                <h4>답변 템플릿</h4>
+                                <p className={styles.hint}>클릭하면 복사되고 답변 입력창에 들어갑니다.</p>
+                                {templates.map((t) => (
+                                    <button type="button" key={t.sno} className={styles.tpl} onClick={() => { copyText(t.content); setDraft(t.content); }}>
+                                        <div className={styles.tplTitle}><Copy size={12} /> {t.title}</div>
+                                        <div className={styles.tplBody}>{t.content}</div>
+                                    </button>
+                                ))}
+                            </section>
+                        ),
+                    }]}
+                />
             </div>
         </div>
     );

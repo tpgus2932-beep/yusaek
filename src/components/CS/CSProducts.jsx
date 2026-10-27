@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link2, Search } from 'lucide-react';
+import { ArrowLeft, Link2, Search } from 'lucide-react';
 import styles from './CSProducts.module.css';
-import CSAddressModal from './CSAddressModal';
 import CSInbound from './CSInbound';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
@@ -31,6 +30,8 @@ const costRange = (m) => {
     if (m.cost_min == null) return '-';
     return m.cost_min === m.cost_max ? won(m.cost_min) : `${won(m.cost_min)} ~ ${won(m.cost_max)}`;
 };
+
+let productsCache = null; // 마지막으로 받은 /cs/dashboard 응답 (탭을 옮겨도 유지)
 
 const call = async (path, { method = 'GET', body } = {}) => {
     const res = await fetch(`${LOCAL_API_BASE}/cs${path}`, {
@@ -235,32 +236,45 @@ function OptionRow({ room, product, onChanged }) {
 }
 
 const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom, conversation }) => {
-    const [products, setProducts] = useState([]);
-    const [baseAvailable, setBaseAvailable] = useState(null);
-    const [loading, setLoading] = useState(true);
+    // 탭을 옮겼다 돌아오면 지난번 결과를 바로 보여주고, 최신 값은 뒤에서 받아 갱신한다.
+    const [products, setProducts] = useState(() => productsCache?.by_product || []);
+    const [baseAvailable, setBaseAvailable] = useState(() => productsCache?.base_available ?? null);
+    const [loading, setLoading] = useState(!productsCache);
     const [error, setError] = useState('');
     const [reloadTick, setReloadTick] = useState(0);
     const [sort, setSort] = useState('count');
     const [search, setSearch] = useState('');
     const [onlyUnmatched, setOnlyUnmatched] = useState(false);
     const [selectedSno, setSelectedSno] = useState(initialGoodsSno || null);
+    const [showRooms, setShowRooms] = useState(Boolean(initialGoodsSno)); // true면 왼쪽이 상품 목록 대신 선택한 상품의 문의 목록
     const [topic, setTopic] = useState('');
     const [onlyWaiting, setOnlyWaiting] = useState(false);
     const [roomSort, setRoomSort] = useState('waiting'); // 선택한 상품의 문의 정렬
-    const [addressOrder, setAddressOrder] = useState(''); // 주소 변경 모달에 띄울 주문번호
+    // 일괄발송: 대화를 보다가 카드의 '일괄발송'으로 담아 두고, 같은 답변을 한 번에 보낸다
+    const [bulkSel, setBulkSel] = useState(() => new Set());
+    const [bulkMsg, setBulkMsg] = useState('');
+    const [bulkRun, setBulkRun] = useState(null); // {total, done, failed:[{name, error}]} 발송 진행/결과
 
     const reload = useCallback(() => setReloadTick((t) => t + 1), []);
+
+    const exitBulk = () => {
+        setBulkSel(new Set());
+        setBulkMsg('');
+        setBulkRun(null);
+    };
 
     useEffect(() => {
         let cancelled = false;
         call('/dashboard?product_limit=300&room_limit=200&with_match=true')
             .then((body) => {
                 if (cancelled) return;
+                productsCache = body;
                 setProducts(body.by_product || []);
                 setBaseAvailable(body.base_available);
             })
             .catch((err) => {
-                if (!cancelled) setError(err.message);
+                // 이미 보여줄 값이 있으면 배경 갱신 실패로 화면을 덮지 않는다.
+                if (!cancelled && !productsCache) setError(err.message);
             })
             .finally(() => {
                 if (!cancelled) setLoading(false);
@@ -285,7 +299,9 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
     const selected = products.find((p) => p.goods_sno === selectedSno) || visible[0] || null;
 
     const selectProduct = (p) => {
+        exitBulk();
         setSelectedSno(p.goods_sno);
+        setShowRooms(true);
         setTopic('');
         setOnlyWaiting(false);
     };
@@ -308,12 +324,51 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
             return Number(b.waiting) - Number(a.waiting) || timeOf(b).localeCompare(timeOf(a));
         });
 
+    const sending = Boolean(bulkRun && bulkRun.done < bulkRun.total);
+    const allPicked = rooms.length > 0 && rooms.every((r) => bulkSel.has(r.sno));
+    const picked = rooms.filter((r) => bulkSel.has(r.sno));
+
+    // 카드의 '일괄발송' 버튼: 이 문의를 발송 대상에 담거나 뺀다 (카드를 열어 보는 동작과는 별개).
+    const toggleBulk = (r) => {
+        if (sending) return;
+        setBulkRun(null);
+        setBulkSel((prev) => {
+            const next = new Set(prev);
+            if (next.has(r.sno)) next.delete(r.sno);
+            else next.add(r.sno);
+            return next;
+        });
+    };
+
+    const toggleAll = () => setBulkSel(allPicked ? new Set() : new Set(rooms.map((r) => r.sno)));
+
+    // 체크한 문의에 차례로 답변을 보낸다. 하나가 실패해도 나머지는 계속 보내고 결과를 모아 보여준다.
+    const sendBulk = async () => {
+        const text = bulkMsg.trim();
+        if (!text || picked.length === 0 || sending) return;
+        if (!window.confirm(`선택한 ${picked.length}건의 문의에 같은 답변을 보낼까요?\n보낸 답변은 되돌릴 수 없습니다.\n\n${text.slice(0, 200)}`)) return;
+        const targets = picked;
+        const failed = [];
+        setBulkRun({ total: targets.length, done: 0, failed });
+        for (let i = 0; i < targets.length; i += 1) {
+            const r = targets[i];
+            try {
+                await call(`/rooms/${r.sno}/reply`, { method: 'POST', body: { content: text.replaceAll('{이름}', r.member?.name || '') } });
+            } catch (e) {
+                failed.push({ name: r.member?.name || String(r.sno), error: e.message });
+            }
+            setBulkRun({ total: targets.length, done: i + 1, failed: [...failed] });
+        }
+        setBulkSel(new Set());
+        reload();
+    };
+
     if (error) return <div className={styles.empty}>{error}</div>;
     if (loading) return <div className={styles.empty}>불러오는 중...</div>;
 
     return (
         <div className={styles.wrap}>
-            <aside className={styles.side}>
+            {!showRooms && <aside className={styles.side}>
                 <div className={styles.tools}>
                     <label className={styles.search}>
                         <Search size={14} />
@@ -358,12 +413,15 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
                         </button>
                     ))}
                 </div>
-            </aside>
+            </aside>}
 
-            <section className={styles.main}>
-                {!selected && <div className={styles.empty}>왼쪽에서 상품을 선택하세요.</div>}
+            {showRooms && <section className={`${styles.side} ${styles.sideRooms}`}>
+                {!selected && <div className={styles.empty}>상품이 없어요.</div>}
                 {selected && (
                     <>
+                        <button type="button" className={styles.backBtn} onClick={() => { exitBulk(); setShowRooms(false); }}>
+                            <ArrowLeft size={14} /> 상품 목록
+                        </button>
                         <div className={styles.head}>
                             {selected.image && <img src={selected.image} alt="" className={styles.bigThumb} />}
                             <div className={styles.headText}>
@@ -402,6 +460,37 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
                             </label>
                         </div>
 
+                        {(bulkSel.size > 0 || bulkRun) && (
+                            <div className={styles.bulkBar}>
+                                <div className={styles.bulkHead}>
+                                    <label className={styles.check}>
+                                        <input type="checkbox" checked={allPicked} disabled={sending} onChange={toggleAll} />
+                                        전체 선택 ({rooms.length}건)
+                                    </label>
+                                    <span className={styles.bulkCount}>{picked.length}건 담음</span>
+                                    <button type="button" className={styles.miniBtn} disabled={sending} onClick={exitBulk}>비우기</button>
+                                </div>
+                                <textarea
+                                    rows={3}
+                                    value={bulkMsg}
+                                    disabled={sending}
+                                    placeholder="선택한 문의에 보낼 답변 ({이름}은 고객 이름으로 바뀝니다)"
+                                    onChange={(e) => setBulkMsg(e.target.value)}
+                                />
+                                <button type="button" className={styles.bulkSend} disabled={sending || !bulkMsg.trim() || picked.length === 0} onClick={sendBulk}>
+                                    {sending ? `발송 중 ${bulkRun.done} / ${bulkRun.total}` : `${picked.length}건 일괄 발송`}
+                                </button>
+                                {bulkRun && !sending && (
+                                    <div className={bulkRun.failed.length ? styles.matchWarn : styles.matchOk}>
+                                        {bulkRun.total - bulkRun.failed.length}건 발송 완료{bulkRun.failed.length > 0 && `, ${bulkRun.failed.length}건 실패`}
+                                    </div>
+                                )}
+                                {bulkRun && !sending && bulkRun.failed.map((f) => (
+                                    <div key={`${f.name}:${f.error}`} className={styles.matchMuted}>{f.name}: {f.error}</div>
+                                ))}
+                            </div>
+                        )}
+
                         <div className={styles.rooms}>
                             {rooms.length === 0 && <div className={styles.empty}>조건에 맞는 문의가 없어요</div>}
                             {rooms.map((r) => (
@@ -409,7 +498,7 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
                                     key={r.sno}
                                     role="button"
                                     tabIndex={0}
-                                    className={`${styles.roomCard} ${selectedRoomSno === r.sno ? styles.roomActive : ''}`}
+                                    className={`${styles.roomCard} ${selectedRoomSno === r.sno ? styles.roomActive : ''} ${bulkSel.has(r.sno) ? styles.roomBulk : ''}`}
                                     onClick={() => openRoom(r)}
                                     onKeyDown={(e) => {
                                         if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
@@ -427,16 +516,19 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
                                         </span>
                                         <span className={styles.msg}>{r.latest_message?.content || '[이미지]'}</span>
                                     </div>
-                                    {/* 카드 안의 조작(옵션 연결·주소 변경)을 눌렀을 때 카드가 열리지 않도록 이벤트를 막는다 */}
+                                    {/* 카드 안의 조작(옵션 연결·일괄발송)을 눌렀을 때 카드가 열리지 않도록 이벤트를 막는다 */}
                                     <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
                                         {baseAvailable && <OptionRow room={r} product={selected} onChanged={reload} />}
-                                        {r.order_sno && (
-                                            <div className={styles.cardActions}>
-                                                <button type="button" className={styles.miniBtn} onClick={() => setAddressOrder(String(r.order_sno))}>
-                                                    주소 변경
-                                                </button>
-                                            </div>
-                                        )}
+                                        <div className={styles.cardActions}>
+                                            <button
+                                                type="button"
+                                                className={`${styles.miniBtn} ${bulkSel.has(r.sno) ? styles.miniBtnOn : ''}`}
+                                                disabled={sending}
+                                                onClick={() => toggleBulk(r)}
+                                            >
+                                                {bulkSel.has(r.sno) ? '✓ 일괄발송 대상' : '일괄발송'}
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
                             ))}
@@ -446,10 +538,9 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
                         </div>
                     </>
                 )}
-            </section>
+            </section>}
 
-            <section className={styles.chat}>{conversation}</section>
-            {addressOrder && <CSAddressModal orderNo={addressOrder} onClose={() => setAddressOrder('')} />}
+            {conversation}
         </div>
     );
 };

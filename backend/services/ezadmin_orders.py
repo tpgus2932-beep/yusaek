@@ -8,6 +8,7 @@ HAR(검색.har / 주소변경.har)에서 확인한 호출을 그대로 따른다
 """
 from __future__ import annotations
 
+import html
 import json
 import re
 import time
@@ -48,13 +49,15 @@ def _tail(phone: str) -> str:
     return digits[-4:] if len(digits) >= 4 else ""
 
 
-async def search_packs(phpsessid: str, keyword: str, *, days: int = 90, rows: int = 50) -> list[dict]:
-    """주문번호로 합포 목록을 검색한다. 결과 행(cell)을 그대로 돌려준다."""
+async def search_packs(
+    phpsessid: str, keyword: str, *, days: int = 90, rows: int = 50, search_type: str = "0"
+) -> list[dict]:
+    """주문번호(기본)나 전화번호(search_type=6, 배송확인.har)로 합포 목록을 검색한다. 결과 행(cell)을 그대로 돌려준다."""
     today = datetime.now()
     par = (
         "pack=&history_seq=&date_type=collect_date"
         f"&start_date={(today - timedelta(days=days)).strftime('%Y-%m-%d')}&end_date={today.strftime('%Y-%m-%d')}"
-        "&date_period_sel=0&search_type=0&keyword=&keyword1=&keyword2=&keyword3=&keyword4=&keyword5="
+        f"&date_period_sel=0&search_type={search_type}&keyword=&keyword1=&keyword2=&keyword3=&keyword4=&keyword5="
         f"&super_keyword={quote(keyword)}&order_status=-1&order_cs=0&query_trans_who=0&is_gift=0&work_type=0"
         "&labels_string=&checkbox_options_string="
     )
@@ -105,6 +108,8 @@ def describe_pack(pack: str, search_cell: dict, rows: list[dict], keyword: str) 
         "shop_name": search_cell.get("shop_name", ""),
         "collect_date": search_cell.get("collect_date", ""),
         "status": str(search_cell.get("status", "")),
+        "hold": str(search_cell.get("hold", "") or "0"),
+        "order_cs": str(search_cell.get("order_cs", "") or "0"),
         "recv_name": data.get("recv_name") or search_cell.get("recv_name", ""),
         "tel_tail": _tail(data.get("recv_tel2") or data.get("recv_tel1") or search_cell.get("recv_mobile", "")),
         "address": data.get("recv_add") or search_cell.get("recv_address", ""),
@@ -112,15 +117,109 @@ def describe_pack(pack: str, search_cell: dict, rows: list[dict], keyword: str) 
         "memo": data.get("memo", ""),
         "trans_no": data.get("trans_no", "") or "",
         "trans_corp": data.get("trans_corp_name", "") or "",
+        "shop_id": str(data.get("shop_id", "")),
         "items": [
             {
                 "name": r["cell"].get("product_name", ""),
                 "options": r["cell"].get("options", ""),
                 "qty": r["cell"].get("qty", ""),
+                "prd_seq": str(r["row"].get("prd_seq", "")),
+                "product_id": str(r["row"].get("product_id", "")),
             }
             for r in rows
         ],
     }
+
+
+def _strip_html(text) -> str:
+    return re.sub(r"<[^>]*>|&nbsp;", " ", str(text or "")).strip()
+
+
+async def search_products(phpsessid: str, name: str, shop_id: str, *, max_pages: int = 10) -> list[dict]:
+    """상품교환 팝업(search_popup_product, 교환뜨빠.har)과 같은 검색. 상품명으로 옵션(상품코드) 목록을 모두 모은다."""
+    found: list[dict] = []
+    total = None
+    async with _client() as client:
+        for page in range(max_pages):
+            obj = await _post(
+                client,
+                phpsessid,
+                {
+                    "readonly": "T", "template": "E900", "action": "search_popup_product", "name": name,
+                    "query_type": "1", "query_string": "", "shop_id": str(shop_id), "page": str(page),
+                    "auth_e3": "0", "is_pre_trans": "1", "timeFlag": _time_flag(),
+                },
+            )
+            if not isinstance(obj, list) or not obj:
+                break
+            for r in obj:
+                found.append({
+                    "product_id": str(r.get("product_id", "")).strip(),
+                    "name": _strip_html(r.get("name")),
+                    "options": _strip_html(r.get("options")),
+                    "supply": _strip_html(r.get("supply")),
+                })
+            total = obj[0].get("total_rows", total)
+            if total is not None and len(found) >= int(total):
+                break
+    return found
+
+
+_CS_TYPES = {"2": "보류 해제", "10": "취소", "12": "정상 복귀", "17": "상품 교환"}  # HAR(뜨빠/교환뜨빠)에서 확인한 값만
+_KNOWN_TAGS = re.compile(r"</?(?:b|i|u|p|a|em|div|span|font|strong|img|table|tr|td)\b[^>]*>", re.IGNORECASE)
+
+
+def _clean_cs_text(text) -> str:
+    """CS 내용의 HTML을 글자로 바꾼다. '<본상품:(S1)…>' 처럼 꺾쇠로 쓴 값은 태그가 아니므로 남긴다."""
+    out = re.sub(r"<br\s*/?>", "\n", str(text or ""), flags=re.IGNORECASE)
+    out = _KNOWN_TAGS.sub("", out)
+    return html.unescape(out).strip()
+
+
+async def cs_history(phpsessid: str, pack: str) -> list[dict]:
+    """합포의 C/S 이력 (get_cs_history). 이지어드민이 주는 순서(최신순)를 그대로 돌려준다."""
+    async with _client() as client:
+        obj = await _post(
+            client, phpsessid,
+            {"readonly": "T", "template": "E900", "action": "get_cs_history", "seq": str(pack), "cs_all": "true", "timeFlag": _time_flag()},
+        )
+    out = []
+    for row in (obj.get("list") if isinstance(obj, dict) else None) or []:
+        if str(row.get("is_delete", "0")) not in ("0", ""):
+            continue
+        cs_type = str(row.get("cs_type", ""))
+        out.append({
+            "id": str(row.get("id_seq", "")),
+            "time": str(row.get("input_time", "")),
+            "writer": str(row.get("writer") or ""),
+            "type": cs_type,
+            "type_name": _CS_TYPES.get(cs_type, f"CS({cs_type})" if cs_type else "CS"),
+            "content": _clean_cs_text(row.get("content")),
+            "reply": _clean_cs_text(row.get("res_content")),
+            "reply_writer": str(row.get("res_writer") or ""),
+        })
+    return out
+
+
+async def release_hold(phpsessid: str, pack: str) -> dict:
+    """보류 해제 (cancel_hold, 뜨빠.har)."""
+    async with _client() as client:
+        return await _post(
+            client, phpsessid,
+            {"template": "E900", "action": "cancel_hold", "seq": str(pack), "timeFlag": _time_flag()},
+        )
+
+
+async def normal_pack(phpsessid: str, pack: str) -> dict:
+    """주문 정상 복귀 (normal_pack, 뜨빠.har). 취소 등 CS 상태를 정상으로 되돌린다."""
+    async with _client() as client:
+        return await _post(
+            client, phpsessid,
+            {
+                "template": "E900", "action": "normal_pack", "seq": str(pack),
+                "cancel_re_ex": "0", "cancel_re": "0", "timeFlag": _time_flag(),
+            },
+        )
 
 
 def build_change_params(data: dict, address: str, zip_code: str, pack: str) -> dict:

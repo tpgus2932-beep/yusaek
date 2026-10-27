@@ -132,7 +132,7 @@
 
 .body {
     display: grid;
-    grid-template-columns: 330px 1fr 270px;
+    grid-template-columns: 330px minmax(0, 1fr) 340px;
     gap: 12px;
     flex: 1;
     min-height: 0;
@@ -414,4 +414,461 @@
     gap: 10px;
     margin: 0 12px 6px;
     font-size: 0.82rem;
+}
+
+.replyBox {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--cs-border, #e5e5e5);
+}
+
+.replyBox textarea {
+    width: 100%;
+    resize: vertical;
+    padding: 8px 10px;
+    font: inherit;
+    box-sizing: border-box;
+}
+
+.replyActions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.orderStatus {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.orderNow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 4px 0;
+    font-weight: 600;
+}
+
+.orderNow .orderStatus {
+    padding: 3px 12px;
+    font-size: 14px;
+}
+
+/* 상품별 탭: 대화(가운데) + 정보 패널(오른쪽) */
+.convMain,
+.convSide {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-radius: 16px;
+    background: var(--cs-card);
+    box-shadow: var(--cs-shadow);
+}
+
+.convMain .messages {
+    overflow-y: auto;
+}
+
+.convSide {
+    overflow-y: auto;
+}
+
+.chatHead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--cs-line);
+}
+
+.chatHeadTag {
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: var(--cs-bg);
+    color: var(--cs-sub);
+    font-size: 0.72rem;
+}
+
+.sideTabs {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    border-bottom: 1px solid var(--cs-line);
+    border-radius: 16px 16px 0 0;
+    background: var(--cs-card);
+}
+
+.sideTab {
+    flex: 1;
+    padding: 12px 0;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--cs-sub);
+    font: inherit;
+    font-size: 0.84rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.sideTabOn {
+    border-bottom-color: var(--cs-accent);
+    color: var(--cs-accent);
+}
+
+.sideSec {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--cs-line);
+}
+
+.sideSec:last-child {
+    border-bottom: none;
+}
+
+.sideSec h4 {
+    margin: 0 0 8px;
+    font-size: 0.88rem;
+}
+
+.sideChip {
+    display: inline-block;
+    margin-bottom: 6px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: var(--cs-bg);
+    font-size: 0.72rem;
+    font-weight: 600;
+}
+
+.sideGoods {
+    font-size: 0.82rem;
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.sideLine {
+    font-size: 0.78rem;
+    line-height: 1.6;
+}
+
+.sideMuted {
+    margin: 2px 0 4px;
+    color: var(--cs-sub);
+    font-size: 0.74rem;
+    line-height: 1.5;
+}
+
+.sideStatus {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+/* 배송 확인 모달 */
+.deliverySearch {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.deliverySearch input {
+    flex: 1;
+    min-width: 0;
+    padding: 7px 10px;
+    border: 1px solid var(--cs-line);
+    border-radius: 10px;
+    background: var(--cs-card);
+    color: var(--cs-text);
+    font: inherit;
+}
+
+.deliveryList {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.deliveryItem {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--cs-line);
+    border-radius: 12px;
+    background: var(--cs-card);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.deliveryItemOn {
+    border-color: var(--cs-accent);
+    background: var(--cs-accent-soft);
+}
+
+.deliveryTop {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.deliveryHas,
+.deliveryNone {
+    margin-left: auto;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 0.68rem;
+    font-weight: 700;
+}
+
+.deliveryHas {
+    background: var(--cs-ok-soft);
+    color: var(--cs-ok);
+}
+
+.deliveryNone {
+    background: var(--cs-warn-soft);
+    color: var(--cs-warn);
+}
+
+.csLogList {
+    max-height: 340px;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+}
+
+.csLogList li {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--cs-line);
+}
+
+.csLogList li:last-child {
+    border-bottom: none;
+}
+
+.csLogTop {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 3px;
+}
+
+.csLogType {
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--cs-accent-soft);
+    color: var(--cs-accent);
+    font-size: 0.7rem;
+    font-weight: 700;
+}
+
+.csLogWriter {
+    margin-left: auto;
+    color: var(--cs-sub);
+    font-size: 0.72rem;
+}
+
+.csLogText,
+.csLogReply {
+    font-size: 0.8rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.csLogReply {
+    margin-top: 3px;
+    color: var(--cs-sub);
+}
+
+.holdTags {
+    display: flex;
+    gap: 4px;
+    margin-left: auto;
+}
+
+.holdTags > span {
+    margin-left: 0;
+}
+
+.deliveryResult {
+    margin-top: 12px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: var(--cs-bg);
+}
+
+.deliveryResult h4 {
+    margin: 0 0 6px;
+    font-size: 0.86rem;
+}
+
+.exchangeFilter,
+.exchangeForm input {
+    padding: 6px 10px;
+    border: 1px solid var(--cs-line);
+    border-radius: 10px;
+    background: var(--cs-card);
+    color: var(--cs-text);
+    font: inherit;
+}
+
+.exchangeFilter {
+    width: 100%;
+    margin: 8px 0 6px;
+    box-sizing: border-box;
+}
+
+.exchangeOptions {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 6px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.exchangeForm {
+    display: flex;
+    gap: 10px;
+    margin: 10px 0;
+}
+
+.exchangeForm label {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    color: var(--cs-sub);
+    font-size: 0.74rem;
+}
+
+.exchangeForm label:last-child {
+    flex: 1;
+}
+
+.deliveryTrack {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--cs-line);
+}
+
+.deliveryNow {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 0.95rem;
+}
+
+.deliveryHistory {
+    max-height: 180px;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+    font-size: 0.78rem;
+}
+
+.deliveryHistory li {
+    display: grid;
+    grid-template-columns: 80px 1fr auto;
+    gap: 8px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--cs-line);
+}
+
+.deliveryInvoice {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1.05rem;
+}
+
+.actionList {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.actionBtn {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 100%;
+    padding: 10px 12px;
+    border: none;
+    border-radius: 12px;
+    background: var(--cs-bg);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.actionBtn:hover {
+    background: var(--cs-accent-soft);
+}
+
+.actionBtn strong {
+    font-size: 0.84rem;
+}
+
+.actionBtn span {
+    color: var(--cs-sub);
+    font-size: 0.74rem;
+    line-height: 1.4;
+}
+
+.sideOrders {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.sideOrders li {
+    padding: 8px 0;
+    border-bottom: 1px dashed var(--cs-line);
+}
+
+.sideOrders li:last-child {
+    border-bottom: none;
+}
+
+.toneCancel { background: #fde2e2; color: #b42318; }
+.tonePrepare { background: #fff0d6; color: #b25e00; }
+.toneShipping { background: #dcebff; color: #1d5fc4; }
+.toneDone { background: #dff5e4; color: #1b7a34; }
+.toneEtc { background: #ececec; color: #555; }
+
+.purchaseReturnForm {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.purchaseReturnForm label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-weight: 600;
+}
+
+.purchaseReturnForm input,
+.purchaseReturnForm textarea {
+    padding: 8px 10px;
+    font: inherit;
+    font-weight: 400;
+    box-sizing: border-box;
 }

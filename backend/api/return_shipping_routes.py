@@ -914,6 +914,106 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
 
         return {**result, "sms_queued": sms_queued}
 
+    @router.post("/purchase-confirmed-return")
+    async def purchase_confirmed_return(payload: dict = Body(...), user=Depends(get_current_user)):
+        """구매확정 후 반품: EZAdmin 회수접수 + 회수 문자 + 반품 특이사항(원송장번호) 등록.
+
+        하나라도 안 되면 아무것도 하지 않도록, 되돌릴 수 없는 일(회수접수·문자) 전에
+        필요한 조건을 모두 확인하고, 특이사항은 먼저 저장했다가 회수접수가 실패하면 되돌린다.
+        에이블리 반품요청은 구매확정 건에서 안 될 수 있어 호출하지 않는다.
+        """
+        invoice = _clean_invoice(payload.get("invoice"))
+        note = str(payload.get("note") or "").strip()
+        tel = "".join(ch for ch in str(payload.get("buyer_tel") or "") if ch.isdigit())
+        name = str(payload.get("buyer_name") or "").strip()
+        goods_name = str(payload.get("goods_name") or "").strip()
+        if not invoice:
+            raise HTTPException(status_code=400, detail="원송장번호를 입력하세요.")
+        if not note:
+            raise HTTPException(status_code=400, detail="특이사항 내용을 입력하세요.")
+        if not tel:
+            raise HTTPException(status_code=400, detail="고객 연락처가 없어 회수 문자를 보낼 수 없습니다. 아무것도 처리하지 않았습니다.")
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        # 1) 사전 점검: 문자와 특이사항 저장이 가능한지 먼저 확인한다.
+        sender = os.environ.get("ALIGO_SENDER", "").strip()
+        if not (enqueue_sms and get_shared_db and sender):
+            raise HTTPException(status_code=400, detail="문자 발송 설정(발신번호)이 없어 아무것도 처리하지 않았습니다.")
+        sconn = get_shared_db()
+        try:
+            tmpl = sconn.execute(
+                "SELECT msg, title, msg_type FROM sms_templates WHERE name = ?", ("반품 최초 접수",)
+            ).fetchone()
+            prev_note = sconn.execute(
+                "SELECT note, created_by, created_at FROM return_special_notes WHERE invoice_no = ?", (invoice,)
+            ).fetchone()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"문자 템플릿/특이사항 확인 실패: {e} 아무것도 처리하지 않았습니다.")
+        finally:
+            sconn.close()
+        if not tmpl or not tmpl["msg"]:
+            raise HTTPException(status_code=400, detail="'반품 최초 접수' 문자 템플릿이 없어 아무것도 처리하지 않았습니다.")
+        msg = tmpl["msg"].replace("{이름}", name).replace("{수령인}", name).replace("{상품명}", goods_name)
+        prev = dict(prev_note) if prev_note else None
+
+        # 2) 특이사항 저장 (회수접수가 실패하면 원래대로 되돌린다)
+        def write_note(row: dict | None):
+            conn = get_shared_db()
+            try:
+                if row is None:
+                    conn.execute("DELETE FROM return_special_notes WHERE invoice_no = ?", (invoice,))
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO return_special_notes (invoice_no, note, created_by, created_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(invoice_no) DO UPDATE SET
+                            note = excluded.note,
+                            created_by = excluded.created_by,
+                            created_at = excluded.created_at
+                        """,
+                        (invoice, row["note"], row["created_by"], row["created_at"]),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+        try:
+            write_note({"note": note, "created_by": str(user), "created_at": datetime.now(timezone.utc).isoformat()})
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"특이사항 저장 실패: {e} 아무것도 처리하지 않았습니다.")
+
+        # 3) 이지어드민 회수접수 - 실패하면 특이사항을 되돌린다.
+        try:
+            result = await _register_return_invoices(phpsessid, {invoice: None}, {})
+        except Exception as e:
+            result = {"ok": False, "error": f"회수접수 중 오류: {e}"}
+        if not result.get("ok"):
+            try:
+                write_note(prev)
+            except Exception:
+                pass
+            if result.get("need_session"):
+                return result
+            return {"ok": False, "error": f"{result.get('error') or '회수접수 실패'} 아무것도 처리하지 않았습니다."}
+
+        # 4) 회수 문자 - 사전 점검을 통과했으므로 보통 성공한다. 여기서 실패하면 회수접수는 이미 된 상태다.
+        try:
+            enqueue_sms(
+                {"receiver": tel, "msg": msg, "msg_type": tmpl["msg_type"] or "LMS", "title": tmpl["title"] or "", "sender": sender},
+                "auto-return-pickup",
+            )
+        except Exception as e:
+            return {
+                "ok": False,
+                "partial": True,
+                "error": f"회수접수와 특이사항 등록은 끝났지만 회수 문자 발송 요청이 실패했습니다: {e} 문자는 직접 보내 주세요.",
+            }
+
+        return {**result, "sms_queued": 1, "note_saved": True}
+
     @router.post("/new-return-pickup")
     async def new_return_pickup(
         user=Depends(get_current_user),

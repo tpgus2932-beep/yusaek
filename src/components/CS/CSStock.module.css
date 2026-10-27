@@ -208,6 +208,98 @@
     line-height: 1.4;
 }
 
+/* 오른쪽 정보 패널용 (표 대신 카드) */
+.boxCompact {
+    margin: 0 0 10px;
+    padding: 0;
+    background: transparent;
+}
+
+.optList {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.optCard {
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: var(--cs-bg);
+}
+
+.optTop {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.optLabel {
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.kv {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 3px 10px;
+    margin: 4px 0 0;
+    font-size: 0.76rem;
+}
+
+.kv dt {
+    color: var(--cs-sub);
+}
+
+.kv dd {
+    margin: 0;
+    min-width: 0;
+}
+
+.okTag,
+.warnTag {
+    margin-left: 8px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 0.68rem;
+    font-weight: 700;
+}
+
+.okTag {
+    background: var(--cs-ok-soft);
+    color: var(--cs-ok);
+}
+
+.warnTag {
+    background: var(--cs-warn-soft);
+    color: var(--cs-warn);
+}
+
+.askedSummary {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: var(--cs-accent-soft);
+}
+
+.askedSummaryTitle {
+    color: var(--cs-accent);
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+.askedSummaryRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 4px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
 .allBar {
     display: flex;
     flex-wrap: wrap;

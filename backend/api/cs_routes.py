@@ -22,6 +22,8 @@ from api.inventory_dashboard_routes import (
     _to_int,
 )
 from barcode_core import normalize_to_s5
+from sdk.ezadmin import EzAdminClient, EzAdminSessionExpired
+from sdk.llogis import LLogisClient
 from services import ezadmin_orders as ezo
 from services import kakao_postcode
 from services.cs_cost_match import CostBase, clean_name, option_key
@@ -35,6 +37,7 @@ _MAX_PAGES = 100
 _PREFETCH_LIMIT = 40
 _PREFETCH_CONCURRENCY = 5
 _BASE_TTL_SEC = 60
+_EXCHANGE_TRANS_CORP = "30079"  # 이지어드민 CS창 상품교환 때 화면이 보낸 택배사 값 (교환뜨빠.har)
 
 
 def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_to_yusas=None, allow_live_stock=True):
@@ -240,6 +243,10 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_to_
             total = conn.execute("SELECT COUNT(*) AS c FROM cs_rooms").fetchone()["c"]
         finally:
             conn.close()
+        try:
+            await _reconcile_open_rooms(now)
+        except HTTPException:
+            pass
         asyncio.create_task(_prefetch_details())
         return {"ok": True, "fetched": fetched, "total": total, "synced_at": now.isoformat()}
 
@@ -302,6 +309,119 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_to_
             return detail
         finally:
             conn.close()
+
+    async def _ably_post(client: httpx.AsyncClient, path: str, **kwargs):
+        token = await _get_token(client)
+        res = await client.post(f"{ABLY_BASE}{path}", headers=_headers(token), **kwargs)
+        if res.status_code in (401, 403):
+            token = await _get_token(client, force=True)
+            res = await client.post(f"{ABLY_BASE}{path}", headers=_headers(token), **kwargs)
+        if res.status_code not in (200, 201):
+            raise HTTPException(status_code=502, detail=f"에이블리 요청 실패({res.status_code})")
+        return res
+
+    async def _refresh_room(sno: int) -> dict:
+        """답변/완료 직후 에이블리의 최신 상태를 저장본에 반영하고 상세를 돌려준다."""
+        detail = await _fetch_detail(sno)
+        room = detail.get("contact_room") or {}
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT room_json FROM cs_rooms WHERE sno = ?", (sno,)).fetchone()
+            if row:
+                merged = json.loads(row["room_json"])
+                for key in ("status", "get_status_display", "updated_latest_message_at", "latest_message"):
+                    if key in room:
+                        merged[key] = room[key]
+                _upsert_room(conn, merged)
+                _store_detail(conn, sno, merged.get("updated_latest_message_at") or "", detail)
+                conn.commit()
+        finally:
+            conn.close()
+        return detail
+
+    async def _reconcile_open_rooms(now: datetime) -> None:
+        """에이블리에서 이미 완료된 문의가 저장본에 '진행 중'으로 남지 않게 상태를 바로잡는다."""
+        conn = get_db()
+        try:
+            rows = conn.execute("SELECT sno, updated_at FROM cs_rooms WHERE status IN (1, 2)").fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return
+        oldest = min(r["updated_at"] for r in rows)[:10] or (now - timedelta(days=_INITIAL_SYNC_DAYS)).strftime("%Y-%m-%d")
+        open_snos: set = set()
+        last_sno = None
+        for _ in range(_MAX_PAGES):
+            params = [
+                ("start_date", oldest), ("end_date", now.strftime("%Y-%m-%d")),
+                ("order", "-updated_latest_message_at"), ("status[]", "1"), ("status[]", "2"),
+            ]
+            if last_sno:
+                params.append(("last_sno", str(last_sno)))
+            data = await _ably_get(http, "/seller/contact_rooms/", params)
+            page = data.get("contact_rooms") or []
+            open_snos.update(r["sno"] for r in page)
+            last_sno = data.get("last_sno")
+            if data.get("is_last") or not page or not last_sno:
+                break
+        else:
+            return  # 끝까지 못 읽었으면 잘못 완료 처리하지 않도록 건너뛴다
+        stale = [r["sno"] for r in rows if r["sno"] not in open_snos][:_PREFETCH_LIMIT]
+        sem = asyncio.Semaphore(_PREFETCH_CONCURRENCY)
+
+        async def _one(sno: int):
+            async with sem:
+                try:
+                    await _refresh_room(sno)
+                except Exception:
+                    pass
+
+        await asyncio.gather(*(_one(sno) for sno in stale))
+
+    @router.get("/exchange/{order_sno}")
+    async def exchange_options(order_sno: int, current_user=Depends(get_current_user)):
+        """주문번호의 교환 신청에서 원래 옵션 → 교환 옵션을 상품별로 돌려준다."""
+        now = datetime.now(_KST)
+        data = await _ably_get(http, "/seller/exchanges/", {
+            "page": 1, "per_page": 30,
+            "requested_at_start": (now - timedelta(days=365)).strftime("%Y-%m-%d 00:00:00"),
+            "requested_at_end": now.strftime("%Y-%m-%d 23:59:59"),
+            "keyword_type": "order_sno", "keyword": str(order_sno),
+        })
+        items = []
+        for ex in data.get("exchanges") or []:
+            for it in ex.get("exchange_items") or []:
+                order_item = it.get("order_item") or {}
+                original = order_item.get("original_goods_option") or {}
+                exchange = it.get("exchange_goods_option") or {}
+                items.append({
+                    "exchange_sno": ex.get("exchange_sno"),
+                    "exchange_status": ex.get("exchange_status"),
+                    "status": order_item.get("status") or "",
+                    "goods_sno": order_item.get("goods_sno"),
+                    "goods_name": order_item.get("goods_name") or "",
+                    "quantity": order_item.get("quantity") or 1,
+                    "original_options": original.get("option_values") or [],
+                    "original_option_no": original.get("sno"),
+                    "exchange_options": exchange.get("option_values") or [],
+                    "exchange_option_no": exchange.get("sno"),
+                })
+        return {"order_sno": order_sno, "items": items}
+
+    @router.post("/rooms/{room_sno}/reply")
+    async def reply(room_sno: int, payload: dict = Body(...), current_user=Depends(get_current_user)):
+        """에이블리 문의에 답변을 보낸다."""
+        content = str(payload.get("content") or "").strip()
+        if not content:
+            raise HTTPException(status_code=400, detail="답변 내용을 입력하세요.")
+        await _ably_post(http, f"/seller/contact_rooms/{room_sno}/send/", files={"content": (None, content)})
+        return {"ok": True, "detail": await _refresh_room(room_sno)}
+
+    @router.post("/rooms/{room_sno}/complete")
+    async def complete(room_sno: int, current_user=Depends(get_current_user)):
+        """에이블리 문의를 답변 완료 처리한다."""
+        await _ably_post(http, f"/seller/contact_rooms/{room_sno}/complete/")
+        return {"ok": True, "detail": await _refresh_room(room_sno)}
 
     @router.get("/dashboard")
     def dashboard(
@@ -662,6 +782,186 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_to_
         packs = [ezo.describe_pack(c["pack"], c, rows, keyword) for c, rows in zip(cells, details)]
         packs.sort(key=lambda p: (not p["exact"], p["collect_date"]), reverse=False)
         return {"ok": True, "order_no": keyword, "packs": packs}
+
+    @router.post("/delivery/search")
+    async def delivery_search(body: dict = Body(...), current_user=Depends(get_current_user)):
+        """전화번호로 이지어드민 주문(합포)을 검색해 송장번호까지 돌려준다. 여러 건이면 화면에서 고른다."""
+        digits = re.sub(r"\D", "", str(body.get("phone") or ""))
+        if not re.fullmatch(r"01\d{8,9}", digits):
+            raise HTTPException(status_code=400, detail="휴대폰 번호를 정확히 입력해 주세요. (예: 010-1234-5678)")
+        # 이지어드민에는 하이픈이 있는 형태로 저장돼 있다 (010-1234-5678).
+        keyword = f"{digits[:3]}-{digits[3:-4]}-{digits[-4:]}"
+        phpsessid = _ezadmin_session()
+        try:
+            cells = await ezo.search_packs(phpsessid, keyword, days=int(body.get("days") or 30), rows=20, search_type="6")
+            cells = cells[:10]
+            details = await asyncio.gather(*(ezo.pack_rows(phpsessid, c["pack"]) for c in cells))
+        except ezo.SessionExpired as e:
+            raise HTTPException(status_code=401, detail=f"{e} 상단 EZAdmin 설정에서 세션을 갱신해 주세요.")
+        except (httpx.HTTPError, RuntimeError) as e:
+            raise HTTPException(status_code=502, detail=f"이지어드민 조회 실패: {e}")
+        packs = [ezo.describe_pack(c["pack"], c, rows, "") for c, rows in zip(cells, details)]
+        packs.sort(key=lambda p: p["collect_date"], reverse=True)
+        return {"ok": True, "phone": keyword, "packs": packs}
+
+    @router.post("/history")
+    async def pack_history(body: dict = Body(...), current_user=Depends(get_current_user)):
+        """합포의 이지어드민 C/S 이력."""
+        pack = str(body.get("pack") or "").strip()
+        if not re.fullmatch(r"\d{1,12}", pack):
+            raise HTTPException(status_code=400, detail="합포 번호가 올바르지 않아요.")
+        phpsessid = _ezadmin_session()
+        try:
+            history = await ezo.cs_history(phpsessid, pack)
+        except ezo.SessionExpired as e:
+            raise HTTPException(status_code=401, detail=f"{e} 상단 EZAdmin 설정에서 세션을 갱신해 주세요.")
+        except (httpx.HTTPError, RuntimeError) as e:
+            raise HTTPException(status_code=502, detail=f"이지어드민 조회 실패: {e}")
+        return {"ok": True, "pack": pack, "history": history}
+
+    @router.post("/hold/release")
+    async def hold_release(body: dict = Body(...), current_user=Depends(get_current_user)):
+        """합포의 보류를 풀고 정상 상태로 되돌린다. 지금 상태를 다시 읽어 필요한 단계만 실행한다."""
+        pack = str(body.get("pack") or "").strip()
+        if not re.fullmatch(r"\d{1,12}", pack):
+            raise HTTPException(status_code=400, detail="합포 번호가 올바르지 않아요.")
+        phpsessid = _ezadmin_session()
+
+        async def current_state() -> dict:
+            rows = await ezo.pack_rows(phpsessid, pack)
+            if not rows:
+                raise HTTPException(status_code=404, detail="합포를 찾지 못했어요. 다시 검색해 주세요.")
+            order_id = str(rows[0]["row"].get("order_id", ""))
+            cell = next((c for c in await ezo.search_packs(phpsessid, order_id) if str(c.get("pack")) == pack), None)
+            if cell is None:
+                raise HTTPException(status_code=404, detail="합포의 현재 상태를 읽지 못했어요. 다시 검색해 주세요.")
+            return {"hold": str(cell.get("hold", "") or "0"), "order_cs": str(cell.get("order_cs", "") or "0")}
+
+        def ok(result) -> bool:
+            return isinstance(result, dict) and str(result.get("error", "")) in ("0", "")
+
+        done: list[str] = []
+        try:
+            before = await current_state()
+            needs_cs = before["order_cs"].split(",")[0] != "0"
+            if before["hold"] == "0" and not needs_cs:
+                raise HTTPException(status_code=409, detail="이미 보류가 아닌 정상 주문이에요.")
+            if needs_cs and not body.get("allow_cancelled"):
+                raise HTTPException(status_code=409, detail="취소·CS 상태의 주문이에요. 확인 후 다시 진행해 주세요.")
+            if before["hold"] != "0":
+                result = await ezo.release_hold(phpsessid, pack)
+                if not ok(result):
+                    raise HTTPException(status_code=502, detail=f"이지어드민이 보류 해제를 거부했어요. ({result})")
+                done.append("보류 해제")
+            if needs_cs:
+                result = await ezo.normal_pack(phpsessid, pack)
+                if not ok(result):
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"{'보류 해제는 끝났지만 ' if done else ''}정상 복귀를 이지어드민이 거부했어요. ({result})",
+                    )
+                done.append("정상 복귀")
+            after = await current_state()
+        except ezo.SessionExpired as e:
+            raise HTTPException(status_code=401, detail=f"{e} 상단 EZAdmin 설정에서 세션을 갱신해 주세요.")
+        except (httpx.HTTPError, RuntimeError) as e:
+            raise HTTPException(status_code=502, detail=f"이지어드민 연결 실패: {e}")
+        return {"ok": True, "done": done, "before": before, "after": after}
+
+    @router.post("/exchange/options")
+    async def exchange_options(body: dict = Body(...), current_user=Depends(get_current_user)):
+        """교환할 상품의 옵션 목록 (이지어드민 상품교환 팝업 검색과 같다)."""
+        name = re.sub(r"\s+", " ", str(body.get("name") or "")).strip()
+        shop_id = str(body.get("shop_id") or "").strip()
+        if not name or not re.fullmatch(r"\d{1,10}", shop_id):
+            raise HTTPException(status_code=400, detail="상품명과 쇼핑몰 정보가 필요합니다.")
+        phpsessid = _ezadmin_session()
+        try:
+            options = await ezo.search_products(phpsessid, name, shop_id)
+        except ezo.SessionExpired as e:
+            raise HTTPException(status_code=401, detail=f"{e} 상단 EZAdmin 설정에서 세션을 갱신해 주세요.")
+        except (httpx.HTTPError, RuntimeError) as e:
+            raise HTTPException(status_code=502, detail=f"이지어드민 조회 실패: {e}")
+        return {"ok": True, "options": options}
+
+    @router.post("/exchange/change")
+    async def exchange_change(body: dict = Body(...), current_user=Depends(get_current_user)):
+        """합포의 주문상품 한 줄을 다른 옵션(상품코드)으로 교환 처리한다 (이지어드민 change_product)."""
+        pack = str(body.get("pack") or "").strip()
+        prd_seq = str(body.get("prd_seq") or "").strip()
+        old_id = str(body.get("old_product_id") or "").strip()
+        new_id = str(body.get("new_product_id") or "").strip()
+        reason = str(body.get("reason") or "").strip()[:200]
+        try:
+            qty = int(body.get("qty") or 1)
+        except (TypeError, ValueError):
+            qty = 0
+        if not (re.fullmatch(r"\d{1,12}", pack) and re.fullmatch(r"\d{1,12}", prd_seq) and old_id and new_id):
+            raise HTTPException(status_code=400, detail="교환할 주문상품 정보가 올바르지 않아요.")
+        if old_id == new_id:
+            raise HTTPException(status_code=400, detail="같은 옵션으로는 교환할 수 없어요.")
+        phpsessid = _ezadmin_session()
+        try:
+            rows = await ezo.pack_rows(phpsessid, pack)
+            line = next((r for r in rows if str(r["row"].get("prd_seq", "")) == prd_seq), None)
+            # 검색 이후 다른 곳에서 바뀌었다면 처리하지 않는다.
+            if line is None or str(line["row"].get("product_id", "")) != old_id:
+                raise HTTPException(status_code=409, detail="그 사이 주문상품이 바뀌었어요. 다시 검색해서 확인해 주세요.")
+            if line["row"].get("trans_no") and not body.get("allow_shipped"):
+                raise HTTPException(status_code=409, detail="이미 송장이 발행된 주문이에요. 확인 후 다시 진행해 주세요.")
+            ordered = int(line["row"].get("qty") or 1)
+            if not 1 <= qty <= ordered:
+                raise HTTPException(status_code=400, detail=f"교환 수량은 1~{ordered}개여야 해요.")
+            # 새 옵션 이름은 클라이언트 값을 믿지 않고 이지어드민 검색 결과에서 가져온다.
+            candidates = await ezo.search_products(phpsessid, str(line["row"].get("product_name") or ""), str(line["row"].get("shop_id") or ""))
+            target = next((c for c in candidates if c["product_id"] == new_id), None)
+            if target is None:
+                raise HTTPException(status_code=400, detail="선택한 옵션을 이 상품의 옵션 목록에서 찾지 못했어요.")
+            result = await EzAdminClient(get_setting).change_product(
+                pack, prd_seq, product_id=new_id, old_product_id=old_id, options=target["options"],
+                qty=qty, trans_corp=_EXCHANGE_TRANS_CORP, reason=reason,
+            )
+            if not isinstance(result, dict) or str(result.get("error", "")) not in ("0", ""):
+                raise HTTPException(status_code=502, detail=f"이지어드민이 교환 처리를 거부했어요. ({result})")
+            after = await ezo.pack_rows(phpsessid, pack)
+        except (ezo.SessionExpired, EzAdminSessionExpired) as e:
+            raise HTTPException(status_code=401, detail=f"{e} 상단 EZAdmin 설정에서 세션을 갱신해 주세요.")
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=f"이지어드민 연결 실패: {e}")
+        verified = any(str(r["row"].get("product_id", "")) == new_id for r in after)
+        return {"ok": True, "verified": verified, "new_options": target["options"], "qty": qty}
+
+    @router.post("/delivery/track")
+    async def delivery_track(body: dict = Body(...), current_user=Depends(get_current_user)):
+        """송장번호로 롯데택배(llogis) 배송 상태와 이동 이력을 바로 조회한다."""
+        invoice = re.sub(r"\D", "", str(body.get("invoice") or ""))
+        if not invoice:
+            raise HTTPException(status_code=400, detail="송장번호가 필요합니다.")
+        try:
+            raw = await LLogisClient().query_raw(invoice)
+        except (httpx.HTTPError, RuntimeError) as e:
+            raise HTTPException(status_code=502, detail=f"롯데택배 조회 실패: {e}")
+        info = (raw.get("invInfoList") or [{}])[0]
+        moves = raw.get("mvmList") or []
+        if not info and not moves:
+            return {"ok": True, "found": False, "invoice": invoice}
+        # mvmList 는 시간순이 아닐 수 있어 스캔일시 기준으로 최신순 정렬한다.
+        history = sorted(moves, key=lambda m: re.sub(r"\D", "", str(m.get("rgstYmd") or "")).ljust(14, "0"), reverse=True)
+        history = [
+            {"status": m.get("paclStatNm") or "-", "location": m.get("scanBrshNm") or "-", "scan_date": m.get("rgstYmd") or ""}
+            for m in history
+        ]
+        return {
+            "ok": True,
+            "found": True,
+            "invoice": invoice,
+            "receiver": info.get("acperNm") or "",
+            "product": info.get("artcNm") or "",
+            "sent_date": info.get("acptRgstYmd") or "",
+            "delivered_date": info.get("dlvYmd") or "",
+            "latest": history[0] if history else None,
+            "history": history,
+        }
 
     @router.get("/address/lookup")
     def address_lookup(q: str = "", current_user=Depends(get_current_user)):

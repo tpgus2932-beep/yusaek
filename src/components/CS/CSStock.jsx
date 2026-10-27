@@ -59,7 +59,7 @@ const tokenKey = (parts) =>
  * orderNo: 이 문의의 에이블리 주문번호 — 대기 주문 순번 확인에 쓴다
  * title: 여러 상품을 함께 보여줄 때 구분용 제목, lookupSignal: 값이 바뀔 때마다 재고를 조회(전체 조회용)
  */
-export default function CSStock({ goods, asked, orderNo, title = '', lookupSignal = 0 }) {
+export default function CSStock({ goods, asked, orderNo, title = '', lookupSignal = 0, orderStatus = '', compact = false, section = 'all' }) {
     const [result, setResult] = useState(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
@@ -71,9 +71,13 @@ export default function CSStock({ goods, asked, orderNo, title = '', lookupSigna
     const [rank, setRank] = useState(null);
     const [rankLoading, setRankLoading] = useState(false);
     const [rankError, setRankError] = useState('');
+    const [exchange, setExchange] = useState(null); // 교환 신청의 {원래 옵션 → 교환 옵션} 목록
+    const [exchangeLoading, setExchangeLoading] = useState(false);
+    const [exchangeError, setExchangeError] = useState('');
 
     // 마지막으로 조회한 결과가 있으면 바로 보여준다.
     useEffect(() => {
+        if (section === 'rank') return undefined;
         let cancelled = false;
         call(`/stock/${goods.sno}`)
             .then((data) => {
@@ -83,7 +87,7 @@ export default function CSStock({ goods, asked, orderNo, title = '', lookupSigna
         return () => {
             cancelled = true;
         };
-    }, [goods.sno]);
+    }, [goods.sno, section]);
 
     const lookup = async () => {
         setLoading(true);
@@ -99,7 +103,7 @@ export default function CSStock({ goods, asked, orderNo, title = '', lookupSigna
 
     // '전체 재고 조회'가 눌릴 때마다 이 상품도 함께 조회한다.
     useEffect(() => {
-        if (lookupSignal > 0) lookup();
+        if (lookupSignal > 0 && section !== 'rank') lookup();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [lookupSignal]);
 
@@ -125,6 +129,24 @@ export default function CSStock({ goods, asked, orderNo, title = '', lookupSigna
             setRankError(e.message);
         } finally {
             setRankLoading(false);
+        }
+    };
+
+    // 교환상품 준비중인 주문의 교환 옵션을 에이블리에서 읽어 재고 표에 함께 보여준다.
+    const checkExchange = async () => {
+        setExchangeLoading(true);
+        setExchangeError('');
+        try {
+            const data = await call(`/exchange/${orderNo}`);
+            const mine = (data.items || []).filter((x) => String(x.goods_sno) === String(goods.sno));
+            setExchange(mine);
+            if (!mine.length) setExchangeError('이 상품의 교환 신청을 찾지 못했어요.');
+            else if (!result) lookup();
+        } catch (e) {
+            setExchange(null);
+            setExchangeError(e.message);
+        } finally {
+            setExchangeLoading(false);
         }
     };
 
@@ -162,48 +184,139 @@ export default function CSStock({ goods, asked, orderNo, title = '', lookupSigna
         || (asked?.optionNo && o.option_no && String(o.option_no) === String(asked.optionNo))
         || (askedKey && o.key === askedKey);
 
-    // 문의한 옵션을 찾았으면 그 옵션만 보여주고, 전체 옵션은 따로 펼쳐서 본다.
-    const askedRows = result ? result.options.filter(isAsked) : [];
+    const exchangeKeys = (exchange || []).map((x) => ({ key: tokenKey(x.exchange_options), no: x.exchange_option_no }));
+    const isExchange = (o) =>
+        exchangeKeys.some((x) => (x.no && o.option_no && String(o.option_no) === String(x.no)) || (x.key && o.key === x.key));
+
+    // 문의한 옵션(+교환 옵션)을 찾았으면 그 옵션만 보여주고, 전체 옵션은 따로 펼쳐서 본다.
+    const askedRows = result ? result.options.filter((o) => isAsked(o) || isExchange(o)) : [];
     const focusAsked = askedRows.length > 0 && !showAll;
     const rows = focusAsked ? askedRows : result?.options || [];
 
-    return (
-        <section className={styles.box}>
-            {title && <div className={styles.title}>{cleanTitle(title)}</div>}
-            <div className={styles.head}>
-                <strong>옵션별 재고</strong>
-                {result && (
-                    <span className={styles.muted}>
-                        {SOURCE[result.source]} · {fmtTime(result.fetched_at)} 기준 · 합계 {result.total_stock}개
-                    </span>
-                )}
-                <button type="button" className={styles.btn} disabled={loading} onClick={lookup}>
-                    {loading ? '조회 중…' : result ? '다시 조회' : '재고 조회'}
+    const renderInbound = (o) => (
+        <>
+            {o.inbound ? (
+                <>
+                    <div>
+                        {o.inbound.expected_date && (
+                            <b className={o.inbound.expected_date < todayStr() ? styles.zero : styles.inboundDate}>
+                                {shortDate(o.inbound.expected_date)}
+                                {o.inbound.expected_date < todayStr() && ' (지남)'}
+                            </b>
+                        )}
+                        {o.inbound.note && <span> {o.inbound.note}</span>}
+                    </div>
+                    <div className={styles.muted}>
+                        {fmtTime(o.inbound.updated_at)} 업데이트{o.inbound.updated_by ? ` · ${o.inbound.updated_by}` : ''}
+                    </div>
+                </>
+            ) : (
+                <span className={styles.muted}>-</span>
+            )}
+            <button type="button" className={styles.link} onClick={() => startEdit(o)}>
+                {o.inbound ? '수정' : '입력'}
+            </button>
+            {o.inbound && confirmDelete !== o.code && (
+                <button type="button" className={styles.linkDanger} onClick={() => setConfirmDelete(o.code)}>삭제</button>
+            )}
+            {o.inbound && confirmDelete === o.code && (
+                <span className={styles.confirmInline}>
+                    삭제할까요?{' '}
+                    <button type="button" className={styles.linkDanger} disabled={saving} onClick={() => saveInbound([o.code], true)}>예</button>
+                    <button type="button" className={styles.link} onClick={() => setConfirmDelete(null)}>아니오</button>
+                </span>
+            )}
+        </>
+    );
+
+    const renderEditor = (o) => (
+        <div className={styles.editor}>
+            <input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} />
+            <input
+                className={styles.noteInput}
+                placeholder="메모 (예: 2차 입고, 지연될 수 있음)"
+                maxLength={200}
+                value={form.note}
+                onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))}
+            />
+            <button type="button" className={styles.btnSmall} disabled={saving} onClick={() => saveInbound([o.code])}>저장</button>
+            <button
+                type="button"
+                className={styles.btnSmall}
+                disabled={saving}
+                title="이 상품의 모든 옵션에 같은 입고 일정을 적용해요"
+                onClick={() => saveInbound(result.options.map((x) => x.code))}
+            >
+                전체 옵션에 적용
+            </button>
+            <button type="button" className={styles.link} onClick={() => setEditing(null)}>취소</button>
+            {o.inbound && (
+                <button type="button" className={styles.linkDanger} disabled={saving} onClick={() => saveInbound([o.code], true)}>
+                    이 일정 삭제
                 </button>
-            </div>
-            {orderNo && (
+            )}
+        </div>
+    );
+
+    const showRank = section !== 'stock';
+    const showStock = section !== 'rank';
+    const askedOptions = result ? result.options.filter(isAsked) : [];
+
+    return (
+        <section className={`${styles.box} ${compact ? styles.boxCompact : ''}`}>
+            {title && <div className={styles.title}>{cleanTitle(title)}</div>}
+            {showStock && (
+                <div className={styles.head}>
+                    <strong>옵션별 재고</strong>
+                    {result && (
+                        <span className={styles.muted}>
+                            {SOURCE[result.source]} · {fmtTime(result.fetched_at)} 기준 · 합계 {result.total_stock}개
+                        </span>
+                    )}
+                    <button type="button" className={styles.btn} disabled={loading} onClick={lookup}>
+                        {loading ? '조회 중…' : result ? '다시 조회' : '재고 조회'}
+                    </button>
+                </div>
+            )}
+            {showStock && askedOptions.length > 0 && (
+                <div className={styles.askedSummary}>
+                    <span className={styles.askedSummaryTitle}>문의한 옵션 재고</span>
+                    {askedOptions.map((o) => (
+                        <div key={o.code} className={styles.askedSummaryRow}>
+                            <span>{o.label}</span>
+                            <b className={o.stock_qty > 0 ? styles.num : styles.zero}>{o.stock_qty > 0 ? `${o.stock_qty}개` : '재고 없음'}</b>
+                        </div>
+                    ))}
+                </div>
+            )}
+            {showRank && orderNo && (
                 <div className={styles.rankBox}>
                     <div className={styles.head}>
                         <strong>내 주문 대기 순번</strong>
-                        <span className={styles.muted}>
-                            에이블리(유색) 기준 · 주문번호 {orderNo}
-                            {paidAt(orderNo) && <> · 결제일 <b className={styles.paidAt}>{paidAt(orderNo)}</b></>}
-                        </span>
+                        {paidAt(orderNo) && (
+                            <span className={styles.muted}>결제일 <b className={styles.paidAt}>{paidAt(orderNo)}</b></span>
+                        )}
                         <button type="button" className={styles.btn} disabled={rankLoading} onClick={checkRank}>
                             {rankLoading ? '확인 중…' : rank ? '다시 확인' : '순번 확인'}
                         </button>
                     </div>
                     {rankError && <div className={styles.warn}>{rankError}</div>}
                     {rank && rank.found && (
-                        <div className={styles.rankLine}>
-                            <b className={styles.rankNum}>{rank.rank}번째</b>
-                            <span> / 대기 {rank.total}건 중</span>
-                            <span className={styles.muted}>
-                                {' '}· {rank.option.label} · 이 주문까지 누적 {rank.seller_cum_qty}개 (이지어드민 전체 누적 {rank.all_cum_qty}개)
-                                {' '}· 현재고 {rank.stock ?? '-'}개 · {rank.deliverable === 'O' ? '배송 가능' : '재고 부족'}
-                                {' '}· 발주 {rank.ordered_at}
-                            </span>
-                        </div>
+                        <>
+                            <div className={styles.rankLine}>
+                                <b className={styles.rankNum}>{rank.rank}번째</b>
+                                <span> / 대기 {rank.total}건 중</span>
+                                <span className={rank.deliverable === 'O' ? styles.okTag : styles.warnTag}>
+                                    {rank.deliverable === 'O' ? '배송 가능' : '재고 부족'}
+                                </span>
+                            </div>
+                            <dl className={styles.kv}>
+                                <dt>옵션</dt><dd>{rank.option.label}</dd>
+                                <dt>현재고</dt><dd>{rank.stock ?? '-'}개</dd>
+                                <dt>이 주문까지 누적</dt><dd>{rank.seller_cum_qty}개 <span className={styles.muted}>(전체 {rank.all_cum_qty}개)</span></dd>
+                                <dt>발주</dt><dd>{rank.ordered_at}</dd>
+                            </dl>
+                        </>
                     )}
                     {rank && !rank.found && (
                         <div className={styles.muted}>
@@ -213,24 +326,64 @@ export default function CSStock({ goods, asked, orderNo, title = '', lookupSigna
                     {rank && <div className={styles.muted}>{fmtTime(rank.fetched_at)} 이지어드민 기준</div>}
                 </div>
             )}
-            {error && (
+            {showStock && /교환/.test(orderStatus) && orderNo && (
+                <div className={styles.rankBox}>
+                    <div className={styles.head}>
+                        <strong>교환 옵션</strong>
+                        <span className={styles.muted}>{orderStatus}</span>
+                        <button type="button" className={styles.btn} disabled={exchangeLoading} onClick={checkExchange}>
+                            {exchangeLoading ? '확인 중…' : exchange ? '다시 확인' : '교환옵션 확인'}
+                        </button>
+                    </div>
+                    {exchangeError && <div className={styles.warn}>{exchangeError}</div>}
+                    {(exchange || []).map((x) => (
+                        <div key={`${x.exchange_sno}:${x.exchange_option_no}`} className={styles.rankLine}>
+                            <span>{(x.original_options || []).join(' / ')}</span>
+                            <b className={styles.rankNum}> → {(x.exchange_options || []).join(' / ')}</b>
+                            <span className={styles.muted}> · {x.quantity}개</span>
+                        </div>
+                    ))}
+                </div>
+            )}
+            {showStock && error && (
                 <div className={styles.warn}>
                     {error}
                     {error.includes('매칭') && ' (상품별 탭에서 원가베이스에 연결할 수 있어요)'}
                 </div>
             )}
-            {result?.note && <div className={styles.muted}>{result.note}</div>}
-            {result && askedRows.length > 0 && (
+            {showStock && result?.note && <div className={styles.muted}>{result.note}</div>}
+            {showStock && result && askedRows.length > 0 && (
                 <div className={styles.viewToggle}>
                     <span className={styles.muted}>
-                        {focusAsked ? `문의한 옵션 ${askedRows.length}개만 표시 중` : `전체 옵션 ${result.options.length}개 표시 중`}
+                        {focusAsked ? `문의·교환 옵션 ${askedRows.length}개만 표시 중` : `전체 옵션 ${result.options.length}개 표시 중`}
                     </span>
                     <button type="button" className={styles.link} onClick={() => setShowAll((v) => !v)}>
-                        {focusAsked ? `전체 옵션 보기 (${result.options.length})` : '문의 옵션만 보기'}
+                        {focusAsked ? `전체 옵션 보기 (${result.options.length})` : '문의·교환 옵션만 보기'}
                     </button>
                 </div>
             )}
-            {result && (
+            {showStock && result && compact && (
+                <div className={styles.optList}>
+                    {rows.map((o) => (
+                        <div key={o.code} className={`${styles.optCard} ${isAsked(o) || isExchange(o) ? styles.asked : ''}`}>
+                            <div className={styles.optTop}>
+                                <span className={styles.optLabel}>
+                                    {o.label}
+                                    {isAsked(o) && <span className={styles.askedTag}>문의 옵션</span>}
+                                    {isExchange(o) && <span className={styles.askedTag}>교환 옵션</span>}
+                                </span>
+                                <b className={o.stock_qty > 0 ? styles.num : styles.zero}>{o.stock_qty > 0 ? `${o.stock_qty}개` : '재고 없음'}</b>
+                            </div>
+                            <dl className={styles.kv}>
+                                <dt>입고대기</dt><dd>{o.stock_in_standby || '-'}</dd>
+                                <dt>입고 일정</dt><dd className={styles.inboundCell}>{renderInbound(o)}</dd>
+                            </dl>
+                            {editing === o.code && renderEditor(o)}
+                        </div>
+                    ))}
+                </div>
+            )}
+            {showStock && result && !compact && (
                 <div className={styles.tableWrap}>
                     <table className={styles.table}>
                         <thead>
@@ -239,77 +392,19 @@ export default function CSStock({ goods, asked, orderNo, title = '', lookupSigna
                         <tbody>
                             {rows.map((o) => (
                                 <Fragment key={o.code}>
-                                    <tr className={isAsked(o) ? styles.asked : ''}>
+                                    <tr className={isAsked(o) || isExchange(o) ? styles.asked : ''}>
                                         <td>
                                             {o.label}
                                             {isAsked(o) && <span className={styles.askedTag}>문의 옵션</span>}
+                                            {isExchange(o) && <span className={styles.askedTag}>교환 옵션</span>}
                                         </td>
                                         <td className={o.stock_qty > 0 ? styles.num : styles.zero}>{o.stock_qty > 0 ? o.stock_qty : '없음'}</td>
                                         <td>{o.stock_in_standby || '-'}</td>
-                                        <td className={styles.inboundCell}>
-                                            {o.inbound ? (
-                                                <>
-                                                    <div>
-                                                        {o.inbound.expected_date && (
-                                                            <b className={o.inbound.expected_date < todayStr() ? styles.zero : styles.inboundDate}>
-                                                                {shortDate(o.inbound.expected_date)}
-                                                                {o.inbound.expected_date < todayStr() && ' (지남)'}
-                                                            </b>
-                                                        )}
-                                                        {o.inbound.note && <span> {o.inbound.note}</span>}
-                                                    </div>
-                                                    <div className={styles.muted}>
-                                                        {fmtTime(o.inbound.updated_at)} 업데이트{o.inbound.updated_by ? ` · ${o.inbound.updated_by}` : ''}
-                                                    </div>
-                                                </>
-                                            ) : (
-                                                <span className={styles.muted}>-</span>
-                                            )}
-                                            <button type="button" className={styles.link} onClick={() => startEdit(o)}>
-                                                {o.inbound ? '수정' : '입력'}
-                                            </button>
-                                            {o.inbound && confirmDelete !== o.code && (
-                                                <button type="button" className={styles.linkDanger} onClick={() => setConfirmDelete(o.code)}>삭제</button>
-                                            )}
-                                            {o.inbound && confirmDelete === o.code && (
-                                                <span className={styles.confirmInline}>
-                                                    삭제할까요?{' '}
-                                                    <button type="button" className={styles.linkDanger} disabled={saving} onClick={() => saveInbound([o.code], true)}>예</button>
-                                                    <button type="button" className={styles.link} onClick={() => setConfirmDelete(null)}>아니오</button>
-                                                </span>
-                                            )}
-                                        </td>
+                                        <td className={styles.inboundCell}>{renderInbound(o)}</td>
                                     </tr>
                                     {editing === o.code && (
                                         <tr className={styles.editRow}>
-                                            <td colSpan={4}>
-                                                <div className={styles.editor}>
-                                                    <input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} />
-                                                    <input
-                                                        className={styles.noteInput}
-                                                        placeholder="메모 (예: 2차 입고, 지연될 수 있음)"
-                                                        maxLength={200}
-                                                        value={form.note}
-                                                        onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))}
-                                                    />
-                                                    <button type="button" className={styles.btnSmall} disabled={saving} onClick={() => saveInbound([o.code])}>저장</button>
-                                                    <button
-                                                        type="button"
-                                                        className={styles.btnSmall}
-                                                        disabled={saving}
-                                                        title="이 상품의 모든 옵션에 같은 입고 일정을 적용해요"
-                                                        onClick={() => saveInbound(result.options.map((x) => x.code))}
-                                                    >
-                                                        전체 옵션에 적용
-                                                    </button>
-                                                    <button type="button" className={styles.link} onClick={() => setEditing(null)}>취소</button>
-                                                    {o.inbound && (
-                                                        <button type="button" className={styles.linkDanger} disabled={saving} onClick={() => saveInbound([o.code], true)}>
-                                                            이 일정 삭제
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            </td>
+                                            <td colSpan={4}>{renderEditor(o)}</td>
                                         </tr>
                                     )}
                                 </Fragment>

@@ -1,9 +1,35 @@
 .wrap {
     display: grid;
-    grid-template-columns: 300px minmax(300px, 380px) 1fr;
+    grid-template-columns: 360px minmax(0, 1fr) 320px;
     gap: 12px;
     flex: 1;
     min-height: 0;
+}
+
+.backBtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    align-self: flex-start;
+    margin: 12px 12px 0;
+    padding: 5px 12px;
+    border: none;
+    border-radius: 999px;
+    background: var(--cs-bg);
+    color: var(--cs-text);
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+/* 문의 목록 모드: 상품 정보·필터·문의 카드가 한 컬럼에서 같이 스크롤 */
+.sideRooms {
+    overflow-y: auto;
+}
+
+.sideRooms .rooms {
+    flex: none;
+    overflow: visible;
 }
 
 .side,
@@ -461,6 +487,75 @@
     flex-wrap: wrap;
     gap: 6px;
     width: 100%;
+}
+
+/* 일괄발송 */
+.bulkBar {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0 12px 8px;
+    padding: 10px 12px;
+    border-radius: 14px;
+    background: var(--cs-card);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+}
+
+.bulkHead {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.bulkCount {
+    margin-left: auto;
+    color: var(--cs-accent);
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+.bulkBar textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border: 1px solid var(--cs-line);
+    border-radius: 10px;
+    background: var(--cs-bg);
+    color: var(--cs-text);
+    font: inherit;
+    resize: vertical;
+}
+
+.bulkSend {
+    padding: 8px 0;
+    border: none;
+    border-radius: 10px;
+    background: var(--cs-accent);
+    color: #fff;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.bulkSend:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* 일괄발송 대상으로 담긴 카드: 열어 본 카드(roomActive)와 구분되는 왼쪽 띠 */
+.roomBulk {
+    box-shadow: inset 4px 0 0 var(--cs-accent);
+}
+
+.roomBulk.roomActive {
+    box-shadow: inset 0 0 0 2px var(--cs-accent), inset 4px 0 0 var(--cs-accent);
+}
+
+.miniBtnOn {
+    background: var(--cs-accent);
+    color: #fff;
 }
 
 .cardActions {
