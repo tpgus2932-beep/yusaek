@@ -91,3 +91,65 @@ def init_cs_tables(get_db) -> None:
     )
     conn.commit()
     conn.close()
+
+
+# CS 테이블을 Turso에서 로컬 SQLite로 옮길 때 복사하는 표와 열 (cs_rooms 는 크므로 sno 순으로 나눠서 읽는다).
+_MIGRATE_TABLES = (
+    ("cs_meta", ("key", "value")),
+    ("cs_product_links", ("goods_sno", "base_name", "linked_by", "linked_at")),
+    ("cs_option_links", ("goods_sno", "option_key", "base_code", "linked_by", "linked_at")),
+    ("cs_stock_cache", ("goods_sno", "fetched_at", "result_json")),
+    ("cs_inbound_schedules", ("code", "expected_date", "note", "updated_by", "updated_at")),
+    (
+        "cs_address_changes",
+        ("id", "pack", "order_id", "shop_name", "old_address", "old_zip", "new_address", "new_zip", "verified", "changed_by", "changed_at"),
+    ),
+)
+_ROOM_COLUMNS = ("sno", "updated_at", "status", "member_name", "search_text", "room_json", "detail_json", "detail_updated_at")
+_ROOM_PAGE = 200
+_MIGRATED_KEY = "migrated_from_turso"
+
+
+def _insert_sql(table: str, cols: tuple) -> str:
+    return f"INSERT OR REPLACE INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})"
+
+
+def migrate_cs_from_turso(local_get_db, remote_get_db, log=print) -> bool:
+    """예전에 Turso에 쌓인 CS 데이터를 로컬 SQLite로 한 번만 복사한다. 이미 옮겼으면 아무것도 하지 않는다.
+
+    끝까지 성공했을 때만 완료 표시(cs_meta)를 남기므로, 중간에 실패하면 다음 시작 때 처음부터 다시 시도한다.
+    Turso 쪽 데이터는 지우지 않는다.
+    """
+    local = local_get_db()
+    try:
+        if local.execute("SELECT 1 FROM cs_meta WHERE key = ?", (_MIGRATED_KEY,)).fetchone():
+            return False
+        remote = remote_get_db()
+        copied = {}
+        last_sno = -1
+        total_rooms = 0
+        while True:
+            rows = remote.execute(
+                f"SELECT {', '.join(_ROOM_COLUMNS)} FROM cs_rooms WHERE sno > ? ORDER BY sno LIMIT {_ROOM_PAGE}", (last_sno,)
+            ).fetchall()
+            if not rows:
+                break
+            local.executemany(_insert_sql("cs_rooms", _ROOM_COLUMNS), [tuple(r[c] for c in _ROOM_COLUMNS) for r in rows])
+            local.commit()
+            last_sno = rows[-1]["sno"]
+            total_rooms += len(rows)
+        copied["cs_rooms"] = total_rooms
+        for table, cols in _MIGRATE_TABLES:
+            rows = remote.execute(f"SELECT {', '.join(cols)} FROM {table}").fetchall()
+            if rows:
+                local.executemany(_insert_sql(table, cols), [tuple(r[c] for c in cols) for r in rows])
+                local.commit()
+            copied[table] = len(rows)
+        local.execute(
+            "INSERT OR REPLACE INTO cs_meta (key, value) VALUES (?, datetime('now'))", (_MIGRATED_KEY,)
+        )
+        local.commit()
+        log(f"[CS] Turso → 로컬 SQLite 이전 완료: {copied}")
+        return True
+    finally:
+        local.close()

@@ -69,7 +69,7 @@ from api.exchange_return_routes import build_exchange_return_router
 from api.pastelco_routes import build_pastelco_router
 from api.ably_minus_routes import build_ably_minus_router
 from api.cs_routes import build_cs_router
-from services.cs_store import init_cs_tables
+from services.cs_store import init_cs_tables, migrate_cs_from_turso
 from api.accident_cargo_routes import build_accident_cargo_router
 from api.return_regathering_routes import build_return_regathering_router
 from api.return_processing_log_routes import build_return_processing_log_router
@@ -1752,13 +1752,19 @@ app.include_router(
 app.include_router(
     build_cs_router(
         get_current_user=_get_current_user,
-        get_db=_get_shared_db,
+        get_db=_get_db,  # CS는 로컬 SQLite (Render에서만 Turso) — Turso HTTP 왕복이 느려서
         get_setting=_get_setting,
         normalize_to_yusas=normalize_to_yusas,
         allow_live_stock=not _IS_RENDER,
     )
 )
-init_cs_tables(_get_shared_db)
+init_cs_tables(_get_db)
+if _USE_TURSO and not _IS_RENDER:
+    # 예전에 Turso에 쌓인 CS 데이터를 로컬로 한 번만 복사한다 (실패해도 서버는 계속 뜨고 다음 시작 때 다시 시도).
+    try:
+        migrate_cs_from_turso(_get_db, _get_shared_db)
+    except Exception as exc:
+        print(f"[CS] Turso → 로컬 이전 실패, 다음 시작 때 다시 시도합니다: {exc}")
 
 def _init_client_cancel_soldout_logs():
     conn = _get_shared_db()
