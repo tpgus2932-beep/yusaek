@@ -1095,6 +1095,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (!res.ok) throw new Error(data?.detail || "김승일 감소 실패");
       setKimsungilList(data.kimsungil ?? []); setItems(data.items ?? items);    } catch (err) { pushLog(`김승일 감소 실패: ${err.message || ""}`.trim()); }
   };
+  // 원가베이스유 원가 × 수량. 원가를 못 찾은 상품은 합계에서 빠지므로 건수를 따로 센다.
+  const getKimsungilTotalCost = () =>
+    kimsungilList.reduce((sum, item) => sum + (Number(item.base_cost) || 0) * (Number(item.count) || 0), 0);
+  const getKimsungilNoCostCount = () =>
+    kimsungilList.filter((item) => !(Number(item.base_cost) > 0)).length;
+
 
   const handleKimsungilRemove = async (code) => {
     try {
@@ -1305,26 +1311,16 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       }));
       if (perTab.some((list) => list === null)) return;
       const merged = new Map();
-      perTab.flat().forEach((item) => {
-        const qty = Number(item.kimsungil_summon_qty) || 0;
+      allItems.forEach((item) => {
+        const qty = includeSummon
+          ? Number(item.count) || 0
+          : Number(item.normal_qty ?? item.count) || 0;
         if (qty <= 0) return;
         const prev = merged.get(item.code);
         if (prev) prev.count += qty;
         else merged.set(item.code, { ...item, count: qty });
       });
-      let sourceList = [...merged.values()];
-      if (sourceList.length === 0) {
-        // 소환술 항목이 없으면 불량 목록 전체를 코드별로 합산해서 보낸다.
-        const allMerged = new Map();
-        perTab.flat().forEach((item) => {
-          const qty = Number(item.count) || 0;
-          if (qty <= 0) return;
-          const prev = allMerged.get(item.code);
-          if (prev) prev.count += qty;
-          else allMerged.set(item.code, { ...item, count: qty });
-        });
-        sourceList = [...allMerged.values()];
-      }
+      const sourceList = [...merged.values()];
       if (sourceList.length === 0) {
         alert("보낼 불량 항목이 없습니다.");
         return;
@@ -1351,6 +1347,14 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
       const res = await fetch(`${API}/noye-kimsungil/bulyang/import`, {
         method: "POST",
+      // 소환술 항목이 있으면 포함할지 먼저 묻는다. count = 일반 불량 + 소환술 수량이라
+      // 포함하면 count를, 제외하면 일반 불량(normal_qty)만 모든 탭에 걸쳐 코드별로 합산한다.
+      const allItems = perTab.flat();
+      const summonedCount = new Set(
+        allItems.filter((item) => (Number(item.kimsungil_summon_qty) || 0) > 0).map((item) => item.code)
+      ).size;
+      const includeSummon = summonedCount === 0
+        || window.confirm(`김승일 소환술 항목 ${summonedCount}종이 있습니다. 불량출력에 포함할까요? (확인=포함, 취소=제외)`);
         headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ rows }),
       });
@@ -2928,7 +2932,10 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       {/* 김승일 로그 모달 */}
       {showKimsungilLog && (
         <div className={styles.modalOverlay} onClick={() => setShowKimsungilLog(false)}>
-          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+          <div className={styles.modal} style={{ width: "min(1100px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
+                <span className={styles.pill} title={getKimsungilNoCostCount() > 0 ? `원가를 찾지 못한 상품 ${getKimsungilNoCostCount()}종은 제외됨` : "원가베이스유 원가 × 수량"}>
+                  총 원가 {getKimsungilTotalCost().toLocaleString()}원{getKimsungilNoCostCount() > 0 ? ` (원가없음 ${getKimsungilNoCostCount()}종 제외)` : ""}
+                </span>
             <div className={styles.modalHeader}>
               <h4 className={styles.modalTitle}>김승일 로그 — {kimsungilLogCode}</h4>
               <div className={styles.modalActions}>
@@ -3003,6 +3010,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               <div className={styles.statusMsg}>
                 <strong>{defectBasePath}</strong>
               </div>
+                    {item.base_cost > 0 && (
+                      <span className={styles.inlineMeta}>{(item.base_cost * item.count).toLocaleString()}원</span>
+                    )}
             )}
 
             <div className={styles.uploadRow}>

@@ -2631,7 +2631,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         # 라벨 거래처 관리(간단입고)에 접두어가 지정된 거래처 상품은 새 상품명 맨 앞에 그 접두어를 붙인다.
         prefix_by_supplier = _load_label_prefixes()
         rows = conn.execute(
-            """SELECT 대표상품코드, 상품명, 색상, 카테고리, 거래처 FROM wonbe
+            """SELECT 대표상품코드, 상품명, 색상, 카테고리, 거래처, 상품코드 FROM wonbe
                WHERE TRIM(COALESCE(대표상품코드, '')) != '' AND 카테고리 IN ('상의','하의','아우터','악세사리')
                  AND TRIM(COALESCE(상품명, '')) != ''"""
         ).fetchall()
@@ -2649,6 +2649,28 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             base = str(r["상품명"]).strip()
             supplier = re.sub(r"\s+", "", str(r["거래처"] or ""))
             label_prefix = prefix_by_supplier.get(supplier, "")
+    def _load_bad_stock_codes() -> set[str]:
+        """바코드 사이드메뉴 악성재고 모달에 올라있는 상품코드(S00000 형식 대문자) 집합. 상품명 변경 대상에서 뺀다."""
+        if get_shared_db is None:
+            return set()
+        codes: set[str] = set()
+        try:
+            conn = get_shared_db()
+        except Exception:
+            return codes
+        try:
+            for r in conn.execute("SELECT code FROM barcode_bad_stock").fetchall():
+                code = str(r[0] or "").strip().upper()
+                if code.startswith("YUSAS"):
+                    code = code[3:]
+                if code:
+                    codes.add(code)
+        except Exception:
+            pass  # 악성재고 테이블이 아직 없으면 제외할 상품도 없다.
+        finally:
+            conn.close()
+        return codes
+
             if label_prefix:
                 # 라벨 거래처 관리에 접두어가 설정된 거래처는 카테고리/컬러 글자(BA 등) 없이 접두어만 붙인다 (예: "K 상품명").
                 # 접두어가 없는 거래처는 아래 기존 규칙(BA 등)을 따른다.
@@ -2662,6 +2684,12 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 if not letter:
                     unmatched.add((r["카테고리"], color))
                     continue
+        # 악성재고에 올라있는 옵션이 하나라도 있는 상품(대표상품코드)은 상품명을 바꾸지 않는다.
+        bad_codes = _load_bad_stock_codes()
+        bad_reps = {
+            str(r["대표상품코드"]).strip() for r in rows
+            if str(r["상품코드"] or "").strip().upper() in bad_codes
+        }
                 new = f"{CATEGORY_LETTER[r['카테고리']]}{letter} {base}"
             rep = str(r["대표상품코드"]).strip()
             names.setdefault(rep, set()).add(new)
@@ -2673,6 +2701,8 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             else:
                 conflicts.append(rep)
         items.sort(key=lambda x: x["code"])
+            if str(r["대표상품코드"]).strip() in bad_reps:
+                continue
         # 이미 같은 이름으로 EZAdmin에 올린 상품은 건너뛴다(변경분·신규만). force면 전부 다시 올린다.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS wonbe_name_rename_applied (code TEXT PRIMARY KEY, new_name TEXT, applied_at TEXT)"
@@ -2684,7 +2714,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             already_applied = len(items) - len(pending)
             items = pending
         return {
-            "already_applied": already_applied,
+            "already_applied": already_applied, "bad_stock_excluded": len(bad_reps),
             "items": items, "conflicts": conflicts, "unmatched_colors": [{"category": c, "color": col} for c, col in sorted(unmatched)],
             "no_color_rows": no_color, "skipped_no_rep_or_category": no_rep_or_cat,
         }

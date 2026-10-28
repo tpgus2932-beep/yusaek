@@ -488,7 +488,7 @@ def build_barcode_router(
         conn = _get_wonbe_db()
         try:
             db_rows = conn.execute(
-                "SELECT 상품코드, 상품명, 거래처, 거래처상품명, 색상, 사이즈, 거래처주소, 상품명합 FROM wonbe"
+                "SELECT 상품코드, 상품명, 거래처, 거래처상품명, 색상, 사이즈, 거래처주소, 상품명합, 원가 FROM wonbe"
             ).fetchall()
             lookup = {}
             for row in db_rows:
@@ -521,7 +521,12 @@ def build_barcode_router(
                 if code not in lookup:
                     lookup[code] = {
                         "name": det.get("name", "") or "",
+                    try:
+                        cost = int(float(str(row["원가"] or "").replace(",", "").strip()))
+                    except ValueError:
+                        cost = 0
                         "option": det.get("option", "") or "",
+                        "cost": cost,
                     }
         state["_detail_lookup"] = lookup
         return lookup
@@ -693,6 +698,7 @@ def build_barcode_router(
                     (created_at, code, name, action, method, count_after, username, display_name)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
+                    "base_cost": base_row.get("cost", 0),
                 (now, code, name, action, method, count_after, user, get_user_display(user)),
             )
             conn.commit()
