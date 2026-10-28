@@ -106,6 +106,8 @@ const ReturnsPage = () => {
     const [changeProductLoading, setChangeProductLoading] = useState(false);
     const [changeProductMsg, setChangeProductMsg] = useState('');
     const [csLookupLoading, setCsLookupLoading] = useState(false);
+    const [orderLookupLoading, setOrderLookupLoading] = useState(false);
+    const [orderLookupModal, setOrderLookupModal] = useState(null);
     const [csDetailModal, setCsDetailModal] = useState(null);
     const [zoomImage, setZoomImage] = useState(null);
     const [refundLoading, setRefundLoading] = useState(false);
@@ -1521,6 +1523,32 @@ body { background: #fff; font-family: sans-serif; }
         }
         printProductLabels(labels);
         setMessage(`바코드 출력: ${labels.length}건`);
+    // 원송장번호 → 이지어드민 CS검색(주문번호) → 에이블리 전체주문조회. 결과는 모달로 보여준다.
+    const handleOrderLookup = async (selectedIds) => {
+        const ids = Array.from(selectedIds);
+        if (ids.length === 0) return;
+        setOrderLookupLoading(true);
+        setMessage('');
+        try {
+            const res = await fetch(`${API}/returns/unmatched/order-lookup`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ ids }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.need_session) {
+                openEzadminModal(() => handleOrderLookup(selectedIds));
+                return;
+            }
+            if (!res.ok || !data?.ok) throw new Error(data?.detail || '전체주문조회 실패');
+            setOrderLookupModal({ results: data.results || [] });
+        } catch (err) {
+            setMessage(err.message || '전체주문조회 실패');
+        } finally {
+            setOrderLookupLoading(false);
+        }
+    };
+
     };
 
     // 미매칭 항목도 원가베이스유 매칭이 안 돼 resolveProductCodes를 못 쓰므로,
@@ -3150,6 +3178,14 @@ body { background: #fff; font-family: sans-serif; }
                                     type="date"
                                     value={logFilterDateFrom}
                                     onChange={(e) => setLogFilterDateFrom(e.target.value)}
+                                    <button
+                                        type="button"
+                                        className={pageStyles.secondaryBtn}
+                                        onClick={() => handleOrderLookup(selectedUnmatched)}
+                                        disabled={orderLookupLoading || selectedUnmatched.size === 0}
+                                    >
+                                        {orderLookupLoading ? '조회 중...' : `전체주문조회 (${selectedUnmatched.size})`}
+                                    </button>
                                 />
                                 <input
                                     type="date"
@@ -3729,6 +3765,66 @@ body { background: #fff; font-family: sans-serif; }
                                 문자 보내지 않기
                             </label>
                             {reasonChangeTemplatesLoading ? (
+            {orderLookupModal && (
+                <div
+                    onClick={() => setOrderLookupModal(null)}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0,0,0,0.5)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 1000,
+                    }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                            background: 'var(--bg-primary, #fff)',
+                            borderRadius: 8,
+                            width: 'min(760px, 92vw)',
+                            maxHeight: '80vh',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            overflow: 'hidden',
+                        }}
+                    >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border-color, #e5e7eb)' }}>
+                            <strong>전체주문조회 ({orderLookupModal.results.length}건)</strong>
+                            <button type="button" onClick={() => setOrderLookupModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>×</button>
+                        </div>
+                        <div style={{ padding: 16, overflowY: 'auto' }}>
+                            {orderLookupModal.results.map((r, i) => (
+                                <div key={r.id ?? i} style={{ marginBottom: 20 }}>
+                                    <div style={{ fontWeight: 600, marginBottom: 8 }}>
+                                        원송장 {r.original_invoice || '-'}
+                                        {r.order_no && ` · 주문번호 ${r.order_no}`}
+                                    </div>
+                                    {r.error && <div style={{ color: '#dc2626' }}>{r.error}</div>}
+                                    {(r.order_items || []).map((oi, j) => (
+                                        <div key={oi.sno ?? j} style={{ marginBottom: 10, paddingLeft: 8, borderLeft: '3px solid var(--border-color, #e5e7eb)', fontSize: 13, lineHeight: 1.6 }}>
+                                            <div style={{ fontWeight: 600 }}>{oi.goods_name}</div>
+                                            <div>
+                                                {oi.option_info}{oi.option_stock_sync_code ? ` (${oi.option_stock_sync_code})` : ''} · {oi.ea}개
+                                                {oi.price != null && ` · ${Number(oi.price).toLocaleString()}원`} · {oi.status}
+                                            </div>
+                                            <div style={{ color: 'var(--text-secondary, #6b7280)' }}>
+                                                주문 {oi.ordered_at || '-'} · 발송 {oi.goods_sent_at || '-'} · 배송완료 {oi.delivery_completed_at || '-'}
+                                            </div>
+                                            <div style={{ color: 'var(--text-secondary, #6b7280)' }}>
+                                                {oi.delivery_name || '-'} {oi.invoice || ''} · 구매자 {oi.buyer_name || '-'} {oi.buyer_tel || ''} · 수령자 {oi.receiver_name || '-'} {oi.receiver_tel || ''}
+                                            </div>
+                                            {oi.memo && <div>메모: {oi.memo}</div>}
+                                        </div>
+                                    ))}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
+
                                 <div>템플릿 불러오는 중...</div>
                             ) : reasonChangeTemplates.length === 0 ? (
                                 <div>등록된 템플릿이 없습니다. 사이드메뉴 "문자 발송"에서 템플릿을 먼저 만들어주세요.</div>

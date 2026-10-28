@@ -2353,6 +2353,95 @@ def build_returns_router(
                     "스캔송장": it.get("scan", ""),
                     "매칭송장": _request_memo_for_item(state, it),
                     "분류": it.get("type", "고객"),
+    @router.post("/returns/unmatched/order-lookup")
+    async def returns_unmatched_order_lookup(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """미매칭 항목의 원송장번호 → 이지어드민 CS검색(최근 3개월)으로 주문번호 확인 →
+        그 주문번호로 에이블리 전체주문조회를 해서 주문 상세를 돌려준다.
+
+        lookup-cs와 같은 방식으로 item["match"](반품송장→원송장 매핑을 거친 값)를
+        검색에 쓴다. 결과는 큐에 저장하지 않고 화면 모달에 바로 보여준다.
+        """
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        state = get_return_state(user)
+        target_ids = {int(i) for i in (payload.get("ids") or [])}
+        if not target_ids:
+            raise HTTPException(status_code=400, detail="조회할 항목이 없습니다.")
+
+        items = [it for it in state.queue_unmatched if it.get("id") in target_ids]
+        ez = EzAdminClient(get_setting)
+        ably = AblyClient()
+
+        now = datetime.now(_KST)
+        ez_start = (now - timedelta(days=90)).strftime("%Y-%m-%d")
+        ably_start = (now - timedelta(days=365)).strftime("%Y-%m-%d")
+        end_date = now.strftime("%Y-%m-%d")
+
+        results = []
+        for item in items:
+            original_invoice = str(item.get("match") or "").strip()
+            result = {
+                "id": item.get("id"),
+                "scan": item.get("scan"),
+                "original_invoice": original_invoice,
+                "order_no": "",
+                "order_items": [],
+                "error": "",
+            }
+            results.append(result)
+            if not original_invoice:
+                result["error"] = "원송장번호 없음 (반품송장 매핑 실패)"
+                continue
+            try:
+                order = await ez.find_order_by_invoice(original_invoice, start_date=ez_start, end_date=end_date)
+            except EzAdminSessionExpired:
+                return {"ok": False, "need_session": True}
+            if not order:
+                result["error"] = "이지어드민 미조회"
+                continue
+            order_no = str(order.get("order_id") or "").strip()
+            if not order_no:
+                result["error"] = "이지어드민 검색 결과에 주문번호 없음"
+                continue
+            result["order_no"] = order_no
+            try:
+                rows = await ably.search_order_items_by_order_sno(order_no, start_date=ably_start, end_date=end_date)
+            except Exception as e:
+                result["error"] = f"에이블리 주문조회 실패: {str(e)[:200]}"
+                continue
+            if not rows:
+                result["error"] = "에이블리에서 주문을 찾지 못함"
+                continue
+            result["order_items"] = [
+                {
+                    "sno": row.get("sno"),
+                    "order_sno": row.get("order_sno"),
+                    "status": row.get("status"),
+                    "goods_name": row.get("goods_name"),
+                    "option_info": row.get("option_info"),
+                    "option_stock_sync_code": row.get("option_stock_sync_code"),
+                    "ea": row.get("ea"),
+                    "price": row.get("price"),
+                    "invoice": row.get("invoice"),
+                    "delivery_name": (row.get("delivery") or {}).get("name"),
+                    "delivery_type": row.get("delivery_type"),
+                    "ordered_at": row.get("ordered_at"),
+                    "checked_at": row.get("checked_at"),
+                    "goods_sent_at": row.get("goods_sent_at"),
+                    "delivery_completed_at": row.get("delivery_completed_at"),
+                    "buyer_name": row.get("buyer_name"),
+                    "buyer_tel": row.get("buyer_tel"),
+                    "receiver_name": row.get("receiver_name"),
+                    "receiver_tel": row.get("receiver_tel"),
+                    "memo": row.get("memo"),
+                }
+                for row in rows
+            ]
+
+        return {"ok": True, "results": results}
+
                     "원가베이스매칭": matched_flag,
                 }
             )

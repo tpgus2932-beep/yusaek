@@ -244,7 +244,8 @@ class EzAdminClient:
             if not pack:
                 continue
             phone = first_present(cell or row, ("recv_tel", "recv_mobile"))
-            return {"pack": str(pack), "phone": str(phone) if phone else None}
+            order_id = first_present(cell or row, ("order_id",))
+            return {"pack": str(pack), "phone": str(phone) if phone else None, "order_id": str(order_id) if order_id else None}
         return None
 
     async def packlist(self, pack: str) -> dict:

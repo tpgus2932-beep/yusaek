@@ -125,6 +125,31 @@ class AblyClient:
             "messages": messages,
         }
 
+    async def search_order_items_by_order_sno(self, order_sno: str | int, *, start_date: str, end_date: str) -> list[dict]:
+        """에이블리 주문번호(order_sno)로 주문상품 목록을 조회.
+
+        셀러어드민 전체주문 화면에서 주문번호로 검색할 때와 같은 요청이다
+        (keyword_type=order_sno, 기간은 결제확인일(checked_at) 기준, 실제 브라우저
+        검색 요청 HAR 캡처로 확인됨). start_date/end_date는 YYYY-MM-DD.
+        """
+        response = await self.request(
+            "GET", "/seller/order_items/",
+            params={
+                "order": "-checked_at",
+                "page": 1,
+                "per_page": 30,
+                "delivery_type[]": ["standard", "today", "combine", "reserved"],
+                "keyword": str(order_sno),
+                "keyword_type": "order_sno",
+                "start_date": f"{start_date} 00:00:00",
+                "end_date": f"{end_date} 23:59:59",
+                "date_type": "checked_at",
+            },
+            origin="my.a-bly.com",
+        )
+        response.raise_for_status()
+        return response.json().get("order_items") or []
+
     async def rollback_order_items_to_prepare(self, sno_list: list[int]) -> httpx.Response:
         return await self.request("PUT", "/seller/order_items/rollback_to_prepare/", json={"sno_list": sno_list}, origin="my.a-bly.com")
 
