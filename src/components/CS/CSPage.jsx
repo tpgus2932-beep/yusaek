@@ -5,6 +5,7 @@ import CSDashboard from './CSDashboard';
 import CSProducts from './CSProducts';
 import CSConversation from './CSConversation';
 import CSAddress from './CSAddress';
+import CSMyTemplates from './CSMyTemplates';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
 const STATUS_OPTIONS = [
@@ -26,6 +27,28 @@ const fmtTime = (iso) => {
 };
 
 const PAGE_SIZE = 100;
+
+const SORT_OPTIONS = [
+    { value: 'newest', label: '최신순' },
+    { value: 'oldest', label: '오래된순' },
+    { value: 'beforeShip', label: '출고전' },
+];
+const DEFAULT_KEYWORDS = ['교환', '변경'];
+
+const loadStored = (key, fallback, valid) => {
+    try {
+        const value = JSON.parse(localStorage.getItem(key));
+        return valid(value) ? value : fallback;
+    } catch {
+        return fallback;
+    }
+};
+
+// 문의 상품 사진: 문의에 붙은 상품 → 주문 상품 순으로 찾는다.
+const roomImage = (r) => {
+    const goods = r.goods || r.order_item?.goods || {};
+    return goods.image_still || goods.image || '';
+};
 
 const apiCall = async (path, params, method = 'GET', body) => {
     const qs = params ? `?${new URLSearchParams(params)}` : '';
@@ -53,6 +76,11 @@ const CSPage = () => {
     const [lastSyncAt, setLastSyncAt] = useState('');
     const [query, setQuery] = useState('');
     const [limit, setLimit] = useState(PAGE_SIZE);
+    // 정렬: 최신순 / 오래된순 / 출고전(문의 내용에 키워드가 있는 문의를 위로 올리고 표시)
+    const [sortMode, setSortMode] = useState(() => loadStored('csSortMode', 'newest', (v) => SORT_OPTIONS.some((o) => o.value === v)));
+    const [keywords, setKeywords] = useState(() => loadStored('csSortKeywords', DEFAULT_KEYWORDS, (v) => Array.isArray(v) && v.every((x) => typeof x === 'string')));
+    const [keywordInput, setKeywordInput] = useState('');
+    const [keywordOpen, setKeywordOpen] = useState(false); // 단어 목록 편집 패널 (평소에는 접어 둔다)
     const [view, setView] = useState(() => {
         try {
             const saved = localStorage.getItem('csView');
@@ -97,6 +125,39 @@ const CSPage = () => {
             setLoading(false);
         }
     }, [startDate, endDate, status, query, limit]);
+
+    useEffect(() => {
+        try {
+            localStorage.setItem('csSortMode', JSON.stringify(sortMode));
+            localStorage.setItem('csSortKeywords', JSON.stringify(keywords));
+        } catch { /* 저장 실패는 무시 */ }
+    }, [sortMode, keywords]);
+
+    const addKeyword = () => {
+        const word = keywordInput.trim();
+        if (word && !keywords.includes(word)) setKeywords([...keywords, word]);
+        setKeywordInput('');
+    };
+
+    // 화면에 보여줄 순서와, 문의 내용에서 찾은 키워드(출고전 정렬일 때만 표시)
+    const { shownRooms, hitWords } = useMemo(() => {
+        const hits = new Map();
+        const timeOf = (r) => r.updated_latest_message_at || '';
+        const list = [...rooms];
+        if (sortMode === 'oldest') {
+            list.sort((a, b) => timeOf(a).localeCompare(timeOf(b)));
+        } else {
+            list.sort((a, b) => timeOf(b).localeCompare(timeOf(a)));
+        }
+        if (sortMode === 'beforeShip') {
+            for (const r of list) {
+                const text = r.latest_message?.content || '';
+                hits.set(r.sno, keywords.filter((k) => text.includes(k)));
+            }
+            list.sort((a, b) => Number(hits.get(b.sno).length > 0) - Number(hits.get(a.sno).length > 0)); // 안정 정렬: 같은 그룹 안에서는 최신순 유지
+        }
+        return { shownRooms: list, hitWords: hits };
+    }, [rooms, sortMode, keywords]);
 
     const syncRooms = useCallback(async () => {
         setSyncing(true);
@@ -280,33 +341,96 @@ const CSPage = () => {
                     selectedRoomSno={selected}
                     onSelectRoom={openRoom}
                     conversation={
-                        <CSConversation {...conversationProps} splitInfo />
+                        <CSConversation
+                            {...conversationProps}
+                            splitInfo
+                            extraTabs={[{
+                                key: 'myTemplates',
+                                label: '템플릿',
+                                content: <CSMyTemplates api={apiCall} onPick={(text) => { copyText(text); setDraft(text); }} />,
+                            }]}
+                        />
                     }
                 />
             )}
             {view === 'address' && <CSAddress />}
             <div className={styles.body} style={view === 'inbox' ? undefined : { display: 'none' }}>
                 <aside className={styles.list}>
+                    <div className={styles.sortBar}>
+                        <div className={styles.sortTabs}>
+                            {SORT_OPTIONS.map((o) => (
+                                <button
+                                    key={o.value}
+                                    type="button"
+                                    className={`${styles.sortTab} ${sortMode === o.value ? styles.sortTabOn : ''}`}
+                                    onClick={() => setSortMode(o.value)}
+                                >
+                                    {o.label}
+                                </button>
+                            ))}
+                        </div>
+                        {sortMode === 'beforeShip' && (
+                            <div className={styles.keywordBox}>
+                                <button type="button" className={styles.keywordToggle} onClick={() => setKeywordOpen((v) => !v)}>
+                                    <span>
+                                        올릴 단어 {keywords.length}개
+                                        {!keywordOpen && keywords.length > 0 && (
+                                            <span className={styles.keywordPreview}> · {keywords.slice(0, 3).join(', ')}{keywords.length > 3 ? ' …' : ''}</span>
+                                        )}
+                                    </span>
+                                    <span>{keywordOpen ? '접기 ▴' : '편집 ▾'}</span>
+                                </button>
+                                {keywordOpen && (
+                                <div className={styles.keywordPanel}>
+                                <div className={styles.keywordHint}>문의 내용에 아래 단어가 있으면 위로 올려요</div>
+                                <div className={styles.keywordChips}>
+                                    {keywords.map((k) => (
+                                        <span key={k} className={styles.keywordChip}>
+                                            {k}
+                                            <button type="button" aria-label={`${k} 삭제`} onClick={() => setKeywords(keywords.filter((x) => x !== k))}>×</button>
+                                        </span>
+                                    ))}
+                                    <input
+                                        value={keywordInput}
+                                        placeholder="단어 추가"
+                                        maxLength={20}
+                                        onChange={(e) => setKeywordInput(e.target.value)}
+                                        onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && addKeyword()}
+                                    />
+                                    <button type="button" className={styles.keywordAdd} disabled={!keywordInput.trim()} onClick={addKeyword}>추가</button>
+                                </div>
+                                </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
                     {loading && <div className={styles.empty}>불러오는 중...</div>}
                     {!loading && rooms.length === 0 && <div className={styles.empty}>문의가 없습니다.</div>}
-                    {rooms.map((r) => (
+                    {shownRooms.map((r) => (
                         <button
                             type="button"
                             key={r.sno}
-                            className={`${styles.roomItem} ${selected === r.sno ? styles.roomItemActive : ''}`}
+                            className={`${styles.roomItem} ${selected === r.sno ? styles.roomItemActive : ''} ${hitWords.get(r.sno)?.length > 0 ? styles.roomItemHit : ''}`}
                             onClick={() => openRoom(r)}
                             onMouseEnter={() => prefetchRoom(r)}
                         >
-                            <div className={styles.roomHead}>
-                                <strong>{r.member?.name || '-'}</strong>
-                                <span className={styles.badge}>{r.get_status_display}</span>
-                                <span className={styles.time}>{fmtTime(r.updated_latest_message_at)}</span>
-                            </div>
-                            <div className={styles.cat}>
-                                {r.parent_category_display} &gt; {r.child_category_display}
-                            </div>
-                            <div className={styles.preview}>
-                                {r.latest_message?.content || (r.latest_message?.image_url ? '[이미지]' : '')}
+                            {roomImage(r) ? (
+                                <img src={roomImage(r)} alt="" className={styles.roomThumb} loading="lazy" />
+                            ) : (
+                                <span className={styles.roomThumb} />
+                            )}
+                            <div className={styles.roomBody}>
+                                <div className={styles.roomHead}>
+                                    <strong>{r.member?.name || '-'}</strong>
+                                    <span className={styles.badge}>{r.get_status_display}</span>
+                                    <span className={styles.time}>{fmtTime(r.updated_latest_message_at)}</span>
+                                </div>
+                                <div className={styles.cat}>
+                                    {r.parent_category_display} &gt; {r.child_category_display}
+                                </div>
+                                <div className={styles.preview}>
+                                    {r.latest_message?.content || (r.latest_message?.image_url ? '[이미지]' : '')}
+                                </div>
                             </div>
                         </button>
                     ))}
@@ -320,6 +444,7 @@ const CSPage = () => {
                 <CSConversation
                     {...conversationProps}
                     splitInfo
+                    keywordHits={hitWords.get(selected) || []}
                     extraTabs={[{
                         key: 'templates',
                         label: '템플릿',

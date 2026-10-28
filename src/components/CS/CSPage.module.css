@@ -174,7 +174,10 @@
 }
 
 .roomItem {
-    display: block;
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
     width: 100%;
     margin-bottom: 4px;
     padding: 11px 12px;
@@ -194,6 +197,163 @@
 .roomItemActive,
 .roomItemActive:hover {
     background: var(--cs-accent-soft);
+}
+
+/* 문의 목록 정렬 / 출고전 키워드 */
+.sortBar {
+    position: sticky;
+    top: -8px;
+    z-index: 2;
+    margin: -8px -8px 6px;
+    padding: 8px;
+    background: var(--cs-card);
+    border-bottom: 1px solid var(--cs-line);
+}
+
+.sortTabs {
+    display: flex;
+    gap: 4px;
+}
+
+.sortTab {
+    flex: 1;
+    padding: 6px 0;
+    border: none;
+    border-radius: 999px;
+    background: var(--cs-bg);
+    color: var(--cs-sub);
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.sortTabOn {
+    background: var(--cs-accent);
+    color: #fff;
+}
+
+.keywordBox {
+    margin-top: 8px;
+}
+
+.keywordToggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    padding: 5px 10px;
+    border: none;
+    border-radius: 8px;
+    background: var(--cs-bg);
+    color: var(--cs-text);
+    font: inherit;
+    font-size: 0.74rem;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+}
+
+.keywordPreview {
+    color: var(--cs-sub);
+    font-weight: 400;
+}
+
+.keywordPanel {
+    max-height: 160px;
+    margin-top: 6px;
+    padding: 8px;
+    overflow-y: auto;
+    border-radius: 8px;
+    background: var(--cs-bg);
+}
+
+.keywordHint {
+    margin-bottom: 4px;
+    color: var(--cs-sub);
+    font-size: 0.7rem;
+}
+
+.keywordChips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+}
+
+.keywordChip {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px 4px 2px 9px;
+    border-radius: 999px;
+    background: var(--cs-warn-soft);
+    color: var(--cs-warn);
+    font-size: 0.74rem;
+    font-weight: 700;
+}
+
+.keywordChip button {
+    padding: 0 4px;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font-size: 0.9rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.keywordChips input {
+    width: 80px;
+    padding: 3px 8px;
+    border: 1px solid var(--cs-line);
+    border-radius: 999px;
+    background: var(--cs-bg);
+    color: var(--cs-text);
+    font: inherit;
+    font-size: 0.74rem;
+}
+
+.keywordAdd {
+    padding: 3px 9px;
+    border: none;
+    border-radius: 999px;
+    background: var(--cs-accent-soft);
+    color: var(--cs-accent);
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.keywordAdd:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.hitBadge {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--cs-warn-soft);
+    color: var(--cs-warn);
+    font-size: 0.68rem;
+    font-weight: 700;
+}
+
+.roomItemHit {
+    box-shadow: inset 4px 0 0 var(--cs-warn);
+}
+
+.roomThumb {
+    width: 48px;
+    height: 48px;
+    border-radius: 10px;
+    background: var(--cs-line);
+    object-fit: cover;
+}
+
+.roomBody {
+    min-width: 0;
 }
 
 .roomHead {
@@ -331,6 +491,70 @@
     color: var(--cs-sub);
     font-size: 0.75rem;
     white-space: pre-wrap;
+}
+
+.tplHeadRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.tplRow {
+    position: relative;
+}
+
+.tplActions {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: flex;
+    gap: 2px;
+}
+
+.tplActions button {
+    display: inline-flex;
+    padding: 4px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--cs-sub);
+    cursor: pointer;
+}
+
+.tplActions button:hover {
+    background: var(--cs-card);
+    color: var(--cs-accent);
+}
+
+.tplEditor {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 8px;
+    padding: 10px;
+    border-radius: 12px;
+    background: var(--cs-bg);
+}
+
+.tplEditor input,
+.tplEditor textarea {
+    padding: 6px 8px;
+    border: 1px solid var(--cs-line);
+    border-radius: 8px;
+    background: var(--cs-card);
+    color: inherit;
+    font: inherit;
+    resize: vertical;
+}
+
+.tplEditorBtns {
+    display: flex;
+    gap: 6px;
+}
+
+.tplError {
+    color: var(--cs-warn);
+    font-size: 0.74rem;
 }
 
 .linkBtn {

@@ -89,6 +89,18 @@ def init_cs_tables(get_db) -> None:
         )
         """
     )
+    # 상품별 탭 답변 템플릿 (에이블리 템플릿과 별개, 전 직원 공유)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cs_my_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            updated_by TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
     conn.commit()
     conn.close()
 

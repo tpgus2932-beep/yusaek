@@ -87,7 +87,7 @@ const optionText = (o) => (o.options || []).join(' / ') || [o.option1, o.option2
 // 문의 대화 패널 (문의함 / 상품별 탭 공용)
 // splitInfo: 주문·주소·재고 정보를 대화 오른쪽 별도 패널로 분리해서 그린다 (상품별·문의함 탭).
 // extraTabs: 오른쪽 패널 끝에 덧붙일 탭 [{key, label, content}] (문의함의 답변 템플릿 등).
-const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', setDraft, acting = false, onReply, onComplete, splitInfo = false, extraTabs = [] }) => {
+const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', setDraft, acting = false, onReply, onComplete, splitInfo = false, keywordHits = [], extraTabs = [] }) => {
     const [returnOrder, setReturnOrder] = useState(''); // 구매확정 반품 모달에 띄울 주문번호
     const [addressOrder, setAddressOrder] = useState(''); // 주소 변경 모달에 띄울 주문번호
     const [deliveryOpen, setDeliveryOpen] = useState(false); // 배송 확인(전화번호 → 송장번호) 모달
@@ -177,9 +177,7 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                             type="button"
                             className={styles.btn}
                             disabled={acting || ![1, 2].includes(room.status)}
-                            onClick={() => {
-                                if (window.confirm('이 문의를 답변 완료 처리할까요?')) onComplete();
-                            }}
+                            onClick={onComplete}
                         >
                             완료 처리
                         </button>
@@ -231,6 +229,9 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                                 </span>
                             )}
                             {room?.get_status_display && <span className={styles.badge}>{room.get_status_display}</span>}
+                            {keywordHits.length > 0 && (
+                                <span className={styles.hitBadge} title="문의 내용에 포함된 단어">{keywordHits.join('·')}</span>
+                            )}
                         </div>
                     )}
                     {selected && detailLoading && <div className={styles.empty}>대화 내용 불러오는 중...</div>}

@@ -40,7 +40,7 @@ _BASE_TTL_SEC = 60
 _EXCHANGE_TRANS_CORP = "30079"  # 이지어드민 CS창 상품교환 때 화면이 보낸 택배사 값 (교환뜨빠.har)
 
 
-def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_to_yusas=None, allow_live_stock=True):
+def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_code=None, allow_live_stock=True):
     router = APIRouter(prefix="/cs")
     token_cache: dict = {"token": None, "at": 0.0}
     http = httpx.AsyncClient(timeout=20.0)  # 연결 재사용으로 호출마다 TLS 핸드셰이크 생략
@@ -576,7 +576,7 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_to_
 
     async def _ezadmin_stock_by_name(phpsessid: str, base_name: str, fetched_at: str) -> dict:
         """이지어드민 재고(I100)를 상품명으로 검색해 {상품코드: 재고 레코드}로 돌려준다."""
-        normalize = normalize_to_yusas or (lambda value: value)
+        normalize = normalize_code or (lambda value: value)
         par = _build_par(fetched_at[:10]).replace("query_type=name&query_str=", f"query_type=name&query_str={quote(base_name)}")
         found: dict = {}
         async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
@@ -1212,5 +1212,60 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_to_
     @router.get("/templates")
     async def templates(current_user=Depends(get_current_user)):
         return await _ably_get(http, "/seller/templates/answer/", {"page": 1, "per_page": 100})
+
+    def _clean_template(payload: dict) -> tuple[str, str]:
+        title = str(payload.get("title") or "").strip()
+        content = str(payload.get("content") or "").strip()
+        if not title or not content:
+            raise HTTPException(status_code=400, detail="이름과 내용을 모두 입력하세요.")
+        return title, content
+
+    @router.get("/my-templates")
+    def list_my_templates(current_user=Depends(get_current_user)):
+        conn = get_db()
+        try:
+            rows = conn.execute("SELECT id, title, content FROM cs_my_templates ORDER BY id").fetchall()
+        finally:
+            conn.close()
+        return {"templates": [{"id": r["id"], "title": r["title"], "content": r["content"]} for r in rows]}
+
+    @router.post("/my-templates")
+    def create_my_template(payload: dict = Body(...), current_user=Depends(get_current_user)):
+        title, content = _clean_template(payload)
+        conn = get_db()
+        try:
+            cur = conn.execute(
+                "INSERT INTO cs_my_templates (title, content, updated_by, updated_at) VALUES (?, ?, ?, ?)",
+                (title, content, _username(current_user), datetime.now(_KST).isoformat()),
+            )
+            conn.commit()
+            new_id = cur.lastrowid
+        finally:
+            conn.close()
+        return {"id": new_id, "title": title, "content": content}
+
+    @router.put("/my-templates/{template_id}")
+    def update_my_template(template_id: int, payload: dict = Body(...), current_user=Depends(get_current_user)):
+        title, content = _clean_template(payload)
+        conn = get_db()
+        try:
+            conn.execute(
+                "UPDATE cs_my_templates SET title = ?, content = ?, updated_by = ?, updated_at = ? WHERE id = ?",
+                (title, content, _username(current_user), datetime.now(_KST).isoformat(), template_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"id": template_id, "title": title, "content": content}
+
+    @router.delete("/my-templates/{template_id}")
+    def delete_my_template(template_id: int, current_user=Depends(get_current_user)):
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM cs_my_templates WHERE id = ?", (template_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True}
 
     return router

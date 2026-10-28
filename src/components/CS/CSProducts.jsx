@@ -24,6 +24,10 @@ const fmtTime = (iso) => {
     return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
+// 에이블리 상품 페이지 (문의 상품의 goods_sno가 곧 상품번호)
+const goodsUrl = (goodsSno) => `https://mobile.a-bly.com/goods/${goodsSno}`;
+const openGoodsPage = (goodsSno) => window.open(goodsUrl(goodsSno), '_blank', 'noopener,noreferrer');
+
 const won = (n) => (n == null ? '-' : `${Number(n).toLocaleString('ko-KR')}원`);
 
 const costRange = (m) => {
@@ -399,7 +403,19 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
                             className={`${styles.prod} ${selected?.goods_sno === p.goods_sno ? styles.prodActive : ''}`}
                             onClick={() => selectProduct(p)}
                         >
-                            {p.image ? <img src={p.image} alt="" className={styles.thumb} loading="lazy" /> : <span className={styles.thumb} />}
+                            {/* 목록 줄 자체가 버튼이라 안에 <a>를 둘 수 없어서, 사진만 따로 눌러 상품 페이지를 연다 */}
+                            <span
+                                role="link"
+                                tabIndex={-1}
+                                className={styles.thumbLink}
+                                title="상품 페이지 열기"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    openGoodsPage(p.goods_sno);
+                                }}
+                            >
+                                {p.image ? <img src={p.image} alt="" className={styles.thumb} loading="lazy" /> : <span className={styles.thumb} />}
+                            </span>
                             <span className={styles.prodName}>
                                 {p.clean_name}
                                 {baseAvailable && (
@@ -423,7 +439,11 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
                             <ArrowLeft size={14} /> 상품 목록
                         </button>
                         <div className={styles.head}>
-                            {selected.image && <img src={selected.image} alt="" className={styles.bigThumb} />}
+                            {selected.image && (
+                                <a href={goodsUrl(selected.goods_sno)} target="_blank" rel="noopener noreferrer" className={styles.thumbLink} title="상품 페이지 열기">
+                                    <img src={selected.image} alt="" className={styles.bigThumb} />
+                                </a>
+                            )}
                             <div className={styles.headText}>
                                 <h2 title={selected.name}>{selected.clean_name}</h2>
                                 <div className={styles.headSub}>
