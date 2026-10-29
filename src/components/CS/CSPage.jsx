@@ -257,7 +257,17 @@ const CSPage = () => {
         if (ok) setDraft('');
         return ok;
     };
-    const completeRoom = () => runAction('/complete');
+    // opts.next: 완료 후 목록의 다음 문의를 바로 연다 (Ctrl+Enter). 다음이 없으면 이전 문의, 그것도 없으면 그대로 둔다.
+    const completeRoom = async (opts) => {
+        let next = null;
+        if (opts?.next && view === 'inbox') {
+            const i = shownRooms.findIndex((r) => r.sno === selected);
+            if (i >= 0) next = shownRooms[i + 1] || shownRooms[i - 1] || null;
+        }
+        const ok = await runAction('/complete');
+        if (ok && next) openRoom(next);
+        return ok;
+    };
     const conversationProps = { selected, preview, detail, detailLoading, draft, setDraft, acting, onReply: replyRoom, onComplete: completeRoom };
 
     return (

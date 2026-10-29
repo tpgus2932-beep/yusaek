@@ -4,7 +4,7 @@ import pageStyles from "./BarcodePage.module.css";
 import styles from "./ShippingEtaPage.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
-const PER_PERSON_PER_MIN = 2; // 한 명당 1분에 처리하는 개수
+const DEFAULT_PER_PERSON_PER_MIN = 2; // 한 명당 1분에 처리하는 개수 기본값(칸마다 수정 가능)
 
 const SECTIONS = [
   { key: "bulk", label: "대량 입고전표" },
@@ -52,14 +52,14 @@ function buildHeadcount(attendance) {
 }
 
 // 지금부터 인원 변동(출근/퇴근)을 반영해 qty개를 다 처리하는 시각을 계산한다.
-function estimate(qty, nowMs, attendance) {
+function estimate(qty, nowMs, attendance, perPersonPerMin) {
   const { at, edges, hasCheckin } = buildHeadcount(attendance);
   if (!hasCheckin) return { status: "noAttendance" };
   const points = [nowMs, ...edges.filter((t) => t > nowMs)];
   let remaining = qty;
   for (let i = 0; i < points.length; i += 1) {
     const heads = at(points[i]);
-    const rate = heads * PER_PERSON_PER_MIN; // 개/분
+    const rate = heads * perPersonPerMin; // 개/분
     const nextMs = i + 1 < points.length ? points[i + 1] : Infinity;
     if (rate > 0) {
       const needMin = remaining / rate;
@@ -73,8 +73,19 @@ function estimate(qty, nowMs, attendance) {
   return { status: "short", remaining: Math.ceil(remaining), heads: at(nowMs) };
 }
 
+// 근무 인원을 직접 입력하면 출퇴근 기록 대신 그 인원이 계속 일한다고 보고 계산한다.
+function estimateFixed(qty, nowMs, heads, perPersonPerMin) {
+  const leftMin = qty / (heads * perPersonPerMin);
+  return { status: "done", endMs: nowMs + leftMin * 60000, leftMin, heads };
+}
+
 function Section({ label, date, attendance, nowMs }) {
   const { openModal: openEzadminModal } = useEzadminSession();
+  const [qtyInput, setQtyInput] = useState("");
+  const [headsInput, setHeadsInput] = useState("");
+  const manualHeads = Math.floor(Number(headsInput)) || 0;
+  const [rateInput, setRateInput] = useState(String(DEFAULT_PER_PERSON_PER_MIN));
+  const perPersonPerMin = Number(rateInput) > 0 ? Number(rateInput) : DEFAULT_PER_PERSON_PER_MIN;
   const [vouchers, setVouchers] = useState([]); // 불러온 전체 전표
   const [selected, setSelected] = useState([]); // 선택한 sheet
   const [loading, setLoading] = useState(false);
@@ -113,14 +124,20 @@ function Section({ label, date, attendance, nowMs }) {
     setShowModal(false);
   };
 
-  const totalQty = applied.reduce((sum, v) => sum + parseQty(v.cell?.req_qty), 0);
-  const result = applied.length > 0 && totalQty > 0 ? estimate(totalQty, nowMs, attendance) : null;
+  // 개수를 직접 입력하면 불러온 전표 합계 대신 그 값으로 계산한다(전표를 안 불러와도 가능).
+  const manualQty = Math.floor(Number(qtyInput)) || 0;
+  const voucherQty = applied.reduce((sum, v) => sum + parseQty(v.cell?.req_qty), 0);
+  const totalQty = manualQty > 0 ? manualQty : voucherQty;
+  const hasQty = manualQty > 0 || applied.length > 0;
+  const result = hasQty && totalQty > 0
+    ? (manualHeads > 0 ? estimateFixed(totalQty, nowMs, manualHeads, perPersonPerMin) : estimate(totalQty, nowMs, attendance, perPersonPerMin))
+    : null;
 
   return (
     <div className={styles.cell}>
       <div className={styles.cellStatus}>
         <span className={styles.statusTag}>{label}</span>
-        <span className={styles.elapsed}>{applied.length > 0 ? `${totalQty.toLocaleString()}개` : "-"}</span>
+        <span className={styles.elapsed}>{hasQty ? `${totalQty.toLocaleString()}개` : "-"}</span>
       </div>
 
       {result?.status === "done" && (
@@ -137,7 +154,7 @@ function Section({ label, date, attendance, nowMs }) {
         <div className={styles.cellMeta}>출근 인원이 없어 계산할 수 없습니다. 아래 근무 인원에서 출근을 불러오세요.</div>
       )}
       {applied.length > 0 && totalQty === 0 && <div className={styles.cellMeta}>선택한 전표의 수량이 0개입니다.</div>}
-      {applied.length === 0 && <div className={styles.cellMeta}>전표를 불러오면 종료 시각을 계산합니다.</div>}
+      {!hasQty && <div className={styles.cellMeta}>전표를 불러오거나 개수를 직접 입력하면 종료 시각을 계산합니다.</div>}
 
       {applied.length > 0 && (
         <div className={styles.chipRow}>
@@ -150,12 +167,52 @@ function Section({ label, date, attendance, nowMs }) {
       )}
       {message && <div className={pageStyles.statusMsg}>{message}</div>}
 
+      <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.9rem" }}>
+        물건 개수
+        <input
+          type="number"
+          min="1"
+          inputMode="numeric"
+          value={qtyInput}
+          onChange={(e) => setQtyInput(e.target.value)}
+          placeholder={applied.length > 0 ? `전표 ${voucherQty.toLocaleString()}` : "직접 입력"}
+          style={{ width: "6rem", padding: "0.25rem 0.5rem" }}
+        />
+        개
+      </label>
+      <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.9rem" }}>
+        근무 인원
+        <input
+          type="number"
+          min="1"
+          inputMode="numeric"
+          value={headsInput}
+          onChange={(e) => setHeadsInput(e.target.value)}
+          placeholder="출퇴근 기록"
+          style={{ width: "6rem", padding: "0.25rem 0.5rem" }}
+        />
+        명
+      </label>
+      <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.9rem" }}>
+        1인당 1분
+        <input
+          type="number"
+          min="0.1"
+          step="any"
+          inputMode="decimal"
+          value={rateInput}
+          onChange={(e) => setRateInput(e.target.value)}
+          style={{ width: "6rem", padding: "0.25rem 0.5rem" }}
+        />
+        개
+      </label>
+
       <div className={styles.cellActions}>
         <button className={`${pageStyles.secondaryBtn} ${styles.cellBtn}`} onClick={handleOpen} disabled={loading}>
           {loading ? "조회 중..." : "입고전표 불러오기"}
         </button>
         {applied.length > 0 && (
-          <button className={styles.linkBtn} onClick={() => setApplied([])}>초기화</button>
+          <button className={styles.linkBtn} onClick={() => { setApplied([]); setQtyInput(""); }}>초기화</button>
         )}
       </div>
 
@@ -217,7 +274,7 @@ export default function LeadTimeCard({ date, attendance, nowMs }) {
     <section className={pageStyles.card}>
       <div className={pageStyles.cardHeader}>
         <h3 className={pageStyles.cardTitle}>리드타임체크</h3>
-        <span className={styles.etaHint}>1인당 1분 {PER_PERSON_PER_MIN}개 · 출퇴근 인원 변동 반영</span>
+        <span className={styles.etaHint}>근무 인원을 비우면 출퇴근 인원 변동 반영</span>
       </div>
       <div className={styles.board} style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
         {SECTIONS.map(({ key, label }) => (

@@ -129,6 +129,7 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
                 member.get("email"),
                 latest.get("content"),
                 (room.get("order_item") or {}).get("order_sno"),
+                (room.get("order_item") or {}).get("sno"),
             )
         )
         conn.execute(
@@ -819,6 +820,76 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
             raise HTTPException(status_code=502, detail=f"이지어드민 조회 실패: {e}")
         return {"ok": True, "pack": pack, "history": history}
 
+    @router.post("/return/search")
+    async def return_search(body: dict = Body(...), current_user=Depends(get_current_user)):
+        """주문번호로 에이블리 진행 중인 반품 요청(철회 가능한 건)을 찾는다."""
+        order_no = str(body.get("order_no") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9\-]{6,40}", order_no):
+            raise HTTPException(status_code=400, detail="주문번호를 정확히 입력해 주세요. (영문·숫자 6자 이상)")
+        today = datetime.now(_KST)
+        params_base = {
+            "cancel_type": "return",
+            "processing_sub_status[]": ["41", "42"],
+            "delivery_type[]": ["standard", "today", "combine", "reserved"],
+            "order": "cancel_received_at",
+            "date_type": "cancel_received_at",
+            "per_page": 100,
+            "start_date": (today - timedelta(days=60)).strftime("%Y-%m-%d"),
+            "end_date": today.strftime("%Y-%m-%d"),
+        }
+        found: list[dict] = []
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            page = 1
+            while page <= 20:
+                data = await _ably_get(http, "/seller/order_cancels/", {**params_base, "page": page})
+                cancels = data.get("order_cancels") or []
+                if not cancels:
+                    break
+                for cancel in cancels:
+                    items = cancel.get("order_items") or []
+                    ids = {str(v) for v in (cancel.get("order_id"), cancel.get("order_sno")) if v}
+                    ids |= {str(v) for it in items for v in (it.get("order_id"), it.get("order_sno")) if v}
+                    if order_no not in ids:
+                        continue
+                    found.append({
+                        "cancel_sno": str(cancel.get("sno") or ""),
+                        "received_at": str(cancel.get("cancel_received_at") or ""),
+                        "status": str(cancel.get("processing_sub_status_display") or cancel.get("processing_sub_status") or ""),
+                        "items": [
+                            {
+                                "name": str((it.get("goods") or {}).get("name") or it.get("goods_name") or ""),
+                                "options": str(it.get("option") or it.get("option_name") or ""),
+                                "qty": it.get("ea") or it.get("quantity") or 1,
+                            }
+                            for it in items
+                        ],
+                    })
+                if page >= int(data.get("max_page_number") or 1):
+                    break
+                page += 1
+        return {"ok": True, "order_no": order_no, "cancels": found}
+
+    @router.post("/return/withdraw")
+    async def return_withdraw(body: dict = Body(...), current_user=Depends(get_current_user)):
+        """에이블리 반품 요청을 철회(거부 처리)한다. 한 번 처리하면 되돌릴 수 없다."""
+        cancel_sno = str(body.get("cancel_sno") or "").strip()
+        if not re.fullmatch(r"\d{1,15}", cancel_sno):
+            raise HTTPException(status_code=400, detail="반품요청번호가 올바르지 않아요.")
+        reason = str(body.get("reason") or "").strip()
+        if not reason:
+            raise HTTPException(status_code=400, detail="철회 사유를 입력해 주세요.")
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            token = await _get_token(http)
+            headers = {**_headers(token), "Content-Type": "application/json", "Origin": "https://my.a-bly.com", "Referer": "https://my.a-bly.com/"}
+            url = f"{ABLY_BASE}/seller/order_cancels/{cancel_sno}/reject_request/"
+            res = await http.put(url, headers=headers, json={"refuse_cause_comment": reason})
+            if res.status_code in (401, 403):
+                headers["Authorization"] = f"JWT {await _get_token(http, force=True)}"
+                res = await http.put(url, headers=headers, json={"refuse_cause_comment": reason})
+        if res.status_code not in (200, 201, 204):
+            raise HTTPException(status_code=502, detail=f"반품 철회 실패({res.status_code}): {res.text[:200]}")
+        return {"ok": True, "cancel_sno": cancel_sno}
+
     @router.post("/hold/release")
     async def hold_release(body: dict = Body(...), current_user=Depends(get_current_user)):
         """합포의 보류를 풀고 정상 상태로 되돌린다. 지금 상태를 다시 읽어 필요한 단계만 실행한다."""
@@ -872,6 +943,8 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
     async def exchange_options(body: dict = Body(...), current_user=Depends(get_current_user)):
         """교환할 상품의 옵션 목록 (이지어드민 상품교환 팝업 검색과 같다)."""
         name = re.sub(r"\s+", " ", str(body.get("name") or "")).strip()
+        # 상품명 맨 앞 영문(예: 'AA 뮤즈 ...')은 색상 코드라 검색에 쓰면 그 색상만 나오므로 뺀다.
+        name = re.sub(r"^[A-Za-z]+\s+(?=\S)", "", name)
         shop_id = str(body.get("shop_id") or "").strip()
         if not name or not re.fullmatch(r"\d{1,10}", shop_id):
             raise HTTPException(status_code=400, detail="상품명과 쇼핑몰 정보가 필요합니다.")
@@ -913,7 +986,8 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
             if not 1 <= qty <= ordered:
                 raise HTTPException(status_code=400, detail=f"교환 수량은 1~{ordered}개여야 해요.")
             # 새 옵션 이름은 클라이언트 값을 믿지 않고 이지어드민 검색 결과에서 가져온다.
-            candidates = await ezo.search_products(phpsessid, str(line["row"].get("product_name") or ""), str(line["row"].get("shop_id") or ""))
+            search_name = re.sub(r"^[A-Za-z]+\s+(?=\S)", "", re.sub(r"\s+", " ", str(line["row"].get("product_name") or "")).strip())
+            candidates = await ezo.search_products(phpsessid, search_name, str(line["row"].get("shop_id") or ""))
             target = next((c for c in candidates if c["product_id"] == new_id), None)
             if target is None:
                 raise HTTPException(status_code=400, detail="선택한 옵션을 이 상품의 옵션 목록에서 찾지 못했어요.")

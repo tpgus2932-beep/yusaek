@@ -74,17 +74,9 @@ def _resolve_layout(ws) -> dict:
     }
 
 
-def normalize_to_yusas(text: str | None) -> str:
-    if text is None:
-        return ""
-    s = str(text)
-    m2 = PATTERN_YUSAS5.search(s)
-    if m2:
-        return f"YUSAS{m2.group(1)}"
-    m1 = PATTERN_S5.search(s)
-    if m1:
-        return f"YUSAS{m1.group(1)}"
-    return ""
+def normalize_code(text: str | None) -> str:
+    """상품코드의 기준 키 형식. 'S'/'YUSAS' + 5자리를 모두 받아 'S00000'으로 돌려준다."""
+    return normalize_to_s5(text)
 
 
 def normalize_to_s5(text: str | None) -> str:
@@ -194,7 +186,7 @@ def process_and_load_any(path: Path):
     # 상품코드 정규화
     for row in ws.iter_rows(min_row=2, min_col=layout["code_col"], max_col=layout["code_col"]):
         cell = row[0]
-        cell.value = normalize_to_yusas(cell.value)
+        cell.value = normalize_code(cell.value)
 
     # 시간 기준 정렬
     rows = []

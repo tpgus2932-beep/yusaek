@@ -560,41 +560,79 @@ def build_returns_router(
         }
 
     @router.post("/returns/save")
-    def returns_save(user: str = Depends(get_current_user)):
+    def returns_save(body: dict = Body(None), user: str = Depends(get_current_user)):
         state = get_return_state(user)
         payload = json.dumps(return_state_to_payload(state), ensure_ascii=False)
         updated_at = datetime.now(timezone.utc).isoformat()
+        name = ((body or {}).get("name") or "").strip()[:40]
+        try:
+            tab_id = int((body or {}).get("tab_id") or 0)
+        except (TypeError, ValueError):
+            tab_id = 0
         conn = get_db()
         conn.execute(
-            "INSERT INTO return_saved_snapshots (username, payload, updated_at) VALUES (?, ?, ?)",
-            (user, payload, updated_at),
+            "INSERT INTO return_saved_snapshots (username, name, tab_id, payload, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (user, name, tab_id, payload, updated_at),
         )
         conn.execute(
             """
             DELETE FROM return_saved_snapshots
-            WHERE username = ? AND id NOT IN (
-                SELECT id FROM return_saved_snapshots WHERE username = ? ORDER BY id DESC LIMIT 6
+            WHERE tab_id = ? AND id NOT IN (
+                SELECT id FROM return_saved_snapshots WHERE tab_id = ? ORDER BY id DESC LIMIT 60
             )
             """,
-            (user, user),
+            (tab_id, tab_id),
         )
         conn.commit()
         conn.close()
         return {"ok": True, "saved_at": updated_at}
 
     @router.get("/returns/saves")
-    def returns_saves(username: str | None = None, user: str = Depends(get_current_user)):
-        target = username or user
+    def returns_saves(tab_id: int = 0, user: str = Depends(get_current_user)):
         conn = get_db()
         rows = conn.execute(
-            "SELECT id, name, updated_at FROM return_saved_snapshots WHERE username = ? ORDER BY id DESC LIMIT 6",
-            (target,),
+            "SELECT id, username, name, updated_at FROM return_saved_snapshots WHERE tab_id = ? ORDER BY id DESC LIMIT 60",
+            (tab_id,),
         ).fetchall()
         conn.close()
         return {
             "ok": True,
-            "items": [{"id": r["id"], "name": r["name"] or "", "updated_at": r["updated_at"]} for r in rows],
+            "items": [
+                {"id": r["id"], "username": r["username"], "name": r["name"] or "", "updated_at": r["updated_at"]}
+                for r in rows
+            ],
         }
+
+    @router.get("/returns/snapshot-tabs")
+    def returns_snapshot_tabs(user: str = Depends(get_current_user)):
+        conn = get_db()
+        rows = conn.execute("SELECT id, name FROM return_snapshot_tabs ORDER BY id").fetchall()
+        conn.close()
+        return {"ok": True, "tabs": [{"id": r["id"], "name": r["name"]} for r in rows]}
+
+    @router.post("/returns/snapshot-tabs")
+    def returns_snapshot_tab_create(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        name = (payload.get("name") or "").strip()[:20]
+        if not name:
+            raise HTTPException(status_code=400, detail="탭 이름을 입력하세요.")
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO return_snapshot_tabs (name, created_at) VALUES (?, ?)",
+            (name, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        tab_id = conn.execute("SELECT MAX(id) AS id FROM return_snapshot_tabs").fetchone()["id"]
+        conn.close()
+        return {"ok": True, "id": tab_id, "name": name}
+
+    @router.delete("/returns/snapshot-tabs/{tab_id}")
+    def returns_snapshot_tab_delete(tab_id: int, user: str = Depends(get_current_user)):
+        conn = get_db()
+        conn.execute("UPDATE return_saved_snapshots SET tab_id = 0 WHERE tab_id = ?", (tab_id,))
+        conn.execute("DELETE FROM return_snapshot_tabs WHERE id = ?", (tab_id,))
+        conn.commit()
+        conn.close()
+        return {"ok": True}
 
     @router.patch("/returns/saves/{snapshot_id}")
     def returns_save_rename(snapshot_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
@@ -2315,44 +2353,6 @@ def build_returns_router(
 
         return {"ok": True, "rooms": result_rooms}
 
-    @router.post("/returns/onebe/build")
-    def returns_build_onebe(payload: dict = Body(None), user: str = Depends(get_current_user)):
-        state = get_return_state(user)
-        source = (payload or {}).get("source", "customer")
-        if source == "all":
-            items = state.all_items
-            if not items:
-                raise HTTPException(status_code=400, detail="전체 대기 데이터가 없습니다.")
-        else:
-            exchange_normal_items = [
-                item for item in state.queue_exchange_customer if item.get("sound_type") == "교환정상"
-            ]
-            items = list(state.queue_customer) + exchange_normal_items
-            if not items:
-                raise HTTPException(status_code=400, detail="고객 대기 또는 교환정상 데이터가 없습니다.")
-
-        if not state.cost_map:
-            try:
-                load_return_cost_base(state)
-            except Exception:
-                raise HTTPException(status_code=400, detail="원가베이스를 먼저 불러오세요.")
-
-        rows = []
-        for it in items:
-            item_text = normalize_spaces(it.get("item_text", ""))
-            match_key = normalize_key(item_text)
-            product_code = it.get("changed_product_code") or state.cost_map.get(match_key, "")
-            matched_flag = "O" if product_code else "X"
-
-            rows.append(
-                {
-                    "상품코드": product_code,
-                    "요청수량": 0,
-                    "수량": it.get("qty", ""),
-                    "가공데이터": item_text,
-                    "스캔송장": it.get("scan", ""),
-                    "매칭송장": _request_memo_for_item(state, it),
-                    "분류": it.get("type", "고객"),
     @router.post("/returns/unmatched/order-lookup")
     async def returns_unmatched_order_lookup(payload: dict = Body(...), user: str = Depends(get_current_user)):
         """미매칭 항목의 원송장번호 → 이지어드민 CS검색(최근 3개월)으로 주문번호 확인 →
@@ -2442,6 +2442,44 @@ def build_returns_router(
 
         return {"ok": True, "results": results}
 
+    @router.post("/returns/onebe/build")
+    def returns_build_onebe(payload: dict = Body(None), user: str = Depends(get_current_user)):
+        state = get_return_state(user)
+        source = (payload or {}).get("source", "customer")
+        if source == "all":
+            items = state.all_items
+            if not items:
+                raise HTTPException(status_code=400, detail="전체 대기 데이터가 없습니다.")
+        else:
+            exchange_normal_items = [
+                item for item in state.queue_exchange_customer if item.get("sound_type") == "교환정상"
+            ]
+            items = list(state.queue_customer) + exchange_normal_items
+            if not items:
+                raise HTTPException(status_code=400, detail="고객 대기 또는 교환정상 데이터가 없습니다.")
+
+        if not state.cost_map:
+            try:
+                load_return_cost_base(state)
+            except Exception:
+                raise HTTPException(status_code=400, detail="원가베이스를 먼저 불러오세요.")
+
+        rows = []
+        for it in items:
+            item_text = normalize_spaces(it.get("item_text", ""))
+            match_key = normalize_key(item_text)
+            product_code = it.get("changed_product_code") or state.cost_map.get(match_key, "")
+            matched_flag = "O" if product_code else "X"
+
+            rows.append(
+                {
+                    "상품코드": product_code,
+                    "요청수량": 0,
+                    "수량": it.get("qty", ""),
+                    "가공데이터": item_text,
+                    "스캔송장": it.get("scan", ""),
+                    "매칭송장": _request_memo_for_item(state, it),
+                    "분류": it.get("type", "고객"),
                     "원가베이스매칭": matched_flag,
                 }
             )

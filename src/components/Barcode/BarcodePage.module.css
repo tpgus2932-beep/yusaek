@@ -673,6 +673,24 @@
   border-color: #111111;
 }
 
+.tabRed {
+  background-color: #fee2e2;
+  border-color: #dc2626;
+  color: #b91c1c;
+}
+
+.tabRed:hover {
+  border-color: #b91c1c;
+  color: #991b1b;
+}
+
+.tabRedActive,
+.tabRedActive:hover {
+  background-color: #dc2626;
+  border-color: #dc2626;
+  color: #ffffff;
+}
+
 .tableWrap {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
@@ -764,13 +782,87 @@
   font-family: inherit;
 }
 
+.scanRowInline {
+  display: flex;
+  gap: 0.75rem;
+  align-items: stretch;
+}
+
 @media (max-width: 640px) {
   .page {
-    padding: 1.5rem;
+    padding: 1rem;
+    gap: 1rem;
   }
 
   .card {
-    padding: 1.25rem;
+    padding: 1rem;
+  }
+
+  .dualCard {
+    padding: 0.9rem;
+  }
+
+  .cardHeader {
+    flex-wrap: wrap;
+  }
+
+  .tabRow {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .tabRow::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tabBtn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .uploadRow {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .scanRowInline {
+    flex-direction: column;
+  }
+
+  .scanInput {
+    min-width: 0;
+    width: 100%;
+    font-size: 1rem;
+  }
+
+  .searchInput,
+  .dateInput {
+    min-width: 0;
+    width: 100%;
+    font-size: 1rem;
+  }
+
+  .defectText {
+    min-width: 0;
+  }
+
+  .primaryBtn,
+  .secondaryBtn {
+    min-height: 44px;
+  }
+
+  .modalOverlay {
+    padding: 0.5rem;
+    align-items: flex-end;
+  }
+
+  .modal,
+  .modalWide {
+    width: 100%;
+    max-height: 92dvh;
+    padding: 1rem;
   }
 }
 

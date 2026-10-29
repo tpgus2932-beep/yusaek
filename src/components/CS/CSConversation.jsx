@@ -1,12 +1,14 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import styles from './CSPage.module.css';
 import CSStock from './CSStock';
 import CSAddressModal from './CSAddressModal';
 import CSPurchaseReturnModal from './CSPurchaseReturnModal';
+import CSReturnWithdrawModal from './CSReturnWithdrawModal';
 import CSDeliveryModal from './CSDeliveryModal';
 import CSExchangeModal from './CSExchangeModal';
 import CSHoldModal from './CSHoldModal';
 import CSLogModal from './CSLogModal';
+import CSRecallModal from './CSRecallModal';
 
 const fmtTime = (iso) => {
     if (!iso) return '';
@@ -89,9 +91,11 @@ const optionText = (o) => (o.options || []).join(' / ') || [o.option1, o.option2
 // extraTabs: 오른쪽 패널 끝에 덧붙일 탭 [{key, label, content}] (문의함의 답변 템플릿 등).
 const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', setDraft, acting = false, onReply, onComplete, splitInfo = false, keywordHits = [], extraTabs = [] }) => {
     const [returnOrder, setReturnOrder] = useState(''); // 구매확정 반품 모달에 띄울 주문번호
+    const [withdrawOrder, setWithdrawOrder] = useState(''); // 반품 철회 모달에 띄울 주문번호
     const [addressOrder, setAddressOrder] = useState(''); // 주소 변경 모달에 띄울 주문번호
     const [deliveryOpen, setDeliveryOpen] = useState(false); // 배송 확인(전화번호 → 송장번호) 모달
     const [logOpen, setLogOpen] = useState(false); // CS 로그(C/S 이력) 확인 모달
+    const [recallOpen, setRecallOpen] = useState(false); // 회수신청(전화번호 → 주문 선택 → 회수접수) 모달
     const [holdOpen, setHoldOpen] = useState(false); // 보류 해제·정상 복귀 모달
     const [exchangeOpen, setExchangeOpen] = useState(false); // 상품 교환(전화번호 → 주문 → 옵션 교환) 모달
     const room = detail?.contact_room;
@@ -100,6 +104,15 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
     const stockItems = stockProducts(preview, detail);
     const [lookupAll, setLookupAll] = useState(0); // 값이 바뀔 때마다 모든 상품 재고를 조회
     const [sideTab, setSideTab] = useState('order'); // 상품별 탭 오른쪽 패널: 'order' | 'stock'
+    // 답변 입력창에서 전송/완료를 하면 처리 후에도(다음 문의로 넘어가 입력창이 새로 그려져도) 커서를 입력창에 둔다.
+    const replyRef = useRef(null);
+    const keepFocus = useRef(false);
+    const rightCtrl = useRef(false);
+    const isRightCtrlKey = (e) => e.code === 'ControlRight' || e.code === 'Lang2' || e.key === 'Hanja' || e.key === 'HanjaMode';
+    const hasReplyBox = Boolean(room && onReply);
+    useEffect(() => {
+        if (keepFocus.current && !acting && !detailLoading && replyRef.current) replyRef.current.focus();
+    }, [acting, detailLoading, selected, hasReplyBox]);
     const orderItems = detail?.order_items || [];
     const targetItems = product?.orderNo ? orderItems.filter((o) => String(o.order_sno) === String(product.orderNo)) : [];
 
@@ -152,22 +165,41 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
             {onReply && (
                 <section className={styles.replyBox}>
                     <textarea
+                        ref={replyRef}
                         rows={4}
                         value={draft}
-                        placeholder="답변 내용을 입력하세요. (Enter 전송 · Shift+Enter 줄바꿈)"
+                        onFocus={() => { keepFocus.current = true; }}
+                        onBlur={(e) => {
+                            rightCtrl.current = false;
+                            if (e.relatedTarget) keepFocus.current = false;
+                        }}
+                        placeholder="답변 내용을 입력하세요. (Enter 전송 · Shift+Enter 줄바꿈 · Ctrl+Enter 완료 처리)"
                         onChange={(e) => setDraft(e.target.value)}
+                        onKeyUp={(e) => {
+                            if (isRightCtrlKey(e)) rightCtrl.current = false;
+                        }}
                         onKeyDown={(e) => {
-                            // 한글 조합 중 Enter는 무시, Shift+Enter는 줄바꿈
+                            // 한국어 키보드의 오른쪽 Ctrl은 한자 키로 인식되어 ctrlKey가 false일 수 있음
+                            if (isRightCtrlKey(e)) {
+                                rightCtrl.current = true;
+                                return;
+                            }
+                            // 한글 조합 중 Enter는 무시, Shift+Enter는 줄바꿈, Ctrl+Enter는 완료 처리
                             if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return;
                             e.preventDefault();
+                            if (e.ctrlKey || e.metaKey || rightCtrl.current) {
+                                if (!acting && [1, 2].includes(room.status)) onComplete({ next: true });
+                                return;
+                            }
                             if (!acting && draft.trim()) onReply(draft);
                         }}
-                        disabled={acting}
+                        readOnly={acting}
                     />
                     <div className={styles.replyActions}>
                         <button
                             type="button"
                             className={styles.btn}
+                            onMouseDown={(e) => e.preventDefault()}
                             disabled={acting || !draft.trim()}
                             onClick={() => onReply(draft)}
                         >
@@ -176,8 +208,9 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                         <button
                             type="button"
                             className={styles.btn}
+                            onMouseDown={(e) => e.preventDefault()}
                             disabled={acting || ![1, 2].includes(room.status)}
-                            onClick={onComplete}
+                            onClick={() => onComplete()}
                         >
                             완료 처리
                         </button>
@@ -197,9 +230,13 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                     onClose={() => setReturnOrder('')}
                 />
             )}
+            {withdrawOrder && <CSReturnWithdrawModal orderNo={withdrawOrder} onClose={() => setWithdrawOrder('')} />}
             {addressOrder && <CSAddressModal orderNo={addressOrder} onClose={() => setAddressOrder('')} />}
             {logOpen && (
                 <CSLogModal phone={room?.member?.mobile || preview?.member?.mobile || ''} onClose={() => setLogOpen(false)} />
+            )}
+            {recallOpen && (
+                <CSRecallModal phone={room?.member?.mobile || preview?.member?.mobile || ''} onClose={() => setRecallOpen(false)} />
             )}
             {holdOpen && (
                 <CSHoldModal phone={room?.member?.mobile || preview?.member?.mobile || ''} onClose={() => setHoldOpen(false)} />
@@ -262,6 +299,7 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                                 <section className={styles.sideSec}>
                                     <h4>현재 문의 상품</h4>
                                     {product.orderNo && <div className={styles.sideChip}>주문번호 {product.orderNo}</div>}
+                                    {targetItems.length > 0 && <div className={styles.sideChip}>상품주문번호 {targetItems.map((o) => o.sno).join(', ')}</div>}
                                     <div className={styles.sideGoods}>{product.goods.name}</div>
                                     {product.asked.options.length > 0 && (
                                         <div className={styles.sideMuted}>{product.asked.options.join(' / ')}</div>
@@ -295,7 +333,7 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                                             <li key={o.sno}>
                                                 <div className={styles.sideGoods}>{o.goods?.name}</div>
                                                 <div className={styles.sideMuted}>
-                                                    {optionText(o)} · {o.ea}개 · 주문 {o.order_sno}
+                                                    {optionText(o)} · {o.ea}개 · 주문 {o.order_sno} · 상품주문번호 {o.sno}
                                                 </div>
                                                 <OrderStatus status={o.status} />
                                             </li>
@@ -321,6 +359,10 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                                                 <strong>구매확정 반품</strong>
                                                 <span>회수접수 + 회수 문자 + 반품 특이사항 등록</span>
                                             </button>
+                                            <button type="button" className={styles.actionBtn} onClick={() => setWithdrawOrder(String(product.orderNo))}>
+                                                <strong>반품 철회</strong>
+                                                <span>주문 {product.orderNo}의 진행 중인 에이블리 반품 요청을 철회</span>
+                                            </button>
                                         </div>
                                     ) : (
                                         <div className={styles.sideMuted}>이 문의에 연결된 주문이 없어 작업할 수 없어요.</div>
@@ -333,6 +375,10 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                                         <button type="button" className={styles.actionBtn} onClick={() => setLogOpen(true)}>
                                             <strong>CS 로그 확인</strong>
                                             <span>전화번호로 주문을 검색해 이지어드민 C/S 이력 확인</span>
+                                        </button>
+                                        <button type="button" className={styles.actionBtn} onClick={() => setRecallOpen(true)}>
+                                            <strong>회수신청</strong>
+                                            <span>전화번호로 주문을 검색해 선택하고, CS 로그를 보며 이지어드민에 회수접수</span>
                                         </button>
                                         <button type="button" className={styles.actionBtn} onClick={() => setHoldOpen(true)}>
                                             <strong>보류 해제 · 정상 복귀</strong>
@@ -403,7 +449,7 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                                     {orderItems.map((o) => (
                                         <li key={o.sno}>
                                             {o.goods?.name} · {optionText(o)} ·{' '}
-                                            {o.ea}개 · <OrderStatus status={o.status} /> · 주문 {o.order_sno}
+                                            {o.ea}개 · <OrderStatus status={o.status} /> · 주문 {o.order_sno} · 상품주문번호 {o.sno}
                                         </li>
                                     ))}
                                 </ul>

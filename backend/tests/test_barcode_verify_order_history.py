@@ -76,7 +76,7 @@ def _make_client(monkeypatch, incoming_counts, wonbe_conn=None):
             to_int=lambda v: int(v or 0),
             process_and_load_any=lambda *a, **k: None,
             load_excel_any=lambda *a, **k: None,
-            normalize_to_yusas=lambda v: v,
+            normalize_code=lambda v: v,
             process_easyadmin_product_upload=lambda *a, **k: None,
             content_disposition=lambda *a, **k: "",
             get_shared_incoming_counts=lambda: incoming_counts,
@@ -184,7 +184,7 @@ def test_verify_order_history_all_confirmed_returns_empty_missing(monkeypatch):
 
 
 def test_verify_order_history_matches_yusas_incoming_code_against_s_code_history(monkeypatch):
-    """입고파일 코드는 normalize_to_yusas가 만든 YUSAS00000 형식인데 order_history/wonbe는
+    """입고파일 코드는 normalize_code가 만든 YUSAS00000 형식인데 order_history/wonbe는
     S00000 형식이라, 형식을 맞춰 비교하지 않으면 실제로는 발주된 상품도 전부 미확인으로
     잘못 뜬다 - 그 회귀를 막는 테스트."""
     client, get_db = _make_client(monkeypatch, incoming_counts={"YUSAS00123": 5, "YUSAS00456": 2})

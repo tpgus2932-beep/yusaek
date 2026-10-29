@@ -38,7 +38,7 @@ from api.timebox_routes import build_timebox_router
 from api.worklog_routes import build_worklog_router
 from api.equipment_routes import build_equipment_router
 from api.inventory_dashboard_routes import build_inventory_dashboard_router
-from barcode_core import normalize_to_yusas
+from barcode_core import normalize_code
 from api.wonbe_routes import WONBE_DB_PATH, build_wonbe_read_router
 from main import (
     ALLOWED_REQUEST_EXTS,
@@ -398,7 +398,7 @@ app.include_router(
     build_inventory_dashboard_router(
         get_current_user=_get_current_user,
         get_setting=_get_setting,
-        normalize_to_yusas=normalize_to_yusas,
+        normalize_code=normalize_code,
         get_db=_get_shared_db,
         allow_refresh=False,
     )

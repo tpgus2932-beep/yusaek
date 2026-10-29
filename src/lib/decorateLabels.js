@@ -18,7 +18,9 @@ export async function decorateLabels(labels) {
     return labels.map((l) => {
       const dec = decorations[l.code];
       if (!dec) return l;
-      const title = dec.prefix && !l.alreadyPrefixed ? `${dec.prefix} ${l.title}` : l.title;
+      // EZAdmin 상품명을 그대로 쓰는 라벨은 이미 일괄변경 접두어(AA 등)가 붙어 있을 수 있어 중복해서 붙이지 않는다.
+      const hasPrefix = l.alreadyPrefixed || String(l.title || '').startsWith(`${dec.prefix} `);
+      const title = dec.prefix && !hasPrefix ? `${dec.prefix} ${l.title}` : l.title;
       return { ...l, title, clientLine: l.clientLine || dec.clientLine || '' };
     });
   } catch {

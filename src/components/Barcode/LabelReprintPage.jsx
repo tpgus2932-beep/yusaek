@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import styles from './LabelReprintPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import { printProductLabels } from '../../lib/printProductLabels';
+import { useEzadminSession } from '../../lib/EzadminSessionContext';
 
 const rowOption = (row) => [row['색상'], row['사이즈']].filter(Boolean).join(' ');
 const rowName = (row) => row['상품명'] || row['상품명합'] || '';
@@ -15,11 +16,86 @@ const LabelReprintPage = ({ onClose }) => {
   const [searching, setSearching] = useState(false);
   const [items, setItems] = useState([]); // { code, name, option, clientProductName, qty }
   const [message, setMessage] = useState({ text: '', error: false });
+  const [invoiceText, setInvoiceText] = useState(''); // 송장번호 (줄바꿈/쉼표로 여러 개 = 일괄)
+  const [invoiceBusy, setInvoiceBusy] = useState(false);
+  const [bulkText, setBulkText] = useState(''); // "상품코드 수량" 한 줄에 하나
+  const [bulkBusy, setBulkBusy] = useState(false);
   const scanRef = useRef(null);
+  const { openModal: openEzadminModal } = useEzadminSession();
 
   useEffect(() => { scanRef.current?.focus(); }, []);
 
   const notify = (text, error = false) => setMessage({ text, error });
+
+  // 입력한 송장번호로 이지어드민에서 같은 번호의 송장을 다시 만들어 출력한다(번호는 새로 발급하지 않는다).
+  const handleInvoiceReprint = async () => {
+    const trans_nos = invoiceText.split(/[\s,;]+/).filter(Boolean);
+    if (!trans_nos.length) { notify('송장번호를 입력하세요.', true); return; }
+    if (!window.confirm(`${trans_nos.length}건의 송장을 같은 송장번호로 재출력합니다.\n(이지어드민에서 배송처리 취소 → 출력 → 배송처리가 자동으로 진행됩니다)\n\n계속할까요?`)) return;
+    // 팝업 차단을 피하려고 클릭 직후 동기적으로 창을 먼저 연다.
+    const win = window.open('', '_blank');
+    if (!win) { notify('팝업이 차단되었습니다. 팝업 허용 후 다시 시도해 주세요.', true); return; }
+    win.document.write("<p style='font-family:sans-serif'>송장 불러오는 중...</p>");
+    setInvoiceBusy(true);
+    try {
+      const res = await fetch(`${API}/invoice-print/reissue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ trans_nos }),
+      });
+      if (handleUnauthorized(res)) { win.close(); return; }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || '송장 재출력 실패');
+      if (data.need_session) { win.close(); openEzadminModal(handleInvoiceReprint); return; }
+      const warn = [
+        data.missing?.length ? `찾지 못한 송장번호: ${data.missing.join(', ')}` : '',
+        data.cancel_failed?.length ? `배송취소 실패 주문: ${data.cancel_failed.join(', ')}` : '',
+        data.confirm_failed?.length ? `배송처리 복구 실패 주문(이지어드민에서 확인 필요): ${data.confirm_failed.join(', ')}` : '',
+      ].filter(Boolean).join(' / ');
+      if (!data.ok) { win.close(); notify([data.detail || '송장 재출력 실패', warn].filter(Boolean).join(' / '), true); return; }
+      win.document.open();
+      win.document.write(data.html);
+      win.document.close();
+      setTimeout(() => win.print(), 1000);
+      notify(`${data.count}건 송장 출력 창을 열었습니다.${warn ? ` ${warn}` : ''}`, !!(data.confirm_failed?.length));
+    } catch (err) {
+      win.close();
+      notify(err.message, true);
+    } finally {
+      setInvoiceBusy(false);
+    }
+  };
+
+  // "상품코드 수량" 형식으로 한 줄에 하나씩 적은 목록의 라벨을 한 번에 출력한다. 수량을 생략하면 1장.
+  const handleBulkLabelPrint = async () => {
+    const entries = bulkText.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
+      const [code, qty] = line.split(/[\s,\t]+/);
+      return { code, qty: Math.max(1, Math.floor(Number(qty)) || 1) };
+    });
+    if (!entries.length) { notify('상품코드를 입력하세요.', true); return; }
+    setBulkBusy(true);
+    try {
+      const list = [];
+      const missing = [];
+      for (const { code, qty } of entries) {
+        const rows = await searchWonbe(code, 20);
+        if (rows === null) return;
+        const hit = rows.find((r) => String(r['상품코드'] || '').trim().toLowerCase() === code.toLowerCase());
+        if (!hit) { missing.push(code); continue; }
+        const key = String(hit['상품코드']).trim();
+        const existing = list.find((it) => it.code === key);
+        if (existing) existing.qty += qty;
+        else list.push({ code: key, name: rowName(hit), option: rowOption(hit), qty });
+      }
+      if (!list.length) { notify(`찾은 상품이 없습니다: ${missing.join(', ')}`, true); return; }
+      await printItems(list);
+      if (missing.length) notify(`${list.length}종 출력. 찾지 못한 코드: ${missing.join(', ')}`, true);
+    } catch (err) {
+      notify(err.message, true);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   const searchWonbe = async (q, limit) => {
     const params = new URLSearchParams({ q, limit: String(limit) });
@@ -139,6 +215,42 @@ const LabelReprintPage = ({ onClose }) => {
             <input type="checkbox" checked={instantPrint} onChange={(e) => setInstantPrint(e.target.checked)} />
             스캔 즉시 출력
           </label>
+        </div>
+      </div>
+
+      <div className={styles.card}>
+        <div className={styles.cardTitle}>송장 재출력 (송장번호 · 여러 개 일괄)</div>
+        <textarea
+          className={styles.input}
+          rows={4}
+          style={{ width: '100%', resize: 'vertical' }}
+          value={invoiceText}
+          placeholder={'송장번호를 입력하세요. 여러 개는 줄바꿈이나 쉼표로 구분하면 일괄 재출력됩니다.\n예) 412121836534'}
+          onChange={(e) => setInvoiceText(e.target.value)}
+        />
+        <div className={styles.row}>
+          <button type="button" className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleInvoiceReprint} disabled={invoiceBusy}>
+            {invoiceBusy ? '처리 중...' : '송장 재출력'}
+          </button>
+          <button type="button" className={styles.btn} disabled={!invoiceText} onClick={() => setInvoiceText('')}>지우기</button>
+        </div>
+      </div>
+
+      <div className={styles.card}>
+        <div className={styles.cardTitle}>라벨 일괄 재출력 (상품코드 수량)</div>
+        <textarea
+          className={styles.input}
+          rows={4}
+          style={{ width: '100%', resize: 'vertical' }}
+          value={bulkText}
+          placeholder={'한 줄에 "상품코드 수량"을 적으세요. 수량을 생략하면 1장입니다.\n예) S29082 3'}
+          onChange={(e) => setBulkText(e.target.value)}
+        />
+        <div className={styles.row}>
+          <button type="button" className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleBulkLabelPrint} disabled={bulkBusy}>
+            {bulkBusy ? '처리 중...' : '라벨 일괄 출력'}
+          </button>
+          <button type="button" className={styles.btn} disabled={!bulkText} onClick={() => setBulkText('')}>지우기</button>
         </div>
       </div>
 

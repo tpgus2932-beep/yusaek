@@ -7,6 +7,7 @@ import { useEzadminSession } from '../../lib/EzadminSessionContext';
 
 import { LOCAL_API_BASE as API, getAuthHeaders } from '../../lib/api';
 import { decorateLabels } from '../../lib/decorateLabels';
+import ReturnInspectionTab from './ReturnInspectionTab';
 
 // 이 PC에서 실행 중인 인쇄 에이전트 (backend/print_agent)
 const LOCAL_PRINT_AGENT = 'http://127.0.0.1:8765';
@@ -1119,6 +1120,49 @@ body { background: #fff; font-family: sans-serif; }
         saveResendInvoice(id, value);
     };
 
+    // 사진을 긴 변 900px JPEG로 줄여 data URL로 만든다 (DB에 그대로 저장).
+    const shrinkImageFile = (file) => new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+            const scale = Math.min(1, 900 / Math.max(img.width, img.height));
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.round(img.width * scale);
+            canvas.height = Math.round(img.height * scale);
+            canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+            URL.revokeObjectURL(url);
+            resolve(canvas.toDataURL('image/jpeg', 0.7));
+        };
+        img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('이미지를 읽을 수 없습니다.')); };
+        img.src = url;
+    });
+
+    const saveRegatherImages = async (id, images) => {
+        try {
+            const res = await fetch(`${API}/return-regathering/${id}/images`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ images }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '사진 저장 실패');
+            setRegatherItems((prev) => prev.map((r) => (r.id === id ? { ...r, images } : r)));
+        } catch (err) {
+            setMessage(err.message || '사진 저장 실패');
+        }
+    };
+
+    const handleRegatherImageAdd = async (row, fileList) => {
+        const files = Array.from(fileList || []);
+        if (files.length === 0) return;
+        try {
+            const added = await Promise.all(files.map(shrinkImageFile));
+            await saveRegatherImages(row.id, [...(row.images || []), ...added]);
+        } catch (err) {
+            setMessage(err.message || '사진 등록 실패');
+        }
+    };
+
     const handleCompleteRegather = async (id) => {
         try {
             const res = await fetch(`${API}/return-regathering/${id}/complete`, {
@@ -1384,6 +1428,13 @@ body { background: #fff; font-family: sans-serif; }
             }
             setLastType(nextType);
             lastTypeRef.current = nextType;
+            if (!data.duplicate && nextType !== '-' && nextType !== '') {
+                autoSaveCountRef.current += 1;
+                if (autoSaveCountRef.current % 100 === 0) {
+                    const t = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+                    handleSaveSnapshot(`자동저장 ${t} (${autoSaveCountRef.current}건)`);
+                }
+            }
             const nextTab = tabForType(nextType);
             if (nextTab) setActiveTab(nextTab);
             const shouldPlay = nextType !== '-' && nextType !== '' && nextType !== '중복';
@@ -1473,6 +1524,32 @@ body { background: #fff; font-family: sans-serif; }
         }
     };
 
+    // 원송장번호 → 이지어드민 CS검색(주문번호) → 에이블리 전체주문조회. 결과는 모달로 보여준다.
+    const handleOrderLookup = async (selectedIds) => {
+        const ids = Array.from(selectedIds);
+        if (ids.length === 0) return;
+        setOrderLookupLoading(true);
+        setMessage('');
+        try {
+            const res = await fetch(`${API}/returns/unmatched/order-lookup`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ ids }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.need_session) {
+                openEzadminModal(() => handleOrderLookup(selectedIds));
+                return;
+            }
+            if (!res.ok || !data?.ok) throw new Error(data?.detail || '전체주문조회 실패');
+            setOrderLookupModal({ results: data.results || [] });
+        } catch (err) {
+            setMessage(err.message || '전체주문조회 실패');
+        } finally {
+            setOrderLookupLoading(false);
+        }
+    };
+
     const handleUnmatchedReceiveStock = async (selectedIds) => {
         const ids = Array.from(selectedIds);
         if (ids.length === 0) return;
@@ -1523,32 +1600,6 @@ body { background: #fff; font-family: sans-serif; }
         }
         printProductLabels(labels);
         setMessage(`바코드 출력: ${labels.length}건`);
-    // 원송장번호 → 이지어드민 CS검색(주문번호) → 에이블리 전체주문조회. 결과는 모달로 보여준다.
-    const handleOrderLookup = async (selectedIds) => {
-        const ids = Array.from(selectedIds);
-        if (ids.length === 0) return;
-        setOrderLookupLoading(true);
-        setMessage('');
-        try {
-            const res = await fetch(`${API}/returns/unmatched/order-lookup`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                body: JSON.stringify({ ids }),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (data?.need_session) {
-                openEzadminModal(() => handleOrderLookup(selectedIds));
-                return;
-            }
-            if (!res.ok || !data?.ok) throw new Error(data?.detail || '전체주문조회 실패');
-            setOrderLookupModal({ results: data.results || [] });
-        } catch (err) {
-            setMessage(err.message || '전체주문조회 실패');
-        } finally {
-            setOrderLookupLoading(false);
-        }
-    };
-
     };
 
     // 미매칭 항목도 원가베이스유 매칭이 안 돼 resolveProductCodes를 못 쓰므로,
@@ -1624,13 +1675,63 @@ body { background: #fff; font-family: sans-serif; }
 
     const [loadSnapshotModalOpen, setLoadSnapshotModalOpen] = useState(false);
     const [snapshotMergeMode, setSnapshotMergeMode] = useState(false);
+    const [snapshotSaveMode, setSnapshotSaveMode] = useState(false);
     const [snapshotList, setSnapshotList] = useState([]);
     const [snapshotListLoading, setSnapshotListLoading] = useState(false);
-    const [snapshotAccounts, setSnapshotAccounts] = useState([]);
-    const [snapshotAccountsLoading, setSnapshotAccountsLoading] = useState(false);
-    const [activeSnapshotAccount, setActiveSnapshotAccount] = useState('');
     const [editingSnapshotId, setEditingSnapshotId] = useState(null);
     const [snapshotNameDraft, setSnapshotNameDraft] = useState('');
+    const autoSaveCountRef = useRef(0);
+    const [snapshotTabs, setSnapshotTabs] = useState([]);
+    const [activeSnapshotTab, setActiveSnapshotTab] = useState(() => {
+        try { return Number(localStorage.getItem('returnsSnapshotTab')) || 0; } catch { return 0; }
+    });
+
+    const fetchSnapshotTabs = async () => {
+        try {
+            const res = await fetch(`${API}/returns/snapshot-tabs`, { headers: getAuthHeaders() });
+            const data = await res.json().catch(() => ({}));
+            const tabs = Array.isArray(data?.tabs) ? data.tabs : [];
+            setSnapshotTabs(tabs);
+            return tabs;
+        } catch {
+            return [];
+        }
+    };
+
+    const selectSnapshotTab = (tabId) => {
+        setActiveSnapshotTab(tabId);
+        try { localStorage.setItem('returnsSnapshotTab', String(tabId)); } catch { /* ignore */ }
+        fetchSnapshotList(tabId);
+    };
+
+    const createSnapshotTab = async () => {
+        const name = (window.prompt('새 탭 이름을 입력하세요.') || '').trim();
+        if (!name) return;
+        try {
+            const res = await fetch(`${API}/returns/snapshot-tabs`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ name }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '탭 생성 실패');
+            await fetchSnapshotTabs();
+            selectSnapshotTab(data.id);
+        } catch (err) {
+            setMessage(err.message || '탭 생성 실패');
+        }
+    };
+
+    const deleteSnapshotTab = async (tab) => {
+        if (!window.confirm(`'${tab.name}' 탭을 삭제할까요? 안의 저장본은 기본 탭으로 이동합니다.`)) return;
+        try {
+            await fetch(`${API}/returns/snapshot-tabs/${tab.id}`, { method: 'DELETE', headers: getAuthHeaders() });
+            await fetchSnapshotTabs();
+            selectSnapshotTab(0);
+        } catch (err) {
+            setMessage(err.message || '탭 삭제 실패');
+        }
+    };
 
     const formatSnapshotTime = (iso) => {
         if (!iso) return '';
@@ -1639,25 +1740,10 @@ body { background: #fff; font-family: sans-serif; }
         return d.toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
     };
 
-    const handleSaveSnapshot = async () => {
-        try {
-            const res = await fetch(`${API}/returns/save`, {
-                method: 'POST',
-                headers: getAuthHeaders(),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data?.detail || '임시저장 실패');
-            setSavedAt(data.saved_at || '');
-            setMessage('반품 스캔 상태를 임시저장했습니다.');
-        } catch (err) {
-            setMessage(err.message || '임시저장 실패');
-        }
-    };
-
-    const fetchSnapshotsForAccount = async (username) => {
+    const fetchSnapshotList = async (tabId = activeSnapshotTab) => {
         setSnapshotListLoading(true);
         try {
-            const res = await fetch(`${API}/returns/saves?username=${encodeURIComponent(username)}`, { headers: getAuthHeaders() });
+            const res = await fetch(`${API}/returns/saves?tab_id=${tabId}`, { headers: getAuthHeaders() });
             const data = await res.json().catch(() => ({}));
             setSnapshotList(Array.isArray(data?.items) ? data.items : []);
         } catch {
@@ -1667,37 +1753,35 @@ body { background: #fff; font-family: sans-serif; }
         }
     };
 
-    const selectSnapshotAccount = (username) => {
-        setActiveSnapshotAccount(username);
-        fetchSnapshotsForAccount(username);
+    const handleSaveSnapshot = async (name = '') => {
+        try {
+            const res = await fetch(`${API}/returns/save`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ name: typeof name === 'string' ? name : '', tab_id: activeSnapshotTab }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '임시저장 실패');
+            setSavedAt(data.saved_at || '');
+            setMessage(name && typeof name === 'string' ? `${name} 완료` : '반품 스캔 상태를 임시저장했습니다.');
+            fetchSnapshotList();
+        } catch (err) {
+            setMessage(err.message || '임시저장 실패');
+        }
     };
 
-    const openLoadSnapshotModal = async (mergeMode = false) => {
-        setSnapshotMergeMode(mergeMode === true);
+    const openLoadSnapshotModal = async (mode = false) => {
+        setSnapshotMergeMode(mode === true);
+        setSnapshotSaveMode(mode === 'save');
         setLoadSnapshotModalOpen(true);
-        setSnapshotAccountsLoading(true);
-        setSnapshotList([]);
-        setActiveSnapshotAccount('');
-        try {
-            const res = await fetch(`${API}/returns/saves-accounts`, { headers: getAuthHeaders() });
-            const data = await res.json().catch(() => ({}));
-            const accounts = Array.isArray(data?.accounts) ? data.accounts : [];
-            setSnapshotAccounts(accounts);
-            if (accounts.length) {
-                await selectSnapshotAccount(accounts[0].username);
-            }
-        } catch {
-            setSnapshotAccounts([]);
-        } finally {
-            setSnapshotAccountsLoading(false);
-        }
+        const tabs = await fetchSnapshotTabs();
+        const tabId = activeSnapshotTab === 0 || tabs.some((t) => t.id === activeSnapshotTab) ? activeSnapshotTab : 0;
+        selectSnapshotTab(tabId);
     };
 
     const closeLoadSnapshotModal = () => {
         setLoadSnapshotModalOpen(false);
-        setSnapshotList([]);
-        setSnapshotAccounts([]);
-        setActiveSnapshotAccount('');
+        setSnapshotSaveMode(false);
         setEditingSnapshotId(null);
         setSnapshotNameDraft('');
     };
@@ -1774,6 +1858,72 @@ body { background: #fff; font-family: sans-serif; }
             setMessage(err.message || '불러오기 실패');
         }
     };
+
+    const renderSnapshotList = (onPick) => (
+        <>
+            {snapshotListLoading ? (
+                <div>목록 불러오는 중...</div>
+            ) : snapshotList.length === 0 ? (
+                <div>임시저장된 기록이 없습니다.</div>
+            ) : (
+                snapshotList.map((item) => (
+                    <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {editingSnapshotId === item.id ? (
+                            <>
+                                <input
+                                    type="text"
+                                    autoFocus
+                                    value={snapshotNameDraft}
+                                    onChange={(e) => setSnapshotNameDraft(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') saveSnapshotName(item.id);
+                                        if (e.key === 'Escape') cancelEditSnapshotName();
+                                    }}
+                                    placeholder={formatSnapshotTime(item.updated_at)}
+                                    maxLength={40}
+                                    style={{ flex: 1, minWidth: 0 }}
+                                />
+                                <button type="button" className={pageStyles.secondaryBtn} onClick={() => saveSnapshotName(item.id)}>
+                                    저장
+                                </button>
+                                <button type="button" className={pageStyles.secondaryBtn} onClick={cancelEditSnapshotName}>
+                                    취소
+                                </button>
+                            </>
+                        ) : (
+                            <>
+                                <button
+                                    type="button"
+                                    className={pageStyles.secondaryBtn}
+                                    onClick={() => onPick(item.id)}
+                                    style={{ flex: 1, textAlign: 'left' }}
+                                >
+                                    {item.name || formatSnapshotTime(item.updated_at)}
+                                    {item.username && <span style={{ marginLeft: 8, opacity: 0.6, fontSize: '0.75rem' }}>{item.username} · {formatSnapshotTime(item.updated_at)}</span>}
+                                </button>
+                                <button
+                                    type="button"
+                                    className={pageStyles.secondaryBtn}
+                                    onClick={() => startEditSnapshotName(item)}
+                                    title="이름 변경"
+                                >
+                                    이름변경
+                                </button>
+                                <button
+                                    type="button"
+                                    className={pageStyles.secondaryBtn}
+                                    onClick={() => handleDownloadSnapshot(item)}
+                                    title="판매자/고객/미매칭 추출 다운로드"
+                                >
+                                    다운로드
+                                </button>
+                            </>
+                        )}
+                    </div>
+                ))
+            )}
+        </>
+    );
 
     const handleDownloadSnapshot = (item) => {
         const label = item.name || formatSnapshotTime(item.updated_at);
@@ -2396,7 +2546,7 @@ body { background: #fff; font-family: sans-serif; }
                         <button className={pageStyles.secondaryBtn} onClick={handleCostReload} disabled={loading}>
                             새로 로드
                         </button>
-                        <button className={pageStyles.secondaryBtn} onClick={handleSaveSnapshot} disabled={loading}>
+                        <button className={pageStyles.secondaryBtn} onClick={() => openLoadSnapshotModal('save')} disabled={loading}>
                             임시저장
                         </button>
                         <button className={pageStyles.secondaryBtn} onClick={() => openLoadSnapshotModal(false)} disabled={loading}>
@@ -2552,11 +2702,16 @@ body { background: #fff; font-family: sans-serif; }
                                 ['regather', '오회수'],
                                 ['onebe', '원베양식(고객대기)'],
                                 ['processing_log', '처리기록'],
+                                ['inspection', '입고검수'],
                             ].map(([key, label]) => (
                                 <button
                                     key={key}
                                     className={`${pageStyles.tabBtn} ${
                                         activeTab === key ? pageStyles.tabActive : ''
+                                    } ${key === 'seller' || key === 'exchange_seller' ? pageStyles.tabRed : ''} ${
+                                        key === 'seller' || key === 'exchange_seller'
+                                            ? (activeTab === key ? pageStyles.tabRedActive : '')
+                                            : ''
                                     }`}
                                     onClick={() => setActiveTab(key)}
                                 >
@@ -2572,7 +2727,9 @@ body { background: #fff; font-family: sans-serif; }
                         </div>
                     )}
 
-                    {activeTab !== 'onebe' && activeTab !== 'processing_log' && (
+                    {activeTab === 'inspection' && <ReturnInspectionTab />}
+
+                    {activeTab !== 'onebe' && activeTab !== 'processing_log' && activeTab !== 'inspection' && (
                         <>
                             {activeTab === 'all' && renderQueueTab(queues.all, selectedAll, setSelectedAll)}
                             {activeTab === 'seller' && renderQueueTab(queues.seller, selectedSeller, setSelectedSeller, (
@@ -2832,6 +2989,7 @@ body { background: #fff; font-family: sans-serif; }
                                         <table className={pageStyles.table}>
                                             <thead>
                                                 <tr>
+                                                    <th>사진</th>
                                                     <th>원송장번호</th>
                                                     <th>반품송장번호</th>
                                                     <th>상품명</th>
@@ -2844,6 +3002,38 @@ body { background: #fff; font-family: sans-serif; }
                                             <tbody>
                                                 {regatherItems.map((r) => (
                                                     <tr key={r.id}>
+                                                        <td>
+                                                            <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                                                                {(r.images || []).map((src, i) => (
+                                                                    <span key={i} style={{ position: 'relative', display: 'inline-block' }}>
+                                                                        <img
+                                                                            src={src}
+                                                                            alt={`사진 ${i + 1}`}
+                                                                            style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 4, cursor: 'zoom-in' }}
+                                                                            onClick={() => setZoomImage(src)}
+                                                                        />
+                                                                        <button
+                                                                            type="button"
+                                                                            title="사진 삭제"
+                                                                            onClick={() => saveRegatherImages(r.id, r.images.filter((_, idx) => idx !== i))}
+                                                                            style={{ position: 'absolute', top: -6, right: -6, width: 16, height: 16, lineHeight: '14px', padding: 0, borderRadius: '50%', border: 'none', background: '#dc2626', color: '#fff', fontSize: 11, cursor: 'pointer' }}
+                                                                        >
+                                                                            ×
+                                                                        </button>
+                                                                    </span>
+                                                                ))}
+                                                                <label className={pageStyles.secondaryBtn} style={{ cursor: 'pointer', padding: '0.2rem 0.5rem' }}>
+                                                                    + 사진
+                                                                    <input
+                                                                        type="file"
+                                                                        accept="image/*"
+                                                                        multiple
+                                                                        style={{ display: 'none' }}
+                                                                        onChange={(e) => { handleRegatherImageAdd(r, e.target.files); e.target.value = ''; }}
+                                                                    />
+                                                                </label>
+                                                            </div>
+                                                        </td>
                                                         <td>{r.invoice}</td>
                                                         <td>{r.return_invoice}</td>
                                                         <td>{r.goods_name}</td>
@@ -2991,6 +3181,14 @@ body { background: #fff; font-family: sans-serif; }
                                         disabled={csLookupLoading || selectedUnmatched.size === 0}
                                     >
                                         {csLookupLoading ? '조회 중...' : `CS 조회 (${selectedUnmatched.size})`}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={pageStyles.secondaryBtn}
+                                        onClick={() => handleOrderLookup(selectedUnmatched)}
+                                        disabled={orderLookupLoading || selectedUnmatched.size === 0}
+                                    >
+                                        {orderLookupLoading ? '조회 중...' : `전체주문조회 (${selectedUnmatched.size})`}
                                     </button>
                                     <button
                                         type="button"
@@ -3178,14 +3376,6 @@ body { background: #fff; font-family: sans-serif; }
                                     type="date"
                                     value={logFilterDateFrom}
                                     onChange={(e) => setLogFilterDateFrom(e.target.value)}
-                                    <button
-                                        type="button"
-                                        className={pageStyles.secondaryBtn}
-                                        onClick={() => handleOrderLookup(selectedUnmatched)}
-                                        disabled={orderLookupLoading || selectedUnmatched.size === 0}
-                                    >
-                                        {orderLookupLoading ? '조회 중...' : `전체주문조회 (${selectedUnmatched.size})`}
-                                    </button>
                                 />
                                 <input
                                     type="date"
@@ -3579,6 +3769,66 @@ body { background: #fff; font-family: sans-serif; }
                 </div>
             )}
 
+            {orderLookupModal && (
+                <div
+                    onClick={() => setOrderLookupModal(null)}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0,0,0,0.5)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 1000,
+                    }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                            background: 'var(--bg-primary, #fff)',
+                            borderRadius: 8,
+                            width: 'min(760px, 92vw)',
+                            maxHeight: '80vh',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            overflow: 'hidden',
+                        }}
+                    >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border-color, #e5e7eb)' }}>
+                            <strong>전체주문조회 ({orderLookupModal.results.length}건)</strong>
+                            <button type="button" onClick={() => setOrderLookupModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>×</button>
+                        </div>
+                        <div style={{ padding: 16, overflowY: 'auto' }}>
+                            {orderLookupModal.results.map((r, i) => (
+                                <div key={r.id ?? i} style={{ marginBottom: 20 }}>
+                                    <div style={{ fontWeight: 600, marginBottom: 8 }}>
+                                        원송장 {r.original_invoice || '-'}
+                                        {r.order_no && ` · 주문번호 ${r.order_no}`}
+                                    </div>
+                                    {r.error && <div style={{ color: '#dc2626' }}>{r.error}</div>}
+                                    {(r.order_items || []).map((oi, j) => (
+                                        <div key={oi.sno ?? j} style={{ marginBottom: 10, paddingLeft: 8, borderLeft: '3px solid var(--border-color, #e5e7eb)', fontSize: 13, lineHeight: 1.6 }}>
+                                            <div style={{ fontWeight: 600 }}>{oi.goods_name}</div>
+                                            <div>
+                                                {oi.option_info}{oi.option_stock_sync_code ? ` (${oi.option_stock_sync_code})` : ''} · {oi.ea}개
+                                                {oi.price != null && ` · ${Number(oi.price).toLocaleString()}원`} · {oi.status}
+                                            </div>
+                                            <div style={{ color: 'var(--text-secondary, #6b7280)' }}>
+                                                주문 {oi.ordered_at || '-'} · 발송 {oi.goods_sent_at || '-'} · 배송완료 {oi.delivery_completed_at || '-'}
+                                            </div>
+                                            <div style={{ color: 'var(--text-secondary, #6b7280)' }}>
+                                                {oi.delivery_name || '-'} {oi.invoice || ''} · 구매자 {oi.buyer_name || '-'} {oi.buyer_tel || ''} · 수령자 {oi.receiver_name || '-'} {oi.receiver_tel || ''}
+                                            </div>
+                                            {oi.memo && <div>메모: {oi.memo}</div>}
+                                        </div>
+                                    ))}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {specialNoteModalOpen && (
                 <div
                     onClick={() => setSpecialNoteModalOpen(false)}
@@ -3765,66 +4015,6 @@ body { background: #fff; font-family: sans-serif; }
                                 문자 보내지 않기
                             </label>
                             {reasonChangeTemplatesLoading ? (
-            {orderLookupModal && (
-                <div
-                    onClick={() => setOrderLookupModal(null)}
-                    style={{
-                        position: 'fixed',
-                        inset: 0,
-                        background: 'rgba(0,0,0,0.5)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        zIndex: 1000,
-                    }}
-                >
-                    <div
-                        onClick={(e) => e.stopPropagation()}
-                        style={{
-                            background: 'var(--bg-primary, #fff)',
-                            borderRadius: 8,
-                            width: 'min(760px, 92vw)',
-                            maxHeight: '80vh',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            overflow: 'hidden',
-                        }}
-                    >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border-color, #e5e7eb)' }}>
-                            <strong>전체주문조회 ({orderLookupModal.results.length}건)</strong>
-                            <button type="button" onClick={() => setOrderLookupModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>×</button>
-                        </div>
-                        <div style={{ padding: 16, overflowY: 'auto' }}>
-                            {orderLookupModal.results.map((r, i) => (
-                                <div key={r.id ?? i} style={{ marginBottom: 20 }}>
-                                    <div style={{ fontWeight: 600, marginBottom: 8 }}>
-                                        원송장 {r.original_invoice || '-'}
-                                        {r.order_no && ` · 주문번호 ${r.order_no}`}
-                                    </div>
-                                    {r.error && <div style={{ color: '#dc2626' }}>{r.error}</div>}
-                                    {(r.order_items || []).map((oi, j) => (
-                                        <div key={oi.sno ?? j} style={{ marginBottom: 10, paddingLeft: 8, borderLeft: '3px solid var(--border-color, #e5e7eb)', fontSize: 13, lineHeight: 1.6 }}>
-                                            <div style={{ fontWeight: 600 }}>{oi.goods_name}</div>
-                                            <div>
-                                                {oi.option_info}{oi.option_stock_sync_code ? ` (${oi.option_stock_sync_code})` : ''} · {oi.ea}개
-                                                {oi.price != null && ` · ${Number(oi.price).toLocaleString()}원`} · {oi.status}
-                                            </div>
-                                            <div style={{ color: 'var(--text-secondary, #6b7280)' }}>
-                                                주문 {oi.ordered_at || '-'} · 발송 {oi.goods_sent_at || '-'} · 배송완료 {oi.delivery_completed_at || '-'}
-                                            </div>
-                                            <div style={{ color: 'var(--text-secondary, #6b7280)' }}>
-                                                {oi.delivery_name || '-'} {oi.invoice || ''} · 구매자 {oi.buyer_name || '-'} {oi.buyer_tel || ''} · 수령자 {oi.receiver_name || '-'} {oi.receiver_tel || ''}
-                                            </div>
-                                            {oi.memo && <div>메모: {oi.memo}</div>}
-                                        </div>
-                                    ))}
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            )}
-
                                 <div>템플릿 불러오는 중...</div>
                             ) : reasonChangeTemplates.length === 0 ? (
                                 <div>등록된 템플릿이 없습니다. 사이드메뉴 "문자 발송"에서 템플릿을 먼저 만들어주세요.</div>
@@ -3878,100 +4068,54 @@ body { background: #fff; font-family: sans-serif; }
                         style={{
                             background: 'var(--bg-primary, #fff)',
                             borderRadius: 8,
-                            width: 'min(360px, 90vw)',
+                            width: 'min(420px, 90vw)',
                             display: 'flex',
                             flexDirection: 'column',
                         }}
                     >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border-color, #e5e7eb)' }}>
-                            <strong>{snapshotMergeMode ? '판매자 가져오기 (판매자·교환판매자·미매칭 추가)' : '임시저장 불러오기'}</strong>
+                            <strong>{snapshotMergeMode ? '판매자 가져오기 (판매자·교환판매자·미매칭 추가)' : snapshotSaveMode ? '임시저장' : '임시저장 불러오기'}</strong>
                             <button type="button" onClick={closeLoadSnapshotModal} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>×</button>
                         </div>
                         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                            {snapshotAccountsLoading ? (
-                                <div>계정 목록 불러오는 중...</div>
-                            ) : snapshotAccounts.length > 1 ? (
-                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', borderBottom: '1px solid var(--border-color, #e5e7eb)', paddingBottom: 8 }}>
-                                    {snapshotAccounts.map((acc) => (
-                                        <button
-                                            key={acc.username}
-                                            type="button"
-                                            onClick={() => selectSnapshotAccount(acc.username)}
-                                            style={{
-                                                padding: '4px 10px',
-                                                borderRadius: 999,
-                                                border: '1px solid var(--border-color, #e5e7eb)',
-                                                background: acc.username === activeSnapshotAccount ? 'var(--accent-color, #2563eb)' : 'transparent',
-                                                color: acc.username === activeSnapshotAccount ? '#fff' : 'inherit',
-                                                cursor: 'pointer',
-                                                fontSize: '0.8rem',
-                                            }}
-                                        >
-                                            {acc.username}
-                                        </button>
-                                    ))}
-                                </div>
-                            ) : null}
-                            {snapshotListLoading ? (
-                                <div>목록 불러오는 중...</div>
-                            ) : snapshotList.length === 0 ? (
-                                <div>임시저장된 기록이 없습니다.</div>
-                            ) : (
-                                snapshotList.map((item) => (
-                                    <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                        {editingSnapshotId === item.id ? (
-                                            <>
-                                                <input
-                                                    type="text"
-                                                    autoFocus
-                                                    value={snapshotNameDraft}
-                                                    onChange={(e) => setSnapshotNameDraft(e.target.value)}
-                                                    onKeyDown={(e) => {
-                                                        if (e.key === 'Enter') saveSnapshotName(item.id);
-                                                        if (e.key === 'Escape') cancelEditSnapshotName();
-                                                    }}
-                                                    placeholder={formatSnapshotTime(item.updated_at)}
-                                                    maxLength={40}
-                                                    style={{ flex: 1, minWidth: 0 }}
-                                                />
-                                                <button type="button" className={pageStyles.secondaryBtn} onClick={() => saveSnapshotName(item.id)}>
-                                                    저장
-                                                </button>
-                                                <button type="button" className={pageStyles.secondaryBtn} onClick={cancelEditSnapshotName}>
-                                                    취소
-                                                </button>
-                                            </>
-                                        ) : (
-                                            <>
-                                                <button
-                                                    type="button"
-                                                    className={pageStyles.secondaryBtn}
-                                                    onClick={() => (snapshotMergeMode ? mergeSellerFromSnapshot(item.id) : loadSnapshotById(item.id))}
-                                                    style={{ flex: 1, textAlign: 'left' }}
-                                                >
-                                                    {item.name || formatSnapshotTime(item.updated_at)}
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className={pageStyles.secondaryBtn}
-                                                    onClick={() => startEditSnapshotName(item)}
-                                                    title="이름 변경"
-                                                >
-                                                    이름변경
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className={pageStyles.secondaryBtn}
-                                                    onClick={() => handleDownloadSnapshot(item)}
-                                                    title="판매자/고객/미매칭 추출 다운로드"
-                                                >
-                                                    다운로드
-                                                </button>
-                                            </>
-                                        )}
-                                    </div>
-                                ))
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', borderBottom: '1px solid var(--border-color, #e5e7eb)', paddingBottom: 8 }}>
+                                {[{ id: 0, name: '기본' }, ...snapshotTabs].map((tab) => (
+                                    <button
+                                        key={tab.id}
+                                        type="button"
+                                        onClick={() => selectSnapshotTab(tab.id)}
+                                        onContextMenu={(e) => {
+                                            e.preventDefault();
+                                            if (tab.id !== 0) deleteSnapshotTab(tab);
+                                        }}
+                                        title={tab.id !== 0 ? '우클릭: 탭 삭제' : undefined}
+                                        style={{
+                                            padding: '4px 10px',
+                                            borderRadius: 999,
+                                            border: '1px solid var(--border-color, #e5e7eb)',
+                                            background: tab.id === activeSnapshotTab ? 'var(--accent-color, #2563eb)' : 'transparent',
+                                            color: tab.id === activeSnapshotTab ? '#fff' : 'inherit',
+                                            cursor: 'pointer',
+                                            fontSize: '0.8rem',
+                                        }}
+                                    >
+                                        {tab.name}
+                                    </button>
+                                ))}
+                                <button
+                                    type="button"
+                                    onClick={createSnapshotTab}
+                                    style={{ padding: '4px 10px', borderRadius: 999, border: '1px dashed var(--border-color, #9ca3af)', background: 'transparent', cursor: 'pointer', fontSize: '0.8rem' }}
+                                >
+                                    + 탭 추가
+                                </button>
+                            </div>
+                            {snapshotSaveMode && (
+                                <button type="button" className={pageStyles.secondaryBtn} onClick={() => handleSaveSnapshot()}>
+                                    현재 상태를 이 탭에 저장
+                                </button>
                             )}
+                            {renderSnapshotList((id) => (snapshotMergeMode ? mergeSellerFromSnapshot(id) : loadSnapshotById(id)))}
                         </div>
                     </div>
                 </div>

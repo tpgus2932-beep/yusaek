@@ -457,6 +457,128 @@ def build_invoice_print_router(*, get_current_user, get_setting, get_db):
             conn.close()
         return {"ok": True}
 
+    async def _find_packs_by_trans_no(client, cookies, trans_no: str) -> list[str]:
+        """송장번호로 이지어드민 주문(E900)을 검색해 주문 seq(pack) 목록을 돌려준다."""
+        now = datetime.now(_KST)
+        par = (
+            "pack=&history_seq=&date_type=collect_date"
+            f"&start_date={(now - timedelta(days=_LOOKBACK_DAYS)).strftime('%Y-%m-%d')}&end_date={now.strftime('%Y-%m-%d')}"
+            "&date_period_sel=0&search_type=0&keyword=&keyword1=&keyword2=&keyword3=&keyword4=&keyword5="
+            f"&super_keyword={trans_no}&order_status=-1&order_cs=0&query_trans_who=0&is_gift=0&work_type=0"
+            "&labels_string=&checkbox_options_string="
+        )
+        res = await _ez_post(client, cookies, {
+            "_search": "false", "nd": str(int(now.timestamp() * 1000)), "rows": "10", "page": "1",
+            "sidx": "", "sord": "desc", "readonly": "T", "template": "E900", "action": "query_json", "par": par,
+        })
+        try:
+            data = res.json()
+        except Exception:
+            raise HTTPException(status_code=502, detail="이지어드민 주문 검색 응답을 해석하지 못했습니다. 세션을 확인하세요.")
+        packs: list[str] = []
+        for item in data.get("rows", []):
+            pack = str((item.get("cell") or {}).get("pack") or "").strip()
+            if pack and pack not in packs:
+                packs.append(pack)
+        return packs
+
+    @router.post("/reissue")
+    async def reissue_by_trans_no(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """송장번호(여러 개 가능)로 주문을 찾아 같은 송장번호로 출력용 HTML을 다시 만든다. 번호는 새로 발급하지 않는다.
+        이지어드민 수동 절차와 같다: 배송처리 취소(cancel_trans) → make_html_E900(new_trans_no=0) → 배송처리(confirm_trans).
+        취소한 주문은 출력 성공/실패와 관계없이 마지막에 반드시 다시 배송처리한다."""
+        cookies = _cookies()
+        if not cookies:
+            return {"ok": False, "need_session": True}
+        raw = payload.get("trans_nos") or []
+        if isinstance(raw, str):
+            raw = re.split(r"[\s,;]+", raw)
+        trans_nos = list(dict.fromkeys(re.sub(r"\D", "", str(x)) for x in raw if re.sub(r"\D", "", str(x))))
+        if not trans_nos:
+            raise HTTPException(status_code=400, detail="송장번호를 입력하세요.")
+        if len(trans_nos) > 200:
+            raise HTTPException(status_code=400, detail="한 번에 200건까지만 재출력할 수 있습니다.")
+
+        def tf() -> str:
+            return str(int(datetime.now(_KST).timestamp() * 1000))
+
+        missing: list[str] = []
+        seqs: list[str] = []
+        async with httpx.AsyncClient(timeout=_EZ_TIMEOUT, verify=False, follow_redirects=True) as client:
+            for no in trans_nos:
+                packs = await _find_packs_by_trans_no(client, cookies, no)
+                if not packs:
+                    missing.append(no)
+                for p in packs:
+                    if p not in seqs:
+                        seqs.append(p)
+            if not seqs:
+                return {"ok": False, "detail": "송장번호에 해당하는 주문을 찾지 못했습니다.", "missing": missing}
+
+            canceled: list[str] = []
+            cancel_failed: list[str] = []
+            for seq in seqs:
+                res = await _ez_post(client, cookies, {
+                    "template": "E900", "action": "cancel_trans", "seq": seq, "content": "", "timeFlag": tf(),
+                })
+                try:
+                    ok = not res.json().get("error")
+                except Exception:
+                    ok = False
+                (canceled if ok else cancel_failed).append(seq)
+
+            html = ""
+            detail = ""
+            try:
+                if canceled:
+                    n = len(canceled)
+                    res = await _ez_post(client, cookies, {
+                        "is_pre_print": "0", "new_trans_no": "0", "current_tab": "0", "template": "S700",
+                        "action": "make_html_E900", "trans_template": _TRANS_TEMPLATE, "use_safe_number": "0",
+                        "arr_seq": json.dumps(canceled), "arr_rowid": json.dumps(list(range(1, n + 1))),
+                        "arr_qty": json.dumps([1] * n), "box_type": "", "print_page": "E900",
+                        "trans_slot_date": "", "trans_slot_time": "15:00:00", "teamf_is_premium": "x",
+                        "teamf_transType": "tonight", "teamf_box_add": "0", "kakaoT_type": "0",
+                        "hanjin_deliv_type": "GN", "deliv_today_type": "0", "joongang_svc_type": "",
+                    })
+                    body = res.text
+                    try:
+                        result = res.json()
+                    except Exception:
+                        idx = body.find("result_print2(")
+                        result = json.JSONDecoder().raw_decode(body[idx + len("result_print2("):])[0] if idx >= 0 else {}
+                    printed = result.get("print") or {}
+                    url = printed.get("url") or ""
+                    if printed.get("error") or not url.startswith(_EZADMIN_BASE):
+                        detail = f"이지어드민 송장 출력 실패: {printed or body[:200]}"
+                    else:
+                        html_res = await client.get(url, headers=_headers(), cookies=cookies)
+                        html = html_res.text
+            except HTTPException as e:
+                detail = str(e.detail)
+            except Exception as e:
+                detail = f"{type(e).__name__} {e}".strip()
+            finally:
+                confirm_failed: list[str] = []
+                for seq in canceled:
+                    try:
+                        res = await _ez_post(client, cookies, {
+                            "template": "E900", "action": "confirm_trans", "seq": seq, "trans_type": "",
+                            "trans_date": "", "cs_type": "", "content": "", "timeFlag": tf(),
+                        })
+                        if res.json().get("error"):
+                            confirm_failed.append(seq)
+                    except Exception:
+                        confirm_failed.append(seq)
+
+        out = {
+            "ok": bool(html), "html": html, "count": len(canceled), "missing": missing,
+            "cancel_failed": cancel_failed, "confirm_failed": confirm_failed,
+        }
+        if not html:
+            out["detail"] = detail or "재출력할 주문이 없습니다."
+        return out
+
     @router.post("/jobs/{job_id}/chunks/{chunk_no}/release")
     def release_chunk(job_id: str, chunk_no: int, user: str = Depends(get_current_user)):
         """발급 도중 멈춰 있는('issuing') 구간만 다시 풀어준다. 발급된 구간은 풀 수 없다."""

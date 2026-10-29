@@ -26,7 +26,7 @@ const HANGUL_COMPAT = {
   ㅚ:"hl",ㅛ:"y",ㅜ:"n",ㅝ:"nj",ㅞ:"np",ㅟ:"nl",ㅠ:"b",ㅡ:"m",ㅢ:"ml",ㅣ:"l",
 };
 
-const toEnglishKey = (text) => {
+export const toEnglishKey = (text) => {
   if (!text) return text;
   let out = "";
   for (const ch of text) {
@@ -45,9 +45,21 @@ const toEnglishKey = (text) => {
   return out.toUpperCase();
 };
 
-const BAD_STOCK_CATEGORIES = ["상의", "하의"];
-const BAD_STOCK_LETTERS = ["A", "B", "C", "D", "E"];
-const badStockZoneLabel = (zone) => `${zone.slice(0, 2)} ${zone.slice(2)}구역`;
+const BAD_STOCK_CATEGORY_LETTERS = {
+  상의: ["A", "B", "C", "D", "E"],
+  하의: ["A", "B", "C", "D", "E"],
+  아우터: ["A", "B", "C"],
+};
+const BAD_STOCK_CATEGORIES = Object.keys(BAD_STOCK_CATEGORY_LETTERS);
+const BAD_STOCK_BASE_ZONES = new Set(
+  Object.entries(BAD_STOCK_CATEGORY_LETTERS).flatMap(([cat, letters]) => letters.map((l) => `${cat}${l}`))
+);
+// 직접 추가한 탭은 '분류 이름'(예: 상의 F)으로 보여준다.
+const badStockZoneLabel = (zone) => {
+  if (BAD_STOCK_BASE_ZONES.has(zone)) return `${zone.slice(0, -1)} ${zone.slice(-1)}구역`;
+  const cat = BAD_STOCK_CATEGORIES.find((c) => zone.startsWith(c));
+  return cat ? `${cat} ${zone.slice(cat.length)}` : zone;
+};
 
 export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [file, setFile] = useState(null);
@@ -70,6 +82,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [defectTab, setDefectTab] = useState(loadDefectTab);
   const defectTabRef = useRef(defectTab);
   const [summonedByTab, setSummonedByTab] = useState([]);
+  // 불량관리 모달에서 A·B·C 전체 원가 합계를 보여주기 위해 탭별로 따로 받아둔다 ({ A: { count, cost, noCost } }).
+  const [tabStats, setTabStats] = useState({});
   const tabHeaders = () => ({ ...getAuthHeaders(), "X-Defect-Tab": defectTabRef.current });
   const [defectMode, setDefectMode] = useState(false);
   const [showDefectList, setShowDefectList] = useState(false);
@@ -107,6 +121,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [showBadStockModal, setShowBadStockModal] = useState(false);
   const [badStockZone, setBadStockZone] = useState("상의A");
   const [badStockList, setBadStockList] = useState([]);
+  const [badStockCustomZones, setBadStockCustomZones] = useState([]);
+  const [badStockMoveIds, setBadStockMoveIds] = useState([]);
+  const [badStockMoveTarget, setBadStockMoveTarget] = useState("");
   const [badStockScan, setBadStockScan] = useState("");
   const [badStockQuery, setBadStockQuery] = useState("");
   const [badStockRows, setBadStockRows] = useState([]);
@@ -118,6 +135,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [badStockFind, setBadStockFind] = useState("");
   const [badStockNormalizing, setBadStockNormalizing] = useState(false);
   const [badStockRenaming, setBadStockRenaming] = useState(false);
+  const [renameConfirm, setRenameConfirm] = useState(null); // { preview, canProceed, resolve }
+  const [renameConfirmTab, setRenameConfirmTab] = useState("rename");
   const [anomalySearchQuery, setAnomalySearchQuery] = useState("");
   const [anomalySearchRows, setAnomalySearchRows] = useState([]);
   const [anomalySearchLoading, setAnomalySearchLoading] = useState(false);
@@ -159,6 +178,18 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [showLabelReprint, setShowLabelReprint] = useState(false);
+  const [showStockLog, setShowStockLog] = useState(false);
+  const [stockLogCode, setStockLogCode] = useState("");
+  const [stockLogStart, setStockLogStart] = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 1);
+    return d.toLocaleDateString("sv-SE");
+  });
+  const [stockLogEnd, setStockLogEnd] = useState(() => new Date().toLocaleDateString("sv-SE"));
+  const [stockLogReason, setStockLogReason] = useState("");
+  const [stockLogType, setStockLogType] = useState("");
+  const [stockLogLoading, setStockLogLoading] = useState(false);
+  const [stockLogError, setStockLogError] = useState("");
+  const [stockLogResult, setStockLogResult] = useState(null);
   const [invoiceBulkMode, setInvoiceBulkMode] = useState(false);
   const [invoiceStockOutEnabled, setInvoiceStockOutEnabled] = useState(true);
   const [invoiceStockOutMemo, setInvoiceStockOutMemo] = useState("");
@@ -178,18 +209,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     ...(includeStockOut ? ["재고 출고처리"] : []),
     "에이블리 발송관리 롤백",
   ];
-  const [showStockLog, setShowStockLog] = useState(false);
-  const [stockLogCode, setStockLogCode] = useState("");
-  const [stockLogStart, setStockLogStart] = useState(() => {
-    const d = new Date(); d.setMonth(d.getMonth() - 1);
-    return d.toLocaleDateString("sv-SE");
-  });
-  const [stockLogEnd, setStockLogEnd] = useState(() => new Date().toLocaleDateString("sv-SE"));
-  const [stockLogReason, setStockLogReason] = useState("");
-  const [stockLogType, setStockLogType] = useState("");
-  const [stockLogLoading, setStockLogLoading] = useState(false);
-  const [stockLogError, setStockLogError] = useState("");
-  const [stockLogResult, setStockLogResult] = useState(null);
 
   const pushLog = (msg) => setLog((prev) => [msg, ...prev]);
 
@@ -233,7 +252,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     fetchKimsungilList();
   };
 
-  const renderDefectTabs = () => (
+  const renderDefectTabs = (showCost = false) => (
     <div className={styles.tabRow} style={{ marginBottom: "0.75rem" }}>
       {DEFECT_TABS.map((tab) => (
         <button
@@ -242,6 +261,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
           onClick={() => switchDefectTab(tab)}
         >
           {tab}
+          {showCost && getTabStat(tab) && ` · ${getTabStat(tab).cost.toLocaleString()}원`}
         </button>
       ))}
     </div>
@@ -511,10 +531,19 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "악성재고 불러오기 실패");
       setBadStockList(data.items ?? []);
+      setBadStockCustomZones(data.custom_zones ?? []);
     } catch (err) {
       setBadStockMessage(err.message || "악성재고 불러오기 실패");
     }
   };
+
+  // 원가베이스 원가 × 수량. zone을 주면 그 구역만, 안 주면 전체 구역 합계. 원가 없는 상품은 합계에서 빠진다.
+  const getBadStockCost = (zone) =>
+    badStockList
+      .filter((i) => !zone || i.zone === zone)
+      .reduce((sum, i) => sum + (Number(i.base_cost) || 0) * (Number(i.qty) || 1), 0);
+  const getBadStockNoCostCount = () =>
+    badStockList.filter((i) => !(Number(i.base_cost) > 0)).length;
 
   const openBadStockModal = () => {
     setShowBadStockModal(true);
@@ -533,6 +562,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "악성재고 처리 실패");
       setBadStockList(data.items ?? []);
+      if (data.custom_zones) setBadStockCustomZones(data.custom_zones);
       return data;
     } catch (err) {
       setBadStockMessage(err.message || "악성재고 처리 실패");
@@ -544,6 +574,36 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     const data = await callBadStockApi("add", { zone: badStockZone, code, product_name: productName });
     if (data) setBadStockMessage(`${badStockZoneLabel(badStockZone)} 추가: ${data.added?.product_name || code}`);
     return !!data;
+  };
+
+  const addBadStockZone = async (category) => {
+    const suffix = (window.prompt(`${category}에 추가할 탭 이름을 입력하세요 (10자 이내)`) || "").trim();
+    if (!suffix) return;
+    const data = await callBadStockApi("zone/add", { category, name: suffix });
+    if (data) {
+      setBadStockZone(data.zone);
+      setBadStockRows([]);
+      setBadStockMoveIds([]);
+      setBadStockMessage(`'${badStockZoneLabel(data.zone)}' 탭을 추가했습니다.`);
+    }
+  };
+
+  const removeBadStockZone = async (name) => {
+    if (!window.confirm(`'${badStockZoneLabel(name)}' 탭을 삭제하시겠습니까?`)) return;
+    const data = await callBadStockApi("zone/remove", { name });
+    if (data) {
+      if (badStockZone === name) setBadStockZone("상의A");
+      setBadStockMessage(`'${badStockZoneLabel(name)}' 탭을 삭제했습니다.`);
+    }
+  };
+
+  const moveBadStock = async () => {
+    if (!badStockMoveIds.length || !badStockMoveTarget) return;
+    const data = await callBadStockApi("move", { ids: badStockMoveIds, zone: badStockMoveTarget });
+    if (data) {
+      setBadStockMessage(`${data.moved ?? 0}종을 ${badStockZoneLabel(badStockMoveTarget)}(으)로 옮겼습니다.`);
+      setBadStockMoveIds([]);
+    }
   };
 
   const checkBadStockWithEzadmin = async () => {
@@ -642,16 +702,33 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   // 악성재고 상품의 이지어드민 상품명 앞에 구역 접두어(A구역 ZA, B구역 ZB ...)를 붙인다.
   const renameBadStockProducts = async () => {
     const call = async (dryRun) => {
-      const res = await fetch(`${API}/barcode/bad-stock/rename-products`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...tabHeaders() },
-        body: JSON.stringify({ dry_run: dryRun }),
-      });
-      if (handleUnauthorized(res)) return null;
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "상품명 변경 실패");
-      if (data.need_session) throw new Error("이지어드민 세션이 만료되었거나 없습니다. PHPSESSID를 다시 등록해주세요.");
-      return data;
+      // 요청이 끝날 때까지 서버의 진행도(읽은 수/변경한 수)를 주기적으로 읽어 메시지에 보여준다.
+      let polling = true;
+      const poll = async () => {
+        try {
+          const res = await fetch(`${API}/barcode/bad-stock/rename-progress`, { headers: tabHeaders() });
+          const p = await res.json().catch(() => ({}));
+          if (!polling || !p?.total) return;
+          if (p.phase === "read") setBadStockMessage(`이지어드민에서 상품명 확인 중... (${p.done}/${p.total}종)`);
+          else if (p.phase === "write") setBadStockMessage(`상품명 변경 중... (${p.done}/${p.total}종)`);
+        } catch { /* 진행도는 보조 정보라 실패해도 무시한다 */ }
+      };
+      const timer = setInterval(poll, 700);
+      try {
+        const res = await fetch(`${API}/barcode/bad-stock/rename-products`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...tabHeaders() },
+          body: JSON.stringify({ dry_run: dryRun }),
+        });
+        if (handleUnauthorized(res)) return null;
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.detail || "상품명 변경 실패");
+        if (data.need_session) throw new Error("이지어드민 세션이 만료되었거나 없습니다. PHPSESSID를 다시 등록해주세요.");
+        return data;
+      } finally {
+        polling = false;
+        clearInterval(timer);
+      }
     };
     setBadStockRenaming(true);
     setBadStockMessage("이지어드민에서 상품명 확인 중...");
@@ -659,20 +736,23 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       const preview = await call(true);
       if (!preview) return;
       const targets = preview.items.filter((i) => i.status === "rename");
-      const skipped = preview.items.length - targets.length;
       const conflictItems = preview.items.filter((i) => i.status === "conflict");
       const conflictText = (list) => list.slice(0, 8).map((i) => `${i.old_name || i.code} [${(i.zones ?? []).map(badStockZoneLabel).join(", ")}]`).join("\n")
         + (list.length > 8 ? `\n... 외 ${list.length - 8}종` : "");
+      // 변경 예정·변경 안 함(이미 변경/오류/충돌/제외) 목록을 탭으로 보여주고 진행 여부를 묻는다.
+      const askConfirm = (canProceed) => new Promise((resolve) => {
+        setRenameConfirmTab(canProceed ? "rename" : (preview.items.some((i) => i.status === "skip") ? "skip" : "excluded"));
+        setRenameConfirm({ preview, canProceed, resolve });
+      });
       if (!targets.length) {
+        await askConfirm(false);
         setBadStockMessage(
           `변경할 상품이 없습니다. (이미 변경 ${preview.summary?.skip ?? 0} / 충돌 ${conflictItems.length} / 오류 ${preview.summary?.error ?? 0})`
           + (conflictItems.length ? ` 구역 충돌: ${conflictText(conflictItems).replace(/\n/g, " / ")}` : "")
         );
         return;
       }
-      const lines = targets.slice(0, 12).map((i) => `${i.old_name}\n  → ${i.new_name}${i.message ? `  (${i.message})` : ""}`).join("\n");
-      const more = targets.length > 12 ? `\n... 외 ${targets.length - 12}종` : "";
-      if (!window.confirm(`${targets.length}종의 이지어드민 상품명을 변경합니다. (제외 ${skipped}종)\n\n${lines}${more}${conflictItems.length ? `\n\n[구역 충돌 - 서로 다른 A~E 구역에 걸쳐 있어 제외 ${conflictItems.length}종]\n${conflictText(conflictItems)}` : ""}\n\n진행하시겠습니까?`)) {
+      if (!(await askConfirm(true))) {
         setBadStockMessage("");
         return;
       }
@@ -1060,6 +1140,36 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const getKimsungilTotalCount = () =>
     kimsungilList.reduce((sum, item) => sum + (Number(item.count) || 0), 0);
 
+  // 원가베이스유 원가 × 수량. 원가를 못 찾은 상품은 합계에서 빠지므로 건수를 따로 센다.
+  const getKimsungilTotalCost = () =>
+    kimsungilList.reduce((sum, item) => sum + (Number(item.base_cost) || 0) * (Number(item.count) || 0), 0);
+  const getKimsungilNoCostCount = () =>
+    kimsungilList.filter((item) => !(Number(item.base_cost) > 0)).length;
+
+  const calcTabStat = (list) => ({
+    count: list.reduce((sum, item) => sum + (Number(item.count) || 0), 0),
+    cost: list.reduce((sum, item) => sum + (Number(item.base_cost) || 0) * (Number(item.count) || 0), 0),
+    noCost: list.filter((item) => !(Number(item.base_cost) > 0)).length,
+  });
+
+  // 현재 탭은 화면에 떠 있는 목록으로 바로 계산하고(수정 즉시 반영), 나머지 탭은 모달을 열 때 받아둔 값을 쓴다.
+  const getTabStat = (tab) => (tab === defectTab ? calcTabStat(kimsungilList) : tabStats[tab] || null);
+  const getAllTabsTotalCost = () =>
+    DEFECT_TABS.reduce((sum, tab) => sum + (getTabStat(tab)?.cost || 0), 0);
+  const getAllTabsNoCostCount = () =>
+    DEFECT_TABS.reduce((sum, tab) => sum + (getTabStat(tab)?.noCost || 0), 0);
+
+  const fetchAllTabStats = async () => {
+    const entries = await Promise.all(DEFECT_TABS.map(async (tab) => {
+      try {
+        const res = await fetch(`${API}/barcode/kimsungil/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": tab } });
+        const data = await res.json().catch(() => ({}));
+        return [tab, res.ok ? calcTabStat(data.kimsungil ?? []) : null];
+      } catch { return [tab, null]; }
+    }));
+    setTabStats(Object.fromEntries(entries.filter(([, stat]) => stat)));
+  };
+
   const fetchDefectList = async () => {
     try {
       const tab = defectTabRef.current;
@@ -1107,12 +1217,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (!res.ok) throw new Error(data?.detail || "김승일 감소 실패");
       setKimsungilList(data.kimsungil ?? []); setItems(data.items ?? items);    } catch (err) { pushLog(`김승일 감소 실패: ${err.message || ""}`.trim()); }
   };
-  // 원가베이스유 원가 × 수량. 원가를 못 찾은 상품은 합계에서 빠지므로 건수를 따로 센다.
-  const getKimsungilTotalCost = () =>
-    kimsungilList.reduce((sum, item) => sum + (Number(item.base_cost) || 0) * (Number(item.count) || 0), 0);
-  const getKimsungilNoCostCount = () =>
-    kimsungilList.filter((item) => !(Number(item.base_cost) > 0)).length;
-
 
   const handleKimsungilRemove = async (code) => {
     try {
@@ -1322,6 +1426,14 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
         return data.defects ?? [];
       }));
       if (perTab.some((list) => list === null)) return;
+      // 소환술 항목이 있으면 포함할지 먼저 묻는다. count = 일반 불량 + 소환술 수량이라
+      // 포함하면 count를, 제외하면 일반 불량(normal_qty)만 모든 탭에 걸쳐 코드별로 합산한다.
+      const allItems = perTab.flat();
+      const summonedCount = new Set(
+        allItems.filter((item) => (Number(item.kimsungil_summon_qty) || 0) > 0).map((item) => item.code)
+      ).size;
+      const includeSummon = summonedCount === 0
+        || window.confirm(`김승일 소환술 항목 ${summonedCount}종이 있습니다. 불량출력에 포함할까요? (확인=포함, 취소=제외)`);
       const merged = new Map();
       allItems.forEach((item) => {
         const qty = includeSummon
@@ -1359,14 +1471,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
       const res = await fetch(`${API}/noye-kimsungil/bulyang/import`, {
         method: "POST",
-      // 소환술 항목이 있으면 포함할지 먼저 묻는다. count = 일반 불량 + 소환술 수량이라
-      // 포함하면 count를, 제외하면 일반 불량(normal_qty)만 모든 탭에 걸쳐 코드별로 합산한다.
-      const allItems = perTab.flat();
-      const summonedCount = new Set(
-        allItems.filter((item) => (Number(item.kimsungil_summon_qty) || 0) > 0).map((item) => item.code)
-      ).size;
-      const includeSummon = summonedCount === 0
-        || window.confirm(`김승일 소환술 항목 ${summonedCount}종이 있습니다. 불량출력에 포함할까요? (확인=포함, 취소=제외)`);
         headers: { "Content-Type": "application/json", ...tabHeaders() },
         body: JSON.stringify({ rows }),
       });
@@ -1393,11 +1497,17 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
   const handleDefectPurchaseManager = async () => {
     try {
-      // A/B/C 전 탭의 김승일 소환술 항목만 코드별로 합산해서 보낸다 (서버에서 합산)
+      // 화면에 보이는 불량리스트의 코드/수량을 그대로 보낸다
+      const counts = {};
+      defectList.forEach((item) => {
+        const code = String(item.code || "").trim();
+        const qty = Number(item.count) || 0;
+        if (code && qty > 0) counts[code] = (counts[code] || 0) + qty;
+      });
       const res = await fetch(`${API}/barcode/defect/purchase-manager-handoff`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...tabHeaders() },
-        body: JSON.stringify({ summoned_all_tabs: true }),
+        body: JSON.stringify({ counts }),
       });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
@@ -1532,6 +1642,41 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     onStep?.(idx, "done");
   };
 
+  // "입고요청전표2 자동입고: (2262 : 승일)" 형식은 입고전표, 그 외 숫자가 들어간 사유는 반품입고로 묶는다.
+  const stockLogReasonGroup = (reason) => {
+    const r = (reason || "").trim();
+    if (/^입고요청전표\d*\s*자동입고\s*:\s*\(\s*\d+\s*:/.test(r)) return "입고전표";
+    if (/\d/.test(r)) return "반품입고";
+    return r;
+  };
+  const stockLogFiltered = (stockLogResult?.logs || []).filter(
+    (l) => (!stockLogReason || stockLogReasonGroup(l.사유) === stockLogReason) && (!stockLogType || l.구분 === stockLogType)
+  );
+
+  const handleStockLogSearch = async () => {
+    const code = stockLogCode.trim();
+    if (!code) { setStockLogError("상품코드를 입력하세요."); return; }
+    setStockLogLoading(true);
+    setStockLogError("");
+    try {
+      const res = await fetch(`${API}/barcode/stock-log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ product_code: code, start_date: stockLogStart, end_date: stockLogEnd }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) { openEzadminModal(handleStockLogSearch); return; }
+      if (!res.ok) throw new Error(data?.detail || "로그 조회 실패");
+      setStockLogResult(data);
+    } catch (err) {
+      setStockLogResult(null);
+      setStockLogError(err.message || "로그 조회 실패");
+    } finally {
+      setStockLogLoading(false);
+    }
+  };
+
   const openInvoiceDeleteModal = () => {
     setInvoiceBulkMode(false);
     setInvoiceStockOutEnabled(true);
@@ -1642,41 +1787,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       const target = localResults.find((r) => r.invoice_no === invoiceNo);
       if (target?.steps?.[idx]) { target.steps[idx] = { ...target.steps[idx], status, detail }; }
       setInvoiceBulkResults([...localResults]);
-  // "입고요청전표2 자동입고: (2262 : 승일)" 형식은 입고전표, 그 외 숫자가 들어간 사유는 반품입고로 묶는다.
-  const stockLogReasonGroup = (reason) => {
-    const r = (reason || "").trim();
-    if (/^입고요청전표\d*\s*자동입고\s*:\s*\(\s*\d+\s*:/.test(r)) return "입고전표";
-    if (/\d/.test(r)) return "반품입고";
-    return r;
-  };
-  const stockLogFiltered = (stockLogResult?.logs || []).filter(
-    (l) => (!stockLogReason || stockLogReasonGroup(l.사유) === stockLogReason) && (!stockLogType || l.구분 === stockLogType)
-  );
-
-  const handleStockLogSearch = async () => {
-    const code = stockLogCode.trim();
-    if (!code) { setStockLogError("상품코드를 입력하세요."); return; }
-    setStockLogLoading(true);
-    setStockLogError("");
-    try {
-      const res = await fetch(`${API}/barcode/stock-log`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ product_code: code, start_date: stockLogStart, end_date: stockLogEnd }),
-      });
-      if (handleUnauthorized(res)) return;
-      const data = await res.json().catch(() => ({}));
-      if (data?.need_session) { openEzadminModal(handleStockLogSearch); return; }
-      if (!res.ok) throw new Error(data?.detail || "로그 조회 실패");
-      setStockLogResult(data);
-    } catch (err) {
-      setStockLogResult(null);
-      setStockLogError(err.message || "로그 조회 실패");
-    } finally {
-      setStockLogLoading(false);
-    }
-  };
-
     };
 
     for (const invoiceNo of invoiceNos) {
@@ -1834,6 +1944,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
             <h3 className={styles.cardTitle}>스캔</h3>
             <div className={styles.headerActions}>
               <button className={styles.secondaryBtn} onClick={openInvoiceDeleteModal}>송장삭제</button>
+              <button className={styles.secondaryBtn} onClick={() => setShowStockLog(true)}>로그 확인</button>
               <button className={styles.secondaryBtn} onClick={() => setShowLabelReprint(true)}>라벨 재출력</button>
               <button
                 className={`${styles.toggleBtn} ${defectMode ? styles.toggleOn : ""}`}
@@ -1848,7 +1959,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                   <span className={styles.inlineTagDanger} style={{ marginLeft: "0.35rem" }}>{defectList.length}</span>
                 )}
               </button>
-              <button className={styles.secondaryBtn} onClick={() => { setShowKimsungilList(true); fetchKimsungilList(); }}>
+              <button className={styles.secondaryBtn} onClick={() => { setShowKimsungilList(true); fetchKimsungilList(); fetchAllTabStats(); }}>
                 불량관리
                 {kimsungilList.filter(i => (i.incoming_qty || 0) > 0).length > 0 && (
                   <span className={styles.inlineTagIncoming} style={{ marginLeft: "0.35rem" }}>{kimsungilList.filter(i => (i.incoming_qty || 0) > 0).length}</span>
@@ -1863,7 +1974,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: "0.75rem", alignItems: "stretch" }}>
+          <div className={styles.scanRowInline}>
             <input
               ref={scanRef}
               value={scanText}
@@ -1944,7 +2055,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               display: "flex",
               flexDirection: "column",
               gap: "0.75rem",
-              <button className={styles.secondaryBtn} onClick={() => setShowStockLog(true)}>로그 확인</button>
             }}>
               <span className={styles.infoLabel}>현재 상품</span>
               {items.length > 0 ? (
@@ -1985,6 +2095,97 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
 
       {showLabelReprint && <LabelReprintPage onClose={() => setShowLabelReprint(false)} />}
+
+      {/* 로그 확인 모달 (EZAdmin 재고내역) */}
+      {showStockLog && (
+        <div className={styles.modalOverlay} onClick={() => setShowStockLog(false)}>
+          <div className={`${styles.modal} ${styles.modalWide}`} style={{ height: "90vh" }} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <h4 className={styles.modalTitle}>로그 확인</h4>
+              <div className={styles.modalActions}>
+                <button className={styles.secondaryBtn} onClick={() => setShowStockLog(false)}>닫기</button>
+              </div>
+            </div>
+            <div className={styles.uploadRow}>
+              <input
+                value={stockLogCode}
+                onChange={(e) => setStockLogCode(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleStockLogSearch(); }}
+                placeholder="상품코드 입력 (예: S09888)"
+                className={styles.searchInput}
+                disabled={stockLogLoading}
+                autoFocus
+              />
+              <input type="date" className={styles.searchInput} style={{ maxWidth: "11rem" }} value={stockLogStart} max={stockLogEnd} onChange={(e) => setStockLogStart(e.target.value)} disabled={stockLogLoading} />
+              <span>~</span>
+              <input type="date" className={styles.searchInput} style={{ maxWidth: "11rem" }} value={stockLogEnd} min={stockLogStart} onChange={(e) => setStockLogEnd(e.target.value)} disabled={stockLogLoading} />
+              <button className={styles.primaryBtn} onClick={handleStockLogSearch} disabled={stockLogLoading}>
+                {stockLogLoading ? "조회 중..." : "로그 조회"}
+              </button>
+              <select
+                value={stockLogType}
+                onChange={(e) => setStockLogType(e.target.value)}
+                className={styles.searchInput}
+                style={{ maxWidth: "9rem" }}
+              >
+                <option value="">구분 전체</option>
+                {[...new Set((stockLogResult?.logs || []).map((l) => l.구분).filter(Boolean))].map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+              <select
+                value={stockLogReason}
+                onChange={(e) => setStockLogReason(e.target.value)}
+                className={styles.searchInput}
+                style={{ maxWidth: "16rem" }}
+              >
+                <option value="">사유 전체</option>
+                {[...new Set((stockLogResult?.logs || []).map((l) => stockLogReasonGroup(l.사유)).filter(Boolean))].map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+              {stockLogResult && (
+                <span className={styles.metaLabel}>
+                  {stockLogResult.product_code} · {stockLogResult.start_date} ~ {stockLogResult.end_date} ·{" "}
+                  {stockLogReason || stockLogType ? `${stockLogFiltered.length} / ` : ""}{stockLogResult.count}건
+                </span>
+              )}
+            </div>
+            {stockLogError && (
+              <div className={styles.statusMsg} style={{ borderColor: "rgba(220,53,69,0.4)", backgroundColor: "rgba(220,53,69,0.07)" }}>
+                <strong>{stockLogError}</strong>
+              </div>
+            )}
+            <div className={styles.tableWrap} style={{ flex: 1, minHeight: 0, overflowX: "hidden" }}>
+              <table className={`${styles.table} ${styles.stockLogTable}`}>
+                <thead>
+                  <tr>
+                    {["일시", "구분", "수량", "재고", "수령자", "주문자", "사유"].map((h) => (
+                      <th key={h} style={{ position: "sticky", top: 0 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {stockLogFiltered.map((l, i) => (
+                    <tr key={i}>
+                      <td style={{ whiteSpace: "nowrap" }}>{l.일시}</td>
+                      <td>{l.구분}</td>
+                      <td>{l.수량}</td>
+                      <td>{l.재고}</td>
+                      <td>{l.수령자}</td>
+                      <td>{l.주문자}</td>
+                      <td>{l.사유}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {stockLogResult && stockLogFiltered.length === 0 && (
+                <div style={{ padding: "1.5rem", textAlign: "center" }}>조회된 로그가 없습니다.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 불량 리스트 모달 */}
       {showInvoiceModal && (
@@ -2096,97 +2297,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
                     {invoiceSteps.length > 0 && (
                       <div style={{ marginTop: "0.75rem" }}>
-      {/* 로그 확인 모달 (EZAdmin 재고내역) */}
-      {showStockLog && (
-        <div className={styles.modalOverlay} onClick={() => setShowStockLog(false)}>
-          <div className={`${styles.modal} ${styles.modalWide}`} style={{ height: "90vh" }} onClick={(e) => e.stopPropagation()}>
-            <div className={styles.modalHeader}>
-              <h4 className={styles.modalTitle}>로그 확인</h4>
-              <div className={styles.modalActions}>
-                <button className={styles.secondaryBtn} onClick={() => setShowStockLog(false)}>닫기</button>
-              </div>
-            </div>
-            <div className={styles.uploadRow}>
-              <input
-                value={stockLogCode}
-                onChange={(e) => setStockLogCode(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleStockLogSearch(); }}
-                placeholder="상품코드 입력 (예: S09888)"
-                className={styles.searchInput}
-                disabled={stockLogLoading}
-                autoFocus
-              />
-              <input type="date" className={styles.searchInput} style={{ maxWidth: "11rem" }} value={stockLogStart} max={stockLogEnd} onChange={(e) => setStockLogStart(e.target.value)} disabled={stockLogLoading} />
-              <span>~</span>
-              <input type="date" className={styles.searchInput} style={{ maxWidth: "11rem" }} value={stockLogEnd} min={stockLogStart} onChange={(e) => setStockLogEnd(e.target.value)} disabled={stockLogLoading} />
-              <button className={styles.primaryBtn} onClick={handleStockLogSearch} disabled={stockLogLoading}>
-                {stockLogLoading ? "조회 중..." : "로그 조회"}
-              </button>
-              <select
-                value={stockLogType}
-                onChange={(e) => setStockLogType(e.target.value)}
-                className={styles.searchInput}
-                style={{ maxWidth: "9rem" }}
-              >
-                <option value="">구분 전체</option>
-                {[...new Set((stockLogResult?.logs || []).map((l) => l.구분).filter(Boolean))].map((r) => (
-                  <option key={r} value={r}>{r}</option>
-                ))}
-              </select>
-              <select
-                value={stockLogReason}
-                onChange={(e) => setStockLogReason(e.target.value)}
-                className={styles.searchInput}
-                style={{ maxWidth: "16rem" }}
-              >
-                <option value="">사유 전체</option>
-                {[...new Set((stockLogResult?.logs || []).map((l) => stockLogReasonGroup(l.사유)).filter(Boolean))].map((r) => (
-                  <option key={r} value={r}>{r}</option>
-                ))}
-              </select>
-              {stockLogResult && (
-                <span className={styles.metaLabel}>
-                  {stockLogResult.product_code} · {stockLogResult.start_date} ~ {stockLogResult.end_date} ·{" "}
-                  {stockLogReason || stockLogType ? `${stockLogFiltered.length} / ` : ""}{stockLogResult.count}건
-                </span>
-              )}
-            </div>
-            {stockLogError && (
-              <div className={styles.statusMsg} style={{ borderColor: "rgba(220,53,69,0.4)", backgroundColor: "rgba(220,53,69,0.07)" }}>
-                <strong>{stockLogError}</strong>
-              </div>
-            )}
-            <div className={styles.tableWrap} style={{ flex: 1, minHeight: 0, overflowX: "hidden" }}>
-              <table className={`${styles.table} ${styles.stockLogTable}`}>
-                <thead>
-                  <tr>
-                    {["일시", "구분", "수량", "재고", "수령자", "주문자", "사유"].map((h) => (
-                      <th key={h} style={{ position: "sticky", top: 0 }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {stockLogFiltered.map((l, i) => (
-                    <tr key={i}>
-                      <td style={{ whiteSpace: "nowrap" }}>{l.일시}</td>
-                      <td>{l.구분}</td>
-                      <td>{l.수량}</td>
-                      <td>{l.재고}</td>
-                      <td>{l.수령자}</td>
-                      <td>{l.주문자}</td>
-                      <td>{l.사유}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {stockLogResult && stockLogFiltered.length === 0 && (
-                <div style={{ padding: "1.5rem", textAlign: "center" }}>조회된 로그가 없습니다.</div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
                         <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>진행 상태</div>
                         {invoiceSteps.map((s) => (
                           <div key={s.label} style={{ display: "flex", alignItems: "center", gap: "0.35rem", padding: "0.15rem 0" }}>
@@ -2283,12 +2393,72 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
         </div>
       )}
 
+      {renameConfirm && (() => {
+        const { preview, canProceed, resolve } = renameConfirm;
+        const items = preview.items ?? [];
+        const tabs = [
+          { key: "rename", label: "변경 예정", rows: items.filter((i) => i.status === "rename") },
+          { key: "skip", label: "이미 변경됨", rows: items.filter((i) => i.status === "skip") },
+          { key: "conflict", label: "구역 충돌", rows: items.filter((i) => i.status === "conflict") },
+          { key: "error", label: "오류", rows: items.filter((i) => i.status === "error" || i.status === "failed") },
+          { key: "excluded", label: "제외(알파벳 아닌 직접 추가 탭)", rows: preview.excluded ?? [] },
+        ].filter((t) => t.key === "rename" || t.rows.length > 0);
+        const active = tabs.find((t) => t.key === renameConfirmTab) ?? tabs[0];
+        const close = (proceed) => { setRenameConfirm(null); resolve(proceed); };
+        const rowText = (row) => {
+          if (active.key === "rename") return `${row.old_name}  →  ${row.new_name}${row.message ? `  (${row.message})` : ""}`;
+          if (active.key === "skip") return `${row.new_name || row.old_name}${row.message ? `  (${row.message})` : ""}`;
+          if (active.key === "conflict") return `${row.old_name || row.code}  [${(row.zones ?? []).map(badStockZoneLabel).join(", ")}]`;
+          if (active.key === "error") return `${row.old_name || row.code}  (${row.message || "오류"})`;
+          return `${row.name || row.code}  [${badStockZoneLabel(row.zone)}]`;
+        };
+        return (
+          <div className={styles.modalOverlay} style={{ zIndex: 60 }} onClick={() => close(false)}>
+            <div className={`${styles.modal} ${styles.modalWide}`} onClick={(e) => e.stopPropagation()}>
+              <div className={styles.modalHeader}>
+                <h4 className={styles.modalTitle}>
+                  {canProceed ? `이지어드민 상품명 ${tabs[0].rows.length}종을 변경합니다` : "변경할 상품이 없습니다"}
+                </h4>
+                <div className={styles.modalActions}>
+                  {canProceed && <button className={styles.primaryBtn} onClick={() => close(true)}>진행</button>}
+                  <button className={styles.secondaryBtn} onClick={() => close(false)}>{canProceed ? "취소" : "닫기"}</button>
+                </div>
+              </div>
+              <div className={styles.tabRow} style={{ marginBottom: "0.5rem" }}>
+                {tabs.map((t) => (
+                  <button
+                    key={t.key}
+                    className={`${styles.tabBtn} ${active.key === t.key ? styles.tabActive : ""}`}
+                    onClick={() => setRenameConfirmTab(t.key)}
+                  >
+                    {t.label} ({t.rows.length})
+                  </button>
+                ))}
+              </div>
+              <div className={styles.modalBody} style={{ maxHeight: "60vh", overflowY: "auto" }}>
+                {active.rows.length === 0 ? (
+                  <div style={{ padding: "0.75rem", opacity: 0.7 }}>해당하는 상품이 없습니다.</div>
+                ) : (
+                  active.rows.map((row, idx) => (
+                    <div key={`${row.code ?? idx}-${idx}`} style={{ padding: "0.35rem 0.5rem", borderBottom: "1px solid rgba(128,128,128,0.2)", wordBreak: "break-all" }}>
+                      {rowText(row)}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {showBadStockModal && (
         <div className={styles.modalOverlay} onClick={() => setShowBadStockModal(false)}>
           <div className={`${styles.modal} ${styles.modalWide}`} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHeader}>
               <h4 className={styles.modalTitle}>악성재고</h4>
               <div className={styles.modalActions}>
+                <span className={styles.pill} title={getBadStockNoCostCount() > 0 ? `원가를 찾지 못한 상품 ${getBadStockNoCostCount()}종은 제외됨` : "전체 구역 원가 × 수량"}>
+                  전체 원가 {getBadStockCost().toLocaleString()}원{getBadStockNoCostCount() > 0 ? ` (원가없음 ${getBadStockNoCostCount()}종 제외)` : ""}
+                </span>
                 <button className={styles.secondaryBtn} onClick={checkBadStockWithEzadmin} disabled={badStockChecking}>
                   {badStockChecking ? "확인 중..." : "이지어드민 재고 비교"}
                 </button>
@@ -2301,18 +2471,30 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
             </div>
             {BAD_STOCK_CATEGORIES.map((cat) => (
               <div key={cat} className={styles.tabRow} style={{ marginBottom: "0.5rem" }}>
-                {BAD_STOCK_LETTERS.map((letter) => {
+                {BAD_STOCK_CATEGORY_LETTERS[cat].map((letter) => {
                   const zone = `${cat}${letter}`;
                   return (
                     <button
                       key={zone}
                       className={`${styles.tabBtn} ${badStockZone === zone ? styles.tabActive : ""}`}
-                      onClick={() => { setBadStockZone(zone); setBadStockRows([]); setBadStockMessage(""); }}
+                      onClick={() => { setBadStockZone(zone); setBadStockRows([]); setBadStockMessage(""); setBadStockMoveIds([]); }}
                     >
-                      {badStockZoneLabel(zone)} ({badStockList.filter((i) => i.zone === zone).reduce((s, i) => s + (Number(i.qty) || 1), 0)})
+                      {badStockZoneLabel(zone)} ({badStockList.filter((i) => i.zone === zone).reduce((s, i) => s + (Number(i.qty) || 1), 0)} · {getBadStockCost(zone).toLocaleString()}원)
                     </button>
                   );
                 })}
+                {badStockCustomZones.filter((zone) => zone.startsWith(cat)).map((zone) => (
+                  <span key={zone} style={{ display: "inline-flex", alignItems: "center" }}>
+                    <button
+                      className={`${styles.tabBtn} ${badStockZone === zone ? styles.tabActive : ""}`}
+                      onClick={() => { setBadStockZone(zone); setBadStockRows([]); setBadStockMessage(""); setBadStockMoveIds([]); }}
+                    >
+                      {badStockZoneLabel(zone)} ({badStockList.filter((i) => i.zone === zone).reduce((s, i) => s + (Number(i.qty) || 1), 0)} · {getBadStockCost(zone).toLocaleString()}원)
+                    </button>
+                    <button className={styles.ghostBtn} title="탭 삭제" onClick={() => removeBadStockZone(zone)}>×</button>
+                  </span>
+                ))}
+                <button className={styles.secondaryBtn} title={`${cat} 탭 추가`} onClick={() => addBadStockZone(cat)}>+</button>
               </div>
             ))}
             <div className={styles.uploadRow} style={{ marginBottom: "0.5rem" }}>
@@ -2488,12 +2670,38 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               {badStockList.filter((i) => i.zone === badStockZone).length === 0 ? (
                 <div className={styles.empty}>{badStockZoneLabel(badStockZone)}에 등록된 상품이 없습니다.</div>
               ) : (
+                <>
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.5rem" }}>
+                  <span>선택 {badStockMoveIds.length}종 →</span>
+                  <select value={badStockMoveTarget} onChange={(e) => setBadStockMoveTarget(e.target.value)}>
+                    <option value="">이동할 구역</option>
+                    {[...BAD_STOCK_BASE_ZONES, ...badStockCustomZones]
+                      .filter((z) => z !== badStockZone)
+                      .map((z) => <option key={z} value={z}>{badStockZoneLabel(z)}</option>)}
+                  </select>
+                  <button
+                    className={styles.secondaryBtn}
+                    disabled={!badStockMoveIds.length || !badStockMoveTarget}
+                    onClick={moveBadStock}
+                  >
+                    구역 이동
+                  </button>
+                </div>
                 <table className={styles.table}>
                   <thead>
                     <tr>
+                      <th>
+                        <input
+                          type="checkbox"
+                          checked={badStockList.filter((i) => i.zone === badStockZone).length > 0
+                            && badStockList.filter((i) => i.zone === badStockZone).every((i) => badStockMoveIds.includes(i.id))}
+                          onChange={(e) => setBadStockMoveIds(e.target.checked ? badStockList.filter((i) => i.zone === badStockZone).map((i) => i.id) : [])}
+                        />
+                      </th>
                       <th>상품코드</th>
                       <th>상품명</th>
                       <th>수량</th>
+                      <th>원가</th>
                       <th>등록일</th>
                       <th></th>
                     </tr>
@@ -2501,9 +2709,17 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                   <tbody>
                     {badStockList.filter((i) => i.zone === badStockZone).map((item) => (
                       <tr key={`badstock-${item.id}`}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={badStockMoveIds.includes(item.id)}
+                            onChange={(e) => setBadStockMoveIds((prev) => e.target.checked ? [...prev, item.id] : prev.filter((x) => x !== item.id))}
+                          />
+                        </td>
                         <td>{item.code}</td>
                         <td>{item.product_name}</td>
                         <td style={{ fontWeight: 700 }}>{item.qty ?? 1}</td>
+                        <td>{Number(item.base_cost) > 0 ? `${(item.base_cost * (Number(item.qty) || 1)).toLocaleString()}원` : "-"}</td>
                         <td>{String(item.created_at || "").slice(0, 10)}</td>
                         <td>
                           {(item.qty ?? 1) > 1 && (
@@ -2527,9 +2743,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                   </tbody>
                   <tfoot>
                     <tr>
-                      <td colSpan={2} style={{ fontWeight: 700 }}>{badStockZoneLabel(badStockZone)} 합계</td>
+                      <td colSpan={3} style={{ fontWeight: 700 }}>{badStockZoneLabel(badStockZone)} 합계</td>
                       <td style={{ fontWeight: 700 }}>
                         {badStockList.filter((i) => i.zone === badStockZone).reduce((s, i) => s + (Number(i.qty) || 1), 0)}
+                      </td>
+                      <td style={{ fontWeight: 700 }}>
+                        {getBadStockCost(badStockZone).toLocaleString()}원
                       </td>
                       <td colSpan={2}>
                         ({badStockList.filter((i) => i.zone === badStockZone).length}종)
@@ -2537,6 +2756,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                     </tr>
                   </tfoot>
                 </table>
+                </>
               )}
             </div>
           </div>
@@ -2975,11 +3195,17 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       {/* 김승일 리스트 모달 */}
       {showKimsungilList && (
         <div className={styles.modalOverlay} onClick={() => setShowKimsungilList(false)}>
-          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+          <div className={styles.modal} style={{ width: "min(1100px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHeader}>
               <h4 className={styles.modalTitle}>불량관리 리스트 ({defectTab})</h4>
               <div className={styles.modalActions}>
                 <span className={styles.pill}>합계 {getKimsungilTotalCount()}</span>
+                <span className={styles.pill} title={getKimsungilNoCostCount() > 0 ? `원가를 찾지 못한 상품 ${getKimsungilNoCostCount()}종은 제외됨` : "원가베이스유 원가 × 수량"}>
+                  {defectTab}탭 원가 {getKimsungilTotalCost().toLocaleString()}원{getKimsungilNoCostCount() > 0 ? ` (원가없음 ${getKimsungilNoCostCount()}종 제외)` : ""}
+                </span>
+                <span className={styles.pill} title={getAllTabsNoCostCount() > 0 ? `원가를 찾지 못한 상품 ${getAllTabsNoCostCount()}종은 제외됨` : "A·B·C 탭 원가 합계"}>
+                  전체 원가 {getAllTabsTotalCost().toLocaleString()}원
+                </span>
                 <button className={styles.secondaryBtn} onClick={() => setShowKimsungilList(false)}>닫기</button>
               </div>
             </div>
@@ -3012,7 +3238,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 ))}
               </div>
             )}
-            {renderDefectTabs()}
+            {renderDefectTabs(true)}
             <div className={styles.uploadRow}>
               <input
                 value={kimsungilSearchQuery}
@@ -3054,6 +3280,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                     <span className={styles.defectText}>{renderDefectLabel(item)}</span>
                     <span style={{ fontSize:"0.75rem", fontWeight:700, padding:"0.2rem 0.5rem", borderRadius:"999px", backgroundColor:"rgba(56,182,255,0.15)", color:"#0a6fa8", border:"1px solid rgba(56,182,255,0.3)" }}>추가 {item.count}</span>
                     {(item.incoming_qty || 0) > 0 && <span className={styles.inlineTagIncoming}>입고 {item.incoming_qty}</span>}
+                    {item.base_cost > 0 && (
+                      <span className={styles.inlineMeta}>{(item.base_cost * item.count).toLocaleString()}원</span>
+                    )}
                     <div className={styles.defectActions}>
                       <button className={styles.ghostBtn} onClick={() => openKimsungilLog(item.code)}>로그</button>
                       <button className={styles.ghostBtn} onClick={() => handleKimsungilDec(item.code)}>-1</button>
@@ -3071,10 +3300,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       {/* 김승일 로그 모달 */}
       {showKimsungilLog && (
         <div className={styles.modalOverlay} onClick={() => setShowKimsungilLog(false)}>
-          <div className={styles.modal} style={{ width: "min(1100px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
-                <span className={styles.pill} title={getKimsungilNoCostCount() > 0 ? `원가를 찾지 못한 상품 ${getKimsungilNoCostCount()}종은 제외됨` : "원가베이스유 원가 × 수량"}>
-                  총 원가 {getKimsungilTotalCost().toLocaleString()}원{getKimsungilNoCostCount() > 0 ? ` (원가없음 ${getKimsungilNoCostCount()}종 제외)` : ""}
-                </span>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHeader}>
               <h4 className={styles.modalTitle}>김승일 로그 — {kimsungilLogCode}</h4>
               <div className={styles.modalActions}>
@@ -3149,9 +3375,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               <div className={styles.statusMsg}>
                 <strong>{defectBasePath}</strong>
               </div>
-                    {item.base_cost > 0 && (
-                      <span className={styles.inlineMeta}>{(item.base_cost * item.count).toLocaleString()}원</span>
-                    )}
             )}
 
             <div className={styles.uploadRow}>

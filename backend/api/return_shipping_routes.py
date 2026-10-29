@@ -1014,6 +1014,21 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
 
         return {**result, "sms_queued": 1, "note_saved": True}
 
+    @router.post("/recall-pickup")
+    async def recall_pickup(payload: dict = Body(...), user=Depends(get_current_user)):
+        """송장번호 한 건을 EZAdmin 회수접수(DS05/DS00)만 한다. 문자·특이사항·에이블리 반품요청은 하지 않는다."""
+        invoice = _clean_invoice(payload.get("invoice"))
+        if not re.fullmatch(r"\d{8,20}", invoice):
+            raise HTTPException(status_code=400, detail="송장번호가 올바르지 않아요.")
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+        try:
+            result = await _register_return_invoices(phpsessid, {invoice: None}, {})
+        except Exception as e:
+            return {"ok": False, "error": f"회수접수 중 오류: {e}"}
+        return result
+
     @router.post("/new-return-pickup")
     async def new_return_pickup(
         user=Depends(get_current_user),

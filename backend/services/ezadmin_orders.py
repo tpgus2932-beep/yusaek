@@ -138,9 +138,12 @@ def _strip_html(text) -> str:
 async def search_products(phpsessid: str, name: str, shop_id: str, *, max_pages: int = 10) -> list[dict]:
     """상품교환 팝업(search_popup_product, 교환뜨빠.har)과 같은 검색. 상품명으로 옵션(상품코드) 목록을 모두 모은다."""
     found: list[dict] = []
+    seen: set[str] = set()
     total = None
+    # 팝업은 첫 화면에 page=0, 2페이지 버튼에 page=2 를 보낸다 (page=1 은 1페이지와 같은 내용이라 건너뛴다).
+    pages = [0, *range(2, max_pages + 1)]
     async with _client() as client:
-        for page in range(max_pages):
+        for page in pages:
             obj = await _post(
                 client,
                 phpsessid,
@@ -152,15 +155,21 @@ async def search_products(phpsessid: str, name: str, shop_id: str, *, max_pages:
             )
             if not isinstance(obj, list) or not obj:
                 break
+            fresh = 0
             for r in obj:
+                product_id = str(r.get("product_id", "")).strip()
+                if product_id in seen:
+                    continue
+                seen.add(product_id)
+                fresh += 1
                 found.append({
-                    "product_id": str(r.get("product_id", "")).strip(),
+                    "product_id": product_id,
                     "name": _strip_html(r.get("name")),
                     "options": _strip_html(r.get("options")),
                     "supply": _strip_html(r.get("supply")),
                 })
             total = obj[0].get("total_rows", total)
-            if total is not None and len(found) >= int(total):
+            if not fresh or (total is not None and len(found) >= int(total)):
                 break
     return found
 
@@ -219,6 +228,49 @@ async def normal_pack(phpsessid: str, pack: str) -> dict:
                 "template": "E900", "action": "normal_pack", "seq": str(pack),
                 "cancel_re_ex": "0", "cancel_re": "0", "timeFlag": _time_flag(),
             },
+        )
+
+
+_TRANS_TEMPLATE = "20004"
+
+
+async def print_invoice(phpsessid: str, pack: str) -> dict:
+    """송장출력 (make_html_E900, 송출.har). 기존 송장번호를 그대로 쓰고(new_trans_no=0) 출력용 HTML 주소를 돌려준다.
+    성공 시 ``{"url": ..., "trans_corp": ..., "trans_no": ...}``."""
+    async with _client() as client:
+        obj = await _post(
+            client, phpsessid,
+            {
+                "is_pre_print": "0", "new_trans_no": "0", "current_tab": "0", "template": "S700",
+                "action": "make_html_E900", "trans_template": _TRANS_TEMPLATE, "use_safe_number": "0",
+                "arr_seq": json.dumps([str(pack)]), "arr_rowid": "[1]", "arr_qty": "[1]", "print_page": "E900",
+                "trans_slot_time": "15:00:00", "teamf_is_premium": "x", "teamf_transType": "tonight",
+                "teamf_box_add": "0", "kakaoT_type": "0", "hanjin_deliv_type": "GN", "deliv_today_type": "0",
+            },
+        )
+    printed = (obj.get("print") if isinstance(obj, dict) else None) or {}
+    url = str(printed.get("url") or "")
+    if printed.get("error") or not url.startswith(EZADMIN_BASE):
+        raise RuntimeError(f"이지어드민 송장출력 실패: {printed or obj}")
+    first = next(iter((obj.get("rows") or {}).values()), {})
+    return {"url": url, "trans_corp": first.get("trans_corp", ""), "trans_no": first.get("trans_no", "")}
+
+
+async def fetch_print_html(phpsessid: str, url: str) -> str:
+    """print_invoice가 돌려준 출력용 HTML을 내려받는다."""
+    if not url.startswith(EZADMIN_BASE):
+        raise RuntimeError("이지어드민 주소가 아닌 출력 URL입니다.")
+    async with _client() as client:
+        res = await client.get(url, cookies={"PHPSESSID": phpsessid}, headers=_HEADERS)
+    return res.text
+
+
+async def confirm_trans(phpsessid: str, pack: str) -> dict:
+    """배송확인 (confirm_trans, 송출.har). 성공 시 ``{"error": 0}``."""
+    async with _client() as client:
+        return await _post(
+            client, phpsessid,
+            {"template": "E900", "action": "confirm_trans", "seq": str(pack), "timeFlag": _time_flag()},
         )
 
 

@@ -14,6 +14,7 @@ from sdk.ezadmin import (
     extract_sms_rows,
     normalize_sms_row,
 )
+from services import ezadmin_orders as ezo
 from services.delivery_anomaly_logic import latest_reply_after, parse_ezdesk_time
 
 _TEMPLATE_NAME = "배송후취소 확인문자"
@@ -354,6 +355,109 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
         finally:
             conn.close()
         return {"ok": True, "cancel_sno": cancel_sno}
+
+    @router.post("/withdraw")
+    async def withdraw(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """취소철회 및 송장출력 - 에이블리 취소철회 → 이지어드민 보류해제·전체정상복귀 → 송장출력 → 배송확인.
+        에이블리 철회는 되돌릴 수 없으므로 맨 앞에서 한 번만 하고, 이후 단계가 실패하면 같은 버튼으로
+        이어서 재시도한다(이미 철회된 건은 에이블리 단계를 건너뜀)."""
+        cancel_sno = str(payload.get("cancel_sno") or "").strip()
+        if not cancel_sno:
+            raise HTTPException(status_code=400, detail="cancel_sno is required")
+
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT order_sno, action, closed_at FROM post_shipment_cancel_stock_review WHERE cancel_sno = ?",
+                (cancel_sno,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            raise HTTPException(status_code=404, detail="발송내역을 찾을 수 없습니다")
+        if row["closed_at"]:
+            raise HTTPException(status_code=409, detail="이미 처리 완료된 건입니다")
+        order_sno = str(row["order_sno"] or "").strip()
+        if not order_sno:
+            raise HTTPException(status_code=400, detail="주문번호가 없어 이지어드민 주문을 찾을 수 없습니다")
+
+        phpsessid = (get_setting("ezadmin_phpsessid") or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_ezadmin_session": True}
+
+        steps: list[str] = []
+        if row["action"] != "withdrawn":
+            try:
+                await AblyClient().withdraw_order_cancel(cancel_sno)
+            except NotImplementedError as exc:
+                raise HTTPException(status_code=501, detail=str(exc))
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f"에이블리 취소철회 실패: {exc}")
+            conn = get_db()
+            try:
+                conn.execute(
+                    "UPDATE post_shipment_cancel_stock_review SET action = 'withdrawn' WHERE cancel_sno = ?",
+                    (cancel_sno,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            steps.append("에이블리 취소철회")
+
+        def ez_ok(result) -> bool:
+            return isinstance(result, dict) and str(result.get("error", "")) in ("0", "")
+
+        def fail(stage: str, detail: str):
+            raise HTTPException(
+                status_code=502,
+                detail=f"{stage} 실패: {detail} (완료된 단계: {', '.join(steps) or '없음'}) - 같은 버튼으로 이어서 재시도할 수 있습니다.",
+            )
+
+        try:
+            cells = [c for c in await ezo.search_packs(phpsessid, order_sno) if str(c.get("order_id")) == order_sno]
+            if len(cells) != 1:
+                fail("이지어드민 주문 찾기", f"주문번호 {order_sno}에 해당하는 합포가 {len(cells)}건입니다. 이지어드민에서 직접 처리해주세요.")
+            cell = cells[0]
+            pack = str(cell.get("pack") or "")
+
+            if str(cell.get("hold", "") or "0") != "0":
+                result = await ezo.release_hold(phpsessid, pack)
+                if not ez_ok(result):
+                    fail("보류해제", str(result))
+                steps.append("보류해제")
+            if str(cell.get("order_cs", "") or "0").split(",")[0] != "0":
+                result = await ezo.normal_pack(phpsessid, pack)
+                if not ez_ok(result):
+                    fail("전체정상복귀", str(result))
+                steps.append("전체정상복귀")
+
+            printed = await ezo.print_invoice(phpsessid, pack)
+            html = await ezo.fetch_print_html(phpsessid, printed["url"])
+            steps.append("송장출력")
+            result = await ezo.confirm_trans(phpsessid, pack)
+            if not ez_ok(result):
+                fail("배송확인", str(result))
+            steps.append("배송확인")
+        except ezo.SessionExpired:
+            return {"ok": False, "need_ezadmin_session": True}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            fail("이지어드민 처리", str(exc))
+
+        conn = get_db()
+        try:
+            conn.execute(
+                "UPDATE post_shipment_cancel_stock_review SET action = 'completed', closed_at = ? WHERE cancel_sno = ?",
+                (datetime.now().isoformat(), cancel_sno),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {
+            "ok": True, "cancel_sno": cancel_sno, "pack": pack, "steps": steps, "html": html,
+            "trans_corp": printed["trans_corp"], "trans_no": printed["trans_no"],
+        }
 
     @router.post("/reply")
     async def reply(payload: dict = Body(...), user: str = Depends(get_current_user)):

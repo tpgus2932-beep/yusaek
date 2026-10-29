@@ -24,6 +24,14 @@ _DEFAULT_SUPPLIERS = ("케이디지", "리자드스탠다드")
 _SLOT_START_MIN = 9 * 60
 _SLOT_END_MIN = 22 * 60
 _SLOT_STEP = 30
+_HEAD_KINDS = ("pack", "ship_bulk", "ship_single")  # 시간대별 근무 인원: 포장 / 대량출고 / 개별출고
+_RATE_KINDS = ("pack", "ship_bulk", "ship_single", "ship")  # 1인 1분 처리 개수 ("ship"은 예전에 합쳐 저장하던 값)
+_QTY_KINDS = ("pack", "ship")  # 직접 입력한 포장/출고 개수
+# 비우면(null) 해제되는 인원 설정: 합류 인원 / 대량출고 인원 / 개별출고 인원
+_COUNT_OPTIONS = ("join_count", "bulk_head", "single_head")
+# 시작 시각 직접 지정("HH:MM", 비우면 자동): 포장 / 출고
+_TIME_OPTIONS = ("pack_start", "ship_start")
+_TIME_RE = re.compile(r"^\d{1,2}:\d{2}$")
 
 
 def init_lead_time_tables(get_db):
@@ -36,6 +44,27 @@ def init_lead_time_tables(get_db):
                 slot TEXT NOT NULL,
                 headcount INTEGER NOT NULL,
                 PRIMARY KEY (work_date, slot)
+            )
+            """
+        )
+        # 포장/출고 따로 입력한 시간대별 인원. 위 lead_time_headcount는 구분 없이 저장하던 예전 값(포장·출고 둘 다에 적용).
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lead_time_headcount_kind (
+                work_date TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                headcount INTEGER NOT NULL,
+                PRIMARY KEY (work_date, slot, kind)
+            )
+            """
+        )
+        # 1인 1분 처리 개수(rates, 모든 날짜 공통)와 직접 입력한 포장/출고 개수(qty, 날짜별). key는 날짜 또는 "_rates".
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lead_time_settings (
+                key TEXT PRIMARY KEY,
+                data TEXT NOT NULL DEFAULT '{}'
             )
             """
         )
@@ -73,6 +102,15 @@ def init_lead_time_tables(get_db):
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS lead_time_unchecked_check (
+                work_date TEXT NOT NULL,
+                sheet TEXT NOT NULL,
+                PRIMARY KEY (work_date, sheet)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lead_time_pack_exclude (
                 work_date TEXT NOT NULL,
                 sheet TEXT NOT NULL,
                 PRIMARY KEY (work_date, sheet)
@@ -228,23 +266,37 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
         conn = get_db()
         try:
             scheduled, scheduled_calc = _scheduled_headcount(conn, work_date)
-            manual = {r["slot"]: r["headcount"] for r in conn.execute(
+            legacy = {r["slot"]: r["headcount"] for r in conn.execute(
                 "SELECT slot, headcount FROM lead_time_headcount WHERE work_date = ?", (work_date,)
             ).fetchall()}
+            manual: dict[str, dict[str, int]] = {k: {} for k in _HEAD_KINDS}
+            for r in conn.execute(
+                "SELECT slot, kind, headcount FROM lead_time_headcount_kind WHERE work_date = ?", (work_date,)
+            ).fetchall():
+                if r["kind"] in manual:
+                    manual[r["kind"]][r["slot"]] = r["headcount"]
         finally:
             conn.close()
+
+        def _kind_cell(kind: str, s: str) -> dict:
+            # 포장/출고 따로 입력한 값 > 예전(구분 없는) 입력값 > 스케줄 예정 인원. 처음엔 둘이 같은 값이다.
+            m = manual[kind].get(s, legacy.get(s))
+            return {"manual": m, "headcount": scheduled[s] if m is None else m,
+                    "calc": scheduled_calc[s] if m is None else m}
+
         slots = [
-            {"slot": s, "scheduled": scheduled[s], "manual": manual.get(s),
-             "headcount": manual.get(s, scheduled[s]),
-             "calc": manual.get(s, scheduled_calc[s])}
+            {"slot": s, "scheduled": scheduled[s], **{kind: _kind_cell(kind, s) for kind in _HEAD_KINDS}}
             for s in _slot_labels()
         ]
         return {"ok": True, "date": work_date, "slots": slots}
 
     @router.put("/headcount")
     def put_headcount(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        """slots: {"09:00": 6, "09:30": null}. null이면 수동값을 지우고 스케줄 예정 인원으로 되돌린다."""
+        """kind: "pack" | "ship". slots: {"09:00": 6, "09:30": null}. null이면 그 구분의 수동값을 지우고 스케줄 예정 인원으로 되돌린다."""
         work_date = _norm_date(payload.get("date", ""))
+        kind = payload.get("kind")
+        if kind not in _HEAD_KINDS:
+            raise HTTPException(status_code=400, detail="포장/출고 구분이 필요합니다.")
         slots = payload.get("slots") or {}
         valid = set(_slot_labels())
         conn = get_db()
@@ -252,24 +304,149 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
             for slot, value in slots.items():
                 if slot not in valid:
                     raise HTTPException(status_code=400, detail=f"알 수 없는 시간대입니다: {slot}")
-                if value is None or value == "":
+                n = None
+                if value is not None and value != "":
+                    try:
+                        n = int(value)
+                    except (TypeError, ValueError):
+                        raise HTTPException(status_code=400, detail="인원은 숫자로 입력해 주세요.")
+                    if n < 0:
+                        raise HTTPException(status_code=400, detail="인원은 0 이상이어야 합니다.")
+                # 구분 없이 저장돼 있던 예전 값은 포장·출고 양쪽으로 옮겨 두고, 지금 바꾸는 쪽만 덮어쓴다.
+                legacy = conn.execute(
+                    "SELECT headcount FROM lead_time_headcount WHERE work_date = ? AND slot = ?", (work_date, slot)
+                ).fetchone()
+                if legacy is not None:
+                    for k in _HEAD_KINDS:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO lead_time_headcount_kind (work_date, slot, kind, headcount) VALUES (?, ?, ?, ?)",
+                            (work_date, slot, k, legacy["headcount"]),
+                        )
                     conn.execute("DELETE FROM lead_time_headcount WHERE work_date = ? AND slot = ?", (work_date, slot))
+                if n is None:
+                    conn.execute(
+                        "DELETE FROM lead_time_headcount_kind WHERE work_date = ? AND slot = ? AND kind = ?",
+                        (work_date, slot, kind),
+                    )
                     continue
-                try:
-                    n = int(value)
-                except (TypeError, ValueError):
-                    raise HTTPException(status_code=400, detail="인원은 숫자로 입력해 주세요.")
-                if n < 0:
-                    raise HTTPException(status_code=400, detail="인원은 0 이상이어야 합니다.")
                 conn.execute(
-                    "INSERT INTO lead_time_headcount (work_date, slot, headcount) VALUES (?, ?, ?) "
-                    "ON CONFLICT(work_date, slot) DO UPDATE SET headcount=excluded.headcount",
-                    (work_date, slot, n),
+                    "INSERT INTO lead_time_headcount_kind (work_date, slot, kind, headcount) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(work_date, slot, kind) DO UPDATE SET headcount=excluded.headcount",
+                    (work_date, slot, kind, n),
                 )
             conn.commit()
         finally:
             conn.close()
         return get_headcount(work_date, user)
+
+    # ── 직접 입력한 처리량/개수 저장 ───────────────────────
+    def _load_setting(conn, key: str) -> dict:
+        row = conn.execute("SELECT data FROM lead_time_settings WHERE key = ?", (key,)).fetchone()
+        try:
+            data = json.loads(row["data"]) if row else {}
+        except ValueError:
+            data = {}
+        return data if isinstance(data, dict) else {}
+
+    def _save_setting(conn, key: str, data: dict) -> None:
+        conn.execute(
+            "INSERT INTO lead_time_settings (key, data) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET data=excluded.data",
+            (key, json.dumps(data, ensure_ascii=False)),
+        )
+
+    def _settings_response(conn, work_date: str) -> dict:
+        rates = _load_setting(conn, "_rates")
+        qty = _load_setting(conn, work_date)
+        return {
+            "ok": True, "date": work_date,
+            "rates": {k: rates.get(k) for k in _RATE_KINDS},
+            "qty": {k: qty.get(k) for k in _QTY_KINDS},
+            "options": {
+                "join_bulk": bool(rates.get("join_bulk")),
+                **{k: rates.get(k) for k in _COUNT_OPTIONS},
+                **{k: rates.get(k) for k in _TIME_OPTIONS},
+            },
+        }
+
+    @router.get("/settings")
+    def get_settings(date: str, user: str = Depends(get_current_user)):
+        work_date = _norm_date(date)
+        conn = get_db()
+        try:
+            return _settings_response(conn, work_date)
+        finally:
+            conn.close()
+
+    @router.put("/settings")
+    def put_settings(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """rates: {"pack": 2, "ship": 3} 1인 1분 처리 개수(공통). qty: {"pack": 500, "ship": null} 직접 입력한 개수(날짜별, null이면 불러온 수량으로 복귀).
+        보낸 항목만 바꾼다."""
+        work_date = _norm_date(payload.get("date", ""))
+        rates_in = payload.get("rates") or {}
+        qty_in = payload.get("qty") or {}
+        options_in = payload.get("options") or {}
+        conn = get_db()
+        try:
+            if rates_in or "join_bulk" in options_in or any(k in options_in for k in _COUNT_OPTIONS + _TIME_OPTIONS):
+                rates = _load_setting(conn, "_rates")
+                if "join_bulk" in options_in:  # 개별출고가 먼저 끝나면 그 인원이 대량출고에 합류할지 (공통 설정)
+                    rates["join_bulk"] = bool(options_in["join_bulk"])
+                for opt in _TIME_OPTIONS:  # 시작 시각 직접 지정. 비우면(null) 자동 시작
+                    if opt not in options_in:
+                        continue
+                    value = options_in[opt]
+                    if value is None or value == "":
+                        rates.pop(opt, None)
+                    elif isinstance(value, str) and _TIME_RE.match(value) and _to_min(value) is not None:
+                        rates[opt] = value
+                    else:
+                        raise HTTPException(status_code=400, detail="시작 시각은 HH:MM 형식으로 입력해 주세요.")
+                for opt in _COUNT_OPTIONS:  # 인원/분 설정. 비우면(null) 해제
+                    if opt not in options_in:
+                        continue
+                    value = options_in[opt]
+                    if value is None or value == "":
+                        rates.pop(opt, None)
+                        continue
+                    try:
+                        count = int(value)
+                    except (TypeError, ValueError):
+                        raise HTTPException(status_code=400, detail="인원은 숫자로 입력해 주세요.")
+                    if count < 0:
+                        raise HTTPException(status_code=400, detail="인원은 0 이상이어야 합니다.")
+                    rates[opt] = count
+                for k, v in rates_in.items():
+                    if k not in _RATE_KINDS:
+                        continue
+                    try:
+                        n = float(v)
+                    except (TypeError, ValueError):
+                        raise HTTPException(status_code=400, detail="처리 개수는 숫자로 입력해 주세요.")
+                    if n <= 0:
+                        raise HTTPException(status_code=400, detail="처리 개수는 0보다 커야 합니다.")
+                    rates[k] = n
+                _save_setting(conn, "_rates", rates)
+            if qty_in:
+                qty = _load_setting(conn, work_date)
+                for k, v in qty_in.items():
+                    if k not in _QTY_KINDS:
+                        continue
+                    if v is None or v == "":
+                        qty.pop(k, None)
+                        continue
+                    try:
+                        n = int(v)
+                    except (TypeError, ValueError):
+                        raise HTTPException(status_code=400, detail="개수는 숫자로 입력해 주세요.")
+                    if n < 0:
+                        raise HTTPException(status_code=400, detail="개수는 0 이상이어야 합니다.")
+                    qty[k] = n
+                _save_setting(conn, work_date, qty)
+            conn.commit()
+            return _settings_response(conn, work_date)
+        finally:
+            conn.close()
 
     # ── 미검수 거래처 ─────────────────────────────────────
     def _suppliers(conn) -> list[str]:
@@ -342,6 +519,11 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
             "SELECT sheet FROM lead_time_pack_assign WHERE work_date = ?", (work_date,)
         ).fetchall()}
 
+    def _exclude_sheets(conn, work_date: str) -> set[str]:
+        return {r["sheet"] for r in conn.execute(
+            "SELECT sheet FROM lead_time_pack_exclude WHERE work_date = ?", (work_date,)
+        ).fetchall()}
+
     def _check_sheets(conn, work_date: str) -> set[str]:
         return {r["sheet"] for r in conn.execute(
             "SELECT sheet FROM lead_time_unchecked_check WHERE work_date = ?", (work_date,)
@@ -363,6 +545,7 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
         try:
             bulk = _bulk_sheets(conn, work_date)
             check = _check_sheets(conn, work_date)
+            exclude = _exclude_sheets(conn, work_date)
         finally:
             conn.close()
         return {
@@ -374,23 +557,27 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
             ],
             "bulk": sorted(bulk),
             "check": sorted(check),
+            "exclude": sorted(exclude),
         }
 
     @router.put("/pack/assign")
     def pack_assign(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        """bulk: 대량으로 지정할 전표(sheet) 목록, check: 미검수 확인할 전표 목록.
+        """bulk: 대량으로 지정할 전표(sheet) 목록, check: 미검수 확인할 전표 목록, exclude: 불러오기에서 뺄 전표 목록.
         bulk에 없는 전표는 개별로 보고, check에 없는 전표는 미검수를 찾지 않는다."""
         work_date = _norm_date(payload.get("date", ""))
         bulk = {str(s).strip() for s in payload.get("bulk") or [] if str(s).strip()}
         check = {str(s).strip() for s in payload.get("check") or [] if str(s).strip()}
+        exclude = {str(s).strip() for s in payload.get("exclude") or [] if str(s).strip()}
         conn = get_db()
         try:
-            for table, sheets in (("lead_time_pack_assign", bulk), ("lead_time_unchecked_check", check)):
+            for table, sheets in (
+                ("lead_time_pack_assign", bulk), ("lead_time_unchecked_check", check), ("lead_time_pack_exclude", exclude),
+            ):
                 conn.execute(f"DELETE FROM {table} WHERE work_date = ?", (work_date,))
                 for s in sheets:
                     conn.execute(f"INSERT INTO {table} (work_date, sheet) VALUES (?, ?)", (work_date, s))
             conn.commit()
-            return {"ok": True, "bulk": sorted(bulk), "check": sorted(check)}
+            return {"ok": True, "bulk": sorted(bulk), "check": sorted(check), "exclude": sorted(exclude)}
         finally:
             conn.close()
 
@@ -407,10 +594,11 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
             suppliers = _suppliers(conn)
             bulk_sheets = _bulk_sheets(conn, work_date)
             check_sheets = _check_sheets(conn, work_date)
+            exclude_sheets = _exclude_sheets(conn, work_date)
         finally:
             conn.close()
         try:
-            vouchers = await fetch_im00_vouchers(get_setting, date=work_date)
+            vouchers = [v for v in await fetch_im00_vouchers(get_setting, date=work_date) if v["sheet"] not in exclude_sheets]
             rows = []
             for v in vouchers:
                 cell = v["cell"]

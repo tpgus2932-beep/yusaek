@@ -25,6 +25,7 @@ from api.wonbe_routes import (
     load_wonbe_client_info_by_code,
     load_wonbe_product_name_map,
     load_wonbe_pure_product_name_map,
+    load_wonbe_rename_prefix_map,
 )
 from services.misong_lookup import load_misong_qty_by_code
 
@@ -285,6 +286,15 @@ def build_order_router(
                 return []
         finally:
             conn.close()
+
+    def _rename_prefix_by_code() -> dict[str, str]:
+        # 컬러 글자 매핑은 로컬 원가베이스유 DB에만 있다 - 배포앱에서는 없는 것으로 보고 접두어를 생략한다.
+        if is_render:
+            return {}
+        try:
+            return load_wonbe_rename_prefix_map()
+        except Exception:
+            return {}
 
     def _option_sno_map() -> dict[str, str]:
         if not is_render:
@@ -1620,13 +1630,15 @@ def build_order_router(
         supplier_set = {s.replace(" ", "") for s in _load_label_suppliers()}
         prefix_by_supplier = {k.replace(" ", ""): v for k, v in _load_label_prefixes().items()}
         client_info = _client_info_by_code()
+        rename_prefixes = _rename_prefix_by_code()
         decorations = {}
         for code in codes:
             info = client_info.get(code) or {}
             supplier = str(info.get("거래처") or "").replace(" ", "")
             client_product = str(info.get("거래처상품명") or "").strip()
             decorations[code] = {
-                "prefix": prefix_by_supplier.get(supplier, ""),
+                # 거래처 접두어가 없으면 상품명 일괄변경이 붙인 카테고리+컬러 글자(AA 등)를 쓴다.
+                "prefix": prefix_by_supplier.get(supplier) or rename_prefixes.get(code, ""),
                 "clientLine": f"({client_product})" if supplier in supplier_set and client_product else "",
             }
         return {"ok": True, "decorations": decorations}
@@ -1638,9 +1650,11 @@ def build_order_router(
             return {"ok": True, "names": {}, "clients": {}}
         name_map = load_wonbe_pure_product_name_map()
         client_info = _client_info_by_code()
+        rename_prefixes = _rename_prefix_by_code()
         return {
             "ok": True,
             "names": {code: name_map.get(code, "") for code in codes},
+            "renamePrefixes": {code: rename_prefixes[code] for code in codes if code in rename_prefixes},
             "clients": {
                 code: {
                     "거래처": (client_info.get(code) or {}).get("거래처", ""),

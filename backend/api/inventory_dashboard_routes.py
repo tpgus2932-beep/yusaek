@@ -78,9 +78,9 @@ def _build_par(today: str) -> str:
     )
 
 
-def _row_to_record(cell: dict, normalize_to_yusas, fetched_at: str):
+def _row_to_record(cell: dict, normalize_code, fetched_at: str):
     raw_code = cell.get("key") or _strip_html(cell.get("product_id"))
-    code = normalize_to_yusas(raw_code) or str(raw_code).strip()
+    code = normalize_code(raw_code) or str(raw_code).strip()
     if not code:
         return None
     return (
@@ -114,7 +114,7 @@ def build_inventory_dashboard_router(
     *,
     get_current_user,
     get_setting,
-    normalize_to_yusas,
+    normalize_code,
     get_db,
     allow_refresh: bool = True,
 ):
@@ -178,7 +178,7 @@ def build_inventory_dashboard_router(
             raise HTTPException(status_code=502, detail=f"이지어드민 연결 실패: {exc}")
 
         records = [
-            rec for rec in (_row_to_record(c, normalize_to_yusas, fetched_at) for c in cells) if rec
+            rec for rec in (_row_to_record(c, normalize_code, fetched_at) for c in cells) if rec
         ]
 
         # 조회가 모두 성공한 뒤에만 교체한다 (실패 시 기존 데이터 유지).

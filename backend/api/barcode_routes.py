@@ -36,7 +36,7 @@ _SCHEDULE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 from services.defect_tab import bind_defect_tab
 from services.ezadmin_stock_log import fetch_ezadmin_stock_logs
-from api.wonbe_routes import _get_wonbe_db as _get_wonbe_db, record_defect_process_logs
+from api.wonbe_routes import WONBE_DB_PATH, _get_wonbe_db as _get_wonbe_db, record_defect_process_logs
 from barcode_core import normalize_to_s5
 
 
@@ -47,7 +47,7 @@ def build_barcode_router(
     to_int,
     process_and_load_any,
     load_excel_any,
-    normalize_to_yusas,
+    normalize_code,
     process_easyadmin_product_upload,
     content_disposition,
     get_shared_incoming_counts,
@@ -218,7 +218,7 @@ def build_barcode_router(
             lookup: dict[str, str] = {}
             for row in rows:
                 raw_code = str(row["상품코드"] or "").strip()
-                normalized = normalize_to_yusas(raw_code) or raw_code
+                normalized = normalize_code(raw_code) or raw_code
                 if normalized in codes and normalized not in lookup:
                     label = " / ".join(
                         p for p in [str(row["거래처"] or "").strip(), str(row["상품명합"] or "").strip()] if p
@@ -253,7 +253,7 @@ def build_barcode_router(
             rows = []
             for row_idx in range(2, ws.max_row + 1):
                 raw_code = ws.cell(row_idx, code_col).value
-                code = normalize_to_yusas(raw_code)
+                code = normalize_code(raw_code)
                 duplicate_key = _normalize_text(ws.cell(row_idx, 13).value)
                 shop = _normalize_text(ws.cell(row_idx, 4).value)
                 if not duplicate_key and not shop and not code:
@@ -350,7 +350,7 @@ def build_barcode_router(
         for index, source_row in enumerate(ez_rows, start=2):
             cell = source_row.get("cell", {}) or {}
             raw_code = clean(cell.get("product_id", ""))
-            code = normalize_to_yusas(raw_code)
+            code = normalize_code(raw_code)
             invoice = clean(cell.get("trans_no", ""))
             trans_date = clean(cell.get("trans_date", "") or cell.get("collect_date", ""))
             prepared.append({
@@ -485,7 +485,32 @@ def build_barcode_router(
         finally:
             conn.close()
 
+    _defect_base_cache = {"sig": None, "lookup": None}
+
+    def _wonbe_db_signature():
+        # 원가베이스 DB 파일이 바뀌었는지 stat 한 번으로 판별한다. 파일이 없으면 None(캐시 안 씀).
+        sig = []
+        for suffix in ("", "-wal"):
+            try:
+                st = Path(str(WONBE_DB_PATH) + suffix).stat()
+            except OSError:
+                if not suffix:
+                    return None
+                continue
+            sig.append((st.st_mtime_ns, st.st_size))
+        return tuple(sig)
+
     def _build_defect_base_lookup():
+        # 스캔마다 호출되므로 원가베이스 전체 SELECT+정규화를 DB 파일이 바뀔 때만 다시 한다.
+        sig = _wonbe_db_signature()
+        if sig is not None and sig == _defect_base_cache["sig"]:
+            return _defect_base_cache["lookup"]
+        lookup = _build_defect_base_lookup_uncached()
+        _defect_base_cache["sig"] = sig
+        _defect_base_cache["lookup"] = lookup
+        return lookup
+
+    def _build_defect_base_lookup_uncached():
         conn = _get_wonbe_db()
         try:
             db_rows = conn.execute(
@@ -494,10 +519,15 @@ def build_barcode_router(
             lookup = {}
             for row in db_rows:
                 raw_code = str(row["상품코드"] or "").strip()
-                normalized_code = normalize_to_yusas(raw_code) or raw_code
+                normalized_code = normalize_code(raw_code) or raw_code
                 if normalized_code:
                     color_size = _combine_color_size(str(row["색상"] or ""), str(row["사이즈"] or ""))
+                    try:
+                        cost = int(float(str(row["원가"] or "").replace(",", "").strip()))
+                    except ValueError:
+                        cost = 0
                     lookup[normalized_code] = {
+                        "cost": cost,
                         "a": raw_code,
                         "b": str(row["상품명"] or ""),
                         "c": str(row["거래처"] or ""),
@@ -522,12 +552,7 @@ def build_barcode_router(
                 if code not in lookup:
                     lookup[code] = {
                         "name": det.get("name", "") or "",
-                    try:
-                        cost = int(float(str(row["원가"] or "").replace(",", "").strip()))
-                    except ValueError:
-                        cost = 0
                         "option": det.get("option", "") or "",
-                        "cost": cost,
                     }
         state["_detail_lookup"] = lookup
         return lookup
@@ -674,6 +699,7 @@ def build_barcode_router(
                     "incoming_qty": int(incoming_counts.get(code, 0) or 0),
                     "name": det.get("name", ""),
                     "option": det.get("option", ""),
+                    "base_cost": base_row.get("cost", 0),
                     "base_vendor": base_row.get("c", ""),
                     "base_product": base_row.get("d", ""),
                     "base_color": base_row.get("e", ""),
@@ -699,7 +725,6 @@ def build_barcode_router(
                     (created_at, code, name, action, method, count_after, username, display_name)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                    "base_cost": base_row.get("cost", 0),
                 (now, code, name, action, method, count_after, user, get_user_display(user)),
             )
             conn.commit()
@@ -1124,7 +1149,7 @@ def build_barcode_router(
             wb, ws = load_excel_any(tmp_path)
             counts = Counter()
             for r in range(1, ws.max_row + 1):
-                code = normalize_to_yusas(ws.cell(r, 1).value)
+                code = normalize_code(ws.cell(r, 1).value)
                 qty = to_int(ws.cell(r, 2).value, default=0)
                 if code and qty > 0:
                     counts[code] += qty
@@ -1899,7 +1924,7 @@ def build_barcode_router(
         raw_code = str(payload.get("code") or "").strip()
         if not raw_code:
             raise HTTPException(status_code=400, detail="code required")
-        code = normalize_to_yusas(raw_code) or raw_code
+        code = normalize_code(raw_code) or raw_code
         label = str(payload.get("label") or "").strip()
         current = [item for item in _get_registered_products() if item["code"] != code]
         current.append({"code": code, "label": label})
@@ -1925,7 +1950,7 @@ def build_barcode_router(
             raw_str = str(raw or "").strip()
             if not raw_str:
                 continue
-            code = normalize_to_yusas(raw_str) or raw_str
+            code = normalize_code(raw_str) or raw_str
             if code in seen:
                 continue
             seen.add(code)
@@ -2076,7 +2101,7 @@ def build_barcode_router(
         if not raw:
             raise HTTPException(status_code=400, detail="code is required")
 
-        code = normalize_to_yusas(raw) or raw
+        code = normalize_code(raw) or raw
         if inv not in state["mapping"]:
             return {"ok": False, "type": "item", "result": "BAD_INVOICE", "invoice": inv}
 
@@ -2124,14 +2149,12 @@ def build_barcode_router(
     @router.post("/barcode/defect/add")
     def add_defect(payload: dict = Body(...), user: str = Depends(get_current_user)):
         state = get_barcode_state(user)
-        if not state["loaded"]:
-            raise HTTPException(status_code=400, detail="Upload barcode data first")
 
         raw = (payload.get("code") or "").strip()
         if not raw:
             raise HTTPException(status_code=400, detail="code is required")
 
-        code = normalize_to_yusas(raw) or raw
+        code = normalize_code(raw) or raw
         defect_counts = dict(get_shared_defect_counts())
         defect_counts[code] = defect_counts.get(code, 0) + 1
         set_shared_defect_counts(defect_counts)
@@ -2149,8 +2172,6 @@ def build_barcode_router(
     @router.get("/barcode/defect/list")
     def list_defects(user: str = Depends(get_current_user)):
         state = get_barcode_state(user)
-        if not state["loaded"]:
-            raise HTTPException(status_code=400, detail="Upload barcode data first")
         return {"ok": True, "defects": _get_defect_list(state)}
 
     @router.get("/barcode/defect/search")
@@ -2176,7 +2197,7 @@ def build_barcode_router(
             if not all(kw in _normalize_text(display_name).casefold() for kw in keywords):
                 continue
             matches.append({
-                "code": normalize_to_yusas(code) or code,
+                "code": normalize_code(code) or code,
                 "base_code": code,
                 "base_name": display_name,
                 "base_vendor": str(row["거래처"] or ""),
@@ -2204,7 +2225,7 @@ def build_barcode_router(
         if not raw:
             raise HTTPException(status_code=400, detail="code is required")
 
-        code = normalize_to_yusas(raw) or raw
+        code = normalize_code(raw) or raw
         kimsungil_counts = dict(get_shared_kimsungil_counts())
         kimsungil_counts[code] = kimsungil_counts.get(code, 0) + 1
         set_shared_kimsungil_counts(kimsungil_counts)
@@ -2234,7 +2255,7 @@ def build_barcode_router(
         if not raw:
             raise HTTPException(status_code=400, detail="code is required")
 
-        code = normalize_to_yusas(raw) or raw
+        code = normalize_code(raw) or raw
         kimsungil_counts = dict(get_shared_kimsungil_counts())
         if code in kimsungil_counts:
             kimsungil_counts[code] -= 1
@@ -2265,7 +2286,7 @@ def build_barcode_router(
         if not raw:
             raise HTTPException(status_code=400, detail="code is required")
 
-        code = normalize_to_yusas(raw) or raw
+        code = normalize_code(raw) or raw
         kimsungil_counts = dict(get_shared_kimsungil_counts())
         kimsungil_counts.pop(code, None)
         set_shared_kimsungil_counts(kimsungil_counts)
@@ -2332,7 +2353,7 @@ def build_barcode_router(
         if not raw:
             raise HTTPException(status_code=400, detail="code is required")
 
-        code = normalize_to_yusas(raw) or raw
+        code = normalize_code(raw) or raw
         summon_counts = dict(get_shared_defect_summon_counts())
         qty = int(summon_counts.get(code, 0) or 0)
         if qty <= 0:
@@ -2375,7 +2396,7 @@ def build_barcode_router(
         conditions = []
         params: list = []
         if code:
-            normalized = normalize_to_yusas(code) or code
+            normalized = normalize_code(code) or code
             conditions.append("code = ?")
             params.append(normalized)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
@@ -2540,9 +2561,15 @@ def build_barcode_router(
             conn.close()
         return list_anomalies(user)
 
-    _BAD_STOCK_CATEGORIES = ("상의", "하의")
-    _BAD_STOCK_LETTERS = ("A", "B", "C", "D", "E")
-    _BAD_STOCK_ZONES = tuple(f"{cat}{letter}" for cat in _BAD_STOCK_CATEGORIES for letter in _BAD_STOCK_LETTERS)
+    _BAD_STOCK_CATEGORY_LETTERS = {
+        "상의": ("A", "B", "C", "D", "E"),
+        "하의": ("A", "B", "C", "D", "E"),
+        "아우터": ("A", "B", "C"),
+    }
+    _BAD_STOCK_CATEGORIES = tuple(_BAD_STOCK_CATEGORY_LETTERS)
+    _BAD_STOCK_ZONES = tuple(
+        f"{cat}{letter}" for cat, letters in _BAD_STOCK_CATEGORY_LETTERS.items() for letter in letters
+    )
     _bad_stock_migrated = [False]
 
     def _migrate_bad_stock_zones(conn):
@@ -2581,6 +2608,15 @@ def build_barcode_router(
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS barcode_bad_stock_zones (
+                name TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL DEFAULT '',
+                username TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
         # 기존 테이블에는 수량 컬럼이 없으므로 한 번 추가한다(이미 있으면 에러 → 무시).
         try:
             conn.execute("ALTER TABLE barcode_bad_stock ADD COLUMN qty INTEGER NOT NULL DEFAULT 1")
@@ -2597,20 +2633,77 @@ def build_barcode_router(
         conn = _bad_stock_conn()
         try:
             rows = conn.execute("SELECT * FROM barcode_bad_stock ORDER BY id DESC").fetchall()
+            zones = conn.execute("SELECT name FROM barcode_bad_stock_zones ORDER BY created_at, name").fetchall()
         finally:
             conn.close()
-        return {"ok": True, "items": [dict(row) for row in rows]}
+        base_lookup = _build_defect_base_lookup()
+        items = []
+        for row in rows:
+            item = dict(row)
+            code = str(item.get("code") or "")
+            item["base_cost"] = base_lookup.get(normalize_code(code) or code, {}).get("cost", 0)
+            items.append(item)
+        return {"ok": True, "items": items, "custom_zones": [z["name"] for z in zones]}
+
+    def _resolve_bad_stock_zone(conn, raw_zone) -> str:
+        """기본 구역(상의A 등) 또는 직접 추가한 탭 이름이면 정규화한 구역명을, 아니면 400을 낸다."""
+        zone = str(raw_zone or "").strip()
+        if zone.upper() in _BAD_STOCK_ZONES:
+            return zone.upper()
+        if zone and conn.execute("SELECT 1 FROM barcode_bad_stock_zones WHERE name = ?", (zone,)).fetchone():
+            return zone
+        raise HTTPException(status_code=400, detail="존재하지 않는 구역입니다")
+
+    @router.post("/barcode/bad-stock/zone/add")
+    def add_bad_stock_zone(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """상의/하의/아우터 중 한 분류 아래에 탭을 추가한다. 저장되는 구역명은 '분류+이름'(예: 상의F)."""
+        category = str(payload.get("category") or "").strip()
+        if category not in _BAD_STOCK_CATEGORIES:
+            raise HTTPException(status_code=400, detail="분류는 상의/하의/아우터 중 하나여야 합니다")
+        suffix = str(payload.get("name") or "").strip()
+        if not suffix or len(suffix) > 10:
+            raise HTTPException(status_code=400, detail="탭 이름은 1~10자로 입력해주세요")
+        name = f"{category}{suffix}"
+        if name.upper() in _BAD_STOCK_ZONES:
+            raise HTTPException(status_code=400, detail="기본 구역과 같은 이름은 쓸 수 없습니다")
+        conn = _bad_stock_conn()
+        try:
+            if conn.execute("SELECT 1 FROM barcode_bad_stock_zones WHERE name = ?", (name,)).fetchone():
+                raise HTTPException(status_code=400, detail="이미 있는 탭 이름입니다")
+            conn.execute(
+                "INSERT INTO barcode_bad_stock_zones (name, created_at, username) VALUES (?, ?, ?)",
+                (name, datetime.now(_KST).isoformat(), user),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {**list_bad_stock(user), "zone": name}
+
+    @router.post("/barcode/bad-stock/zone/remove")
+    def remove_bad_stock_zone(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        name = str(payload.get("name") or "").strip()
+        conn = _bad_stock_conn()
+        try:
+            if conn.execute("SELECT 1 FROM barcode_bad_stock WHERE zone = ?", (name,)).fetchone():
+                raise HTTPException(status_code=400, detail="상품이 남아 있는 탭은 삭제할 수 없습니다. 다른 구역으로 옮기거나 삭제해주세요")
+            conn.execute("DELETE FROM barcode_bad_stock_zones WHERE name = ?", (name,))
+            conn.commit()
+        finally:
+            conn.close()
+        return list_bad_stock(user)
 
     @router.post("/barcode/bad-stock/add")
     def add_bad_stock(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        """구역(상의A~E/하의A~E)별 악성재고 상품 추가. 바코드(code) 또는 검색 선택(code+product_name) 모두 지원."""
-        zone = str(payload.get("zone") or "").strip().upper()
-        if zone not in _BAD_STOCK_ZONES:
-            raise HTTPException(status_code=400, detail="구역은 상의/하의 A~E 중 하나여야 합니다")
+        """구역(기본 상의/하의/아우터 또는 직접 추가한 탭)별 악성재고 상품 추가. 바코드(code) 또는 검색 선택(code+product_name) 모두 지원."""
+        _zc = _bad_stock_conn()
+        try:
+            zone = _resolve_bad_stock_zone(_zc, payload.get("zone"))
+        finally:
+            _zc.close()
         raw = str(payload.get("code") or "").strip()
         if not raw:
             raise HTTPException(status_code=400, detail="code is required")
-        code = normalize_to_yusas(raw) or raw
+        code = normalize_code(raw) or raw
         product_name = str(payload.get("product_name") or "").strip()
         if not product_name:
             info = _build_defect_base_lookup().get(code)
@@ -2656,6 +2749,40 @@ def build_barcode_router(
             conn.close()
         return list_bad_stock(user)
 
+    @router.post("/barcode/bad-stock/move")
+    def move_bad_stock(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """선택한 악성재고 행(ids)을 다른 구역으로 옮긴다. 대상 구역에 같은 상품이 있으면 수량을 합친다."""
+        try:
+            ids = [int(i) for i in (payload.get("ids") or [])]
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="ids가 올바르지 않습니다")
+        if not ids:
+            raise HTTPException(status_code=400, detail="옮길 상품을 선택해주세요")
+        conn = _bad_stock_conn()
+        moved = 0
+        try:
+            zone = _resolve_bad_stock_zone(conn, payload.get("zone"))
+            for item_id in ids:
+                row = conn.execute("SELECT * FROM barcode_bad_stock WHERE id = ?", (item_id,)).fetchone()
+                if not row or row["zone"] == zone:
+                    continue
+                target = conn.execute(
+                    "SELECT id FROM barcode_bad_stock WHERE zone = ? AND code = ?", (zone, row["code"])
+                ).fetchone()
+                if target:
+                    conn.execute(
+                        "UPDATE barcode_bad_stock SET qty = COALESCE(qty, 1) + ? WHERE id = ?",
+                        (row["qty"] or 1, target["id"]),
+                    )
+                    conn.execute("DELETE FROM barcode_bad_stock WHERE id = ?", (item_id,))
+                else:
+                    conn.execute("UPDATE barcode_bad_stock SET zone = ? WHERE id = ?", (zone, item_id))
+                moved += 1
+            conn.commit()
+        finally:
+            conn.close()
+        return {**list_bad_stock(user), "moved": moved}
+
     # ---- 이지어드민 상품명 접두어(ZA/ZB...) 변경 기록 -------------------------------------------------
     def _load_renamed() -> dict:
         conn = _bad_stock_conn()
@@ -2679,7 +2806,8 @@ def build_barcode_router(
                 "INSERT OR REPLACE INTO barcode_bad_stock_renamed"
                 " (product_id, codes, original_name, renamed_name, letter, renamed_at, username)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (product_id, ",".join(sorted(merged)), (old["original_name"] if old else original_name),
+                (product_id, ",".join(sorted(merged)),
+                 _PREFIX_RE.sub("", (old["original_name"] if old else original_name) or ""),  # 옛 기록의 BC 등도 함께 정리
                  renamed_name, letter, datetime.now(_KST).isoformat(), user),
             )
             conn.commit()
@@ -2737,12 +2865,34 @@ def build_barcode_router(
         ok = save.status_code < 400 and ez_product_rename.get_form_value(check_parts, "name").strip() == new_name
         return ok, "" if ok else "저장 후 확인에서 상품명이 바뀌지 않았습니다"
 
-    _PREFIX_RE = re.compile(r"^Z[A-E]\s+")
+    # ZA/ZB 같은 우리 접두어뿐 아니라 BC 등 앞에 붙어 있던 대문자 알파벳 접두어도 떼고 새 접두어를 붙인다.
+    # 이미 'ZB BC 이름'처럼 겹쳐 붙은 이름도 모두 벗겨 낸다.
+    _PREFIX_RE = re.compile(r"^(?:[A-Z]{1,2}\s+)+")
+    _ZONE_LETTER_RE = re.compile(r"^(?:상의|하의|아우터)\s*([A-Za-z])(?:\s*구역)?$")
+
+    def _zone_letter(zone: str) -> str:
+        """구역의 접두어 알파벳. 기본 구역(상의A~)과 '상의F', '상의F구역'처럼 알파벳 한 글자(+구역)로 만든 직접 추가 탭이 해당된다."""
+        m = _ZONE_LETTER_RE.match(str(zone or "").strip())
+        return m.group(1).upper() if m else ""
+
+    def _record_is_clean(rec) -> bool:
+        """기록된 변경 이름이 'Z{알파벳} 이름' 한 겹뿐인지(BC 같은 옛 접두어가 남지 않았는지)."""
+        renamed = rec["renamed_name"] or ""
+        return renamed == f"Z{rec['letter']} {_PREFIX_RE.sub('', renamed)}"
+    # 상품명 변경 진행도 (사용자별). 화면이 /barcode/bad-stock/rename-progress로 주기적으로 읽는다.
+    _rename_progress: dict[str, dict] = {}
+
+    @router.get("/barcode/bad-stock/rename-progress")
+    def rename_bad_stock_progress(user: str = Depends(get_current_user)):
+        return {"ok": True, **_rename_progress.get(user, {"phase": "idle", "done": 0, "total": 0})}
 
     def _zone_rank(zone: str) -> tuple:
         """구역 우선순위: 알파벳(A→E) 먼저, 같은 알파벳이면 상의→하의."""
+        letter = _zone_letter(zone)
+        if not letter:
+            return ("￿", 9)  # 알파벳이 없는 직접 추가 탭은 맨 뒤로 보낸다
         category = zone[:-1]
-        return (zone[-1:], _BAD_STOCK_CATEGORIES.index(category) if category in _BAD_STOCK_CATEGORIES else 9)
+        return (letter, _BAD_STOCK_CATEGORIES.index(category) if category in _BAD_STOCK_CATEGORIES else 9)
 
     async def _restore_renamed_products(records: list, dry_run: bool) -> list:
         """악성재고에서 모두 빠진 상품의 이지어드민 상품명을 원래 이름으로 되돌린다. 성공하면 기록을 지운다."""
@@ -2792,7 +2942,7 @@ def build_barcode_router(
         ordered: dict[str, int] = {}
         for code_map in (state.get("original_mapping") or {}).values():
             for raw, qty in code_map.items():
-                code = normalize_to_yusas(raw) or str(raw or "").strip()
+                code = normalize_code(raw) or str(raw or "").strip()
                 if code:
                     ordered[code] = ordered.get(code, 0) + int(qty or 0)
 
@@ -2862,11 +3012,23 @@ def build_barcode_router(
         zones_by_code: dict[str, set] = {}
         for r in rows:
             ez_code = normalize_to_s5(r["code"]) or str(r["code"] or "").strip()
-            if ez_code and r["zone"]:
-                letters_by_code.setdefault(ez_code, set()).add(r["zone"][-1])
+            # 알파벳 구역과 '상의F'처럼 알파벳 한 글자로 만든 직접 추가 탭은 그 알파벳을 접두어로 쓴다.
+            # 그 외 이름의 직접 추가 탭은 접두어 규칙과 무관하므로 상품명 변경에서 제외한다.
+            letter = _zone_letter(r["zone"])
+            if ez_code and letter:
+                letters_by_code.setdefault(ez_code, set()).add(letter)
                 zones_by_code.setdefault(ez_code, set()).add(r["zone"])
+        # 화면의 '변경 안 함' 목록용: 접두어 알파벳이 없는 탭에만 있어 상품명 변경 대상이 아닌 상품.
+        excluded = []
+        seen_excluded = set()
+        for r in rows:
+            ez_code = normalize_to_s5(r["code"]) or str(r["code"] or "").strip()
+            if not ez_code or _zone_letter(r["zone"]) or ez_code in letters_by_code or ez_code in seen_excluded:
+                continue
+            seen_excluded.add(ez_code)
+            excluded.append({"code": ez_code, "name": r["product_name"] or "", "zone": r["zone"]})
         if not letters_by_code:
-            return {"ok": True, "items": [], "need_session": False}
+            return {"ok": True, "items": [], "excluded": excluded, "need_session": False}
 
         # 기록에 있고 접두어(알파벳)가 그대로인 코드는 이지어드민을 다시 읽지 않는다.
         records = _load_renamed()
@@ -2880,7 +3042,7 @@ def build_barcode_router(
             rec_letters = set().union(*(
                 letters_by_code.get(c, set()) for c in filter(None, (rec["codes"] or "").split(","))
             )) if rec else set()
-            if rec and rec_letters and min(rec_letters) == rec["letter"]:
+            if rec and rec_letters and min(rec_letters) == rec["letter"] and _record_is_clean(rec):
                 if rec["product_id"] not in known_products:
                     known_products.add(rec["product_id"])
                     items.append({"code": rec["codes"], "product_id": rec["product_id"], "old_name": rec["original_name"],
@@ -2890,6 +3052,8 @@ def build_barcode_router(
 
         cookies = {"PHPSESSID": phpsessid}
         session_lost = False
+        progress = {"phase": "read", "done": 0, "total": len(to_fetch)}
+        _rename_progress[user] = progress
         try:
             async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
                 sem = asyncio.Semaphore(5)
@@ -2900,6 +3064,8 @@ def build_barcode_router(
                             return ez_code, await _ez_read_product(client, cookies, ez_code), None
                         except Exception as exc:
                             return ez_code, None, str(exc)
+                        finally:
+                            progress["done"] += 1
 
                 loaded = await asyncio.gather(*[load(c) for c in to_fetch])
 
@@ -2945,6 +3111,8 @@ def build_barcode_router(
                         continue
                     items.append({**base, "new_name": new_name, "status": "pending", "_prod": prod})
 
+                if not dry_run:
+                    progress.update(phase="write", done=0, total=sum(1 for i in items if i.get("_prod")))
                 for item in items:
                     prod = item.pop("_prod", None)
                     if prod is None:
@@ -2959,8 +3127,12 @@ def build_barcode_router(
                         item.update(status="done" if ok else "failed", message=message)
                     except Exception as exc:
                         item.update(status="failed", message=str(exc))
+                    finally:
+                        progress["done"] += 1
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"이지어드민 요청 실패: {exc}")
+        finally:
+            progress["phase"] = "idle"
 
         if session_lost and to_fetch and not any(i["status"] not in ("error", "skip") for i in items):
             return {"ok": False, "need_session": True}
@@ -2969,7 +3141,7 @@ def build_barcode_router(
         summary: dict[str, int] = {}
         for i in items:
             summary[i["status"]] = summary.get(i["status"], 0) + 1
-        return {"ok": True, "dry_run": dry_run, "items": items, "summary": summary}
+        return {"ok": True, "dry_run": dry_run, "items": items, "excluded": excluded, "summary": summary}
 
     _EZ_TAG_RE = re.compile(r"<[^>]+>")
 
@@ -3176,7 +3348,20 @@ def build_barcode_router(
         payload: dict = Body(default={}),
         user: str = Depends(get_current_user),
     ):
-        if payload.get("summoned_all_tabs") and get_all_tabs_defect_summon_counts:
+        explicit_counts = payload.get("counts")
+        if isinstance(explicit_counts, dict) and explicit_counts:
+            # 화면에 보이는 불량리스트의 코드/수량을 그대로 사용
+            defect_counts = {}
+            for c, q in explicit_counts.items():
+                try:
+                    q = int(q or 0)
+                except (TypeError, ValueError):
+                    continue
+                if str(c).strip() and q > 0:
+                    defect_counts[str(c).strip()] = q
+            if not defect_counts:
+                raise HTTPException(status_code=400, detail="불량 목록이 비어 있습니다.")
+        elif payload.get("summoned_all_tabs") and get_all_tabs_defect_summon_counts:
             # A/B/C 전 탭의 김승일 소환술 수량만 코드별로 합산, 소환술이 없으면 전 탭 불량 전체로 대체
             defect_counts = {c: q for c, q in get_all_tabs_defect_summon_counts().items() if q > 0}
             if not defect_counts and get_all_tabs_defect_counts:
@@ -3360,7 +3545,7 @@ def build_barcode_router(
                 cells = [str(v or "").strip() for v in (values or [])]
                 while len(cells) < 7:
                     cells.append("")
-                code = normalize_to_yusas(cells[0]) or cells[0]
+                code = normalize_code(cells[0]) or cells[0]
                 if not code:
                     continue
                 color, size = _split_color_size(cells[4])
@@ -3378,14 +3563,12 @@ def build_barcode_router(
     @router.post("/barcode/defect/dec")
     def decrement_defect(payload: dict = Body(...), user: str = Depends(get_current_user)):
         state = get_barcode_state(user)
-        if not state["loaded"]:
-            raise HTTPException(status_code=400, detail="Upload barcode data first")
 
         raw = (payload.get("code") or "").strip()
         if not raw:
             raise HTTPException(status_code=400, detail="code is required")
 
-        code = normalize_to_yusas(raw) or raw
+        code = normalize_code(raw) or raw
         defect_counts = dict(get_shared_defect_counts())
         if code in defect_counts:
             defect_counts[code] -= 1
@@ -3413,14 +3596,12 @@ def build_barcode_router(
     @router.post("/barcode/defect/remove")
     def remove_defect(payload: dict = Body(...), user: str = Depends(get_current_user)):
         state = get_barcode_state(user)
-        if not state["loaded"]:
-            raise HTTPException(status_code=400, detail="Upload barcode data first")
 
         raw = (payload.get("code") or "").strip()
         if not raw:
             raise HTTPException(status_code=400, detail="code is required")
 
-        code = normalize_to_yusas(raw) or raw
+        code = normalize_code(raw) or raw
         defect_counts = dict(get_shared_defect_counts())
         defect_counts.pop(code, None)
         set_shared_defect_counts(defect_counts)
@@ -3463,7 +3644,7 @@ def build_barcode_router(
                 k_val = _row["옵션번호"]
                 if not a_val or not k_val:
                     continue
-                normalized = normalize_to_yusas(a_val) or a_val
+                normalized = normalize_code(a_val) or a_val
                 try:
                     code_to_sno[normalized] = int(k_val)
                 except (ValueError, TypeError):
@@ -3739,6 +3920,35 @@ def build_barcode_router(
             vouchers.append({"sheet": sheet_no, "cell": clean})
         return {"ok": True, "date": today, "vouchers": vouchers}
 
+    @router.post("/barcode/stock-log")
+    async def barcode_stock_log(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        """EZAdmin 재고내역(I100 get_tx_history)을 상품코드로 조회한다."""
+        product_id = str(payload.get("product_code") or "").strip()
+        if not product_id:
+            raise HTTPException(status_code=400, detail="상품코드를 입력하세요.")
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        end_date = str(payload.get("end_date") or "").strip() or datetime.now(_KST).strftime("%Y-%m-%d")
+        start_date = str(payload.get("start_date") or "").strip() or (
+            datetime.now(_KST) - timedelta(days=30)
+        ).strftime("%Y-%m-%d")
+        if not _SCHEDULE_DATE_RE.match(start_date) or not _SCHEDULE_DATE_RE.match(end_date):
+            raise HTTPException(status_code=400, detail="날짜 형식이 올바르지 않습니다.")
+
+        try:
+            logs = await fetch_ezadmin_stock_logs(phpsessid, product_id, start_date, end_date)
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"EZAdmin 재고내역 조회 실패: {exc}")
+        if logs is None:
+            return {"ok": False, "need_session": True}
+        return {"ok": True, "product_code": product_id, "start_date": start_date, "end_date": end_date, "count": len(logs), "logs": logs}
+
     @router.post("/barcode/incoming/upload-from-ezadmin")
     async def incoming_upload_from_ezadmin(
         payload: dict = Body(default={}),
@@ -3895,7 +4105,7 @@ def build_barcode_router(
             for values in dataframe.itertuples(index=False, name=None):
                 if len(values) < 2:
                     continue
-                code = normalize_to_yusas(values[0])
+                code = normalize_code(values[0])
                 qty = to_int(values[1], default=0)
                 if code and qty > 0:
                     counts[code] += qty
@@ -3913,7 +4123,7 @@ def build_barcode_router(
             wb, ws = load_excel_any(tmp_path)
             counts = Counter()
             for row_num in range(1, ws.max_row + 1):
-                code = normalize_to_yusas(ws.cell(row_num, 1).value)
+                code = normalize_code(ws.cell(row_num, 1).value)
                 qty = to_int(ws.cell(row_num, 2).value, default=0)
                 if code and qty > 0:
                     counts[code] += qty
@@ -3921,35 +4131,6 @@ def build_barcode_router(
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"파일 파싱 실패: {exc}")
         finally:
-    @router.post("/barcode/stock-log")
-    async def barcode_stock_log(
-        payload: dict = Body(default={}),
-        user: str = Depends(get_current_user),
-    ):
-        """EZAdmin 재고내역(I100 get_tx_history)을 상품코드로 조회한다."""
-        product_id = str(payload.get("product_code") or "").strip()
-        if not product_id:
-            raise HTTPException(status_code=400, detail="상품코드를 입력하세요.")
-        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
-        if not phpsessid:
-            return {"ok": False, "need_session": True}
-
-        end_date = str(payload.get("end_date") or "").strip() or datetime.now(_KST).strftime("%Y-%m-%d")
-        start_date = str(payload.get("start_date") or "").strip() or (
-            datetime.now(_KST) - timedelta(days=30)
-        ).strftime("%Y-%m-%d")
-        if not _SCHEDULE_DATE_RE.match(start_date) or not _SCHEDULE_DATE_RE.match(end_date):
-            raise HTTPException(status_code=400, detail="날짜 형식이 올바르지 않습니다.")
-
-        try:
-            logs = await fetch_ezadmin_stock_logs(phpsessid, product_id, start_date, end_date)
-        except Exception as exc:
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=f"EZAdmin 재고내역 조회 실패: {exc}")
-        if logs is None:
-            return {"ok": False, "need_session": True}
-        return {"ok": True, "product_code": product_id, "start_date": start_date, "end_date": end_date, "count": len(logs), "logs": logs}
-
             tmp_path.unlink(missing_ok=True)
 
         set_shared_incoming_counts(dict(counts))
@@ -4097,7 +4278,7 @@ def build_barcode_router(
         from datetime import timedelta
         import io as _io
         today = datetime.now()
-        start = str(payload.get("start_date") or (today - timedelta(days=90)).strftime("%Y-%m-%d"))
+        start = str(payload.get("start_date") or (today - timedelta(days=30)).strftime("%Y-%m-%d"))
         end = str(payload.get("end_date") or today.strftime("%Y-%m-%d"))
         nd = str(int(today.timestamp() * 1000))
 
@@ -4553,7 +4734,7 @@ def build_barcode_router(
         for row in obj.get("rows", []):
             cell = row.get("cell") or {}
             raw_code = cell.get("key") or cell.get("product_id") or cell.get("code") or ""
-            code = normalize_to_yusas(raw_code) or str(raw_code).strip()
+            code = normalize_code(raw_code) or str(raw_code).strip()
             if code:
                 found_codes.add(code)
 
@@ -4602,7 +4783,7 @@ def build_barcode_router(
         대조해 전날 발주내역에 없는 상품코드만 골라낸다 - verify_trans_in과 같은 패턴이지만
         비교 대상이 이지어드민 I100이 아니라 우리 쪽 order_history 테이블.
 
-        incoming_counts의 키는 normalize_to_yusas가 만든 "YUSAS00000" 형식인데,
+        incoming_counts의 키는 normalize_code가 만든 "YUSAS00000" 형식인데,
         order_history.product_code/wonbe.상품코드는 top90 발주 형식 그대로인 "S00000"
         형식이라 형식이 다르다 - _to_s_code로 맞춰서 비교해야 한다(안 그러면 형식이
         달라서 전부 미확인으로 잘못 뜬다)."""

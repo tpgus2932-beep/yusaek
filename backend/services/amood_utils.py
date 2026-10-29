@@ -4,7 +4,7 @@ import openpyxl
 from fastapi import HTTPException
 from openpyxl.utils.cell import column_index_from_string
 
-from barcode_core import load_excel_any, normalize_to_yusas
+from barcode_core import load_excel_any, normalize_code
 
 AMOOD_COL1_NAME_RAW = "H"
 AMOOD_COL1_SCAN_BARCODE = "D"
@@ -63,7 +63,7 @@ def _amood_status(state: AmoodState) -> dict:
 
 def _amood_norm_barcode(s: str | None) -> str:
     raw = re.sub(r"\s+", "", str(s or ""))
-    normalized = normalize_to_yusas(raw)
+    normalized = normalize_code(raw)
     return normalized or raw
 
 

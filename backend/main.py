@@ -24,7 +24,7 @@ import mimetypes
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-from barcode_core import process_and_load_any, normalize_to_yusas, load_excel_any
+from barcode_core import process_and_load_any, normalize_code, load_excel_any
 
 import barcode_core
 import pandas as pd
@@ -40,6 +40,8 @@ from api.wonbe_routes import (
     load_wonbe_cost_base_df,
     save_wonbe_cost_base_df,
     load_wonbe_cost_base_map,
+    load_wonbe_option_sno_map,
+    load_wonbe_product_codes,
 )
 from api.jeju_hapbae import router as jeju_hapbae_router
 from api.auth_admin_routes import build_auth_admin_router
@@ -73,6 +75,7 @@ from services.cs_store import init_cs_tables, migrate_cs_from_turso
 from api.accident_cargo_routes import build_accident_cargo_router
 from api.return_regathering_routes import build_return_regathering_router
 from api.return_processing_log_routes import build_return_processing_log_router
+from api.return_inspection_routes import build_return_inspection_router, init_return_inspection_tables
 from api.return_special_notes_routes import build_return_special_notes_router
 from api.delivery_anomaly_routes import build_delivery_anomaly_router
 from api.client_cancel_soldout_routes import build_client_cancel_soldout_router
@@ -1187,6 +1190,28 @@ _ensure_return_snapshot_column(
     "name",
     "ALTER TABLE return_saved_snapshots ADD COLUMN name TEXT NOT NULL DEFAULT ''",
 )
+_ensure_return_snapshot_column(
+    "tab_id",
+    "ALTER TABLE return_saved_snapshots ADD COLUMN tab_id INTEGER NOT NULL DEFAULT 0",
+)
+
+
+def _init_return_snapshot_tabs():
+    conn = _get_shared_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS return_snapshot_tabs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_return_snapshot_tabs()
 
 
 def _run_return_saved_states_migration():
@@ -1634,6 +1659,17 @@ def _init_kimsungil_log():
 
 _init_kimsungil_log()
 
+try:
+    from services.code_key_migration import migrate_codes_to_s
+    migrate_codes_to_s(
+        _get_shared_db,
+        _get_setting,
+        _set_setting,
+        [_kimsungil_setting_key(t) for t in defect_tab.DEFECT_TABS],
+    )
+except Exception:
+    traceback.print_exc()  # 이전 실패가 서버 기동을 막으면 안 된다. 다음 기동에 다시 시도한다.
+
 app.include_router(
     amood_hapbae_router,
     dependencies=[Depends(_get_current_user)],
@@ -1664,7 +1700,7 @@ app.include_router(
         to_int=_to_int,
         process_and_load_any=process_and_load_any,
         load_excel_any=load_excel_any,
-        normalize_to_yusas=normalize_to_yusas,
+        normalize_code=normalize_code,
         process_easyadmin_product_upload=_process_easyadmin_product_upload,
         content_disposition=_content_disposition,
         get_shared_incoming_counts=_get_shared_incoming_counts,
@@ -1689,7 +1725,7 @@ app.include_router(
     build_inventory_dashboard_router(
         get_current_user=_get_current_user,
         get_setting=_get_setting,
-        normalize_to_yusas=normalize_to_yusas,
+        normalize_code=normalize_code,
         get_db=_get_shared_db,
         allow_refresh=not _IS_RENDER,
     )
@@ -1766,7 +1802,7 @@ app.include_router(
         get_current_user=_get_current_user,
         get_db=_get_db,  # CS는 로컬 SQLite (Render에서만 Turso) — Turso HTTP 왕복이 느려서
         get_setting=_get_setting,
-        normalize_to_yusas=normalize_to_yusas,
+        normalize_code=normalize_code,
         allow_live_stock=not _IS_RENDER,
     )
 )
@@ -2138,6 +2174,8 @@ def _init_return_regathering():
         conn.execute("ALTER TABLE return_regathering ADD COLUMN return_invoice TEXT NOT NULL DEFAULT ''")
     if "resend_invoice" not in cols:
         conn.execute("ALTER TABLE return_regathering ADD COLUMN resend_invoice TEXT NOT NULL DEFAULT ''")
+    if "images" not in cols:
+        conn.execute("ALTER TABLE return_regathering ADD COLUMN images TEXT NOT NULL DEFAULT '[]'")
     conn.commit()
     conn.close()
 
@@ -2187,6 +2225,18 @@ app.include_router(
     build_return_processing_log_router(
         get_current_user=_get_current_user,
         get_shared_db=_get_shared_db,
+    )
+)
+
+init_return_inspection_tables(_get_shared_db)
+
+app.include_router(
+    build_return_inspection_router(
+        get_current_user=_get_current_user,
+        get_shared_db=_get_shared_db,
+        load_product_codes=load_wonbe_product_codes,
+        load_option_sno_map=load_wonbe_option_sno_map,
+        normalize_code=normalize_code,
     )
 )
 

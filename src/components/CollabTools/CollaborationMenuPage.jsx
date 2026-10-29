@@ -1091,6 +1091,7 @@ export default function CollaborationMenuPage() {
     }
     let nameByCode = {};
     let clientByCode = {};
+    let renamePrefixByCode = {};
     try {
       const res = await fetch(`${LOCAL_API_BASE}/order/simple-receiving/resolve-product-names`, {
         method: 'POST',
@@ -1102,6 +1103,7 @@ export default function CollaborationMenuPage() {
       if (res.ok && data?.ok) {
         nameByCode = data.names || {};
         clientByCode = data.clients || {};
+        renamePrefixByCode = data.renamePrefixes || {};
       }
     } catch {
       // 상품명 조회에 실패해도 출력 자체는 막지 않는다 - 아래에서 담긴 목록의 이름으로 대체한다.
@@ -1119,7 +1121,8 @@ export default function CollaborationMenuPage() {
       const clientName = String(clientInfo['거래처'] || '').replace(/\s+/g, '');
       const clientProductName = String(clientInfo['거래처상품명'] || item.clientProductName || '').trim();
       // 거래처별 접두어(R/K/L 등)가 지정돼 있으면 상품명 앞에 공백 하나 두고 붙인다.
-      const prefix = prefixBySupplier[clientName] || '';
+      // 거래처 접두어가 없으면 상품명 일괄변경이 붙인 카테고리+컬러 글자(AA 등)를 붙인다.
+      const prefix = prefixBySupplier[clientName] || renamePrefixByCode[item.code] || '';
       const title = prefix ? `${prefix} ${baseTitle}` : baseTitle;
       const clientLine = labelSupplierSet.has(clientName) && clientProductName
         ? `(${clientProductName})`

@@ -1,4 +1,4 @@
-const defaultBase = `http://${window.location.hostname}:8000`;
+const defaultBase = `http://${window.location.hostname}:${import.meta.env.VITE_LOCAL_API_PORT || 8000}`;
 
 const trimTrailingSlash = (value) => String(value || '').replace(/\/+$/, '');
 

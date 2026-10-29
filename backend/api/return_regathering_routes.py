@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -18,6 +19,8 @@ except ModuleNotFoundError:
 
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
 _TEMPLATE_NAME = "반품 오회수"
+_MAX_IMAGES = 5
+_MAX_IMAGES_BYTES = 3_000_000
 
 
 def build_return_regathering_router(
@@ -42,7 +45,15 @@ def build_return_regathering_router(
             ).fetchall()
         finally:
             conn.close()
-        return {"items": [dict(r) for r in rows]}
+        items = []
+        for r in rows:
+            item = dict(r)
+            try:
+                item["images"] = json.loads(item.get("images") or "[]")
+            except ValueError:
+                item["images"] = []
+            items.append(item)
+        return {"items": items}
 
     @router.post("/execute")
     async def execute_regathering(
@@ -183,6 +194,32 @@ def build_return_regathering_router(
         finally:
             conn.close()
         return {"ok": True}
+
+    # 원송장 옆 사진등록: 프론트에서 줄인 data URL 목록을 통째로 저장한다.
+    @router.post("/{regathering_id}/images")
+    def set_images(
+        regathering_id: int,
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        images = payload.get("images")
+        if not isinstance(images, list):
+            raise HTTPException(status_code=400, detail="images 형식이 올바르지 않습니다.")
+        images = [s for s in images if isinstance(s, str) and s.startswith("data:image/")]
+        if len(images) > _MAX_IMAGES:
+            raise HTTPException(status_code=400, detail=f"사진은 최대 {_MAX_IMAGES}장까지 등록할 수 있습니다.")
+        if sum(len(s) for s in images) > _MAX_IMAGES_BYTES:
+            raise HTTPException(status_code=400, detail="사진 용량이 너무 큽니다.")
+        conn = get_shared_db()
+        try:
+            conn.execute(
+                "UPDATE return_regathering SET images = ? WHERE id = ?",
+                (json.dumps(images), regathering_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "images": images}
 
     @router.post("/{regathering_id}/complete")
     def complete_regathering(regathering_id: int, user: str = Depends(get_current_user)):

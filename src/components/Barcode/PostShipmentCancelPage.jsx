@@ -92,6 +92,7 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
   const [repliesChecking, setRepliesChecking] = useState(false);
   const [repliesMessage, setRepliesMessage] = useState("");
   const [closingSno, setClosingSno] = useState(null);
+  const [withdrawingSno, setWithdrawingSno] = useState(null);
   const [closeErrors, setCloseErrors] = useState({});
   const [deletingSno, setDeletingSno] = useState(null);
   const [replyDrafts, setReplyDrafts] = useState({});
@@ -349,7 +350,8 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "발송내역 조회 실패");
-      setStockSmsLogs((data.items ?? []).filter((item) => item.action === "sms_sent" && !item.closed_at));
+      // withdrawn = 에이블리 철회까지만 끝나고 이지어드민 단계가 남은 건 (같은 버튼으로 이어서 재시도)
+      setStockSmsLogs((data.items ?? []).filter((item) => ["sms_sent", "withdrawn"].includes(item.action) && !item.closed_at));
     } catch (err) {
       setRepliesMessage(err.message || "발송내역 조회 실패");
     } finally {
@@ -446,6 +448,48 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
       setClosingSno(null);
     }
   }, []);
+
+  // 취소철회 및 송장출력 - 에이블리 취소철회 → 이지어드민 보류해제·전체정상복귀 → 송장출력 → 배송확인.
+  const handleWithdraw = useCallback(async (cancelSno) => {
+    if (!window.confirm("에이블리 취소를 철회하고, 이지어드민에서 정상복귀 → 송장출력 → 배송확인까지 진행합니다. 되돌리기 어려운 작업입니다.\n\n진행하시겠습니까?")) return;
+    setWithdrawingSno(cancelSno);
+    setRepliesMessage("");
+    setCloseErrors((prev) => {
+      const next = { ...prev };
+      delete next[cancelSno];
+      return next;
+    });
+    try {
+      const res = await fetch(`${API}/post-shipment-cancel-stock-sms/withdraw`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ cancel_sno: cancelSno }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (data.need_ezadmin_session) {
+        openEzadminModal();
+        throw new Error("이지어드민 세션이 필요합니다. 세션을 등록한 뒤 다시 눌러주세요.");
+      }
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "취소철회 실패");
+      setStockSmsLogs((prev) => prev.filter((row) => row.cancel_sno !== cancelSno));
+      setRepliesMessage(`취소철회 완료 (${data.steps.join(" → ")}) · ${data.trans_corp} ${data.trans_no}`);
+      const win = window.open("", "_blank");
+      if (win) {
+        win.document.write(data.html);
+        win.document.close();
+        win.focus();
+        win.print();
+      }
+    } catch (err) {
+      const msg = err.message || "취소철회 실패";
+      setRepliesMessage(msg);
+      setCloseErrors((prev) => ({ ...prev, [cancelSno]: msg }));
+      loadStockSmsLogs();
+    } finally {
+      setWithdrawingSno(null);
+    }
+  }, [openEzadminModal, loadStockSmsLogs]);
 
   // 승인할 주문상품 정보가 없어 자동 완료가 불가능한 건을, 에이블리에서 직접 처리했다는 전제로
   // 발송내역 목록에서만 지운다 (에이블리 취소 승인 자체는 여기서 실행하지 않음).
@@ -1009,8 +1053,9 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
           <p className={pageStyles.subtitle}>
             위에서 발송한 "재고있는 취소주문 확인문자" 목록입니다. "수신확인"을 누르면 이지데스크에서
             각 연락처의 대화 내역을 다시 조회해, 문자 발송 이후 온 고객 답장을 가져와 표시합니다.
-            이 목록은 로컬 DB에 저장되며, 각 건마다 "완료"를 눌러야 에이블리에서 취소 승인이 실행되고
-            목록에서 사라집니다. 누르기 전까지는 계속 남아있습니다.
+            이 목록은 로컬 DB에 저장되며, 답장을 확인한 뒤 건별로 처리합니다. "취소실행"은 에이블리 취소를 승인하고,
+            "취소철회 및 송장출력"은 취소를 철회한 뒤 이지어드민 정상복귀 → 송장출력 → 배송확인까지 진행합니다.
+            처리되기 전까지는 목록에 계속 남아있습니다.
           </p>
 
           {repliesMessage && (
@@ -1061,9 +1106,16 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                         <button
                           className={pageStyles.secondaryBtn}
                           onClick={() => handleCloseSentSms(row.cancel_sno)}
-                          disabled={closingSno === row.cancel_sno}
+                          disabled={closingSno === row.cancel_sno || withdrawingSno === row.cancel_sno || row.action === "withdrawn"}
                         >
-                          {closingSno === row.cancel_sno ? "처리 중..." : "완료"}
+                          {closingSno === row.cancel_sno ? "처리 중..." : "취소실행"}
+                        </button>
+                        <button
+                          className={pageStyles.primaryBtn}
+                          onClick={() => handleWithdraw(row.cancel_sno)}
+                          disabled={withdrawingSno === row.cancel_sno || closingSno === row.cancel_sno}
+                        >
+                          {withdrawingSno === row.cancel_sno ? "처리 중..." : "취소철회 및 송장출력"}
                         </button>
                         {closeErrors[row.cancel_sno] && (
                           <span style={{ fontSize: "0.78rem", color: "rgba(220,53,69,0.85)" }}>

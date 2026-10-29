@@ -118,6 +118,9 @@ def _bul_load_font(size_px: int):
     return _PILFont.load_default()
 
 
+_BUL_MAX_ITEMS_PER_PAGE = 5
+
+
 def _bul_build_groups(df: pd.DataFrame) -> tuple[list, dict]:
     raw: dict = {}
     for _, r in df.iterrows():
@@ -138,7 +141,9 @@ def _bul_build_groups(df: pd.DataFrame) -> tuple[list, dict]:
             combo[k] = combo.get(k, 0) + _bul_to_int(it["qty"], 1)
         out = [{"name": k[0], "color": k[1], "qty": v} for k, v in combo.items()]
         out.sort(key=lambda x: (x["name"], x["color"]))
-        merged[key] = out
+        # 같은 거래처 상품 종류가 5개를 넘으면 5개씩 끊어 별도 장으로 출력한다.
+        for n, start in enumerate(range(0, len(out), _BUL_MAX_ITEMS_PER_PAGE)):
+            merged[(key[0], key[1], n)] = out[start:start + _BUL_MAX_ITEMS_PER_PAGE]
 
     keys = list(merged.keys())
     return keys, merged
@@ -974,7 +979,7 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
         groups = sess["groups"]
         if index < 0 or index >= len(keys):
             raise HTTPException(status_code=400, detail="인덱스 범위 초과")
-        vendor, addr = keys[index]
+        vendor, addr, *_ = keys[index]
         items = groups[keys[index]]
         dpi = max(72, min(int(payload.get("dpi", 150)), 300))
         try:
@@ -1011,7 +1016,7 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
         zip_buf = io.BytesIO()
         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for i, key in enumerate(keys):
-                vendor, addr = key
+                vendor, addr, *_ = key
                 items = groups[key]
                 try:
                     png, _ = _bul_render(

@@ -261,6 +261,10 @@ export default function CSStock({ goods, asked, orderNo, title = '', lookupSigna
     const showRank = section !== 'stock';
     const showStock = section !== 'rank';
     const askedOptions = result ? result.options.filter(isAsked) : [];
+    // 옵션들의 공급처(거래처)·공급처상품명 — 값이 여러 개면 모두 보여준다.
+    const uniq = (key) => [...new Set((result?.options || []).map((o) => o[key]).filter(Boolean))];
+    const supplierNames = uniq('supplier');
+    const supplierProducts = uniq('supplier_product');
 
     return (
         <section className={`${styles.box} ${compact ? styles.boxCompact : ''}`}>
@@ -277,6 +281,12 @@ export default function CSStock({ goods, asked, orderNo, title = '', lookupSigna
                         {loading ? '조회 중…' : result ? '다시 조회' : '재고 조회'}
                     </button>
                 </div>
+            )}
+            {showStock && supplierNames.length + supplierProducts.length > 0 && (
+                <dl className={`${styles.kv} ${styles.supplyBox}`}>
+                    <dt>공급처명</dt><dd>{supplierNames.join(', ') || '-'}</dd>
+                    <dt>공급처상품명</dt><dd>{supplierProducts.join(', ') || '-'}</dd>
+                </dl>
             )}
             {showStock && askedOptions.length > 0 && (
                 <div className={styles.askedSummary}>

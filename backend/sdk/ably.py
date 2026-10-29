@@ -247,6 +247,14 @@ class AblyClient:
         """취소/반품 요청 거부 처리."""
         return await self.request("PUT", f"/seller/order_cancels/{sno}/reject_request/", json={"refuse_cause_comment": refuse_cause_comment}, origin="my.a-bly.com")
 
+    async def withdraw_order_cancel(self, cancel_sno: int | str) -> None:
+        """구매자 취소요청 철회(= 취소를 거부하고 주문을 원래대로 되돌림).
+
+        TODO: 취소철회 HAR를 받으면 여기에 실제 호출을 채운다. reject_order_cancel(반품 철회에 쓰는
+        reject_request)이 취소 건에도 같은 동작인지는 확인되지 않아 임의로 연결하지 않았다.
+        """
+        raise NotImplementedError("에이블리 취소철회 API가 아직 연결되지 않았습니다 (취소철회 HAR 필요).")
+
     async def confirm_order_items(self, sno_list: list[int]) -> None:
         """구매자 취소요청 승인(확정) 처리 (실제 브라우저 캡처로 확인).
 
