@@ -178,6 +178,18 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     ...(includeStockOut ? ["재고 출고처리"] : []),
     "에이블리 발송관리 롤백",
   ];
+  const [showStockLog, setShowStockLog] = useState(false);
+  const [stockLogCode, setStockLogCode] = useState("");
+  const [stockLogStart, setStockLogStart] = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 1);
+    return d.toLocaleDateString("sv-SE");
+  });
+  const [stockLogEnd, setStockLogEnd] = useState(() => new Date().toLocaleDateString("sv-SE"));
+  const [stockLogReason, setStockLogReason] = useState("");
+  const [stockLogType, setStockLogType] = useState("");
+  const [stockLogLoading, setStockLogLoading] = useState(false);
+  const [stockLogError, setStockLogError] = useState("");
+  const [stockLogResult, setStockLogResult] = useState(null);
 
   const pushLog = (msg) => setLog((prev) => [msg, ...prev]);
 
@@ -1630,6 +1642,41 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       const target = localResults.find((r) => r.invoice_no === invoiceNo);
       if (target?.steps?.[idx]) { target.steps[idx] = { ...target.steps[idx], status, detail }; }
       setInvoiceBulkResults([...localResults]);
+  // "입고요청전표2 자동입고: (2262 : 승일)" 형식은 입고전표, 그 외 숫자가 들어간 사유는 반품입고로 묶는다.
+  const stockLogReasonGroup = (reason) => {
+    const r = (reason || "").trim();
+    if (/^입고요청전표\d*\s*자동입고\s*:\s*\(\s*\d+\s*:/.test(r)) return "입고전표";
+    if (/\d/.test(r)) return "반품입고";
+    return r;
+  };
+  const stockLogFiltered = (stockLogResult?.logs || []).filter(
+    (l) => (!stockLogReason || stockLogReasonGroup(l.사유) === stockLogReason) && (!stockLogType || l.구분 === stockLogType)
+  );
+
+  const handleStockLogSearch = async () => {
+    const code = stockLogCode.trim();
+    if (!code) { setStockLogError("상품코드를 입력하세요."); return; }
+    setStockLogLoading(true);
+    setStockLogError("");
+    try {
+      const res = await fetch(`${API}/barcode/stock-log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ product_code: code, start_date: stockLogStart, end_date: stockLogEnd }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) { openEzadminModal(handleStockLogSearch); return; }
+      if (!res.ok) throw new Error(data?.detail || "로그 조회 실패");
+      setStockLogResult(data);
+    } catch (err) {
+      setStockLogResult(null);
+      setStockLogError(err.message || "로그 조회 실패");
+    } finally {
+      setStockLogLoading(false);
+    }
+  };
+
     };
 
     for (const invoiceNo of invoiceNos) {
@@ -1897,6 +1944,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               display: "flex",
               flexDirection: "column",
               gap: "0.75rem",
+              <button className={styles.secondaryBtn} onClick={() => setShowStockLog(true)}>로그 확인</button>
             }}>
               <span className={styles.infoLabel}>현재 상품</span>
               {items.length > 0 ? (
@@ -2048,6 +2096,97 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
                     {invoiceSteps.length > 0 && (
                       <div style={{ marginTop: "0.75rem" }}>
+      {/* 로그 확인 모달 (EZAdmin 재고내역) */}
+      {showStockLog && (
+        <div className={styles.modalOverlay} onClick={() => setShowStockLog(false)}>
+          <div className={`${styles.modal} ${styles.modalWide}`} style={{ height: "90vh" }} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <h4 className={styles.modalTitle}>로그 확인</h4>
+              <div className={styles.modalActions}>
+                <button className={styles.secondaryBtn} onClick={() => setShowStockLog(false)}>닫기</button>
+              </div>
+            </div>
+            <div className={styles.uploadRow}>
+              <input
+                value={stockLogCode}
+                onChange={(e) => setStockLogCode(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleStockLogSearch(); }}
+                placeholder="상품코드 입력 (예: S09888)"
+                className={styles.searchInput}
+                disabled={stockLogLoading}
+                autoFocus
+              />
+              <input type="date" className={styles.searchInput} style={{ maxWidth: "11rem" }} value={stockLogStart} max={stockLogEnd} onChange={(e) => setStockLogStart(e.target.value)} disabled={stockLogLoading} />
+              <span>~</span>
+              <input type="date" className={styles.searchInput} style={{ maxWidth: "11rem" }} value={stockLogEnd} min={stockLogStart} onChange={(e) => setStockLogEnd(e.target.value)} disabled={stockLogLoading} />
+              <button className={styles.primaryBtn} onClick={handleStockLogSearch} disabled={stockLogLoading}>
+                {stockLogLoading ? "조회 중..." : "로그 조회"}
+              </button>
+              <select
+                value={stockLogType}
+                onChange={(e) => setStockLogType(e.target.value)}
+                className={styles.searchInput}
+                style={{ maxWidth: "9rem" }}
+              >
+                <option value="">구분 전체</option>
+                {[...new Set((stockLogResult?.logs || []).map((l) => l.구분).filter(Boolean))].map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+              <select
+                value={stockLogReason}
+                onChange={(e) => setStockLogReason(e.target.value)}
+                className={styles.searchInput}
+                style={{ maxWidth: "16rem" }}
+              >
+                <option value="">사유 전체</option>
+                {[...new Set((stockLogResult?.logs || []).map((l) => stockLogReasonGroup(l.사유)).filter(Boolean))].map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+              {stockLogResult && (
+                <span className={styles.metaLabel}>
+                  {stockLogResult.product_code} · {stockLogResult.start_date} ~ {stockLogResult.end_date} ·{" "}
+                  {stockLogReason || stockLogType ? `${stockLogFiltered.length} / ` : ""}{stockLogResult.count}건
+                </span>
+              )}
+            </div>
+            {stockLogError && (
+              <div className={styles.statusMsg} style={{ borderColor: "rgba(220,53,69,0.4)", backgroundColor: "rgba(220,53,69,0.07)" }}>
+                <strong>{stockLogError}</strong>
+              </div>
+            )}
+            <div className={styles.tableWrap} style={{ flex: 1, minHeight: 0, overflowX: "hidden" }}>
+              <table className={`${styles.table} ${styles.stockLogTable}`}>
+                <thead>
+                  <tr>
+                    {["일시", "구분", "수량", "재고", "수령자", "주문자", "사유"].map((h) => (
+                      <th key={h} style={{ position: "sticky", top: 0 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {stockLogFiltered.map((l, i) => (
+                    <tr key={i}>
+                      <td style={{ whiteSpace: "nowrap" }}>{l.일시}</td>
+                      <td>{l.구분}</td>
+                      <td>{l.수량}</td>
+                      <td>{l.재고}</td>
+                      <td>{l.수령자}</td>
+                      <td>{l.주문자}</td>
+                      <td>{l.사유}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {stockLogResult && stockLogFiltered.length === 0 && (
+                <div style={{ padding: "1.5rem", textAlign: "center" }}>조회된 로그가 없습니다.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
                         <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>진행 상태</div>
                         {invoiceSteps.map((s) => (
                           <div key={s.label} style={{ display: "flex", alignItems: "center", gap: "0.35rem", padding: "0.15rem 0" }}>

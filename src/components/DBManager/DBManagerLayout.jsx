@@ -2,7 +2,6 @@ import React, { useState } from "react";
 import { Database } from "lucide-react";
 import styles from "./DBManager.module.css";
 import WonbeTable from "./WonbeTable";
-import KdgTable from "./KdgTable";
 import JanggiTable from "./JanggiTable";
 import AccountDataTable from "./AccountDataTable";
 import IchaeTable from "./IchaeTable";
@@ -14,7 +13,6 @@ import OrderHistoryTable from "./OrderHistoryTable";
 
 const TABLES = [
   { key: "wonbe", label: "원가베이스유", component: WonbeTable },
-  { key: "kdg", label: "케이디지원가베이스", component: KdgTable },
   { key: "janggi", label: "날짜별장끼정리", component: JanggiTable },
   { key: "account", label: "거래처계좌데이터", component: AccountDataTable },
   { key: "ichae", label: "이체파일", component: IchaeTable },

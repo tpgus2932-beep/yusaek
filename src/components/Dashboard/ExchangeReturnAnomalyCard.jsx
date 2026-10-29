@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { MessageSquare, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react';
 import styles from './Dashboard.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
+import { useEzadminSession } from '../../lib/EzadminSessionContext';
 
 function formatDate(raw) {
     if (!raw) return '-';
@@ -49,6 +50,13 @@ export default function ExchangeReturnAnomalyCard() {
     const [expandedInvoices, setExpandedInvoices] = useState(new Set());
     const [regatheringInvoices, setRegatheringInvoices] = useState(new Set());
     const authHeaders = getAuthHeaders();
+    const { openModal: openEzadminModal } = useEzadminSession();
+    const [receiptOpen, setReceiptOpen] = useState(false);
+    const [receiptLoading, setReceiptLoading] = useState(false);
+    const [receiptError, setReceiptError] = useState('');
+    const [receiptResult, setReceiptResult] = useState(null);
+    const [receiptProgress, setReceiptProgress] = useState({ phase: '', done: 0, total: 0 });
+    const receiptRunRef = useRef(0);
 
     const fetchList = useCallback(async () => {
         try {
@@ -133,6 +141,53 @@ export default function ExchangeReturnAnomalyCard() {
         }
     };
 
+    // 반품 이상현상 건마다 EZAdmin 재고로그에서 원송장번호가 사유에 잡히는지(이미 입고됐는지) 확인
+    const runReceiptCheck = async () => {
+        const runId = ++receiptRunRef.current;
+        setReceiptOpen(true);
+        setReceiptLoading(true);
+        setReceiptError('');
+        setReceiptResult(null);
+        setReceiptProgress({ phase: '시작 중', done: 0, total: 0 });
+        try {
+            const res = await fetch(`${API}/exchange-return-anomaly/receipt-check`, {
+                method: 'POST',
+                headers: authHeaders,
+            });
+            if (handleUnauthorized(res)) return;
+            const start = await res.json().catch(() => ({}));
+            if (start?.need_session) { setReceiptOpen(false); setReceiptLoading(false); openEzadminModal(runReceiptCheck); return; }
+            if (!res.ok || !start?.job_id) throw new Error(start?.detail || '입고체크 실패');
+            // 완료될 때까지 1초마다 진행도를 가져온다 (모달을 닫거나 다시 시작하면 중단)
+            while (receiptRunRef.current === runId) {
+                await new Promise((r) => setTimeout(r, 1000));
+                if (receiptRunRef.current !== runId) return;
+                const sres = await fetch(`${API}/exchange-return-anomaly/receipt-check/${start.job_id}`, { headers: authHeaders });
+                if (handleUnauthorized(sres)) return;
+                const job = await sres.json().catch(() => ({}));
+                if (!sres.ok) throw new Error(job?.detail || '진행도 조회 실패');
+                setReceiptProgress({ phase: job.phase, done: job.done, total: job.total });
+                if (!job.finished) continue;
+                if (job.error) throw new Error(job.error);
+                if (job.result?.need_session) { setReceiptOpen(false); openEzadminModal(runReceiptCheck); return; }
+                setReceiptResult(job.result);
+                break;
+            }
+        } catch (err) {
+            if (receiptRunRef.current !== runId) return;
+            setReceiptResult(null);
+            setReceiptError(err.message || '입고체크 실패');
+        } finally {
+            if (receiptRunRef.current === runId) setReceiptLoading(false);
+        }
+    };
+
+    const closeReceipt = () => {
+        receiptRunRef.current += 1;
+        setReceiptLoading(false);
+        setReceiptOpen(false);
+    };
+
     const toggleMemo = (inv) => {
         setExpandedInvoices((prev) => {
             const next = new Set(prev);
@@ -174,6 +229,14 @@ export default function ExchangeReturnAnomalyCard() {
                             마지막 새로고침 {formatRefreshTime(lastRefreshedAt)}
                         </span>
                     )}
+                    <button
+                        type="button"
+                        className={`${styles.filterBtn} ${styles.anomalyRefreshBtn}`}
+                        onClick={runReceiptCheck}
+                        disabled={receiptLoading}
+                    >
+                        입고체크
+                    </button>
                     <button
                         type="button"
                         className={`${styles.filterBtn} ${styles.anomalyRefreshBtn}`}
@@ -289,6 +352,73 @@ export default function ExchangeReturnAnomalyCard() {
                     </div>
                 ))}
             </div>
+            {receiptOpen && (
+                <div className={styles.previewOverlay} onClick={closeReceipt}>
+                    <div className={styles.previewModal} style={{ width: 'min(1100px, 96vw)' }} onClick={(e) => e.stopPropagation()}>
+                        <div className={styles.previewHeader}>
+                            <strong>입고체크 (원송장번호가 EZAdmin 재고로그 사유에 잡힌 반품 건)</strong>
+                            <button type="button" className={styles.filterBtn} onClick={closeReceipt}>닫기</button>
+                        </div>
+                        <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                            {receiptLoading && (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                                    <div>
+                                        {receiptProgress.phase}
+                                        {receiptProgress.total > 0 && ` (${receiptProgress.done} / ${receiptProgress.total})`}
+                                    </div>
+                                    <div style={{ height: '8px', borderRadius: '999px', background: 'var(--d-border-strong, #ddd)', overflow: 'hidden' }}>
+                                        <div
+                                            style={{
+                                                height: '100%',
+                                                width: `${receiptProgress.total > 0 ? Math.round((receiptProgress.done / receiptProgress.total) * 100) : 5}%`,
+                                                background: 'var(--d-indigo, #4f46e5)',
+                                                transition: 'width 0.3s ease',
+                                            }}
+                                        />
+                                    </div>
+                                </div>
+                            )}
+                            {receiptError && <div style={{ color: 'var(--d-red, #dc3545)' }}>{receiptError}</div>}
+                            {receiptResult && !receiptLoading && (
+                                <>
+                                    <div>
+                                        검사 {receiptResult.checked}건 중 <strong>{receiptResult.matched.length}건</strong> 잡힘
+                                        {receiptResult.skipped.length > 0 && ` · 판단 불가 ${receiptResult.skipped.length}건`}
+                                    </div>
+                                    {receiptResult.matched.length === 0 && <div>잡히는 건이 없습니다.</div>}
+                                    {receiptResult.matched.map((m) => (
+                                        <div key={m.id} className={styles.anomalyRow}>
+                                            <div className={styles.anomalyGrid}>
+                                                <div className={styles.anomalyField}><span className={styles.anomalyFieldLabel}>상품코드</span>{m.productCode}</div>
+                                                <div className={styles.anomalyField}><span className={styles.anomalyFieldLabel}>상품명</span>{m.productName || '-'}</div>
+                                                <div className={styles.anomalyField}><span className={styles.anomalyFieldLabel}>옵션</span>{m.optionInfo || '-'}</div>
+                                                <div className={styles.anomalyField}><span className={styles.anomalyFieldLabel}>원송장번호</span>{m.originInvoice}</div>
+                                                <div className={styles.anomalyField}><span className={styles.anomalyFieldLabel}>반품송장번호</span>{m.returnInvoiceNo}</div>
+                                                <div className={styles.anomalyField}><span className={styles.anomalyFieldLabel}>조회기간</span>{m.range}</div>
+                                            </div>
+                                            {m.logs.map((l, i) => (
+                                                <div key={i} style={{ fontSize: '0.8rem', marginTop: '0.35rem' }}>
+                                                    {l.일시} · {l.구분} {l.수량} (재고 {l.재고}) · {l.사유}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ))}
+                                    {receiptResult.skipped.length > 0 && (
+                                        <details>
+                                            <summary>판단 불가 {receiptResult.skipped.length}건</summary>
+                                            {receiptResult.skipped.map((k) => (
+                                                <div key={k.id} style={{ fontSize: '0.8rem' }}>
+                                                    {k.returnInvoiceNo} · {k.productName} · {k.skip_reason}
+                                                </div>
+                                            ))}
+                                        </details>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

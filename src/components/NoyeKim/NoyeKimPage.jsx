@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import styles from "./NoyeKimPage.module.css";
 import { getDownloadFilename } from "../../lib/download";
-import { appendTsvToCostBase } from "../../lib/costBase";
 import PurchaseManager from "./PurchaseManager";
 import {
   AlertTriangle, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, Clock, Clipboard, FileSpreadsheet,
@@ -414,16 +413,6 @@ export default function NoyeKimPage() {
   const [kdgEzadminLoading, setKdgEzadminLoading] = useState(false);
   const [kdgBarcodePrintLoading, setKdgBarcodePrintLoading] = useState(false);
   const [kdgSelected, setKdgSelected] = useState(() => new Set()); // 결과 표에서 체크한 행 인덱스 (결과는 이어붙기만 하므로 인덱스가 유지된다)
-  const [baseStatus, setBaseStatus] = useState(null);
-  const [baseFile, setBaseFile] = useState(null);
-  const [showBaseEditor, setShowBaseEditor] = useState(false);
-  const [baseColumns, setBaseColumns] = useState([]);
-  const [baseRows, setBaseRows] = useState([]);
-  const [baseTotal, setBaseTotal] = useState(0);
-  const [baseOffset, setBaseOffset] = useState(0);
-  const [baseQuery, setBaseQuery] = useState("");
-  const [baseEdits, setBaseEdits] = useState({});
-  const baseLimit = 50;
 
   const [todayFile, setTodayFile] = useState(null);
   const [todayRows, setTodayRows] = useState([]);
@@ -696,37 +685,6 @@ export default function NoyeKimPage() {
     applyHandoff();
   }, []);
 
-  const fetchBaseStatus = async () => {
-    try {
-      const res = await fetch(`${API}/noye-kimsungil/kdg/base/status`, { headers: getAuthHeaders() });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return;
-      setBaseStatus(data);
-    } catch {
-      // ignore
-    }
-  };
-
-  const fetchBasePreview = async (offset = 0, q = baseQuery) => {
-    const res = await fetch(
-      `${API}/noye-kimsungil/kdg/base/preview?offset=${offset}&limit=${baseLimit}&q=${encodeURIComponent(
-        (q || "").trim()
-      )}`,
-      { headers: getAuthHeaders() }
-    );
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data?.detail || "원가베이스 미리보기 실패");
-    setBaseColumns(data.columns || []);
-    setBaseRows(data.rows || []);
-    setBaseTotal(data.total || 0);
-    setBaseOffset(offset);
-    setBaseEdits({});
-  };
-
-  useEffect(() => {
-    fetchBaseStatus();
-  }, []);
-
   const runKdgConvert = async () => {
     if (!kdgText.trim()) {
       setMessage("원본 텍스트를 먼저 입력하세요.");
@@ -907,131 +865,6 @@ export default function NoyeKimPage() {
       setMessage(`클립보드 복사 완료: ${data?.count || 0}행`);
     } catch (err) {
       setMessage(err.message || "날짜별 복사 실패");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const uploadBase = async () => {
-    if (!baseFile) {
-      setMessage("케이디지 원가베이스 파일을 선택하세요.");
-      return;
-    }
-    setLoading(true);
-    setMessage("");
-    try {
-      const formData = new FormData();
-      formData.append("file", baseFile);
-      const res = await fetch(`${API}/noye-kimsungil/kdg/base/upload`, {
-        method: "POST",
-        headers: getAuthHeaders(),
-        body: formData,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "원가베이스 업로드 실패");
-      await fetchBaseStatus();
-      setMessage("원가베이스 업로드 완료");
-      setBaseFile(null);
-    } catch (err) {
-      setMessage(err.message || "원가베이스 업로드 실패");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const appendBaseFromTsv = async () => {
-    if (!kdgText.trim()) {
-      setMessage("\uC6D0\uBCF8 \uD14D\uC2A4\uD2B8\uB97C \uBA3C\uC800 \uC785\uB825\uD558\uC138\uC694.");
-      return;
-    }
-    setLoading(true);
-    setMessage("");
-    try {
-      const data = await appendTsvToCostBase({
-        apiBase: API,
-        endpoint: "/noye-kimsungil/kdg/base/append-tsv",
-        text: kdgText,
-        headers: getAuthHeaders(),
-      });
-      await fetchBaseStatus();
-      if (showBaseEditor) {
-        const nextTotal = Number(data?.total || 0);
-        const nextOffset = baseQuery.trim()
-          ? 0
-          : Math.max(0, Math.floor(Math.max(nextTotal - 1, 0) / baseLimit) * baseLimit);
-        await fetchBasePreview(nextOffset, baseQuery.trim() ? baseQuery : "");
-      }
-      setMessage(`\uC6D0\uAC00\uBCA0\uC774\uC2A4 \uB370\uC774\uD130 \uCD94\uAC00 \uC644\uB8CC (${data?.appended || 0}\uAC74)`);
-    } catch (err) {
-      setMessage(err.message || "\uC6D0\uAC00\uBCA0\uC774\uC2A4 \uB370\uC774\uD130 \uCD94\uAC00 \uC2E4\uD328");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const commitBaseEdits = async () => {
-    const edits = Object.values(baseEdits);
-    if (!edits.length) {
-      setMessage("변경된 내용이 없습니다.");
-      return;
-    }
-    setLoading(true);
-    setMessage("");
-    try {
-      const res = await fetch(`${API}/noye-kimsungil/kdg/base/edit-batch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ edits }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "원가베이스 수정 실패");
-      setBaseEdits({});
-      await fetchBasePreview(baseOffset, baseQuery);
-      await fetchBaseStatus();
-      setMessage("원가베이스 변경 적용 완료");
-    } catch (err) {
-      setMessage(err.message || "원가베이스 수정 실패");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleBaseCellChange = (rowIndex, colIndex, value) => {
-    setBaseRows((prev) =>
-      prev.map((row) =>
-        row.row_index === rowIndex
-          ? { ...row, values: row.values.map((v, i) => (i === colIndex ? value : v)) }
-          : row
-      )
-    );
-    setBaseEdits((prev) => {
-      const key = `${rowIndex}:${colIndex}`;
-      return { ...prev, [key]: { row_index: rowIndex, column: colIndex, value } };
-    });
-  };
-
-  const downloadBase = async () => {
-    setLoading(true);
-    setMessage("");
-    try {
-      const res = await fetch(`${API}/noye-kimsungil/kdg/base/download`, { headers: getAuthHeaders() });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data?.detail || "원가베이스 다운로드 실패");
-      }
-      const blob = await res.blob();
-      const filename = getDownloadFilename(res, "케이디지원가베이스.xlsx");
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-      setMessage(`다운로드 완료: ${filename}`);
-    } catch (err) {
-      setMessage(err.message || "원가베이스 다운로드 실패");
     } finally {
       setLoading(false);
     }
@@ -2933,36 +2766,6 @@ export default function NoyeKimPage() {
                 <Clipboard size={13} />날짜별 복사
               </button>
             </div>
-            <div className={styles.uploadRow}>
-              <label className={styles.fileInput}>
-                <input type="file" accept=".xls,.xlsx,.xlsm" onChange={(e) => setBaseFile(e.target.files?.[0] ?? null)} />
-                <FileSpreadsheet size={14} />케이디지 원가베이스 선택
-              </label>
-              <button className={styles.secondaryBtn} onClick={uploadBase} disabled={loading}>
-                <ArrowDownToLine size={13} style={{ rotate: "180deg" }} />원가베이스 업로드
-              </button>
-              <button className={styles.secondaryBtn} onClick={appendBaseFromTsv} disabled={loading}>
-                <Plus size={13} />원가베이스 데이터 추가
-              </button>
-              <button className={styles.secondaryBtn} onClick={downloadBase} disabled={loading}>
-                <ArrowDownToLine size={13} />원가베이스 다운로드
-              </button>
-              <button
-                className={styles.secondaryBtn}
-                onClick={async () => {
-                  setShowBaseEditor(true);
-                  await fetchBasePreview(0, "").catch((e) => setMessage(e.message || "원가베이스 미리보기 실패"));
-                }}
-                disabled={loading}
-              >
-                원가베이스 편집
-              </button>
-            </div>
-            {baseStatus?.path && (
-              <div className={styles.statusMsg}>
-                <strong>원가베이스:</strong> {baseStatus.path} {baseStatus.exists ? "" : "(없음)"}
-              </div>
-            )}
             {kdgMissing > 0 && (
               <div className={styles.statusMsg}>
                 <strong>미매칭:</strong> {kdgMissing}건
@@ -3482,87 +3285,6 @@ export default function NoyeKimPage() {
         </div>
       )}
 
-      {showBaseEditor && (
-        <div className={styles.modalOverlay} onClick={() => setShowBaseEditor(false)}>
-          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
-            <div className={styles.modalHeader}>
-              <h3 className={styles.modalTitle}>케이디지 원가베이스 편집</h3>
-              <div className={styles.modalActions}>
-                <input
-                  className={styles.searchInput}
-                  value={baseQuery}
-                  onChange={(e) => setBaseQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") fetchBasePreview(0, baseQuery).catch(() => {});
-                  }}
-                  placeholder="검색어 입력"
-                />
-                <button className={styles.secondaryBtn} onClick={() => fetchBasePreview(0, baseQuery).catch(() => {})}>
-                  검색
-                </button>
-                <button className={styles.secondaryBtn} onClick={() => fetchBasePreview(baseOffset, baseQuery).catch(() => {})}>
-                  <RefreshCw size={13} />새로고침
-                </button>
-                <button className={styles.primaryBtn} onClick={commitBaseEdits} disabled={loading}>
-                  변경 적용
-                </button>
-                <button className={styles.secondaryBtn} onClick={() => setShowBaseEditor(false)}>
-                  <X size={13} />닫기
-                </button>
-              </div>
-            </div>
-            <div className={styles.tableWrap}>
-              <table className={styles.table}>
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    {baseColumns.map((c) => (
-                      <th key={c}>{c}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {baseRows.map((row) => (
-                    <tr key={row.row_index}>
-                      <td>{row.row_index + 1}</td>
-                      {row.values.map((v, idx) => (
-                        <td key={`${row.row_index}-${idx}`}>
-                          <input
-                            className={styles.cellInput}
-                            value={v ?? ""}
-                            onChange={(e) => handleBaseCellChange(row.row_index, idx, e.target.value)}
-                          />
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className={styles.uploadRow}>
-              <button
-                className={styles.secondaryBtn}
-                onClick={() => fetchBasePreview(Math.max(0, baseOffset - baseLimit), baseQuery).catch(() => {})}
-                disabled={baseOffset === 0}
-              >
-                이전
-              </button>
-              <button
-                className={styles.secondaryBtn}
-                onClick={() =>
-                  fetchBasePreview(Math.min(baseOffset + baseLimit, Math.max(baseTotal - baseLimit, 0)), baseQuery).catch(() => {})
-                }
-                disabled={baseOffset + baseLimit >= baseTotal}
-              >
-                다음
-              </button>
-              <span className={styles.metaLabel}>
-                {baseTotal ? `${baseOffset + 1}-${Math.min(baseOffset + baseLimit, baseTotal)} / ${baseTotal}` : "0"}
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
       {/* 입고전표 선택 모달 */}
       {showSlipVoucherModal && (
         <div className={styles.modalOverlay} onClick={() => setShowSlipVoucherModal(false)}>

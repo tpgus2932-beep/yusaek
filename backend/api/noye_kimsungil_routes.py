@@ -23,7 +23,14 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Upload
 from fastapi.responses import FileResponse, Response
 import xlwt
 
-from api.wonbe_routes import _get_wonbe_db, _init_ably_stock_table, load_wonbe_client_info_by_code, load_wonbe_pure_product_name_map
+from api.wonbe_routes import (
+    _get_wonbe_db,
+    _init_ably_stock_table,
+    kdg_match_key,
+    load_wonbe_client_info_by_code,
+    load_wonbe_kdg_match_index,
+    load_wonbe_pure_product_name_map,
+)
 
 ABLY_BASE     = "https://api.a-bly.com"
 ABLY_EMAIL    = "eostm1997@naver.com"
@@ -410,24 +417,6 @@ async def _kdg_find_sheet_seq(
 def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, get_db):
     router = APIRouter(prefix="/noye-kimsungil")
 
-    KDG_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\케이디지원가베이스.db")
-    KDG_ALLOWED_BASE = {".xlsx", ".xls", ".xlsm"}
-
-    def _get_kdg_db():
-        KDG_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(KDG_DB_PATH))
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _init_kdg_table(conn):
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS kdg (
-                변환품명 TEXT PRIMARY KEY,
-                상품코드 TEXT
-            )
-        """)
-        conn.commit()
-
     def _init_purchase_manager_table(conn):
         conn.execute("""
             CREATE TABLE IF NOT EXISTS noye_purchase_manager_state (
@@ -514,35 +503,18 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
             raise ValueError("변환할 품명 라인을 찾지 못했음.")
         return rows
 
-    def _read_base_df(path: Path) -> pd.DataFrame:
-        ext = path.suffix.lower()
-        if ext in (".xlsx", ".xlsm"):
-            return pd.read_excel(path, dtype=str, engine="openpyxl")
-        if ext == ".xls":
-            try:
-                return pd.read_excel(path, dtype=str, engine="xlrd")
-            except Exception:
-                return pd.read_excel(path, dtype=str)
-        return pd.read_excel(path, dtype=str)
-
-    def _load_kdg_base_map() -> dict[str, str]:
-        conn = _get_kdg_db()
-        try:
-            _init_kdg_table(conn)
-            rows = conn.execute("SELECT 변환품명, 상품코드 FROM kdg").fetchall()
-            return {str(r["변환품명"] or ""): str(r["상품코드"] or "") for r in rows}
-        finally:
-            conn.close()
-
-    def _match_kdg_rows(rows: list[dict], base_map: dict[str, str]) -> tuple[list[dict], int]:
+    def _match_kdg_rows(rows: list[dict]) -> tuple[list[dict], int]:
         out = []
         missing = 0
-        # 바코드 라벨(상품명/옵션/거래처상품명)용 정보를 매칭된 상품코드로 원가베이스유에서 같이 붙인다.
+        # 상품코드는 원가베이스유(거래처=케이디지)에서 모델번호/색상/사이즈/기장으로 찾고,
+        # 바코드 라벨(상품명/옵션/거래처상품명)용 정보도 같은 상품코드로 붙인다.
+        match_index = load_wonbe_kdg_match_index()
         client_info = load_wonbe_client_info_by_code()
         pure_names = load_wonbe_pure_product_name_map()
         for row in rows:
-            key = _safe_str(row.get("A(변환품명)"))
-            code = base_map.get(key, "")
+            code = match_index.get(
+                kdg_match_key(row.get("모델번호"), row.get("색상"), row.get("사이즈"), row.get("기장")), ""
+            )
             info = client_info.get(_safe_str(code)) or {}
             merged = {
                 **row,
@@ -638,163 +610,6 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
             df_out = df_out.iloc[:-1]
         return df_out
 
-    @router.get("/kdg/base/status")
-    def kdg_base_status(user: str = Depends(get_current_user)):
-        conn = _get_kdg_db()
-        try:
-            _init_kdg_table(conn)
-            total = conn.execute("SELECT COUNT(*) FROM kdg").fetchone()[0]
-            return {"ok": True, "exists": total > 0, "total": total}
-        finally:
-            conn.close()
-
-    @router.get("/kdg/base/preview")
-    def kdg_base_preview(
-        offset: int = 0,
-        limit: int = 50,
-        q: str | None = None,
-        user: str = Depends(get_current_user),
-    ):
-        if offset < 0 or limit <= 0 or limit > 200:
-            raise HTTPException(status_code=400, detail="offset/limit 값이 올바르지 않습니다.")
-        conn = _get_kdg_db()
-        try:
-            _init_kdg_table(conn)
-            q_norm = _safe_str(q)
-            if q_norm:
-                like = f"%{q_norm}%"
-                rows = conn.execute(
-                    "SELECT rowid, 변환품명, 상품코드 FROM kdg WHERE 변환품명 LIKE ? OR 상품코드 LIKE ? LIMIT ? OFFSET ?",
-                    (like, like, limit, offset),
-                ).fetchall()
-                total = conn.execute(
-                    "SELECT COUNT(*) FROM kdg WHERE 변환품명 LIKE ? OR 상품코드 LIKE ?",
-                    (like, like),
-                ).fetchone()[0]
-            else:
-                rows = conn.execute(
-                    "SELECT rowid, 변환품명, 상품코드 FROM kdg ORDER BY rowid LIMIT ? OFFSET ?",
-                    (limit, offset),
-                ).fetchall()
-                total = conn.execute("SELECT COUNT(*) FROM kdg").fetchone()[0]
-            return {
-                "ok": True,
-                "columns": ["변환품명", "상품코드"],
-                "rows": [{"row_index": r["rowid"], "values": [r["변환품명"] or "", r["상품코드"] or ""]} for r in rows],
-                "total": total,
-            }
-        finally:
-            conn.close()
-
-    @router.post("/kdg/base/upload")
-    async def kdg_base_upload(file: UploadFile = File(...), user: str = Depends(get_current_user)):
-        ext = Path(file.filename or "").suffix.lower()
-        if ext not in KDG_ALLOWED_BASE:
-            raise HTTPException(status_code=400, detail="xls/xlsx/xlsm만 업로드 가능합니다.")
-        data = await file.read()
-        if not data:
-            raise HTTPException(status_code=400, detail="업로드 파일이 비어 있습니다.")
-        tmp = Path(tempfile.gettempdir()) / f"kdg_base_{uuid.uuid4().hex}{ext}"
-        tmp.write_bytes(data)
-        try:
-            df = _read_base_df(tmp)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"파일 읽기 실패: {e}")
-        finally:
-            try:
-                tmp.unlink(missing_ok=True)
-            except Exception:
-                pass
-        if df.shape[1] < 2:
-            raise HTTPException(status_code=400, detail="원가베이스는 최소 A,B열이 필요합니다.")
-        conn = _get_kdg_db()
-        try:
-            _init_kdg_table(conn)
-            conn.execute("DELETE FROM kdg")
-            pairs = [
-                (_safe_str(r.iloc[0]), _safe_str(r.iloc[1]))
-                for _, r in df.iterrows()
-                if _safe_str(r.iloc[0])
-            ]
-            conn.executemany("INSERT OR REPLACE INTO kdg (변환품명, 상품코드) VALUES (?, ?)", pairs)
-            conn.commit()
-            total = conn.execute("SELECT COUNT(*) FROM kdg").fetchone()[0]
-            return {"ok": True, "total": total}
-        finally:
-            conn.close()
-
-    @router.post("/kdg/base/edit-batch")
-    def kdg_base_edit_batch(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        edits = payload.get("edits")
-        if not isinstance(edits, list) or not edits:
-            raise HTTPException(status_code=400, detail="edits 값이 올바르지 않습니다.")
-        conn = _get_kdg_db()
-        try:
-            _init_kdg_table(conn)
-            for item in edits:
-                row_index = item.get("row_index")
-                column = item.get("column")
-                value = _safe_str(item.get("value"))
-                if row_index is None:
-                    continue
-                if column == 0 or column == "변환품명":
-                    conn.execute("UPDATE kdg SET 변환품명=? WHERE rowid=?", (value, row_index))
-                elif column == 1 or column == "상품코드":
-                    conn.execute("UPDATE kdg SET 상품코드=? WHERE rowid=?", (value, row_index))
-            conn.commit()
-            return {"ok": True}
-        finally:
-            conn.close()
-
-    @router.post("/kdg/base/append-tsv")
-    def kdg_base_append_tsv(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        raw_text = _safe_str(payload.get("text"))
-        skip_header = bool(payload.get("skip_header"))
-        lines = [ln for ln in raw_text.splitlines() if ln.strip()]
-        if skip_header and lines:
-            lines = lines[1:]
-        pairs = []
-        for ln in lines:
-            parts = ln.split("\t", 1)
-            key = parts[0].strip() if parts else ""
-            val = parts[1].strip() if len(parts) > 1 else ""
-            if key:
-                pairs.append((key, val))
-        if not pairs:
-            raise HTTPException(status_code=400, detail="추가할 데이터가 없습니다.")
-        conn = _get_kdg_db()
-        try:
-            _init_kdg_table(conn)
-            conn.executemany("INSERT OR REPLACE INTO kdg (변환품명, 상품코드) VALUES (?, ?)", pairs)
-            conn.commit()
-            total = conn.execute("SELECT COUNT(*) FROM kdg").fetchone()[0]
-            return {"ok": True, "appended": len(pairs), "total": total}
-        finally:
-            conn.close()
-
-    @router.get("/kdg/base/download")
-    def kdg_base_download(user: str = Depends(get_current_user)):
-        conn = _get_kdg_db()
-        try:
-            _init_kdg_table(conn)
-            rows = conn.execute("SELECT 변환품명, 상품코드 FROM kdg ORDER BY rowid").fetchall()
-        finally:
-            conn.close()
-        book = xlwt.Workbook()
-        sheet = book.add_sheet("Sheet1")
-        sheet.write(0, 0, "변환품명")
-        sheet.write(0, 1, "상품코드")
-        for i, row in enumerate(rows, start=1):
-            sheet.write(i, 0, row["변환품명"] or "")
-            sheet.write(i, 1, row["상품코드"] or "")
-        buf = io.BytesIO()
-        book.save(buf)
-        return Response(
-            content=buf.getvalue(),
-            media_type="application/vnd.ms-excel",
-            headers={"Content-Disposition": _content_disposition("케이디지원가베이스.xls")},
-        )
-
     @router.post("/kdg/convert")
     def kdg_convert(payload: dict = Body(...), user: str = Depends(get_current_user)):
         raw = _safe_str(payload.get("text"))
@@ -805,8 +620,7 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
     def kdg_match(payload: dict = Body(...), user: str = Depends(get_current_user)):
         raw = _safe_str(payload.get("text"))
         rows = _parse_kdg_text(raw)
-        base_map = _load_kdg_base_map()
-        matched, missing = _match_kdg_rows(rows, base_map)
+        matched, missing = _match_kdg_rows(rows)
         return {"ok": True, "count": len(matched), "missing": missing, "rows": matched}
 
     @router.post("/kdg/export-xls")
@@ -818,8 +632,7 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
             raw = _safe_str(payload.get("text"))
             rows = _parse_kdg_text(raw)
         if bool(payload.get("with_match", True)) and not (pre_rows and isinstance(pre_rows, list)):
-            base_map = _load_kdg_base_map()
-            rows, _ = _match_kdg_rows(rows, base_map)
+            rows, _ = _match_kdg_rows(rows)
 
         book = xlwt.Workbook()
         sheet = book.add_sheet("입고업로드")

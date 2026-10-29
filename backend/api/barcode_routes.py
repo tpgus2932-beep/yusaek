@@ -35,6 +35,7 @@ _INCOMING_VERIFY_EXCLUDED_CLIENTS = {"케이디지", "리자드스탠다드", "�
 _SCHEDULE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 from services.defect_tab import bind_defect_tab
+from services.ezadmin_stock_log import fetch_ezadmin_stock_logs
 from api.wonbe_routes import _get_wonbe_db as _get_wonbe_db, record_defect_process_logs
 from barcode_core import normalize_to_s5
 
@@ -3920,6 +3921,35 @@ def build_barcode_router(
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"파일 파싱 실패: {exc}")
         finally:
+    @router.post("/barcode/stock-log")
+    async def barcode_stock_log(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        """EZAdmin 재고내역(I100 get_tx_history)을 상품코드로 조회한다."""
+        product_id = str(payload.get("product_code") or "").strip()
+        if not product_id:
+            raise HTTPException(status_code=400, detail="상품코드를 입력하세요.")
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        end_date = str(payload.get("end_date") or "").strip() or datetime.now(_KST).strftime("%Y-%m-%d")
+        start_date = str(payload.get("start_date") or "").strip() or (
+            datetime.now(_KST) - timedelta(days=30)
+        ).strftime("%Y-%m-%d")
+        if not _SCHEDULE_DATE_RE.match(start_date) or not _SCHEDULE_DATE_RE.match(end_date):
+            raise HTTPException(status_code=400, detail="날짜 형식이 올바르지 않습니다.")
+
+        try:
+            logs = await fetch_ezadmin_stock_logs(phpsessid, product_id, start_date, end_date)
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"EZAdmin 재고내역 조회 실패: {exc}")
+        if logs is None:
+            return {"ok": False, "need_session": True}
+        return {"ok": True, "product_code": product_id, "start_date": start_date, "end_date": end_date, "count": len(logs), "logs": logs}
+
             tmp_path.unlink(missing_ok=True)
 
         set_shared_incoming_counts(dict(counts))

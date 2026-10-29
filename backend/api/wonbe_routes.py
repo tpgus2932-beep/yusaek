@@ -538,6 +538,84 @@ def load_wonbe_client_info_by_code() -> dict[str, dict[str, str]]:
     return info_map
 
 
+_KDG_LENGTH_ALIASES = {
+    "롱": "롱", "long": "롱", "롱(lo)": "롱",
+    "숏": "숏", "short": "숏", "숏(sh)": "숏",
+    "기본": "기본", "midi": "기본",
+}
+
+
+def kdg_match_key(model_no, color, size, length) -> tuple[str, str, str, str]:
+    """케이디지 모델번호/색상/사이즈/기장 → 원가베이스유 매칭 키.
+    색상 뒤 "(1)" 같은 번호 표기는 떼고, 사이즈는 대문자로 맞춘다."""
+    color = re.sub(r"\(\d+\)\s*$", "", str(color or "").strip()).strip()
+    return (
+        str(model_no or "").strip(),
+        color,
+        str(size or "").strip().upper(),
+        _KDG_LENGTH_ALIASES.get(str(length or "").strip().lower(), "기본"),
+    )
+
+
+def load_wonbe_kdg_match_index() -> dict[tuple[str, str, str, str], str]:
+    """거래처가 케이디지인 원가베이스유 행을 (모델번호, 색상, 사이즈, 기장) → 상품코드로 색인.
+
+    모델번호는 거래처상품명(예: "FJ-4081_1", "4086-4")의 4자리 숫자, 색상은 색상 컬럼에서
+    "(N)"을 뗀 값, 사이즈 컬럼은 "롱 L" / "S Short" / "F1(S) Short" 처럼 기장과 사이즈가
+    섞여 있어 토큰별로 분리한다. 같은 키에 상품코드가 둘 이상이면 모호하므로 제외한다."""
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute(
+            "SELECT 상품코드, 색상, 사이즈, 거래처상품명 FROM wonbe WHERE 거래처 = '케이디지' AND 상품코드 != ''"
+        ).fetchall()
+    finally:
+        conn.close()
+    found: dict[tuple[str, str, str, str], list[str]] = {}
+    for r in rows:
+        m = re.search(r"\d{4}", str(r["거래처상품명"] or ""))
+        if not m:
+            continue
+        length, size = "기본", ""
+        for tok in str(r["사이즈"] or "").split():
+            low = tok.lower()
+            if low in _KDG_LENGTH_ALIASES:
+                length = _KDG_LENGTH_ALIASES[low]
+                continue
+            fm = re.fullmatch(r"f\d\((\w+)\)", low)
+            size = fm.group(1) if fm else tok
+        key = kdg_match_key(m.group(), r["색상"], size, length)
+        found.setdefault(key, []).append(str(r["상품코드"]).strip())
+    return {k: v[0] for k, v in found.items() if len(set(v)) == 1}
+
+
+def load_wonbe_rename_prefix_map() -> dict[str, str]:
+    """상품코드 → 상품명 일괄변경이 앞에 붙이는 카테고리+컬러 글자(예: "AA", "BC").
+
+    간단입고 등 라벨의 상품명이 EZAdmin에 올라간 이름(일괄변경 결과)과 같게 나오도록 쓴다.
+    카테고리나 컬러 글자 매핑이 없는 상품은 빠진다. (거래처 접두어 우선 규칙은 호출하는 쪽에서 적용)"""
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS wonbe_color_map2 (카테고리 TEXT NOT NULL, 색상 TEXT NOT NULL, letter TEXT NOT NULL, PRIMARY KEY (카테고리, 색상))"
+        )
+        cmap = {(r["카테고리"], r["색상"]): r["letter"] for r in conn.execute("SELECT 카테고리, 색상, letter FROM wonbe_color_map2").fetchall()}
+        rows = conn.execute(
+            "SELECT 상품코드, 색상, 카테고리 FROM wonbe WHERE 상품코드 != '' AND 카테고리 IN ('상의','하의','아우터','악세사리')"
+        ).fetchall()
+    finally:
+        conn.close()
+    result: dict[str, str] = {}
+    for r in rows:
+        code = str(r["상품코드"] or "").strip()
+        color = str(r["색상"] or "").strip()
+        letter = cmap.get((r["카테고리"], color))
+        if code and letter and code not in result:
+            result[code] = f"{CATEGORY_LETTER[r['카테고리']]}{letter}"
+    return result
+
+
 def build_dash_options(client_info: dict) -> str:
     """색상-기장-사이즈를 대시로 이어붙인 옵션 문자열을 만든다.
 
@@ -664,16 +742,6 @@ def wonbe_cost_base_status() -> dict:
     finally:
         conn.close()
     return {"path": str(WONBE_DB_PATH), "exists": exists, "mtime": mtime, "rows": count}
-
-
-def _init_kdg_table(conn: sqlite3.Connection):
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS 케이디지원가베이스 (
-            상품명합  TEXT,
-            상품코드  TEXT PRIMARY KEY
-        )
-    """)
-    conn.commit()
 
 
 def _init_ingodaegi_table(conn: sqlite3.Connection):
@@ -3056,18 +3124,6 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                     id_backfill,
                 )
 
-            # 거래처가 케이디지인 행을 케이디지원가베이스 테이블에도 추가
-            _init_kdg_table(conn)
-            kdg_rows = [
-                (row[8], row[0])  # (상품명합, 상품코드)
-                for row in final_rows
-                if row[5] == "케이디지"
-            ]
-            if kdg_rows:
-                conn.executemany(
-                    """INSERT OR IGNORE INTO 케이디지원가베이스 (상품명합, 상품코드) VALUES (?, ?)""",
-                    kdg_rows,
-                )
             synced_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             conn.execute(
                 "INSERT OR REPLACE INTO wonbe_meta (key, value) VALUES ('last_sync_at', ?)",
