@@ -1192,6 +1192,94 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
             conn.close()
         return {"result": _attach_inbound(json.loads(row["result_json"])) if row else None}
 
+    @router.get("/malignant-delay/list")
+    async def malignant_delay_list(current_user=Depends(get_current_user)):
+        """에이블리 악성지연(상품준비중, 지연, 옵션 구매불가) 주문을 모두 가져와 원가베이스 옵션·입고 일정을 붙인다."""
+        params = {
+            "order": "-checked_at",
+            "delivery_type[]": ["standard", "today", "combine", "reserved"],
+            "is_delayed": 2,
+            "is_option_buyable": 0,
+            "processing_status[]": 2,
+            "processing_sub_status[]": 0,
+            "per_page": 100,
+        }
+        raw: list[dict] = []
+        total = None
+        for page in range(1, 41):
+            if page == 1:
+                total = (await _ably_get(http, "/seller/order_items/total-count/", {k: v for k, v in params.items() if k not in ("order", "per_page")})).get("total_count")
+            data = await _ably_get(http, "/seller/order_items/", {**params, "page": page})
+            chunk = data.get("order_items") or []
+            raw.extend(chunk)
+            if not chunk or (total is not None and len(raw) >= total):
+                break
+
+        base = _cost_base()
+        conn = get_db()
+        try:
+            product_links = {r["goods_sno"]: r["base_name"] for r in conn.execute("SELECT goods_sno, base_name FROM cs_product_links").fetchall()}
+            option_links = {
+                (r["goods_sno"], r["option_key"]): r["base_code"]
+                for r in conn.execute("SELECT goods_sno, option_key, base_code FROM cs_option_links").fetchall()
+            }
+        finally:
+            conn.close()
+
+        rows_cache: dict = {}
+        items = []
+        for it in raw:
+            goods_sno = it.get("goods_sno")
+            name = it.get("goods_name") or ""
+            options = [it.get("option_info") or ""]
+            code, label = "", ""
+            if base is not None:
+                if goods_sno not in rows_cache:
+                    rows_cache[goods_sno] = base.product_rows(goods_sno, name, product_links.get(goods_sno, ""))[1]
+                rows = rows_cache[goods_sno]
+                if rows:
+                    _, row = base.match_option(rows, options, it.get("option_stock_sync_code"), option_links.get((goods_sno, option_key(options)), ""))
+                    if row:
+                        info = base.option_info(row)
+                        code, label = info["code"], info["label"]
+            items.append(
+                {
+                    "sno": it.get("sno"),
+                    "order_sno": it.get("order_sno"),
+                    "goods_sno": goods_sno,
+                    "goods_name": name,
+                    "option_info": it.get("option_info") or "",
+                    "ea": it.get("ea"),
+                    "buyer_name": it.get("buyer_name") or "",
+                    "ordered_at": it.get("ordered_at") or "",
+                    "delay_days": it.get("delay_days"),
+                    "expected_delivery": (it.get("delivery_expected_info") or {}).get("delivery_date_range") or "",
+                    "code": code,
+                    "base_label": label,
+                }
+            )
+        # 입고 일정은 코드로 한 번에 읽는다 (일정이 있는 옵션만 inbound 가 채워진다).
+        attached = _attach_inbound({"options": [{"code": c} for c in {i["code"] for i in items if i["code"]}]})
+        by_code = {o["code"]: o.get("inbound") for o in attached["options"]}
+        for i in items:
+            i["inbound"] = by_code.get(i["code"]) if i["code"] else None
+        return {"ok": True, "total": len(items), "fetched_at": datetime.now(_KST).isoformat(), "items": items}
+
+    @router.post("/malignant-delay/stock")
+    async def malignant_delay_stock(body: dict = Body(...), current_user=Depends(get_current_user)):
+        """악성지연 상품 하나의 옵션별 재고 — 상품별 재고 조회(/stock/lookup)를 그대로 쓰고 필요한 값만 돌려준다."""
+        result = await stock_lookup({"goods_sno": body.get("goods_sno"), "name": body.get("name")}, current_user)
+        return {
+            "ok": True,
+            "source": result["source"],
+            "note": result["note"],
+            "fetched_at": result["fetched_at"],
+            "options": [
+                {k: o.get(k) for k in ("code", "stock_qty", "stock_in_standby", "found", "inbound")}
+                for o in result["options"]
+            ],
+        }
+
     @router.get("/cost-base/search")
     def cost_base_search(q: str = "", current_user=Depends(get_current_user)):
         base = _cost_base()

@@ -4,7 +4,7 @@ import styles from './CSPage.module.css';
 import CSDashboard from './CSDashboard';
 import CSProducts from './CSProducts';
 import CSConversation from './CSConversation';
-import CSAddress from './CSAddress';
+import CSMalignantDelay from './CSMalignantDelay';
 import CSMyTemplates from './CSMyTemplates';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
@@ -84,7 +84,7 @@ const CSPage = () => {
     const [view, setView] = useState(() => {
         try {
             const saved = localStorage.getItem('csView');
-            return ['dashboard', 'products', 'inbox', 'address'].includes(saved) ? saved : 'dashboard';
+            return ['dashboard', 'products', 'inbox', 'malignant'].includes(saved) ? saved : 'dashboard';
         } catch {
             return 'dashboard';
         }
@@ -297,10 +297,10 @@ const CSPage = () => {
                 </button>
                 <button
                     type="button"
-                    className={`${styles.tab} ${view === 'address' ? styles.tabActive : ''}`}
-                    onClick={() => setView('address')}
+                    className={`${styles.tab} ${view === 'malignant' ? styles.tabActive : ''}`}
+                    onClick={() => setView('malignant')}
                 >
-                    주소변경
+                    악성지연 확인
                 </button>
                 {view === 'inbox' && (
                     <>
@@ -363,7 +363,7 @@ const CSPage = () => {
                     }
                 />
             )}
-            {view === 'address' && <CSAddress />}
+            {view === 'malignant' && <CSMalignantDelay />}
             <div className={styles.body} style={view === 'inbox' ? undefined : { display: 'none' }}>
                 <aside className={styles.list}>
                     <div className={styles.sortBar}>

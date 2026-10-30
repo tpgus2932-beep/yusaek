@@ -1,0 +1,159 @@
+.wrap {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    max-width: 1280px;
+    width: 100%;
+    margin: 0 auto;
+}
+
+.card {
+    margin-bottom: 12px;
+    padding: 16px 18px;
+    border-radius: 16px;
+    background: var(--cs-card);
+    box-shadow: var(--cs-shadow);
+}
+
+.toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.toolbar h3 {
+    margin: 0 auto 0 0;
+    font-size: 0.95rem;
+}
+
+.hint {
+    color: var(--cs-sub);
+    font-size: 0.78rem;
+    font-weight: 400;
+}
+
+.search {
+    min-width: 220px;
+    padding: 8px 12px;
+    border: 1px solid var(--cs-line);
+    border-radius: 10px;
+    background: var(--cs-bg);
+    color: var(--cs-text);
+    font-size: 0.85rem;
+    outline: none;
+}
+
+.check {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.8rem;
+}
+
+.primary,
+.secondary,
+.small {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 10px;
+    font-size: 0.82rem;
+    cursor: pointer;
+}
+
+.primary {
+    padding: 8px 14px;
+    border: none;
+    background: var(--cs-accent);
+    color: #fff;
+    font-weight: 600;
+}
+
+.secondary {
+    padding: 8px 12px;
+    border: 1px solid var(--cs-line);
+    background: var(--cs-bg);
+    color: var(--cs-text);
+}
+
+.small {
+    padding: 4px 10px;
+    border: 1px solid var(--cs-line);
+    background: var(--cs-bg);
+    color: var(--cs-text);
+    white-space: nowrap;
+}
+
+.primary:disabled,
+.secondary:disabled,
+.small:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.muted {
+    color: var(--cs-sub);
+    font-size: 0.76rem;
+}
+
+.error {
+    color: #dc2626;
+    font-size: 0.76rem;
+}
+
+.tableWrap {
+    overflow-x: auto;
+}
+
+.table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+}
+
+.table th,
+.table td {
+    padding: 7px 8px;
+    border-bottom: 1px solid var(--cs-line);
+    text-align: left;
+    vertical-align: top;
+}
+
+.table th {
+    color: var(--cs-sub);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.name {
+    min-width: 260px;
+}
+
+.nowrap {
+    white-space: nowrap;
+}
+
+.ask {
+    color: #dc2626;
+    font-weight: 700;
+}
+
+.date {
+    font-weight: 700;
+}
+
+.past {
+    color: #ea580c;
+    font-weight: 700;
+}
+
+.num {
+    font-weight: 700;
+}
+
+.zero {
+    color: #dc2626;
+    font-weight: 700;
+}
