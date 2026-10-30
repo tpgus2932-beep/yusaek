@@ -82,7 +82,15 @@ function startJob(key, fn, authHeaders) {
     return job;
 }
 
-const POLL_INTERVAL_MS = 4000;
+const POLL_INTERVAL_MS = 1500;
+
+function reportProgress(key, phase, done, total, authHeaders) {
+    fetch(`${API}/daily-checklist/${key}/progress`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ phase, done, total }),
+    }).catch(() => {});
+}
 
 export default function DailyChecklistCard() {
     const [items, setItems] = useState([]);
@@ -166,6 +174,14 @@ export default function DailyChecklistCard() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    // 이 탭에서 직접 시작한 작업은 fetchStatus가 스스로 폴링하지 않으므로, 실행 중에는 진행도를 따로 읽는다.
+    useEffect(() => {
+        if (!activeKey || !activeJob) return undefined;
+        const timer = setInterval(fetchStatus, POLL_INTERVAL_MS);
+        return () => clearInterval(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeKey]);
+
     const run = (key, fn) => {
         if (activeJob) return; // 이미 다른 작업이 실행 중 - 버튼도 비활성화돼 있어야 정상
         setResultMsg((prev) => ({ ...prev, [key]: '' }));
@@ -236,7 +252,8 @@ export default function DailyChecklistCard() {
         const targets = listData.items || [];
         if (!targets.length) return { message: '교환수거중 미처리 건 없음' };
         let success = 0, skipped = 0, failed = 0;
-        for (const item of targets) {
+        for (const [idx, item] of targets.entries()) {
+            reportProgress('daily_check_process_all', '교환/반품 건 처리 중', idx, targets.length, authHeaders);
             try {
                 const res = await fetch(`${API}/exchange-return/process-one`, {
                     method: 'POST',
@@ -406,6 +423,24 @@ export default function DailyChecklistCard() {
                                     {activeKey === item.key ? '실행 중...' : '실행'}
                                 </button>
                             </div>
+                            {activeKey === item.key && item.progress && (
+                                <div style={{ marginLeft: '1.5rem', marginBottom: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                                    <div style={{ fontSize: '0.85rem' }}>
+                                        {item.progress.phase}
+                                        {item.progress.total > 0 && ` (${item.progress.done} / ${item.progress.total})`}
+                                    </div>
+                                    <div style={{ height: '8px', borderRadius: '999px', background: 'var(--d-border-strong, #ddd)', overflow: 'hidden' }}>
+                                        <div
+                                            style={{
+                                                height: '100%',
+                                                width: `${item.progress.total > 0 ? Math.max(5, Math.round((item.progress.done / item.progress.total) * 100)) : 5}%`,
+                                                background: 'var(--d-indigo, #4f46e5)',
+                                                transition: 'width 0.3s ease',
+                                            }}
+                                        />
+                                    </div>
+                                </div>
+                            )}
                             {SELLER_FAULT_CONFIGS[item.key] && (() => {
                                 const config = SELLER_FAULT_CONFIGS[item.key];
                                 const open = !!sellerFaultOpen[item.key];

@@ -15,6 +15,8 @@ from openpyxl import load_workbook
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile
 
+from services.checklist_progress import clear_progress, set_progress
+
 ABLY_BASE = "https://api.a-bly.com"
 LLOGIS_LOGIN_URL = "https://partner.alps.llogis.com/auth/login"
 LLOGIS_BASE = "https://pid.alps.llogis.com:18210"
@@ -28,6 +30,7 @@ LLOGIS_EMP_NO = "348867"
 
 _EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+_NEW_RETURN_KEY = "daily_check_new_return_pickup"
 _KST = timezone(timedelta(hours=9))
 _BROWSER_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 _BROWSER_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -1042,6 +1045,7 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
         running_key = "daily_check_new_return_pickup_running_at"
         if set_setting:
             set_setting(running_key, datetime.now(_KST).isoformat())
+        set_progress(_NEW_RETURN_KEY, "에이블리 신규반품 조회 중")
         try:
             data = await _run_new_return_pickup(phpsessid)
             if set_setting and not data.get("need_session"):
@@ -1054,6 +1058,7 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                 set_setting("daily_check_new_return_pickup_last_result", message)
             return data
         finally:
+            clear_progress(_NEW_RETURN_KEY)
             if set_setting:
                 set_setting(running_key, None)
 
@@ -1094,6 +1099,7 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                 cancels = data.get("order_cancels", [])
                 if not cancels:
                     break
+                set_progress(_NEW_RETURN_KEY, "에이블리 신규반품 조회 중", page, data.get("max_page_number", 1))
                 for cancel in cancels:
                     items = cancel.get("order_items", [])
                     # 판매자 사유(상품 하자/오배송, 셀러 변경) 건은 회수신청/문자 대상에서 제외
@@ -1132,10 +1138,12 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
             note = " (전체가 판매자 부담 사유로 제외됨)" if seller_fault_count else ""
             return {"ok": False, "error": f"처리할 송장번호가 없습니다 (sub_status=41 건 없음){note}"}
 
+        set_progress(_NEW_RETURN_KEY, f"이지어드민 회수신청 등록 중 (송장 {len(inv_to_sno)}건)")
         result = await _register_return_invoices(phpsessid, inv_to_sno, ably_headers)
         if not result.get("ok"):
             return result
 
+        set_progress(_NEW_RETURN_KEY, "안내 문자 발송 중")
         sms_queued = _send_return_pickup_sms(sms_recipients)
 
         # 체크리스트의 "오늘 실행됨" 표시는 실제로 회수신청/문자발송까지 끝난

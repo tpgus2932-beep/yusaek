@@ -1793,15 +1793,14 @@ app.include_router(
     )
 )
 
-app.include_router(
-    build_exchange_return_router(
-        get_current_user=_get_current_user,
-        get_setting=_get_setting,
-        get_db=_get_shared_db,
-        enqueue_sms=_enqueue_sms_fn,
-        set_setting=_set_setting,
-    )
+_exchange_return_router = build_exchange_return_router(
+    get_current_user=_get_current_user,
+    get_setting=_get_setting,
+    get_db=_get_shared_db,
+    enqueue_sms=_enqueue_sms_fn,
+    set_setting=_set_setting,
 )
+app.include_router(_exchange_return_router)
 
 app.include_router(
     build_pastelco_router(
@@ -2314,6 +2313,7 @@ _exchange_return_anomaly_router = build_exchange_return_anomaly_router(
     get_db=_get_shared_db,
     get_setting=_get_setting,
     set_setting=_set_setting,
+    run_ship_pending=_exchange_return_router.run_ship_pending,
 )
 app.include_router(_exchange_return_anomaly_router)
 

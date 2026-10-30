@@ -3,6 +3,7 @@ import { MessageSquare, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react';
 import styles from './Dashboard.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import { useEzadminSession } from '../../lib/EzadminSessionContext';
+import ReceiptSkippedList from './ReceiptSkippedList';
 
 function formatDate(raw) {
     if (!raw) return '-';
@@ -57,6 +58,10 @@ export default function ExchangeReturnAnomalyCard() {
     const [receiptResult, setReceiptResult] = useState(null);
     const [receiptProgress, setReceiptProgress] = useState({ phase: '', done: 0, total: 0 });
     const receiptRunRef = useRef(0);
+    const [advanceLoading, setAdvanceLoading] = useState(false);
+    const [advanceMsg, setAdvanceMsg] = useState('');
+    const [advanceProgress, setAdvanceProgress] = useState({ phase: '', done: 0, total: 0 });
+    const advanceRunRef = useRef(0);
 
     const fetchList = useCallback(async () => {
         try {
@@ -182,8 +187,55 @@ export default function ExchangeReturnAnomalyCard() {
         }
     };
 
+    // 입고체크로 잡힌 건: 교환상품준비중 -> EZAdmin C주문번호 송장으로 교환재배송중 처리
+    const advanceMatched = async () => {
+        const ids = (receiptResult?.matched || []).map((m) => m.id);
+        if (!ids.length) return;
+        if (!window.confirm(`잡힌 ${ids.length}건을 교환상품준비중으로 넘기고 송장을 등록해 교환재배송중 처리할까요?`)) return;
+        const runId = ++advanceRunRef.current;
+        setAdvanceLoading(true);
+        setAdvanceMsg('');
+        setAdvanceProgress({ phase: '시작 중', done: 0, total: ids.length });
+        try {
+            const res = await fetch(`${API}/exchange-return-anomaly/receipt-check/advance`, {
+                method: 'POST',
+                headers: { ...authHeaders, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids }),
+            });
+            if (handleUnauthorized(res)) return;
+            const start = await res.json().catch(() => ({}));
+            if (start?.need_session) { setReceiptOpen(false); openEzadminModal(advanceMatched); return; }
+            if (!res.ok || !start?.job_id) throw new Error(start?.error || start?.detail || '처리 실패');
+            // 오래 걸리는 작업이라 요청 하나로 기다리지 않고, 끝날 때까지 1초마다 진행도를 가져온다.
+            let job = {};
+            while (advanceRunRef.current === runId) {
+                await new Promise((r) => setTimeout(r, 1000));
+                if (advanceRunRef.current !== runId) return;
+                const sres = await fetch(`${API}/exchange-return-anomaly/receipt-check/advance/${start.job_id}`, { headers: authHeaders });
+                if (handleUnauthorized(sres)) return;
+                job = await sres.json().catch(() => ({}));
+                if (!sres.ok) throw new Error(job?.detail || '진행도 조회 실패');
+                setAdvanceProgress({ phase: job.phase, done: job.done, total: job.total });
+                if (job.finished) break;
+            }
+            if (advanceRunRef.current !== runId) return;
+            if (job.error) throw new Error(job.error);
+            if (job.result?.need_session) { setReceiptOpen(false); openEzadminModal(advanceMatched); return; }
+            const data = job.result || {};
+            const s = data.ship || {};
+            const fails = (s.results || []).filter((r) => !r.ok).map((r) => `${r.exchange_sno}: ${r.error}`);
+            setAdvanceMsg(`${data.prepare_timeout ? '(교환상품준비중 응답이 늦어 상태 확인 후 이어서 처리했어요)\n' : ''}교환상품준비중 ${data.prepared}건 · 재배송 성공 ${s.success || 0} / 스킵 ${s.skipped || 0} / 실패 ${s.failed || 0}${fails.length ? `\n${fails.join('\n')}` : ''}`);
+        } catch (err) {
+            if (advanceRunRef.current === runId) setAdvanceMsg(err.message || '처리 실패');
+        } finally {
+            if (advanceRunRef.current === runId) setAdvanceLoading(false);
+        }
+    };
+
     const closeReceipt = () => {
         receiptRunRef.current += 1;
+        advanceRunRef.current += 1;
+        setAdvanceLoading(false);
         setReceiptLoading(false);
         setReceiptOpen(false);
     };
@@ -386,6 +438,32 @@ export default function ExchangeReturnAnomalyCard() {
                                         {receiptResult.skipped.length > 0 && ` · 판단 불가 ${receiptResult.skipped.length}건`}
                                     </div>
                                     {receiptResult.matched.length === 0 && <div>잡히는 건이 없습니다.</div>}
+                                    {receiptResult.matched.length > 0 && (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                                            <button type="button" className={styles.filterBtn} disabled={advanceLoading} onClick={advanceMatched}>
+                                                {advanceLoading ? '처리 중...' : `잡힌 ${receiptResult.matched.length}건 교환재배송 처리`}
+                                            </button>
+                                            {advanceLoading && (
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                                                    <div>
+                                                        {advanceProgress.phase}
+                                                        {advanceProgress.total > 0 && ` (${advanceProgress.done} / ${advanceProgress.total})`}
+                                                    </div>
+                                                    <div style={{ height: '8px', borderRadius: '999px', background: 'var(--d-border-strong, #ddd)', overflow: 'hidden' }}>
+                                                        <div
+                                                            style={{
+                                                                height: '100%',
+                                                                width: `${advanceProgress.total > 0 ? Math.max(5, Math.round((advanceProgress.done / advanceProgress.total) * 100)) : 5}%`,
+                                                                background: 'var(--d-indigo, #4f46e5)',
+                                                                transition: 'width 0.3s ease',
+                                                            }}
+                                                        />
+                                                    </div>
+                                                </div>
+                                            )}
+                                            {advanceMsg && <div style={{ whiteSpace: 'pre-wrap', fontSize: '0.85rem' }}>{advanceMsg}</div>}
+                                        </div>
+                                    )}
                                     {receiptResult.matched.map((m) => (
                                         <div key={m.id} className={styles.anomalyRow}>
                                             <div className={styles.anomalyGrid}>
@@ -403,16 +481,7 @@ export default function ExchangeReturnAnomalyCard() {
                                             ))}
                                         </div>
                                     ))}
-                                    {receiptResult.skipped.length > 0 && (
-                                        <details>
-                                            <summary>판단 불가 {receiptResult.skipped.length}건</summary>
-                                            {receiptResult.skipped.map((k) => (
-                                                <div key={k.id} style={{ fontSize: '0.8rem' }}>
-                                                    {k.returnInvoiceNo} · {k.productName} · {k.skip_reason}
-                                                </div>
-                                            ))}
-                                        </details>
-                                    )}
+                                    <ReceiptSkippedList skipped={receiptResult.skipped} matchUrl={`${API}/exchange-return-anomaly/receipt-check/match`} />
                                 </>
                             )}
                         </div>

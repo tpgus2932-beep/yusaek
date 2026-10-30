@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import calendar
+import json
 import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+import httpx
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 from services.delivery_anomaly_logic import (
     evaluate_exchange_redelivery_anomaly,
@@ -35,6 +37,8 @@ _LAST_RUN_SETTING_KEY = "exchange_return_anomaly_last_run_date"
 _LOOKBACK_DAYS = 60
 
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+# 입고체크에서 자동 매칭이 안 돼 사람이 직접 지정한 상품코드: {매칭키: {"code", "name", "option"}}
+_CODE_OVERRIDES_KEY = "receipt_check_code_overrides"
 
 
 def _add_one_month(d: date) -> date:
@@ -54,7 +58,7 @@ def _invoice_in_reason(invoice: str, reason: str) -> bool:
     return len(digits) >= 8 and digits in re.sub(r"[\s-]", "", reason)
 
 
-def build_exchange_return_anomaly_router(*, get_current_user, get_db, get_setting, set_setting):
+def build_exchange_return_anomaly_router(*, get_current_user, get_db, get_setting, set_setting, run_ship_pending=None):
     router = APIRouter(prefix="/exchange-return-anomaly")
 
     @router.get("/list")
@@ -211,6 +215,29 @@ def build_exchange_return_anomaly_router(*, get_current_user, get_db, get_settin
 
     receipt_jobs: dict[str, dict] = {}
 
+    def _load_code_overrides() -> dict:
+        try:
+            data = json.loads(get_setting(_CODE_OVERRIDES_KEY) or "{}")
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    @router.post("/receipt-check/match")
+    def receipt_check_save_match(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """상품코드 매칭 실패 건을 직접 매칭한 결과를 저장한다 - 다음 입고체크부터 같은 옵션은 자동으로 이 코드를 쓴다."""
+        key = str(payload.get("key") or "").strip()
+        code = str(payload.get("code") or "").strip()
+        if not key or not code:
+            raise HTTPException(status_code=400, detail="매칭할 건과 상품코드가 필요합니다.")
+        overrides = _load_code_overrides()
+        overrides[key] = {
+            "code": code,
+            "name": str(payload.get("name") or "")[:200],
+            "option": str(payload.get("option") or "")[:100],
+        }
+        set_setting(_CODE_OVERRIDES_KEY, json.dumps(overrides, ensure_ascii=False))
+        return {"ok": True, "key": key, "code": code}
+
     async def _receipt_check_worker(job: dict, phpsessid: str) -> None:
         """반품 이상현상 건마다 상품코드의 EZAdmin 재고로그(최종스캔일~한 달 뒤, 최대 오늘)를 조회해서
         사유에 원송장번호가 들어있는 로그가 있는 건만 job["result"]에 담는다 (이미 입고처리된 건 찾기)."""
@@ -238,6 +265,7 @@ def build_exchange_return_anomaly_router(*, get_current_user, get_db, get_settin
             ex_by_sno = {str(ex.get("exchange_sno") or ex.get("sno") or ""): ex for ex in exchanges}
             product_codes = load_wonbe_product_codes()
             option_sno_map = load_wonbe_option_sno_map()
+            overrides = _load_code_overrides()
 
             async def resolve(row) -> dict:
                 """이상현상 1건 -> 상품코드/원송장번호/조회기간 확정. 못 구하면 skip_reason."""
@@ -264,11 +292,15 @@ def build_exchange_return_anomaly_router(*, get_current_user, get_db, get_settin
                     except Exception:
                         pass
                 code = product_codes.get(sync_code.upper(), "") if sync_code else ""
+                opt_sno = str((order_item.get("original_goods_option") or {}).get("sno") or "")
                 if not code:
-                    opt_sno = str((order_item.get("original_goods_option") or {}).get("sno") or "")
                     code = option_sno_map.get(opt_sno, "")
+                # 직접 매칭해 둔 코드: 옵션(없으면 재고연동코드) 단위로 기억한다.
+                match_key = f"opt:{opt_sno}" if opt_sno else (f"sync:{sync_code.upper()}" if sync_code else f"exchange:{row['exchange_sno']}")
                 if not code:
-                    return {**base, "originInvoice": origin_invoice, "skip_reason": "상품코드 매칭 실패"}
+                    code = str((overrides.get(match_key) or {}).get("code") or "")
+                if not code:
+                    return {**base, "originInvoice": origin_invoice, "matchKey": match_key, "skip_reason": "상품코드 매칭 실패"}
                 if not origin_invoice:
                     return {**base, "productCode": code, "skip_reason": "원송장번호 없음"}
                 return {**base, "productCode": code, "originInvoice": origin_invoice,
@@ -349,6 +381,83 @@ def build_exchange_return_anomaly_router(*, get_current_user, get_db, get_settin
         job = receipt_jobs.get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="입고체크 작업을 찾을 수 없습니다.")
+        return {"ok": True, **job}
+
+    advance_jobs: dict[str, dict] = {}
+
+    async def _advance_worker(job: dict, phpsessid: str, snos: list[int]) -> None:
+        """교환상품준비중(prepare) -> EZAdmin 송장 조회 -> 교환재배송중(ship). 건수가 많으면 오래 걸려서
+        요청 하나로 기다리지 않고 job으로 돌리며 진행도를 채운다."""
+        def progress(phase: str, done: int = 0, total: int = 0) -> None:
+            job["phase"], job["done"], job["total"] = phase, done, total
+
+        try:
+            progress("교환상품준비중 처리 중", 0, len(snos))
+            ably = AblyClient()
+            # 건수가 많으면 에이블리가 한참 걸리므로 넉넉하게 기다린다 (기본 15초면 ReadTimeout).
+            prepare_timeout = False
+            try:
+                res = await ably.request("POST", "/seller/exchanges/prepare/", json={"exchange_snos": snos}, timeout=180.0)
+            except httpx.TimeoutException:
+                # 응답만 늦고 에이블리에서는 이미 준비중으로 바뀌었을 수 있다 - 멈추지 말고 배송처리 단계에서 상태 9인 건만 이어서 처리한다.
+                prepare_timeout = True
+            else:
+                if res.status_code not in (200, 201, 204):
+                    job["error"] = f"교환상품준비중 처리 실패 (HTTP {res.status_code}): {res.text[:150]}"
+                    return
+            progress("송장 조회·교환재배송중 처리 중", 0, len(snos))
+            ship = await run_ship_pending(
+                phpsessid, None, None, only_exchange_snos=snos,
+                on_progress=lambda done, total: progress("송장 조회·교환재배송중 처리 중", done, total),
+            )
+            if ship.get("need_session"):
+                job["result"] = {"ok": False, "need_session": True, "prepared": len(snos)}
+                return
+            job["result"] = {"ok": True, "prepared": len(snos), "prepare_timeout": prepare_timeout, "ship": ship}
+        except httpx.TimeoutException:
+            job["error"] = "에이블리 응답 시간이 초과됐습니다. 에이블리에서 처리 상태를 확인한 뒤 다시 시도해주세요."
+        except Exception as exc:
+            job["error"] = f"교환재배송 처리 실패: {exc}"
+        finally:
+            job["finished"] = True
+
+    @router.post("/receipt-check/advance")
+    async def receipt_check_advance(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """입고체크로 잡힌 건(이상현상 id 목록): 수거완료(4) -> 교환상품준비중(9) -> EZAdmin C주문번호
+        송장으로 교환재배송중(5) 배송처리. 백그라운드로 시작하고 job_id를 돌려준다
+        (진행도는 GET /receipt-check/advance/{job_id})."""
+        if not run_ship_pending:
+            raise HTTPException(status_code=500, detail="배송처리 기능이 연결되지 않았습니다.")
+        ids = [int(i) for i in (payload.get("ids") or []) if str(i).isdigit()]
+        if not ids:
+            return {"ok": False, "error": "처리할 건이 없습니다."}
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        conn = get_db()
+        marks = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT exchange_sno FROM exchange_return_anomalies WHERE kind = 'return' AND id IN ({marks})", ids
+        ).fetchall()
+        conn.close()
+        snos = [int(r["exchange_sno"]) for r in rows if str(r["exchange_sno"] or "").isdigit()]
+        if not snos:
+            return {"ok": False, "error": "에이블리 교환번호를 찾을 수 없습니다."}
+
+        for old_id in [k for k, v in advance_jobs.items() if v.get("finished")][:-5]:
+            advance_jobs.pop(old_id, None)
+        job_id = uuid.uuid4().hex
+        job = {"phase": "시작 중", "done": 0, "total": len(snos), "finished": False, "result": None, "error": ""}
+        advance_jobs[job_id] = job
+        asyncio.create_task(_advance_worker(job, phpsessid, snos))
+        return {"ok": True, "job_id": job_id}
+
+    @router.get("/receipt-check/advance/{job_id}")
+    def receipt_check_advance_status(job_id: str, user: str = Depends(get_current_user)):
+        job = advance_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="교환재배송 처리 작업을 찾을 수 없습니다.")
         return {"ok": True, **job}
 
     router.run_scheduled = _run_check_core

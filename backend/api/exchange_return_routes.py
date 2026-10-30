@@ -11,6 +11,8 @@ import httpx
 import xlwt
 from fastapi import APIRouter, Body, Depends, HTTPException
 
+from services.checklist_progress import clear_progress, set_progress
+
 ABLY_BASE = "https://api.a-bly.com"
 LLOGIS_LOGIN_URL = "https://partner.alps.llogis.com/auth/login"
 LLOGIS_BASE = "https://pid.alps.llogis.com:18210"
@@ -26,6 +28,8 @@ LLOGIS_COURIER_SNO = 5  # 롯데택배
 
 _EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
+_SHIP_PENDING_KEY = "daily_check_ship_pending"
+_PICKUP_KEY = "daily_check_exchange_pickup"
 _KST = timezone(timedelta(hours=9))
 _BROWSER_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 _BROWSER_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -436,8 +440,13 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         running_key = "daily_check_ship_pending_running_at"
         if set_setting:
             set_setting(running_key, datetime.now(_KST).isoformat())
+        set_progress(_SHIP_PENDING_KEY, "에이블리 교환상품준비중 건 조회 중")
         try:
-            data = await _run_ship_pending(phpsessid, start_date, end_date)
+            data = await _run_ship_pending(
+                phpsessid, start_date, end_date,
+                on_progress=lambda done, total: set_progress(
+                    _SHIP_PENDING_KEY, "이지어드민 송장 조회·교환재배송중 처리 중", done, total),
+            )
             if set_setting and not data.get("need_session"):
                 if data.get("ok") is not False:
                     message = f"성공 {data.get('success') or 0} / 스킵 {data.get('skipped') or 0} / 실패 {data.get('failed') or 0}"
@@ -446,10 +455,14 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                 set_setting("daily_check_ship_pending_last_result", message)
             return data
         finally:
+            clear_progress(_SHIP_PENDING_KEY)
             if set_setting:
                 set_setting(running_key, None)
 
-    async def _run_ship_pending(phpsessid: str, start_date, end_date):
+    async def _run_ship_pending(phpsessid: str, start_date, end_date, only_exchange_snos=None, on_progress=None):
+        """only_exchange_snos를 주면 그 교환건만 처리하고, 체크리스트 '오늘 실행됨'은 기록하지 않는다.
+        on_progress(done, total)를 주면 교환건 하나를 마칠 때마다 진행도를 알려준다."""
+        only = {str(s) for s in only_exchange_snos} if only_exchange_snos is not None else None
         if not end_date:
             end_date = datetime.now(_KST).strftime("%Y-%m-%d")
         if not start_date:
@@ -493,9 +506,16 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                     break
                 page += 1
 
+        if only is not None:
+            all_exchanges = [e for e in all_exchanges if str(e.get("exchange_sno") or e.get("sno")) in only]
+
         results = []
-        async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as ez_client:
-            for ex in all_exchanges:
+        if on_progress:
+            on_progress(0, len(all_exchanges))
+        async with httpx.AsyncClient(timeout=60.0, verify=False, follow_redirects=True) as ez_client:
+            for ex_idx, ex in enumerate(all_exchanges):
+                if on_progress:
+                    on_progress(ex_idx, len(all_exchanges))
                 exchange_sno = ex.get("exchange_sno") or ex.get("sno")
                 order_sno = ex.get("order_sno")
                 delivery = ex.get("exchange_delivery") or {}
@@ -616,7 +636,7 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                             "delivery_request": delivery.get("delivery_request"),
                         }],
                     }
-                    async with httpx.AsyncClient(timeout=15.0) as ably_client:
+                    async with httpx.AsyncClient(timeout=60.0) as ably_client:
                         ship_res = await ably_client.post(
                             f"{ABLY_BASE}/seller/exchanges/ship/",
                             headers=_ably_headers(token),
@@ -633,13 +653,15 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                 except Exception as e:
                     results.append({"exchange_sno": exchange_sno, "ok": False, "skipped": False, "error": str(e)[:100]})
 
+        if on_progress:
+            on_progress(len(all_exchanges), len(all_exchanges))
         success = sum(1 for r in results if r.get("ok"))
         skipped = sum(1 for r in results if r.get("skipped"))
         failed = sum(1 for r in results if not r.get("ok") and not r.get("skipped"))
         # 체크리스트 "오늘 실행됨" 표시는 전체 배치가 끝난 뒤에만 기록한다 -
         # 도중에 새로고침/예외가 나면 이 지점에 도달하지 못해 done_today가
         # false로 남는다.
-        if set_setting:
+        if set_setting and only is None:
             set_setting("daily_check_ship_pending", datetime.now(_KST).isoformat())
         return {
             "ok": True,
@@ -946,6 +968,7 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         running_key = "daily_check_exchange_pickup_running_at"
         if set_setting:
             set_setting(running_key, datetime.now(_KST).isoformat())
+        set_progress(_PICKUP_KEY, "에이블리 교환요청 조회 중")
         try:
             data = await _run_process_exchange_pickup(phpsessid)
             if set_setting and not data.get("need_session"):
@@ -956,6 +979,7 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                 set_setting("daily_check_exchange_pickup_last_result", message)
             return data
         finally:
+            clear_progress(_PICKUP_KEY)
             if set_setting:
                 set_setting(running_key, None)
 
@@ -1019,7 +1043,8 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         sms_recipients: list[dict] = []
         seen_tels: set[str] = set()
         async with httpx.AsyncClient(timeout=30.0) as client:
-            for ex in pickup_exchanges:
+            for ex_idx, ex in enumerate(pickup_exchanges):
+                set_progress(_PICKUP_KEY, "원송장·수신자 조회 중", ex_idx, len(pickup_exchanges))
                 sno = ex.get("order_item_sno")
                 if not sno:
                     continue
@@ -1051,11 +1076,14 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         if not invoices:
             return {"ok": False, "error": "유효한 송장번호가 없습니다"}
 
+        set_progress(_PICKUP_KEY, f"이지어드민 회수신청 등록 중 (송장 {len(invoices)}건)")
         ez_result = await _register_exchange_ezadmin(phpsessid, invoices)
         if not ez_result.get("ok"):
             return ez_result
 
+        set_progress(_PICKUP_KEY, "에이블리 교환 승인 중")
         approve_status = await _approve_exchanges_ably(token, pickup_exchanges)
+        set_progress(_PICKUP_KEY, "안내 문자 발송 중")
         sms_queued = _send_exchange_pickup_sms(sms_recipients)
 
         # 체크리스트 "오늘 실행됨" 표시는 회수신청/에이블리 승인까지 끝난
@@ -1073,4 +1101,5 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
             "sms_queued": sms_queued,
         }
 
+    router.run_ship_pending = _run_ship_pending
     return router

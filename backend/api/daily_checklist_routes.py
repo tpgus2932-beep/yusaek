@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends
 
+from services.checklist_progress import clear_progress, get_progress, set_progress
+
 _KST = timezone(timedelta(hours=9))
 
 # key: 저장된 설정 키(각 액션 라우터가 실행 시 set_setting으로 기록), label: 화면 표시명
@@ -43,12 +45,14 @@ def build_daily_checklist_router(*, get_current_user, get_setting, set_setting=N
         for entry in CHECKLIST_ITEMS:
             last_run_at = get_setting(entry["key"])
             done_today = bool(last_run_at) and str(last_run_at)[:10] == today
+            in_progress = _is_running(get_setting, entry["key"])
             items.append({
                 "key": entry["key"],
                 "label": entry["label"],
                 "last_run_at": last_run_at,
                 "done_today": done_today,
-                "in_progress": _is_running(get_setting, entry["key"]),
+                "in_progress": in_progress,
+                "progress": get_progress(entry["key"]) if in_progress else None,
                 "last_result": get_setting(f"{entry['key']}_last_result"),
             })
         return {"ok": True, "date": today, "items": items}
@@ -61,14 +65,25 @@ def build_daily_checklist_router(*, get_current_user, get_setting, set_setting=N
     async def mark_start(key: str, user=Depends(get_current_user)):
         if key not in _CHECKLIST_KEYS:
             return {"ok": False, "error": "unknown key"}
+        clear_progress(key)
         if set_setting:
             set_setting(f"{key}_running_at", datetime.now(_KST).isoformat())
+        return {"ok": True}
+
+    # 프론트가 직접 순차 호출하는 작업(전체처리)이 자기 진행도를 알린다.
+    @router.post("/{key}/progress")
+    async def report_progress(key: str, payload: dict = Body(default={}), user=Depends(get_current_user)):
+        if key not in _CHECKLIST_KEYS:
+            return {"ok": False, "error": "unknown key"}
+        p = payload or {}
+        set_progress(key, str(p.get("phase") or ""), p.get("done") or 0, p.get("total") or 0)
         return {"ok": True}
 
     @router.post("/{key}/mark-finish")
     async def mark_finish(key: str, payload: dict = Body(default={}), user=Depends(get_current_user)):
         if key not in _CHECKLIST_KEYS:
             return {"ok": False, "error": "unknown key"}
+        clear_progress(key)
         if set_setting:
             set_setting(f"{key}_running_at", None)
             message = (payload or {}).get("message")
