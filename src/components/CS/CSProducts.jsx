@@ -387,7 +387,7 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
                 {baseAvailable && (
                     <div className={styles.matchFilter}>
                         <button type="button" className={`${styles.pill} ${!onlyUnmatched ? styles.pillOn : ''}`} onClick={() => setOnlyUnmatched(false)}>
-                            전체 {products.length}
+                            전체 상품 {products.length} · 문의 {products.reduce((sum, p) => sum + p.count, 0)}건
                         </button>
                         <button type="button" className={`${styles.pill} ${onlyUnmatched ? styles.pillOn : ''}`} onClick={() => setOnlyUnmatched(true)}>
                             원가 미매칭 {unmatchedCount}

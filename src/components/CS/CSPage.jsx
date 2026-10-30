@@ -162,12 +162,10 @@ const CSPage = () => {
     const syncRooms = useCallback(async () => {
         setSyncing(true);
         try {
-            const result = await apiCall('/sync', null, 'POST');
-            if (result.fetched > 0) {
-                await loadRooms(true);
-                setSyncTick((t) => t + 1);
-            }
-            else setLastSyncAt(result.synced_at || '');
+            await apiCall('/sync', null, 'POST');
+            // 새로 받은 문의가 없어도 서버가 진행 중 문의의 상태를 바로잡았을 수 있으니 항상 다시 읽는다.
+            await loadRooms(true);
+            setSyncTick((t) => t + 1);
         } catch (err) {
             setError(err.message || '동기화 실패');
         } finally {
@@ -367,6 +365,10 @@ const CSPage = () => {
             <div className={styles.body} style={view === 'inbox' ? undefined : { display: 'none' }}>
                 <aside className={styles.list}>
                     <div className={styles.sortBar}>
+                        <div className={styles.keywordHint}>
+                            {totalCount != null ? `문의 총 ${totalCount}건` : '문의 건수 불러오는 중...'}
+                            {rooms.length < (totalCount ?? 0) && ` · ${rooms.length}건 표시 중`}
+                        </div>
                         <div className={styles.sortTabs}>
                             {SORT_OPTIONS.map((o) => (
                                 <button

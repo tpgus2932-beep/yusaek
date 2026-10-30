@@ -34,6 +34,7 @@ _TOKEN_TTL_SEC = 50 * 60
 _KST = timezone(timedelta(hours=9))
 _INITIAL_SYNC_DAYS = 30
 _MAX_PAGES = 100
+_OPEN_ROOMS_LOOKBACK_DAYS = 365
 _PREFETCH_LIMIT = 40
 _PREFETCH_CONCURRENCY = 5
 _BASE_TTL_SEC = 60
@@ -347,10 +348,11 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
             rows = conn.execute("SELECT sno, updated_at FROM cs_rooms WHERE status IN (1, 2)").fetchall()
         finally:
             conn.close()
-        if not rows:
-            return
-        oldest = min(r["updated_at"] for r in rows)[:10] or (now - timedelta(days=_INITIAL_SYNC_DAYS)).strftime("%Y-%m-%d")
+        # 저장본에 없는 오래된 미답변 문의도 가져와야 하므로, 저장된 진행 중 문의 기준이 아니라 넉넉한 기간으로 조회한다
+        # (status 필터가 걸려 있어 건수는 적다).
+        oldest = (now - timedelta(days=_OPEN_ROOMS_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
         open_snos: set = set()
+        open_rooms: list = []
         last_sno = None
         for _ in range(_MAX_PAGES):
             params = [
@@ -362,11 +364,20 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
             data = await _ably_get(http, "/seller/contact_rooms/", params)
             page = data.get("contact_rooms") or []
             open_snos.update(r["sno"] for r in page)
+            open_rooms.extend(page)
             last_sno = data.get("last_sno")
             if data.get("is_last") or not page or not last_sno:
                 break
         else:
             return  # 끝까지 못 읽었으면 잘못 완료 처리하지 않도록 건너뛴다
+        # 에이블리에서 진행 중인데 저장본에 없거나 상태가 다른 문의를 저장한다.
+        conn = get_db()
+        try:
+            for room in open_rooms:
+                _upsert_room(conn, room)
+            conn.commit()
+        finally:
+            conn.close()
         stale = [r["sno"] for r in rows if r["sno"] not in open_snos][:_PREFETCH_LIMIT]
         sem = asyncio.Semaphore(_PREFETCH_CONCURRENCY)
 
