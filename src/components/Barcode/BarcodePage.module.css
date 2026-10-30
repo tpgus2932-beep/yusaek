@@ -673,6 +673,11 @@
   border-color: #111111;
 }
 
+.tabTextRed,
+.tabTextRed:hover {
+  color: #ef4444;
+}
+
 .tabRed {
   background-color: #fee2e2;
   border-color: #dc2626;

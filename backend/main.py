@@ -378,11 +378,11 @@ def _set_shared_incoming_counts(counts: dict[str, int] | None):
 
 
 def _get_shared_defect_counts() -> dict[str, int]:
-    return SHARED_DEFECT_COUNTS[defect_tab.current_tab()]
+    return SHARED_DEFECT_COUNTS.setdefault(defect_tab.current_tab(), {})
 
 
 def _set_shared_defect_counts(counts: dict[str, int] | None):
-    target = SHARED_DEFECT_COUNTS[defect_tab.current_tab()]
+    target = SHARED_DEFECT_COUNTS.setdefault(defect_tab.current_tab(), {})
     target.clear()
     if counts:
         target.update(counts)
@@ -407,11 +407,11 @@ def _get_all_tabs_defect_summon_counts() -> dict[str, int]:
 
 
 def _get_shared_defect_summon_counts() -> dict[str, int]:
-    return SHARED_DEFECT_SUMMON_COUNTS[defect_tab.current_tab()]
+    return SHARED_DEFECT_SUMMON_COUNTS.setdefault(defect_tab.current_tab(), {})
 
 
 def _set_shared_defect_summon_counts(counts: dict[str, int] | None):
-    target = SHARED_DEFECT_SUMMON_COUNTS[defect_tab.current_tab()]
+    target = SHARED_DEFECT_SUMMON_COUNTS.setdefault(defect_tab.current_tab(), {})
     target.clear()
     if counts:
         target.update(counts)
@@ -429,16 +429,16 @@ def _get_shared_kimsungil_counts() -> dict[str, int]:
             val = _get_setting(_kimsungil_setting_key(tab))
             if val:
                 data = json.loads(val)
-                SHARED_KIMSUNGIL_COUNTS[tab].update({k: int(v) for k, v in data.items()})
+                SHARED_KIMSUNGIL_COUNTS.setdefault(tab, {}).update({k: int(v) for k, v in data.items()})
         except Exception:
             pass
         _KIMSUNGIL_LOADED_TABS.add(tab)
-    return SHARED_KIMSUNGIL_COUNTS[tab]
+    return SHARED_KIMSUNGIL_COUNTS.setdefault(tab, {})
 
 
 def _set_shared_kimsungil_counts(counts: dict[str, int] | None):
     tab = defect_tab.current_tab()
-    target = SHARED_KIMSUNGIL_COUNTS[tab]
+    target = SHARED_KIMSUNGIL_COUNTS.setdefault(tab, {})
     target.clear()
     if counts:
         target.update(counts)
@@ -447,6 +447,19 @@ def _set_shared_kimsungil_counts(counts: dict[str, int] | None):
         _set_setting(_kimsungil_setting_key(tab), json.dumps(target, ensure_ascii=False))
     except Exception:
         pass
+
+
+def _drop_defect_tab_data(tab: str):
+    for store in (SHARED_DEFECT_COUNTS, SHARED_DEFECT_SUMMON_COUNTS, SHARED_KIMSUNGIL_COUNTS):
+        store.pop(tab, None)
+    _KIMSUNGIL_LOADED_TABS.discard(tab)
+    try:
+        _set_setting(_kimsungil_setting_key(tab), None)
+    except Exception:
+        pass
+
+
+defect_tab.REMOVE_HOOKS.append(_drop_defect_tab_data)
 
 
 def _load_return_cost_base(state: ReturnState):
@@ -1658,6 +1671,11 @@ def _init_kimsungil_log():
 
 
 _init_kimsungil_log()
+
+try:
+    defect_tab.load_config(_get_setting(defect_tab.SETTING_KEY))
+except Exception:
+    traceback.print_exc()
 
 try:
     from services.code_key_migration import migrate_codes_to_s

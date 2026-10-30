@@ -5,12 +5,12 @@ import LabelReprintPage from "./LabelReprintPage";
 import { getDownloadFilename } from "../../lib/download";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
-const DEFECT_TABS = ["A", "B", "C"];
+const BASE_DEFECT_TABS = ["A", "B", "C"];
 const DEFECT_TAB_STORAGE_KEY = "barcodeDefectTab";
 const loadDefectTab = () => {
   try {
     const saved = localStorage.getItem(DEFECT_TAB_STORAGE_KEY);
-    return DEFECT_TABS.includes(saved) ? saved : "A";
+    return saved || "A";
   } catch { return "A"; }
 };
 
@@ -81,10 +81,13 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   // 불량 리스트/김승일 리스트는 탭(A/B/C)마다 따로 쌓인다 - 서버에는 X-Defect-Tab 헤더로 알린다.
   const [defectTab, setDefectTab] = useState(loadDefectTab);
   const defectTabRef = useRef(defectTab);
+  // 탭 목록/빨강 표시는 서버에 저장 (모든 사용자 공통). 불러오기 전에는 기본 A·B·C만 보인다.
+  const [defectTabs, setDefectTabs] = useState(BASE_DEFECT_TABS);
+  const [redTabs, setRedTabs] = useState([]);
   const [summonedByTab, setSummonedByTab] = useState([]);
   // 불량관리 모달에서 A·B·C 전체 원가 합계를 보여주기 위해 탭별로 따로 받아둔다 ({ A: { count, cost, noCost } }).
   const [tabStats, setTabStats] = useState({});
-  const tabHeaders = () => ({ ...getAuthHeaders(), "X-Defect-Tab": defectTabRef.current });
+  const tabHeaders = () => ({ ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(defectTabRef.current) });
   const [defectMode, setDefectMode] = useState(false);
   const [showDefectList, setShowDefectList] = useState(false);
   const [defectList, setDefectList] = useState([]);
@@ -94,6 +97,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [defectSearchMessage, setDefectSearchMessage] = useState("");
   const [defectRecentCodes, setDefectRecentCodes] = useState([]);
   const [showKimsungilList, setShowKimsungilList] = useState(false);
+  const [kimsungilNameSort, setKimsungilNameSort] = useState(""); // ""(기본: 입고 우선) | "desc" | "asc"
   const [kimsungilList, setKimsungilList] = useState([]);
   const [kimsungilSearchQuery, setKimsungilSearchQuery] = useState("");
   const [kimsungilSearchRows, setKimsungilSearchRows] = useState([]);
@@ -252,18 +256,73 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     fetchKimsungilList();
   };
 
+  const applyTabsConfig = (cfg) => {
+    if (!cfg?.tabs?.length) return;
+    setDefectTabs(cfg.tabs);
+    setRedTabs(cfg.red ?? []);
+    if (!cfg.tabs.includes(defectTabRef.current)) switchDefectTab("A");
+  };
+
+  const callDefectTabsApi = async (path, payload) => {
+    try {
+      const res = await fetch(`${API}/barcode/defect-tabs${path}`, {
+        method: payload ? "POST" : "GET",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: payload ? JSON.stringify(payload) : undefined,
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(data?.detail || "탭 처리 실패"); return; }
+      applyTabsConfig(data);
+      return data;
+    } catch { /* ignore */ }
+  };
+
+  useEffect(() => { callDefectTabsApi(""); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const addDefectTab = async () => {
+    const name = (window.prompt("추가할 탭 이름을 입력하세요 (10자 이내)") || "").trim();
+    if (!name) return;
+    const data = await callDefectTabsApi("/add", { name });
+    if (data) switchDefectTab(name.toUpperCase());
+  };
+
+  const removeDefectTab = async (tab) => {
+    if (!window.confirm(`'${tab}' 탭을 삭제하시겠습니까? 이 탭에 쌓인 불량/김승일 리스트도 함께 사라집니다.`)) return;
+    await callDefectTabsApi("/remove", { name: tab });
+  };
+
+  const toggleRedTab = (tab) => callDefectTabsApi("/red", { name: tab, red: !redTabs.includes(tab) });
+
   const renderDefectTabs = (showCost = false) => (
     <div className={styles.tabRow} style={{ marginBottom: "0.75rem" }}>
-      {DEFECT_TABS.map((tab) => (
-        <button
-          key={tab}
-          className={`${styles.tabBtn} ${defectTab === tab ? styles.tabActive : ""}`}
-          onClick={() => switchDefectTab(tab)}
-        >
-          {tab}
-          {showCost && getTabStat(tab) && ` · ${getTabStat(tab).cost.toLocaleString()}원`}
-        </button>
+      {defectTabs.map((tab) => (
+        <span key={tab} style={{ display: "inline-flex", alignItems: "center" }}>
+          <button
+            className={`${styles.tabBtn} ${defectTab === tab ? styles.tabActive : ""} ${redTabs.includes(tab) ? styles.tabTextRed : ""}`}
+            onClick={() => switchDefectTab(tab)}
+          >
+            {tab}
+            {showCost && getTabStat(tab) && ` · ${getTabStat(tab).cost.toLocaleString()}원`}
+          </button>
+          {showCost && defectTab === tab && (
+            <>
+              <button
+                className={styles.ghostBtn}
+                title={redTabs.includes(tab) ? "글씨 빨강 해제" : "글씨 빨강으로 표시"}
+                style={{ color: "#dc2626", fontWeight: redTabs.includes(tab) ? 800 : 400 }}
+                onClick={() => toggleRedTab(tab)}
+              >
+                {redTabs.includes(tab) ? "●" : "○"}
+              </button>
+              {!BASE_DEFECT_TABS.includes(tab) && (
+                <button className={styles.ghostBtn} title="탭 삭제" onClick={() => removeDefectTab(tab)}>×</button>
+              )}
+            </>
+          )}
+        </span>
       ))}
+      {showCost && <button className={styles.secondaryBtn} title="탭 추가" onClick={addDefectTab}>+</button>}
     </div>
   );
 
@@ -948,9 +1007,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     if (!keywords.length) { setUnifiedRows(null); return; }
     setUnifiedLoading(true);
     try {
-      const lists = await Promise.all(DEFECT_TABS.map(async (tab) => {
+      const lists = await Promise.all(defectTabs.map(async (tab) => {
         try {
-          const res = await fetch(`${API}/barcode/kimsungil/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": tab } });
+          const res = await fetch(`${API}/barcode/kimsungil/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) } });
           const data = await res.json().catch(() => ({}));
           return (data.kimsungil ?? []).map((item) => ({ ...item, tab }));
         } catch { return []; }
@@ -971,7 +1030,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     if (!window.confirm(`${renderDefectLabel(item)}\n${item.tab}탭 ${qty}개 → ${toTab}탭으로 옮길까요?`)) return;
     const post = (path, tab) => fetch(`${API}/barcode/kimsungil/${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...getAuthHeaders(), "X-Defect-Tab": tab },
+      headers: { "Content-Type": "application/json", ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) },
       body: JSON.stringify({ code: item.code }),
     });
     try {
@@ -1155,14 +1214,14 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   // 현재 탭은 화면에 떠 있는 목록으로 바로 계산하고(수정 즉시 반영), 나머지 탭은 모달을 열 때 받아둔 값을 쓴다.
   const getTabStat = (tab) => (tab === defectTab ? calcTabStat(kimsungilList) : tabStats[tab] || null);
   const getAllTabsTotalCost = () =>
-    DEFECT_TABS.reduce((sum, tab) => sum + (getTabStat(tab)?.cost || 0), 0);
+    defectTabs.reduce((sum, tab) => sum + (getTabStat(tab)?.cost || 0), 0);
   const getAllTabsNoCostCount = () =>
-    DEFECT_TABS.reduce((sum, tab) => sum + (getTabStat(tab)?.noCost || 0), 0);
+    defectTabs.reduce((sum, tab) => sum + (getTabStat(tab)?.noCost || 0), 0);
 
   const fetchAllTabStats = async () => {
-    const entries = await Promise.all(DEFECT_TABS.map(async (tab) => {
+    const entries = await Promise.all(defectTabs.map(async (tab) => {
       try {
-        const res = await fetch(`${API}/barcode/kimsungil/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": tab } });
+        const res = await fetch(`${API}/barcode/kimsungil/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) } });
         const data = await res.json().catch(() => ({}));
         return [tab, res.ok ? calcTabStat(data.kimsungil ?? []) : null];
       } catch { return [tab, null]; }
@@ -1233,8 +1292,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   // 소환술로 불량에 들어온 항목을 A/B/C 탭 전체에서 모아 탭별·코드 오름차순으로 보여준다.
   const fetchSummonedAllTabs = async () => {
     try {
-      const results = await Promise.all(DEFECT_TABS.map(async (tab) => {
-        const res = await fetch(`${API}/barcode/defect/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": tab } });
+      const results = await Promise.all(defectTabs.map(async (tab) => {
+        const res = await fetch(`${API}/barcode/defect/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) } });
         if (handleUnauthorized(res)) return { tab, rows: [] };
         const data = await res.json().catch(() => ({}));
         const rows = (data.defects ?? [])
@@ -1254,7 +1313,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     if (!window.confirm(`${tab}탭 ${code} 소환 수량을 김승일 리스트로 되돌릴까요?`)) return;
     try {
       const res = await fetch(`${API}/barcode/kimsungil/revert-from-defect`, {
-        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders(), "X-Defect-Tab": tab },
+        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) },
         body: JSON.stringify({ code }),
       });
       if (handleUnauthorized(res)) return;
@@ -1418,8 +1477,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const handleDefectPrint = async () => {
     try {
       // A/B/C 탭 전체에서 김승일 소환술 항목만 모아, 같은 코드는 수량을 합친다.
-      const perTab = await Promise.all(DEFECT_TABS.map(async (tab) => {
-        const res = await fetch(`${API}/barcode/defect/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": tab } });
+      const perTab = await Promise.all(defectTabs.map(async (tab) => {
+        const res = await fetch(`${API}/barcode/defect/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) } });
         if (handleUnauthorized(res)) return null;
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data?.detail || "불량 리스트 조회 실패");
@@ -3230,7 +3289,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                     <span className={styles.inlineTagDanger}>{item.tab}탭</span>
                     <span className={styles.defectText}>{renderDefectLabel(item)}</span>
                     <span style={{ fontSize:"0.75rem", fontWeight:700 }}>추가 {item.count}</span>
-                    {DEFECT_TABS.filter((t) => t !== item.tab).map((t) => (
+                    {defectTabs.filter((t) => t !== item.tab).map((t) => (
                       <button key={t} className={styles.ghostBtn} onClick={() => moveUnifiedItem(item, t)}>→{t}탭</button>
                     ))}
                     <button className={styles.ghostBtn} onClick={() => switchDefectTab(item.tab)}>{item.tab}탭 보기</button>
@@ -3275,7 +3334,21 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               <div className={styles.empty}>등록된 김승일 상품이 없습니다.</div>
             ) : (
               <div className={styles.defectList}>
-                {[...kimsungilList].sort((a, b) => ((b.incoming_qty || 0) > 0 ? 1 : 0) - ((a.incoming_qty || 0) > 0 ? 1 : 0)).map((item, idx) => (
+                <div style={{ marginBottom: "0.4rem" }}>
+                  <button
+                    className={styles.secondaryBtn}
+                    onClick={() => setKimsungilNameSort((v) => (v === "desc" ? "asc" : v === "asc" ? "" : "desc"))}
+                  >
+                    상품명 {kimsungilNameSort === "desc" ? "내림차순 ▼" : kimsungilNameSort === "asc" ? "오름차순 ▲" : "정렬"}
+                  </button>
+                </div>
+                {[...kimsungilList].sort((a, b) => {
+                  if (kimsungilNameSort) {
+                    const cmp = String(a.base_name || "").localeCompare(String(b.base_name || ""), "ko");
+                    return kimsungilNameSort === "desc" ? -cmp : cmp;
+                  }
+                  return ((b.incoming_qty || 0) > 0 ? 1 : 0) - ((a.incoming_qty || 0) > 0 ? 1 : 0);
+                }).map((item, idx) => (
                   <div key={`${item.code}-kimsungil-${idx}`} className={styles.defectLine}>
                     <span className={styles.defectText}>{renderDefectLabel(item)}</span>
                     <span style={{ fontSize:"0.75rem", fontWeight:700, padding:"0.2rem 0.5rem", borderRadius:"999px", backgroundColor:"rgba(56,182,255,0.15)", color:"#0a6fa8", border:"1px solid rgba(56,182,255,0.3)" }}>추가 {item.count}</span>

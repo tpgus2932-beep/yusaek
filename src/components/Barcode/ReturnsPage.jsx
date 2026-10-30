@@ -40,7 +40,19 @@ const EMPTY_QUEUES = {
     all: [],
 };
 
-const DEFECT_TABS = ['A', 'B', 'C'];
+const BASE_DEFECT_TABS = ['A', 'B', 'C'];
+
+// 바코드 라벨 제목은 상품명만 쓴다 - 옵션(색상/사이즈)은 라벨의 옵션 줄에 따로 찍힌다.
+// goods_name이 비어 item_text(상품명+옵션)로 대체되거나 이름 끝에 옵션이 섞여 있어도 끝의 옵션 토큰은 떼어낸다.
+const labelTitle = (item) => {
+    const title = String(item?.goods_name || item?.item_text || '').trim();
+    const optionTokens = String(item?.option_raw || '')
+        .split(/[/\s]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
+    if (!optionTokens.length) return title;
+    const words = title.split(/\s+/);
+    while (words.length > 1 && optionTokens.includes(words[words.length - 1].toLowerCase())) words.pop();
+    return words.join(' ');
+};
 
 const normalizeQueues = (queues) => ({ ...EMPTY_QUEUES, ...(queues || {}) });
 
@@ -917,7 +929,7 @@ body { background: #fff; font-family: sans-serif; }
             const labels = okResults.map((r) => {
                 const src = selectedItems.find((i) => i.id === r.id);
                 return {
-                    title: src?.goods_name || src?.item_text || '',
+                    title: labelTitle(src),
                     option: src?.option_raw ? `[${src.option_raw.replace(/\//g, '-')}]` : '',
                     code: r.product_id || '',
                 };
@@ -972,14 +984,22 @@ body { background: #fff; font-family: sans-serif; }
 
     // 불량관리로 보낼 탭(A/B/C)을 고르는 모달 - 탭별 현재 수량을 함께 보여준다.
     const pickDefectTab = async () => {
-        const counts = { A: null, B: null, C: null };
+        // 탭 목록/빨강 표시는 서버 설정 (바코드 페이지에서 추가한 탭 포함)
+        let tabs = BASE_DEFECT_TABS;
+        let red = [];
+        try {
+            const res = await fetch(`${API}/barcode/defect-tabs`, { headers: getAuthHeaders() });
+            const cfg = await res.json().catch(() => ({}));
+            if (res.ok && cfg.tabs?.length) { tabs = cfg.tabs; red = cfg.red || []; }
+        } catch { /* 기본 탭 사용 */ }
+        const counts = Object.fromEntries(tabs.map((t) => [t, null]));
         const resolverBox = {};
         const promise = new Promise((resolve) => { resolverBox.resolve = resolve; });
-        setDefectTabPicker({ counts: { ...counts }, resolve: resolverBox.resolve });
-        await Promise.all(DEFECT_TABS.map(async (tab) => {
+        setDefectTabPicker({ tabs, red, counts: { ...counts }, resolve: resolverBox.resolve });
+        await Promise.all(tabs.map(async (tab) => {
             try {
                 const res = await fetch(`${API}/barcode/kimsungil/list`, {
-                    headers: { ...getAuthHeaders(), 'X-Defect-Tab': tab },
+                    headers: { ...getAuthHeaders(), 'X-Defect-Tab': encodeURIComponent(tab) },
                 });
                 const data = await res.json().catch(() => ({}));
                 counts[tab] = (data.kimsungil || []).reduce((sum, i) => sum + (Number(i.count) || 0), 0);
@@ -1018,7 +1038,7 @@ body { background: #fff; font-family: sans-serif; }
                 const src = selectedItems.find((i) => i.id === id) || {};
                 const res = await fetch(`${API}/barcode/kimsungil/add`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders(), 'X-Defect-Tab': defectTab },
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders(), 'X-Defect-Tab': encodeURIComponent(defectTab) },
                     body: JSON.stringify({ code }),
                 });
                 if (res.ok) {
@@ -1026,7 +1046,7 @@ body { background: #fff; font-family: sans-serif; }
                     flagsById[id] = { kimsungil_sent: true, kimsungil_error: undefined };
                     logEntries.push(buildLogEntry(src, '완료'));
                     labels.push({
-                        title: src.goods_name || src.item_text || '',
+                        title: labelTitle(src),
                         option: src.option_raw ? `[${src.option_raw.replace(/\//g, '-')}]` : '',
                         code,
                     });
@@ -1218,7 +1238,7 @@ body { background: #fff; font-family: sans-serif; }
             const codeMap = await resolveProductCodes(selectedItems);
             const withCode = selectedItems
                 .map((i) => ({
-                    title: i.goods_name || i.item_text || '',
+                    title: labelTitle(i),
                     option: i.option_raw ? `[${i.option_raw.replace(/\//g, '-')}]` : '',
                     code: codeMap[i.id] || '',
                 }));
@@ -1630,7 +1650,7 @@ body { background: #fff; font-family: sans-serif; }
                 const code = product.product_id;
                 const res = await fetch(`${API}/barcode/kimsungil/add`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders(), 'X-Defect-Tab': defectTab },
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders(), 'X-Defect-Tab': encodeURIComponent(defectTab) },
                     body: JSON.stringify({ code }),
                 });
                 const optionRaw = [product.color, product.size].filter(Boolean).join('/');
@@ -3692,13 +3712,13 @@ body { background: #fff; font-family: sans-serif; }
                             <strong>불량관리 탭 선택</strong>
                             <button type="button" onClick={() => closeDefectTabPicker(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>×</button>
                         </div>
-                        <div style={{ display: 'flex', gap: 8 }}>
-                            {DEFECT_TABS.map((tab) => (
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                            {defectTabPicker.tabs.map((tab) => (
                                 <button
                                     key={tab}
                                     type="button"
                                     onClick={() => closeDefectTabPicker(tab)}
-                                    style={{ flex: 1, padding: '14px 8px', borderRadius: 8, border: '1px solid var(--border-color, #d1d5db)', background: 'var(--bg-secondary, #f9fafb)', cursor: 'pointer', fontWeight: 700 }}
+                                    style={{ flex: '1 1 80px', padding: '14px 8px', borderRadius: 8, border: '1px solid var(--border-color, #d1d5db)', background: 'var(--bg-secondary, #f9fafb)', cursor: 'pointer', fontWeight: 700, color: defectTabPicker.red.includes(tab) ? '#ef4444' : undefined }}
                                 >
                                     <div style={{ fontSize: 18 }}>{tab}탭</div>
                                     <div style={{ fontSize: 13, fontWeight: 500, marginTop: 4 }}>

@@ -34,6 +34,7 @@ _KST = ZoneInfo("Asia/Seoul")
 _INCOMING_VERIFY_EXCLUDED_CLIENTS = {"케이디지", "리자드스탠다드", "리마인드", "계란속노른자", "도매킴"}
 _SCHEDULE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+from services import defect_tab as defect_tab_service
 from services.defect_tab import bind_defect_tab
 from services.ezadmin_stock_log import fetch_ezadmin_stock_logs
 from api.wonbe_routes import WONBE_DB_PATH, _get_wonbe_db as _get_wonbe_db, record_defect_process_logs
@@ -1280,6 +1281,40 @@ def build_barcode_router(
         filename = f"easyadmin_products_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xls"
         resp_headers = {"Content-Disposition": content_disposition(filename)}
         return Response(content=xls_bytes, media_type="application/vnd.ms-excel", headers=resp_headers)
+
+    def _save_defect_tabs_config():
+        set_setting(defect_tab_service.SETTING_KEY, defect_tab_service.dump_config())
+
+    @router.get("/barcode/defect-tabs")
+    def get_defect_tabs(user: str = Depends(get_current_user)):
+        return defect_tab_service.tabs_config()
+
+    @router.post("/barcode/defect-tabs/add")
+    def add_defect_tab(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        try:
+            defect_tab_service.add_tab(payload.get("name"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        _save_defect_tabs_config()
+        return defect_tab_service.tabs_config()
+
+    @router.post("/barcode/defect-tabs/remove")
+    def remove_defect_tab(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        try:
+            defect_tab_service.remove_tab(payload.get("name"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        _save_defect_tabs_config()
+        return defect_tab_service.tabs_config()
+
+    @router.post("/barcode/defect-tabs/red")
+    def set_defect_tab_red(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        try:
+            defect_tab_service.set_tab_red(payload.get("name"), bool(payload.get("red")))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        _save_defect_tabs_config()
+        return defect_tab_service.tabs_config()
 
     @router.get("/barcode/status")
     def barcode_status(user: str = Depends(get_current_user)):
