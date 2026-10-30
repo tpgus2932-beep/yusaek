@@ -578,7 +578,12 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
     async def _ezadmin_stock_by_name(phpsessid: str, base_name: str, fetched_at: str) -> dict:
         """이지어드민 재고(I100)를 상품명으로 검색해 {상품코드: 재고 레코드}로 돌려준다."""
         normalize = normalize_code or (lambda value: value)
-        par = _build_par(fetched_at[:10]).replace("query_type=name&query_str=", f"query_type=name&query_str={quote(base_name)}")
+        # 재고대시보드용 조건(stock_start=1)은 재고 0인 옵션을 빼므로, CS 재고조회는 재고 0도 포함하도록 비운다.
+        par = (
+            _build_par(fetched_at[:10])
+            .replace("query_type=name&query_str=", f"query_type=name&query_str={quote(base_name)}")
+            .replace("stock_start=1", "stock_start=")
+        )
         found: dict = {}
         async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
             page, total_pages = 1, 1
@@ -601,6 +606,8 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
                     obj = res.json()
                 except Exception:
                     raise PermissionError("이지어드민 세션이 만료되었습니다.")
+                if isinstance(obj, dict) and "rows" not in obj and _to_int(obj.get("records")) == 0:
+                    break  # 검색 결과가 없는 응답은 rows 항목이 아예 없다
                 if not isinstance(obj, dict) or "rows" not in obj:
                     raise RuntimeError("이지어드민 응답 형식이 달라요.")
                 for row in obj["rows"]:
