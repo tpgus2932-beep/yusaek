@@ -4,22 +4,30 @@ import styles from './ReturnInspectionTab.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders } from '../../lib/api';
 import { toEnglishKey } from './BarcodePage';
 
-const DATE_KEY = 'returnInspectionDate';
+const IDS_KEY = 'returnInspectionSnapshotIds';
 
-const readSavedDate = () => {
+const readSavedIds = () => {
     try {
-        return localStorage.getItem(DATE_KEY) || '';
+        const parsed = JSON.parse(localStorage.getItem(IDS_KEY) || '[]');
+        return Array.isArray(parsed) ? parsed.map(Number).filter(Number.isFinite) : [];
     } catch {
-        return '';
+        return [];
     }
 };
 
-const saveDate = (date) => {
+const saveIds = (ids) => {
     try {
-        localStorage.setItem(DATE_KEY, date);
+        localStorage.setItem(IDS_KEY, JSON.stringify(ids));
     } catch {
         // 저장 실패는 무시
     }
+};
+
+// 저장 시각은 UTC ISO로 내려오므로 KST(HH:mm)로 변환해서 표시
+const formatKstTime = (iso) => {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hour12: false });
 };
 
 const RESULT_LABEL = {
@@ -31,8 +39,8 @@ const RESULT_LABEL = {
 
 const ReturnInspectionTab = () => {
     const [dates, setDates] = useState([]);
-    const [date, setDate] = useState(readSavedDate);
-    const [snapshotId, setSnapshotId] = useState('');
+    const [selectedIds, setSelectedIds] = useState(readSavedIds);
+    const [panelOpen, setPanelOpen] = useState(false);
     const [data, setData] = useState(null);
     const [scanText, setScanText] = useState('');
     const [flash, setFlash] = useState(null);
@@ -76,14 +84,15 @@ const ReturnInspectionTab = () => {
         return json;
     }, []);
 
-    const loadDate = useCallback(async (targetDate, opts = {}) => {
-        if (!targetDate) return;
+    const loadSnapshots = useCallback(async (ids, opts = {}) => {
+        if (!ids.length) return;
         setLoading(true);
         setError('');
         try {
-            const json = await request('/load', { date: targetDate, ...opts });
+            const json = await request('/load', { snapshot_ids: ids, ...opts });
             setData(json);
             setFlash(null);
+            saveIds(json.snapshot_ids || ids);
         } catch (err) {
             setData(null);
             setError(err.message || '불러오기 실패');
@@ -98,37 +107,48 @@ const ReturnInspectionTab = () => {
             try {
                 const json = await request('/dates');
                 setDates(json.dates || []);
-                const saved = readSavedDate();
-                const initial = json.dates?.some((d) => d.date === saved) ? saved : json.dates?.[0]?.date || '';
-                if (initial) {
-                    setDate(initial);
-                    loadDate(initial);
+                const existing = new Set((json.dates || []).flatMap((d) => d.snapshots.map((s) => s.id)));
+                const saved = readSavedIds().filter((id) => existing.has(id));
+                const latest = json.dates?.[0]?.snapshots?.[0]?.id;
+                const initial = saved.length ? saved : latest != null ? [latest] : [];
+                if (initial.length) {
+                    setSelectedIds(initial);
+                    loadSnapshots(initial);
                 }
             } catch (err) {
                 setError(err.message || '날짜 목록 조회 실패');
             }
         })();
         focusScan();
-    }, [request, loadDate]);
+    }, [request, loadSnapshots]);
 
-    const dayInfo = useMemo(() => dates.find((d) => d.date === date), [dates, date]);
+    // 모든 날짜의 임시저장 기록을 최신순으로 펼친 목록 (✓ = 해당 날짜 검수 시작됨)
+    const snapshotOptions = useMemo(
+        () => dates.flatMap((d) => d.snapshots.map((s) => ({ ...s, date: d.date }))),
+        [dates],
+    );
 
-    const handleDateChange = (next) => {
-        setDate(next);
-        saveDate(next);
-        setSnapshotId('');
-        loadDate(next);
+    const toggleSnapshot = (id) => {
+        setSelectedIds((prev) => (prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id]));
     };
+
+    const handleLoadSelected = () => {
+        setPanelOpen(false);
+        loadSnapshots(selectedIds);
+    };
+
+    // 현재 화면에 불러온 임시저장본 (선택만 하고 아직 조회 안 한 상태와 구분)
+    const activeIds = data?.snapshot_ids || [];
 
     const handleScan = async () => {
         const value = toEnglishKey(scanText.trim());
         setScanText('');
-        if (!value || !date) {
+        if (!value || !activeIds.length) {
             focusScan();
             return;
         }
         try {
-            const json = await request('/scan', { date, code: value });
+            const json = await request('/scan', { snapshot_ids: activeIds, code: value });
             setData(json);
             setFlash({ result: json.result, code: json.code });
             playSound(json.result);
@@ -141,7 +161,7 @@ const ReturnInspectionTab = () => {
 
     const handleUndo = async (code) => {
         try {
-            const json = await request('/undo', { date, code: code || undefined });
+            const json = await request('/undo', { snapshot_ids: activeIds, code: code || undefined });
             setData(json);
             setFlash(null);
         } catch (err) {
@@ -153,7 +173,7 @@ const ReturnInspectionTab = () => {
 
     const handleClearErrors = async () => {
         try {
-            setData(await request('/clear-errors', { date }));
+            setData(await request('/clear-errors', { snapshot_ids: activeIds }));
         } catch (err) {
             setError(err.message || '처리 실패');
         } finally {
@@ -169,6 +189,13 @@ const ReturnInspectionTab = () => {
     }, [data]);
 
     const summary = data?.summary || { done: 0, total: 0 };
+    const qtySummary = useMemo(
+        () => (data?.items || []).reduce(
+            (acc, i) => ({ scanned: acc.scanned + Math.min(i.scanned, i.total), total: acc.total + i.total }),
+            { scanned: 0, total: 0 },
+        ),
+        [data],
+    );
     const flashInfo = flash ? RESULT_LABEL[flash.result] : null;
     const itemByCode = useMemo(
         () => Object.fromEntries((data?.items || []).map((i) => [i.code, i])),
@@ -178,42 +205,59 @@ const ReturnInspectionTab = () => {
     return (
         <div className={styles.wrap}>
             <div className={styles.controlRow}>
-                <label className={styles.field}>
-                    반품 날짜
-                    <select value={date} onChange={(e) => handleDateChange(e.target.value)} className={styles.select}>
-                        {dates.length === 0 && <option value="">저장된 날짜 없음</option>}
-                        {dates.map((d) => (
-                            <option key={d.date} value={d.date}>
-                                {d.date}{d.started ? ' ✓' : ''}
-                            </option>
-                        ))}
-                    </select>
-                </label>
-                {dayInfo && dayInfo.snapshots.length > 1 && (
-                    <label className={styles.field}>
-                        임시저장 기준
-                        <select
-                            value={snapshotId}
-                            onChange={(e) => {
-                                setSnapshotId(e.target.value);
-                                if (e.target.value) loadDate(date, { snapshot_id: Number(e.target.value) });
-                            }}
-                            className={styles.select}
-                        >
-                            <option value="">최신 ({dayInfo.snapshots.length}개 중)</option>
-                            {dayInfo.snapshots.map((s) => (
-                                <option key={s.id} value={s.id}>
-                                    #{s.id} {s.name || ''} {s.saved_at?.slice(11, 16)}
-                                </option>
-                            ))}
-                        </select>
-                    </label>
-                )}
+                <div className={styles.field}>
+                    임시저장 불러오기 (여러 개 선택 시 합산)
+                    <button
+                        type="button"
+                        className={`${styles.select} ${styles.pickerBtn}`}
+                        onClick={() => setPanelOpen((v) => !v)}
+                    >
+                        {selectedIds.length
+                            ? `${selectedIds.length}개 선택됨${activeIds.length ? ` (조회 중 ${activeIds.length}개)` : ''}`
+                            : snapshotOptions.length === 0 ? '임시저장 기록 없음' : '임시저장을 선택하세요'}
+                    </button>
+                    {panelOpen && (
+                        <div className={styles.pickerPanel}>
+                            <div className={styles.pickerList}>
+                                {snapshotOptions.map((s) => (
+                                    <label key={s.id} className={styles.pickerItem}>
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedIds.includes(s.id)}
+                                            onChange={() => toggleSnapshot(s.id)}
+                                        />
+                                        <span>
+                                            {s.date} {formatKstTime(s.saved_at)} · #{s.id} {s.name || ''}{s.started ? ' ✓' : ''}
+                                        </span>
+                                    </label>
+                                ))}
+                            </div>
+                            <div className={styles.pickerActions}>
+                                <button
+                                    type="button"
+                                    className={pageStyles.secondaryBtn}
+                                    onClick={() => setSelectedIds([])}
+                                    disabled={!selectedIds.length}
+                                >
+                                    선택 해제
+                                </button>
+                                <button
+                                    type="button"
+                                    className={pageStyles.secondaryBtn}
+                                    onClick={handleLoadSelected}
+                                    disabled={!selectedIds.length || loading}
+                                >
+                                    조회
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </div>
                 <button
                     type="button"
                     className={pageStyles.secondaryBtn}
-                    disabled={!date || loading}
-                    onClick={() => loadDate(date, { refresh: true })}
+                    disabled={!activeIds.length || loading}
+                    onClick={() => loadSnapshots(activeIds, { refresh: true })}
                     title="임시저장 기록을 다시 읽어 수량을 갱신합니다 (찍은 수량은 유지)"
                 >
                     리스트 새로고침
@@ -221,7 +265,7 @@ const ReturnInspectionTab = () => {
                 <button
                     type="button"
                     className={pageStyles.secondaryBtn}
-                    disabled={!date || loading}
+                    disabled={!activeIds.length || loading}
                     onClick={() => handleUndo()}
                 >
                     마지막 스캔 취소
@@ -245,10 +289,11 @@ const ReturnInspectionTab = () => {
                     }}
                     placeholder="상품 바코드(상품코드) 스캔 후 Enter"
                     className={pageStyles.scanInput}
-                    disabled={!date}
+                    disabled={!activeIds.length}
                 />
                 <div className={styles.summary}>
                     <strong>{summary.done}</strong> / {summary.total} 상품 완료
+                    <span> · 총 <strong>{qtySummary.scanned}</strong> / {qtySummary.total}개</span>
                 </div>
             </div>
 
@@ -281,9 +326,9 @@ const ReturnInspectionTab = () => {
             )}
 
             <div className={styles.list}>
-                {!data && !loading && !error && <div className={styles.empty}>날짜를 선택하세요.</div>}
+                {!data && !loading && !error && <div className={styles.empty}>임시저장본을 선택하고 조회를 누르세요.</div>}
                 {data && sortedItems.length === 0 && (
-                    <div className={styles.empty}>해당 날짜에 고객대기/교환정상 입고 항목이 없습니다.</div>
+                    <div className={styles.empty}>선택한 임시저장본에 고객대기/교환정상 입고 항목이 없습니다.</div>
                 )}
                 {sortedItems.map((item) => {
                     const complete = item.total > 0 && item.scanned >= item.total;

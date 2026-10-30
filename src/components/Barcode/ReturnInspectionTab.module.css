@@ -216,3 +216,48 @@
   opacity: 0.4;
   cursor: default;
 }
+
+.pickerBtn {
+  text-align: left;
+  cursor: pointer;
+  min-width: 18rem;
+}
+
+.field {
+  position: relative;
+}
+
+.pickerPanel {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  min-width: 26rem;
+  margin-top: 0.25rem;
+  padding: 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-secondary);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.15);
+}
+
+.pickerList {
+  max-height: 20rem;
+  overflow-y: auto;
+}
+
+.pickerItem {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.25rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.pickerActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
