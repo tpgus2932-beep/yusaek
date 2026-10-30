@@ -315,3 +315,46 @@
 .goodsHead .primary {
     margin-left: auto;
 }
+
+.mainRow {
+    display: flex;
+    flex: 1;
+    align-items: flex-start;
+    gap: 12px;
+    min-width: 0;
+}
+
+.optionPanel {
+    position: sticky;
+    top: 0;
+    flex: 0 0 470px;
+    max-height: calc(100vh - 230px);
+    overflow-y: auto;
+    margin-bottom: 0;
+}
+
+.optionPanel .goodsHead {
+    flex-wrap: wrap;
+}
+
+.sortTabs {
+    display: flex;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.sortTab {
+    flex: 1;
+    padding: 5px 8px;
+    border: 1px solid var(--cs-line);
+    border-radius: 8px;
+    background: var(--cs-bg);
+    color: var(--cs-text);
+    font-size: 0.76rem;
+    cursor: pointer;
+}
+
+.sortTabOn {
+    border-color: var(--cs-accent);
+    font-weight: 700;
+}
