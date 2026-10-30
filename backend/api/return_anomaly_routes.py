@@ -216,7 +216,14 @@ def build_return_anomaly_router(*, get_current_user, get_db, get_setting, set_se
                     continue
                 found = by_origin.get(str(row["origin_invoice_no"]).strip())
                 if not found:
-                    skipped.append({**base, "skip_reason": "에이블리 반품건 조회 실패"})
+                    # 에이블리 반품 목록에서 항목을 못 찾으면 옵션 정보가 없어 자동 매칭이 불가능하다 -
+                    # 원송장 단위로 직접 지정한 상품코드가 있으면 그걸 쓰고, 없으면 직접 매칭할 수 있게 키를 내려준다.
+                    match_key = f"return:{str(row['origin_invoice_no']).strip()}"
+                    manual_code = str((overrides.get(match_key) or {}).get("code") or "")
+                    if manual_code:
+                        targets.append({**base, "productCode": manual_code, "start": scan, "end": min(today, _add_one_month(scan))})
+                    else:
+                        skipped.append({**base, "matchKey": match_key, "skip_reason": "에이블리 반품건 조회 실패"})
                     continue
                 item = found["item"]
                 sync_code = str(item.get("option_stock_sync_code") or "").strip()
