@@ -390,3 +390,7 @@
     font-weight: 600;
     word-break: break-all;
 }
+
+.tableFilter {
+    margin-bottom: 10px;
+}

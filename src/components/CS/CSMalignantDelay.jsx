@@ -43,7 +43,8 @@ export default function CSMalignantDelay() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [onlyNoSchedule, setOnlyNoSchedule] = useState(false);
-    const [onlyNotNotified, setOnlyNotNotified] = useState(false); // 배송지연 문자를 아직 안 보낸 주문만
+    const [onlyNotNotified, setOnlyNotNotified] = useState(false); // 주문 표: 배송지연 문자를 안 보낸 주문만
+    const [onlyUnsentGoods, setOnlyUnsentGoods] = useState(false); // 상품 목록: 일부라도 문자를 안 보낸 주문이 있는 상품만
     const [query, setQuery] = useState('');
     // goods_sno -> { loading, error, source, note, fetchedAt, byCode: {code: {stock_qty, stock_in_standby, found}} }
     const [stocks, setStocks] = useState({});
@@ -104,12 +105,11 @@ export default function CSMalignantDelay() {
         const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
         return items.filter((i) => {
             if (onlyNoSchedule && hasSchedule(i.inbound)) return false;
-            if (onlyNotNotified && i.delay_notified_at) return false;
             if (!words.length) return true;
             const hay = `${i.goods_name} ${i.option_info} ${i.order_sno} ${i.buyer_name}`.toLowerCase();
             return words.every((w) => hay.includes(w));
         });
-    }, [items, onlyNoSchedule, onlyNotNotified, query]);
+    }, [items, onlyNoSchedule, query]);
 
     // 상품별 주문 수와 평균 지연일 (왼쪽 목록 정렬 기준에 따라 정렬)
     const groups = useMemo(() => {
@@ -128,12 +128,13 @@ export default function CSMalignantDelay() {
         const avgOf = (g) => g.avg ?? -1;
         return [...map.values()]
             .map((g) => ({ ...g, avg: g.delayCount ? g.delaySum / g.delayCount : null }))
+            .filter((g) => !onlyUnsentGoods || g.notified < g.count)
             .sort((a, b) => (
                 groupSort.key === 'count'
                     ? dir * (a.count - b.count) || avgOf(b) - avgOf(a)
                     : dir * (avgOf(a) - avgOf(b)) || b.count - a.count
             ));
-    }, [filtered, groupSort]);
+    }, [filtered, groupSort, onlyUnsentGoods]);
 
     // 같은 기준을 다시 누르면 방향만 바꾸고, 다른 기준을 누르면 내림차순으로 시작한다.
     const sortGroups = (key) => setGroupSort((g) => (g.key === key ? { key, dir: g.dir === 'desc' ? 'asc' : 'desc' } : { key, dir: 'desc' }));
@@ -176,9 +177,10 @@ export default function CSMalignantDelay() {
         let list = filtered;
         if (activeGoods != null) list = goodsItems;
         if (activeOption != null) list = list.filter((i) => optionKey(i) === activeOption);
+        if (onlyNotNotified) list = list.filter((i) => !i.delay_notified_at);
         const dir = sortDir === 'asc' ? 1 : -1;
         return [...list].sort((a, b) => dir * ((a.delay_days ?? -1) - (b.delay_days ?? -1)));
-    }, [filtered, goodsItems, activeGoods, activeOption, sortDir]);
+    }, [filtered, goodsItems, activeGoods, activeOption, onlyNotNotified, sortDir]);
 
     // 같은 상품은 한 번만 조회한다 (옵션 재고는 상품 단위로 함께 받아 온다).
     const checkAll = async () => {
@@ -249,10 +251,6 @@ export default function CSMalignantDelay() {
                         <input type="checkbox" checked={onlyNoSchedule} onChange={(e) => setOnlyNoSchedule(e.target.checked)} />
                         일정문의필요만
                     </label>
-                    <label className={styles.check}>
-                        <input type="checkbox" checked={onlyNotNotified} onChange={(e) => setOnlyNotNotified(e.target.checked)} />
-                        지연문자 미발송만
-                    </label>
                     <button type="button" className={styles.secondary} disabled={loading} onClick={load}>
                         <RefreshCw size={13} /> {loading ? '불러오는 중…' : '목록 새로고침'}
                     </button>
@@ -272,6 +270,10 @@ export default function CSMalignantDelay() {
                 <div className={styles.sideHead}>
                     <b>상품별</b>
                     <span className={styles.muted}>{groups.length}개 상품</span>
+                    <label className={styles.check}>
+                        <input type="checkbox" checked={onlyUnsentGoods} onChange={(e) => setOnlyUnsentGoods(e.target.checked)} />
+                        지연문자 미발송 있는 상품만
+                    </label>
                     <div className={styles.sortTabs}>
                         <button
                             type="button"
@@ -320,6 +322,10 @@ export default function CSMalignantDelay() {
             </aside>
             <div className={styles.mainRow}>
             <section className={`${styles.card} ${styles.main}`}>
+                <label className={`${styles.check} ${styles.tableFilter}`}>
+                    <input type="checkbox" checked={onlyNotNotified} onChange={(e) => setOnlyNotNotified(e.target.checked)} />
+                    지연문자 미발송 주문만
+                </label>
                 {activeOption != null && (
                     <div className={styles.filterNote}>
                         선택한 옵션 <b>{optionRows.find((o) => o.key === activeOption)?.label}</b> 주문 {shown.length}건
