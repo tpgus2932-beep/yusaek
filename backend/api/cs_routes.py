@@ -1272,6 +1272,31 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
             i["inbound"] = by_code.get(i["code"]) if i["code"] else None
         return {"ok": True, "total": len(items), "fetched_at": datetime.now(_KST).isoformat(), "items": items}
 
+    goods_image_cache: dict = {}
+
+    @router.post("/malignant-delay/images")
+    async def malignant_delay_images(body: dict = Body(...), current_user=Depends(get_current_user)):
+        """상품번호별 대표 이미지 주소. 한 번 읽은 값은 서버가 기억해 둔다."""
+        snos = []
+        for value in (body.get("goods_snos") or [])[:500]:
+            try:
+                snos.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        todo = [s for s in dict.fromkeys(snos) if s not in goods_image_cache]
+        sem = asyncio.Semaphore(8)
+
+        async def _one(sno: int) -> None:
+            async with sem:
+                try:
+                    goods = (await _ably_get(http, f"/seller/goods/{sno}/")).get("goods") or {}
+                    goods_image_cache[sno] = goods.get("image_still") or goods.get("image") or ""
+                except Exception:
+                    pass  # 이미지는 없어도 되므로 실패한 상품은 다음에 다시 시도한다
+
+        await asyncio.gather(*(_one(s) for s in todo))
+        return {"images": {str(s): goods_image_cache.get(s, "") for s in snos}}
+
     @router.post("/malignant-delay/stock")
     async def malignant_delay_stock(body: dict = Body(...), current_user=Depends(get_current_user)):
         """악성지연 상품 하나의 옵션별 재고 — 상품별 재고 조회(/stock/lookup)를 그대로 쓰고 필요한 값만 돌려준다."""

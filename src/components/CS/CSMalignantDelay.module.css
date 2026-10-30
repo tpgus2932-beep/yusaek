@@ -190,8 +190,9 @@
 
 .goods {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
     width: 100%;
     margin-bottom: 4px;
     padding: 8px 10px;
@@ -247,4 +248,70 @@
     color: #c2410c;
     font-size: 0.8rem;
     font-weight: 700;
+}
+
+.thumb {
+    flex: 0 0 52px;
+    width: 52px;
+    height: 52px;
+    border-radius: 8px;
+    background: var(--cs-bg);
+    object-fit: cover;
+}
+
+.thumbLg {
+    width: 72px;
+    height: 72px;
+    border-radius: 10px;
+    object-fit: cover;
+}
+
+.goodsText {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.mainCol {
+    flex: 1;
+    min-width: 0;
+}
+
+.goodsHead {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.goodsHeadText {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.clickRow {
+    cursor: pointer;
+}
+
+.clickRow:hover,
+.rowOn {
+    background: var(--cs-bg);
+}
+
+.rowOn {
+    box-shadow: inset 3px 0 0 var(--cs-accent);
+}
+
+.filterNote {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    font-size: 0.82rem;
+}
+
+.goodsHead .primary {
+    margin-left: auto;
 }

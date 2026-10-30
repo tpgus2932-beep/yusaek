@@ -48,15 +48,31 @@ export default function CSMalignantDelay() {
     const [stocks, setStocks] = useState({});
     const [bulk, setBulk] = useState(null); // { done, total } 일괄 조회 진행 상황
     const [selectedGoods, setSelectedGoods] = useState(null); // 왼쪽 목록에서 고른 상품 (null이면 전체)
+    const [selectedOption, setSelectedOption] = useState(null); // 상품 안에서 고른 옵션 (null이면 상품의 모든 옵션)
     const [sortDir, setSortDir] = useState('desc'); // 지연일 정렬: desc(많은 순) | asc(적은 순)
+    const [images, setImages] = useState({}); // goods_sno -> 대표 이미지 주소
+
+    // 상품 이미지는 목록과 따로 100개씩 받아 와서, 도착하는 대로 채운다.
+    const loadImages = async (snos) => {
+        for (let i = 0; i < snos.length; i += 100) {
+            try {
+                const data = await call('/malignant-delay/images', { method: 'POST', body: { goods_snos: snos.slice(i, i + 100) } });
+                setImages((prev) => ({ ...prev, ...data.images }));
+            } catch {
+                break; // 이미지는 없어도 화면을 쓸 수 있다
+            }
+        }
+    };
 
     const load = useCallback(async () => {
         setLoading(true);
         setError('');
         try {
             const data = await call('/malignant-delay/list');
-            setItems(data.items || []);
+            const list = data.items || [];
+            setItems(list);
             setFetchedAt(data.fetched_at || '');
+            loadImages([...new Set(list.map((i) => i.goods_sno))]);
         } catch (e) {
             setError(e.message);
         } finally {
@@ -111,11 +127,42 @@ export default function CSMalignantDelay() {
 
     const activeGoods = groups.some((g) => g.goods_sno === selectedGoods) ? selectedGoods : null;
 
+    const optionKey = (i) => i.code || `opt:${i.option_info}`;
+    const goodsItems = useMemo(
+        () => (activeGoods == null ? [] : filtered.filter((i) => i.goods_sno === activeGoods)),
+        [filtered, activeGoods],
+    );
+
+    // 고른 상품의 옵션별 주문 수·지연일 (재고·미송·입고 일정은 화면에서 붙인다)
+    const optionRows = useMemo(() => {
+        const map = new Map();
+        goodsItems.forEach((i) => {
+            const key = optionKey(i);
+            const o = map.get(key) || { key, code: i.code, label: i.option_info, items: [], delaySum: 0, delayCount: 0, max: null };
+            o.items.push(i);
+            if (i.delay_days != null) {
+                o.delaySum += i.delay_days;
+                o.delayCount += 1;
+                o.max = Math.max(o.max ?? 0, i.delay_days);
+            }
+            map.set(key, o);
+        });
+        const dir = sortDir === 'asc' ? 1 : -1;
+        return [...map.values()]
+            .map((o) => ({ ...o, avg: o.delayCount ? o.delaySum / o.delayCount : null }))
+            .sort((a, b) => dir * ((a.avg ?? -1) - (b.avg ?? -1)));
+    }, [goodsItems, sortDir]);
+
+    const activeOption = optionRows.some((o) => o.key === selectedOption) ? selectedOption : null;
+
+    // 오른쪽 주문 표: 전체 → 모든 주문, 상품 → 그 상품 주문, 옵션까지 고르면 그 옵션 주문
     const shown = useMemo(() => {
-        const list = activeGoods == null ? filtered : filtered.filter((i) => i.goods_sno === activeGoods);
+        let list = filtered;
+        if (activeGoods != null) list = goodsItems;
+        if (activeOption != null) list = list.filter((i) => optionKey(i) === activeOption);
         const dir = sortDir === 'asc' ? 1 : -1;
         return [...list].sort((a, b) => dir * ((a.delay_days ?? -1) - (b.delay_days ?? -1)));
-    }, [filtered, activeGoods, sortDir]);
+    }, [filtered, goodsItems, activeGoods, activeOption, sortDir]);
 
     // 같은 상품은 한 번만 조회한다 (옵션 재고는 상품 단위로 함께 받아 온다).
     const checkAll = async () => {
@@ -209,7 +256,7 @@ export default function CSMalignantDelay() {
                 <button
                     type="button"
                     className={`${styles.goods} ${activeGoods == null ? styles.goodsOn : ''}`}
-                    onClick={() => setSelectedGoods(null)}
+                    onClick={() => { setSelectedGoods(null); setSelectedOption(null); }}
                 >
                     <span className={styles.goodsName}>전체</span>
                     <span className={styles.goodsStat}>{filtered.length}건</span>
@@ -219,16 +266,83 @@ export default function CSMalignantDelay() {
                         type="button"
                         key={g.goods_sno}
                         className={`${styles.goods} ${activeGoods === g.goods_sno ? styles.goodsOn : ''}`}
-                        onClick={() => setSelectedGoods(activeGoods === g.goods_sno ? null : g.goods_sno)}
+                        onClick={() => { setSelectedGoods(activeGoods === g.goods_sno ? null : g.goods_sno); setSelectedOption(null); }}
                     >
-                        <span className={styles.goodsName}>{g.name}</span>
-                        <span className={styles.goodsStat}>
-                            {g.count}건 · 평균 <b>{g.avg != null ? `${g.avg.toFixed(1)}일` : '-'}</b>
+                        {images[g.goods_sno] ? (
+                            <img src={images[g.goods_sno]} alt="" className={styles.thumb} loading="lazy" />
+                        ) : (
+                            <span className={styles.thumb} />
+                        )}
+                        <span className={styles.goodsText}>
+                            <span className={styles.goodsName}>{g.name}</span>
+                            <span className={styles.goodsStat}>
+                                {g.count}건 · 평균 <b>{g.avg != null ? `${g.avg.toFixed(1)}일` : '-'}</b>
+                            </span>
                         </span>
                     </button>
                 ))}
             </aside>
+            <div className={styles.mainCol}>
+            {activeGoods != null && (
+                <section className={styles.card}>
+                    <div className={styles.goodsHead}>
+                        {images[activeGoods] && <img src={images[activeGoods]} alt="" className={styles.thumbLg} />}
+                        <div className={styles.goodsHeadText}>
+                            <b>{groups.find((g) => g.goods_sno === activeGoods)?.name}</b>
+                            <span className={styles.muted}>옵션을 누르면 그 옵션의 주문만 아래에 보여줘요</span>
+                        </div>
+                        <button
+                            type="button"
+                            className={styles.primary}
+                            disabled={!goodsItems.some((i) => i.code) || stocks[activeGoods]?.loading}
+                            onClick={() => checkStock(goodsItems.find((i) => i.code))}
+                        >
+                            {stocks[activeGoods]?.loading ? '조회 중…' : '이 상품 재고확인'}
+                        </button>
+                    </div>
+                    <div className={styles.tableWrap}>
+                        <table className={styles.table}>
+                            <thead>
+                                <tr>
+                                    <th>옵션</th>
+                                    <th>주문</th>
+                                    <th>
+                                        <button type="button" className={styles.sortBtn} onClick={() => setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))}>
+                                            평균 지연 {sortDir === 'desc' ? '▼' : '▲'}
+                                        </button>
+                                    </th>
+                                    <th>최대</th>
+                                    <th>재고</th>
+                                    <th>입고 일정</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {optionRows.map((o) => (
+                                    <tr
+                                        key={o.key}
+                                        className={`${styles.clickRow} ${activeOption === o.key ? styles.rowOn : ''}`}
+                                        onClick={() => setSelectedOption(activeOption === o.key ? null : o.key)}
+                                    >
+                                        <td><b>{o.label || '-'}</b></td>
+                                        <td className={styles.nowrap}>{o.items.length}건</td>
+                                        <td className={styles.nowrap}>{o.avg != null ? `${o.avg.toFixed(1)}일` : '-'}</td>
+                                        <td className={styles.nowrap}>{o.max != null ? `${o.max}일` : '-'}</td>
+                                        <td>{renderStock(o.items[0])}</td>
+                                        <td>{renderInbound(o.items[0])}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            )}
             <section className={`${styles.card} ${styles.main}`}>
+                {activeOption != null && (
+                    <div className={styles.filterNote}>
+                        선택한 옵션 <b>{optionRows.find((o) => o.key === activeOption)?.label}</b> 주문 {shown.length}건
+                        <button type="button" className={styles.small} onClick={() => setSelectedOption(null)}>옵션 선택 해제</button>
+                    </div>
+                )}
                 {loading && items.length === 0 && <div className={styles.muted}>불러오는 중…</div>}
                 {!loading && shown.length === 0 && <div className={styles.muted}>표시할 주문이 없어요.</div>}
                 {shown.length > 0 && (
@@ -275,6 +389,7 @@ export default function CSMalignantDelay() {
                     </div>
                 )}
             </section>
+            </div>
             </div>
         </div>
     );
