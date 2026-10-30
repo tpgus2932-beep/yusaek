@@ -133,6 +133,7 @@ export default function CSMalignantDelay() {
         const o = s?.byCode?.[i.code];
         if (!s || !o) return <span className={styles.muted}>-</span>;
         if (s.source === 'none') return <span className={styles.muted}>재고 데이터 없음</span>;
+        if (!o.found) return <span className={styles.muted}>이지어드민 미조회</span>;
         return (
             <>
                 <b className={o.stock_qty > 0 ? styles.num : styles.zero}>{o.stock_qty > 0 ? `${o.stock_qty}개` : '재고 없음'}</b>
