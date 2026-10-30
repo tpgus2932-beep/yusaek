@@ -47,6 +47,8 @@ export default function CSMalignantDelay() {
     // goods_sno -> { loading, error, source, note, fetchedAt, byCode: {code: {stock_qty, stock_in_standby, found}} }
     const [stocks, setStocks] = useState({});
     const [bulk, setBulk] = useState(null); // { done, total } 일괄 조회 진행 상황
+    const [selectedGoods, setSelectedGoods] = useState(null); // 왼쪽 목록에서 고른 상품 (null이면 전체)
+    const [sortDir, setSortDir] = useState('desc'); // 지연일 정렬: desc(많은 순) | asc(적은 순)
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -79,7 +81,8 @@ export default function CSMalignantDelay() {
         }
     }, []);
 
-    const shown = useMemo(() => {
+    // 검색·일정문의필요 필터를 거친 주문 (왼쪽 상품 목록의 기준)
+    const filtered = useMemo(() => {
         const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
         return items.filter((i) => {
             if (onlyNoSchedule && hasSchedule(i.inbound)) return false;
@@ -88,6 +91,31 @@ export default function CSMalignantDelay() {
             return words.every((w) => hay.includes(w));
         });
     }, [items, onlyNoSchedule, query]);
+
+    // 상품별 주문 수와 평균 지연일 (평균 지연일이 큰 상품부터)
+    const groups = useMemo(() => {
+        const map = new Map();
+        filtered.forEach((i) => {
+            const g = map.get(i.goods_sno) || { goods_sno: i.goods_sno, name: i.goods_name, count: 0, delaySum: 0, delayCount: 0 };
+            g.count += 1;
+            if (i.delay_days != null) {
+                g.delaySum += i.delay_days;
+                g.delayCount += 1;
+            }
+            map.set(i.goods_sno, g);
+        });
+        return [...map.values()]
+            .map((g) => ({ ...g, avg: g.delayCount ? g.delaySum / g.delayCount : null }))
+            .sort((a, b) => (b.avg ?? -1) - (a.avg ?? -1) || b.count - a.count);
+    }, [filtered]);
+
+    const activeGoods = groups.some((g) => g.goods_sno === selectedGoods) ? selectedGoods : null;
+
+    const shown = useMemo(() => {
+        const list = activeGoods == null ? filtered : filtered.filter((i) => i.goods_sno === activeGoods);
+        const dir = sortDir === 'asc' ? 1 : -1;
+        return [...list].sort((a, b) => dir * ((a.delay_days ?? -1) - (b.delay_days ?? -1)));
+    }, [filtered, activeGoods, sortDir]);
 
     // 같은 상품은 한 번만 조회한다 (옵션 재고는 상품 단위로 함께 받아 온다).
     const checkAll = async () => {
@@ -137,7 +165,7 @@ export default function CSMalignantDelay() {
         return (
             <>
                 <b className={o.stock_qty > 0 ? styles.num : styles.zero}>{o.stock_qty > 0 ? `${o.stock_qty}개` : '재고 없음'}</b>
-                {o.stock_in_standby > 0 && <span className={styles.muted}> · 입고대기 {o.stock_in_standby}</span>}
+                {o.stock_in_standby > 0 && <span className={styles.misong}>미송 {o.stock_in_standby}</span>}
             </>
         );
     };
@@ -172,7 +200,35 @@ export default function CSMalignantDelay() {
                 {error && <div className={styles.error}>{error}</div>}
             </section>
 
-            <section className={styles.card}>
+            <div className={styles.layout}>
+            <aside className={`${styles.card} ${styles.side}`}>
+                <div className={styles.sideHead}>
+                    <b>상품별</b>
+                    <span className={styles.muted}>{groups.length}개 상품 · 평균 지연일 순</span>
+                </div>
+                <button
+                    type="button"
+                    className={`${styles.goods} ${activeGoods == null ? styles.goodsOn : ''}`}
+                    onClick={() => setSelectedGoods(null)}
+                >
+                    <span className={styles.goodsName}>전체</span>
+                    <span className={styles.goodsStat}>{filtered.length}건</span>
+                </button>
+                {groups.map((g) => (
+                    <button
+                        type="button"
+                        key={g.goods_sno}
+                        className={`${styles.goods} ${activeGoods === g.goods_sno ? styles.goodsOn : ''}`}
+                        onClick={() => setSelectedGoods(activeGoods === g.goods_sno ? null : g.goods_sno)}
+                    >
+                        <span className={styles.goodsName}>{g.name}</span>
+                        <span className={styles.goodsStat}>
+                            {g.count}건 · 평균 <b>{g.avg != null ? `${g.avg.toFixed(1)}일` : '-'}</b>
+                        </span>
+                    </button>
+                ))}
+            </aside>
+            <section className={`${styles.card} ${styles.main}`}>
                 {loading && items.length === 0 && <div className={styles.muted}>불러오는 중…</div>}
                 {!loading && shown.length === 0 && <div className={styles.muted}>표시할 주문이 없어요.</div>}
                 {shown.length > 0 && (
@@ -182,7 +238,11 @@ export default function CSMalignantDelay() {
                                 <tr>
                                     <th>상품명</th>
                                     <th>옵션</th>
-                                    <th>지연</th>
+                                    <th>
+                                        <button type="button" className={styles.sortBtn} onClick={() => setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))}>
+                                            지연 {sortDir === 'desc' ? '▼' : '▲'}
+                                        </button>
+                                    </th>
                                     <th>주문번호</th>
                                     <th>입고 일정</th>
                                     <th>재고</th>
@@ -215,6 +275,7 @@ export default function CSMalignantDelay() {
                     </div>
                 )}
             </section>
+            </div>
         </div>
     );
 }
