@@ -358,3 +358,35 @@
     border-color: var(--cs-accent);
     font-weight: 700;
 }
+
+.okText {
+    color: #16a34a;
+    font-weight: 700;
+}
+
+.noteText {
+    color: #dc2626;
+    font-weight: 700;
+}
+
+.kv {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 12px;
+    margin: 0 0 10px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: var(--cs-bg);
+    font-size: 0.8rem;
+}
+
+.kv dt {
+    color: var(--cs-sub);
+    white-space: nowrap;
+}
+
+.kv dd {
+    margin: 0;
+    font-weight: 600;
+    word-break: break-all;
+}

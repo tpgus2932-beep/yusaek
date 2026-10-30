@@ -113,8 +113,9 @@ export default function CSMalignantDelay() {
     const groups = useMemo(() => {
         const map = new Map();
         filtered.forEach((i) => {
-            const g = map.get(i.goods_sno) || { goods_sno: i.goods_sno, name: i.goods_name, count: 0, delaySum: 0, delayCount: 0 };
+            const g = map.get(i.goods_sno) || { goods_sno: i.goods_sno, name: i.goods_name, count: 0, notified: 0, delaySum: 0, delayCount: 0 };
             g.count += 1;
+            if (i.delay_notified_at) g.notified += 1;
             if (i.delay_days != null) {
                 g.delaySum += i.delay_days;
                 g.delayCount += 1;
@@ -138,6 +139,8 @@ export default function CSMalignantDelay() {
 
     const activeGoods = groups.some((g) => g.goods_sno === selectedGoods) ? selectedGoods : null;
 
+    // 상품의 주문들에서 값(공급처 등)을 중복 없이 모아 보여준다.
+    const uniqOf = (list, key) => [...new Set(list.map((i) => i[key]).filter(Boolean))].join(', ');
     const optionKey = (i) => i.code || `opt:${i.option_info}`;
     const goodsItems = useMemo(
         () => (activeGoods == null ? [] : filtered.filter((i) => i.goods_sno === activeGoods)),
@@ -303,7 +306,7 @@ export default function CSMalignantDelay() {
                         <span className={styles.goodsText}>
                             <span className={styles.goodsName}>{g.name}</span>
                             <span className={styles.goodsStat}>
-                                {g.count}건 · 평균 <b>{g.avg != null ? `${g.avg.toFixed(1)}일` : '-'}</b>
+                                {g.count}건 · 지연문자 <b className={g.notified === g.count ? styles.okText : styles.noteText}>{g.notified}/{g.count}</b> · 평균 <b>{g.avg != null ? `${g.avg.toFixed(1)}일` : '-'}</b>
                             </span>
                         </span>
                     </button>
@@ -332,6 +335,7 @@ export default function CSMalignantDelay() {
                                         </button>
                                     </th>
                                     <th>주문번호</th>
+                                    <th>지연문자</th>
                                     <th>입고 일정</th>
                                     <th>재고</th>
                                     <th />
@@ -344,6 +348,11 @@ export default function CSMalignantDelay() {
                                         <td>{i.option_info}{i.ea > 1 && ` ×${i.ea}`}</td>
                                         <td className={styles.nowrap}>{i.delay_days != null ? `${i.delay_days}일` : '-'}</td>
                                         <td className={styles.nowrap}>{i.order_sno}</td>
+                                        <td className={styles.nowrap}>
+                                            {i.delay_notified_at
+                                                ? <span className={styles.okText}>발송 {fmtTime(i.delay_notified_at)}</span>
+                                                : <span className={styles.noteText}>미발송</span>}
+                                        </td>
                                         <td>{renderInbound(i)}</td>
                                         <td>{renderStock(i)}</td>
                                         <td>
@@ -380,6 +389,10 @@ export default function CSMalignantDelay() {
                             {stocks[activeGoods]?.loading ? '조회 중…' : '이 상품 재고확인'}
                         </button>
                     </div>
+                    <dl className={styles.kv}>
+                        <dt>공급처</dt><dd>{uniqOf(goodsItems, 'supplier') || '-'}</dd>
+                        <dt>공급처 상품명</dt><dd>{uniqOf(goodsItems, 'supplier_product') || '-'}</dd>
+                    </dl>
                     <div className={styles.tableWrap}>
                         <table className={styles.table}>
                             <thead>
@@ -392,6 +405,7 @@ export default function CSMalignantDelay() {
                                         </button>
                                     </th>
                                     <th>최대</th>
+                                    <th>지연문자</th>
                                     <th>재고</th>
                                     <th>입고 일정</th>
                                 </tr>
@@ -407,6 +421,7 @@ export default function CSMalignantDelay() {
                                         <td className={styles.nowrap}>{o.items.length}건</td>
                                         <td className={styles.nowrap}>{o.avg != null ? `${o.avg.toFixed(1)}일` : '-'}</td>
                                         <td className={styles.nowrap}>{o.max != null ? `${o.max}일` : '-'}</td>
+                                        <td className={styles.nowrap}>{o.items.filter((x) => x.delay_notified_at).length}/{o.items.length}</td>
                                         <td>{renderStock(o.items[0])}</td>
                                         <td>{renderInbound(o.items[0])}</td>
                                     </tr>

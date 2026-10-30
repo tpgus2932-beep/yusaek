@@ -1239,7 +1239,7 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
             goods_sno = it.get("goods_sno")
             name = it.get("goods_name") or ""
             options = [it.get("option_info") or ""]
-            code, label = "", ""
+            code, label, supplier, supplier_product = "", "", "", ""
             if base is not None:
                 if goods_sno not in rows_cache:
                     rows_cache[goods_sno] = base.product_rows(goods_sno, name, product_links.get(goods_sno, ""))[1]
@@ -1249,6 +1249,7 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
                     if row:
                         info = base.option_info(row)
                         code, label = info["code"], info["label"]
+                        supplier, supplier_product = info["supplier"], info["supplier_product"]
             items.append(
                 {
                     "sno": it.get("sno"),
@@ -1263,6 +1264,9 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
                     "expected_delivery": (it.get("delivery_expected_info") or {}).get("delivery_date_range") or "",
                     "code": code,
                     "base_label": label,
+                    "supplier": supplier,
+                    "supplier_product": supplier_product,
+                    "delay_notified_at": it.get("delay_notified_at") or "",
                 }
             )
         # 입고 일정은 코드로 한 번에 읽는다 (일정이 있는 옵션만 inbound 가 채워진다).
