@@ -106,8 +106,8 @@ def test_latest_scan_date_handles_out_of_order_mvm_list():
     assert latest_movement(llogis_raw)["paclStatNm"] == "배달전"
 
 
-def test_evaluate_anomaly_not_yet_two_days_old():
-    sent = date(2026, 7, 19)
+def test_evaluate_anomaly_sent_today_not_flagged():
+    sent = date(2026, 7, 20)
     today = date(2026, 7, 20)
     assert evaluate_anomaly(sent, today, {"invInfoList": []}) is None
 
@@ -202,7 +202,7 @@ def test_evaluate_anomaly_no_movement_history_flagged():
     today = date(2026, 7, 20)
     llogis_raw = {"invInfoList": [{"a": 1}], "mvmList": []}
     reason = evaluate_anomaly(sent, today, llogis_raw)
-    assert reason == "최종스캔 3일 이상 경과"
+    assert reason == "최종스캔 없음 (12시간 이상 경과)"
 
 
 def test_evaluate_anomaly_reservation_received_without_pickup_flagged_as_missing():
@@ -363,3 +363,36 @@ def test_lost_package_message_content():
     assert "택배사 분실 건으로 확인되었습니다" in LOST_PACKAGE_MESSAGE
     assert "취소 접수 후 환불" in LOST_PACKAGE_MESSAGE
     assert LOST_PACKAGE_MESSAGE.endswith("정말 죄송합니다.")
+
+
+def test_evaluate_anomaly_missing_invoice_before_12h_not_flagged():
+    from datetime import datetime, timedelta, timezone
+    from services.delivery_anomaly_logic import parse_ably_sent_datetime
+
+    kst = timezone(timedelta(hours=9))
+    sent_at = parse_ably_sent_datetime("2026-07-20 10:00:00")
+    now = datetime(2026, 7, 20, 21, 59, tzinfo=kst)
+    raw = {"invInfoList": [], "mvmList": []}
+    assert evaluate_anomaly(date(2026, 7, 20), date(2026, 7, 20), raw, sent_at=sent_at, now=now) is None
+
+
+def test_evaluate_anomaly_missing_invoice_after_12h_flagged():
+    from datetime import datetime, timedelta, timezone
+    from services.delivery_anomaly_logic import parse_ably_sent_datetime
+
+    kst = timezone(timedelta(hours=9))
+    sent_at = parse_ably_sent_datetime("2026-07-20T10:00:00+09:00")
+    now = datetime(2026, 7, 20, 22, 0, tzinfo=kst)
+    raw = {"invInfoList": [], "mvmList": []}
+    assert "송장을 찾을 수 없음" in evaluate_anomaly(date(2026, 7, 20), date(2026, 7, 20), raw, sent_at=sent_at, now=now)
+
+
+def test_evaluate_anomaly_no_scan_after_12h_flagged():
+    from datetime import datetime, timedelta, timezone
+    from services.delivery_anomaly_logic import parse_ably_sent_datetime
+
+    kst = timezone(timedelta(hours=9))
+    sent_at = parse_ably_sent_datetime("2026-07-20 10:00:00")
+    now = datetime(2026, 7, 20, 23, 0, tzinfo=kst)
+    raw = {"invInfoList": [{"a": 1}], "mvmList": []}
+    assert evaluate_anomaly(date(2026, 7, 20), date(2026, 7, 20), raw, sent_at=sent_at, now=now) == "최종스캔 없음 (12시간 이상 경과)"

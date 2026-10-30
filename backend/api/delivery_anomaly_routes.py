@@ -15,6 +15,7 @@ from services.delivery_anomaly_logic import (
     latest_movement,
     latest_reply_after,
     parse_ably_sent_date,
+    parse_ably_sent_datetime,
     parse_ezdesk_time,
 )
 from services.delivery_anomaly_store import sync_anomalies
@@ -444,7 +445,13 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
                 llogis_raw = await _llogis_query(inv_no, llogis_token)
             except Exception:
                 continue
-            reason = evaluate_anomaly(sent_date, today, llogis_raw)
+            reason = evaluate_anomaly(
+                sent_date,
+                today,
+                llogis_raw,
+                sent_at=parse_ably_sent_datetime(item["sent_date"]),
+                now=datetime.now(_KST),
+            )
             if not reason:
                 continue
             if is_invoice_missing(llogis_raw):

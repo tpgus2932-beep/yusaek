@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 
 def parse_ably_sent_date(raw: str | None) -> date | None:
@@ -82,21 +82,55 @@ def latest_scan_date(llogis_raw: dict) -> date | None:
     return parse_llogis_scan_date(m.get("rgstYmd"))
 
 
-def evaluate_anomaly(sent_date: date | None, today: date, llogis_raw: dict) -> str | None:
+_KST = timezone(timedelta(hours=9))
+NO_SCAN_GRACE = timedelta(hours=12)
+
+
+def parse_ably_sent_datetime(raw: str | None) -> datetime | None:
+    """에이블리 발송일시를 timezone-aware datetime으로 변환. 시각이 없거나 파싱 실패면 None.
+
+    타임존 표기가 없는 값은 KST로 간주한다.
+    """
+    text = str(raw or "").strip()
+    if len(text) < 16:  # 'YYYY-MM-DD HH:MM' 이상이어야 시각이 있는 값
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_KST)
+    return dt
+
+
+def evaluate_anomaly(
+    sent_date: date | None,
+    today: date,
+    llogis_raw: dict,
+    sent_at: datetime | None = None,
+    now: datetime | None = None,
+) -> str | None:
     """이상현상이면 사유 문자열, 아니면 None.
 
-    조건: 발송일이 오늘로부터 2일 이상 지났으면서
-      - llogis에서 송장을 찾을 수 없거나 (invInfoList 없음)
-      - 최종스캔일이 없거나 오늘로부터 3일 이상 지난 경우
+    조건:
+      - 송장을 찾을 수 없거나(invInfoList 없음) 최종스캔이 없는 경우: 발송 후 12시간 경과 시 이상.
+        (sent_at/now가 없으면 발송일 기준 1일 이상 경과로 대체)
+      - 최종스캔일이 있지만 오늘로부터 3일 이상 지난 경우: 이상.
     """
     if sent_date is None:
         return None
-    if (today - sent_date).days < 2:
-        return None
+    if sent_at is not None and now is not None:
+        no_scan_elapsed = (now - sent_at) >= NO_SCAN_GRACE
+    else:
+        no_scan_elapsed = (today - sent_date).days >= 1
     if is_invoice_missing(llogis_raw):
-        return "llogis에서 송장을 찾을 수 없음 (다른 택배사이거나 미등록 송장)"
+        if no_scan_elapsed:
+            return "llogis에서 송장을 찾을 수 없음 (다른 택배사이거나 미등록 송장)"
+        return None
     scan_date = latest_scan_date(llogis_raw)
-    if scan_date is None or (today - scan_date).days >= 3:
+    if scan_date is None:
+        return "최종스캔 없음 (12시간 이상 경과)" if no_scan_elapsed else None
+    if (today - scan_date).days >= 3:
         return "최종스캔 3일 이상 경과"
     return None
 
