@@ -222,6 +222,8 @@ def build_return_anomaly_router(*, get_current_user, get_db, get_setting, set_se
                 sync_code = str(item.get("option_stock_sync_code") or "").strip()
                 code = product_codes.get(sync_code.upper(), "") if sync_code else ""
                 opt_sno = str((item.get("original_goods_option") or item.get("goods_option") or {}).get("sno") or "")
+                if not code and sync_code:
+                    code = option_sno_map.get(sync_code, "")  # 재고연동코드가 상품코드가 아니라 옵션번호(숫자)로 내려오는 경우
                 if not code:
                     code = option_sno_map.get(opt_sno, "")
                 # 직접 매칭해 둔 코드(교환 이상현상 입고체크와 같은 저장소): 옵션(없으면 재고연동코드) 단위로 기억한다.
