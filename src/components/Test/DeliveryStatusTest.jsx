@@ -35,6 +35,10 @@ export default function DeliveryStatusTest() {
   const [singleResult, setSingleResult] = useState(() => LS.get("dstat_singleResult", null));
   const [singleLoading, setSingleLoading] = useState(false);
   const [excelLoading, setExcelLoading] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+  const [bulkResults, setBulkResults] = useState([]);
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState("");
   const excelInputRef = useRef(null);
 
   useEffect(() => { LS.set("dstat_items", items); }, [items]);
@@ -184,6 +188,49 @@ export default function DeliveryStatusTest() {
     }
   };
 
+  const parseBulkInvoices = (text) => [
+    ...new Set(
+      String(text || "")
+        .split(/[\s,;]+/)
+        .map((s) => s.replace(/\D/g, ""))
+        .filter(Boolean)
+    ),
+  ];
+
+  const searchBulk = async () => {
+    const invoiceNos = parseBulkInvoices(bulkText);
+    if (!invoiceNos.length) return;
+    setBulkLoading(true);
+    setBulkResults([]);
+    setBulkProgress(`0 / ${invoiceNos.length}`);
+    const results = new Array(invoiceNos.length);
+    let done = 0;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < invoiceNos.length) {
+        const idx = cursor++;
+        const inv = invoiceNos[idx];
+        try {
+          const res = await fetch(
+            `${API}/return-shipping/llogis-detail?inv_no=${encodeURIComponent(inv)}`,
+            { headers: getAuthHeaders() }
+          );
+          const data = await res.json().catch(() => ({}));
+          results[idx] = res.ok ? data : { inv_no: inv, error: data?.detail || "조회 실패" };
+        } catch (e) {
+          results[idx] = { inv_no: inv, error: e.message };
+        }
+        done += 1;
+        setBulkProgress(`${done} / ${invoiceNos.length}`);
+        setBulkResults(results.filter(Boolean));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(5, invoiceNos.length) }, worker));
+    setBulkResults(results.filter(Boolean));
+    setBulkProgress("");
+    setBulkLoading(false);
+  };
+
   const handleExcelLookup = async (file) => {
     if (!file) return;
     setExcelLoading(true);
@@ -323,6 +370,84 @@ export default function DeliveryStatusTest() {
             </div>
           )}
         </div>
+      </section>
+
+      <section className={`${styles.section} ${styles.sectionStock}`}>
+        <div className={styles.sectionHeader}>
+          <div className={styles.sectionTitle}>송장번호 일괄 조회</div>
+          <div className={styles.sectionMeta}>
+            <span>입력 {parseBulkInvoices(bulkText).length}건</span>
+          </div>
+        </div>
+        <div style={{ padding: "0.875rem 1.25rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+          <textarea
+            value={bulkText}
+            onChange={(e) => setBulkText(e.target.value)}
+            placeholder="엑셀에서 송장번호 열을 복사해 붙여넣으세요 (줄바꿈/쉼표/공백 구분)"
+            rows={6}
+            style={{
+              width: "100%",
+              maxWidth: "420px",
+              fontSize: "0.85rem",
+              padding: "0.4rem 0.6rem",
+              border: "1px solid var(--border-color)",
+              borderRadius: "var(--radius-sm)",
+              background: "var(--bg-primary)",
+              color: "var(--text-primary)",
+              resize: "vertical",
+              outline: "none",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          />
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+            <button
+              className={styles.refreshBtn}
+              onClick={searchBulk}
+              disabled={bulkLoading || !parseBulkInvoices(bulkText).length}
+              type="button"
+            >
+              <Search size={13} className={bulkLoading ? styles.spinning : undefined} />
+              일괄 조회
+            </button>
+            {bulkProgress && <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>조회 중... {bulkProgress}</span>}
+          </div>
+        </div>
+        {bulkResults.length > 0 && (
+          <div className={styles.tableWrap}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>송장번호</th>
+                  <th>수취인</th>
+                  <th>상품</th>
+                  <th>발송일</th>
+                  <th>배달일</th>
+                  <th>현재상태</th>
+                  <th>위치</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bulkResults.map((r, i) => (
+                  <tr key={i}>
+                    <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.inv_no}</td>
+                    {r.error ? (
+                      <td colSpan={6} style={{ color: "#ef4444" }}>{r.error}</td>
+                    ) : (
+                      <>
+                        <td>{r.inv_info?.receiver || "-"}</td>
+                        <td>{r.inv_info?.product || "-"}</td>
+                        <td style={{ whiteSpace: "nowrap" }}>{r.inv_info?.sent_date || "-"}</td>
+                        <td style={{ whiteSpace: "nowrap" }}>{r.inv_info?.delivered_date || "-"}</td>
+                        <td>{r.latest_status || "-"}</td>
+                        <td>{r.location || "-"}</td>
+                      </>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
       {items.length > 0 && (
