@@ -43,6 +43,7 @@ export default function CSMalignantDelay() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [onlyNoSchedule, setOnlyNoSchedule] = useState(false);
+    const [onlyNotNotified, setOnlyNotNotified] = useState(false); // 배송지연 문자를 아직 안 보낸 주문만
     const [query, setQuery] = useState('');
     // goods_sno -> { loading, error, source, note, fetchedAt, byCode: {code: {stock_qty, stock_in_standby, found}} }
     const [stocks, setStocks] = useState({});
@@ -103,11 +104,12 @@ export default function CSMalignantDelay() {
         const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
         return items.filter((i) => {
             if (onlyNoSchedule && hasSchedule(i.inbound)) return false;
+            if (onlyNotNotified && i.delay_notified_at) return false;
             if (!words.length) return true;
             const hay = `${i.goods_name} ${i.option_info} ${i.order_sno} ${i.buyer_name}`.toLowerCase();
             return words.every((w) => hay.includes(w));
         });
-    }, [items, onlyNoSchedule, query]);
+    }, [items, onlyNoSchedule, onlyNotNotified, query]);
 
     // 상품별 주문 수와 평균 지연일 (왼쪽 목록 정렬 기준에 따라 정렬)
     const groups = useMemo(() => {
@@ -246,6 +248,10 @@ export default function CSMalignantDelay() {
                     <label className={styles.check}>
                         <input type="checkbox" checked={onlyNoSchedule} onChange={(e) => setOnlyNoSchedule(e.target.checked)} />
                         일정문의필요만
+                    </label>
+                    <label className={styles.check}>
+                        <input type="checkbox" checked={onlyNotNotified} onChange={(e) => setOnlyNotNotified(e.target.checked)} />
+                        지연문자 미발송만
                     </label>
                     <button type="button" className={styles.secondary} disabled={loading} onClick={load}>
                         <RefreshCw size={13} /> {loading ? '불러오는 중…' : '목록 새로고침'}
