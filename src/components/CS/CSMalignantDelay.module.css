@@ -2,7 +2,7 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    max-width: 1600px;
+    max-width: none;
     width: 100%;
     margin: 0 auto;
 }
