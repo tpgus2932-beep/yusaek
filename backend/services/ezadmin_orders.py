@@ -250,6 +250,9 @@ async def print_invoice(phpsessid: str, pack: str) -> dict:
         )
     printed = (obj.get("print") if isinstance(obj, dict) else None) or {}
     url = str(printed.get("url") or "")
+    if url.startswith("/"):
+        # 이지어드민이 전체 주소 대신 상대 경로(/data/...)를 돌려주기도 한다.
+        url = EZADMIN_BASE + url
     if printed.get("error") or not url.startswith(EZADMIN_BASE):
         raise RuntimeError(f"이지어드민 송장출력 실패: {printed or obj}")
     first = next(iter((obj.get("rows") or {}).values()), {})

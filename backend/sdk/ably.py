@@ -247,13 +247,76 @@ class AblyClient:
         """취소/반품 요청 거부 처리."""
         return await self.request("PUT", f"/seller/order_cancels/{sno}/reject_request/", json={"refuse_cause_comment": refuse_cause_comment}, origin="my.a-bly.com")
 
-    async def withdraw_order_cancel(self, cancel_sno: int | str) -> None:
-        """구매자 취소요청 철회(= 취소를 거부하고 주문을 원래대로 되돌림).
+    async def decrease_today_delivery_stock(self, qty_by_code: dict[str, int]) -> list[dict]:
+        """오늘출발 옵션 목록에 있는 옵션만 stock_sync_code별로 수량만큼 재고를 내린다(0 미만은 0).
+        ably_minus_routes의 오출마이너스와 같은 조회/bulk-update 호출이지만, 주문 전체가 아니라 넘긴 수량만 차감한다.
+        목록에 없는 코드는 오늘출발이 아니므로 건드리지 않는다. 바꾼 옵션 내역을 돌려준다.
 
-        TODO: 취소철회 HAR를 받으면 여기에 실제 호출을 채운다. reject_order_cancel(반품 철회에 쓰는
-        reject_request)이 취소 건에도 같은 동작인지는 확인되지 않아 임의로 연결하지 않았다.
-        """
-        raise NotImplementedError("에이블리 취소철회 API가 아직 연결되지 않았습니다 (취소철회 HAR 필요).")
+        옵션은 전체 목록(수십 페이지, 25초 안팎)을 훑지 않고 keyword_type=stock_sync_code 검색으로 코드마다 바로 찾는다.
+        검색이 실패하면 전체 순회로 되돌아가 차감이 누락되지 않게 한다."""
+        async def list_options(**search) -> list[dict]:
+            rows_all: list[dict] = []
+            page = 1
+            while True:
+                response = await self.request(
+                    "GET", "/seller/today-delivery-goods-options/",
+                    params={"current_page": page, "per_page": 50, **search},
+                    origin="my.a-bly.com",
+                )
+                response.raise_for_status()
+                data = response.json()
+                rows = data.get("data", [])
+                if not rows:
+                    break
+                rows_all.extend(rows)
+                if page >= data.get("max_page_number", 1):
+                    break
+                page += 1
+            return rows_all
+
+        options: list[dict] = []
+        try:
+            for code in qty_by_code:
+                # 검색은 부분 일치일 수 있어 stock_sync_code가 정확히 같은 옵션만 쓴다.
+                options.extend(
+                    o for o in await list_options(keyword_type="stock_sync_code", keyword=code)
+                    if str(o.get("stock_sync_code") or "") == code
+                )
+        except Exception:
+            options = await list_options(keyword_type="goods_name")
+
+        updates: list[dict] = []
+        for opt in options:
+            code = str(opt.get("stock_sync_code") or "")
+            qty = qty_by_code.get(code)
+            if not qty:
+                continue
+            prev = int(opt.get("stock") or 0)
+            updates.append({
+                "sno": opt["sno"],
+                "stock_sync_code": code,
+                "delivery_type": opt.get("delivery_type", "today"),
+                "stock": max(0, prev - qty),
+                "safety_stock": int(opt.get("safety_stock") or 0),
+                "use_stock": bool(opt.get("use_stock", False)),
+                "is_display": bool(opt.get("is_display", True)),
+                "_prev_stock": prev,
+                "_ea_minus": qty,
+            })
+        if updates:
+            response = await self.request(
+                "PATCH", "/seller/today-delivery-goods-options/bulk-update/",
+                json={"options": [{k: v for k, v in u.items() if not k.startswith("_")} for u in updates]},
+            )
+            response.raise_for_status()
+        return updates
+
+    async def withdraw_order_cancel(self, cancel_sno: int | str) -> None:
+        """구매자 취소요청 철회(= 취소를 거부하고 주문을 원래대로 되돌림). 취소철회.har에서 확인:
+        PUT /seller/order_cancels/{cancel_sno}/reject_request/ {"refuse_cause_comment": "고객요청"}.
+        cancel_sno는 order_cancels 목록의 sno(주문상품 sno 아님)."""
+        response = await self.reject_order_cancel(cancel_sno, refuse_cause_comment="고객요청")
+        response.raise_for_status()
 
     async def confirm_order_items(self, sno_list: list[int]) -> None:
         """구매자 취소요청 승인(확정) 처리 (실제 브라우저 캡처로 확인).

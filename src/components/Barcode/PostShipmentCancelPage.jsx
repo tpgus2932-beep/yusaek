@@ -93,6 +93,12 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
   const [repliesMessage, setRepliesMessage] = useState("");
   const [closingSno, setClosingSno] = useState(null);
   const [withdrawingSno, setWithdrawingSno] = useState(null);
+  const [withdrawRow, setWithdrawRow] = useState(null); // 취소철회 대상 발송내역 (주문 선택 모달)
+  const [withdrawPhone, setWithdrawPhone] = useState("");
+  const [withdrawPacks, setWithdrawPacks] = useState(null);
+  const [withdrawPack, setWithdrawPack] = useState(null);
+  const [withdrawLoading, setWithdrawLoading] = useState(false);
+  const [withdrawError, setWithdrawError] = useState("");
   const [closeErrors, setCloseErrors] = useState({});
   const [deletingSno, setDeletingSno] = useState(null);
   const [replyDrafts, setReplyDrafts] = useState({});
@@ -449,10 +455,58 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
     }
   }, []);
 
-  // 취소철회 및 송장출력 - 에이블리 취소철회 → 이지어드민 보류해제·전체정상복귀 → 송장출력 → 배송확인.
-  const handleWithdraw = useCallback(async (cancelSno) => {
-    if (!window.confirm("에이블리 취소를 철회하고, 이지어드민에서 정상복귀 → 송장출력 → 배송확인까지 진행합니다. 되돌리기 어려운 작업입니다.\n\n진행하시겠습니까?")) return;
+  // 취소철회 및 송장출력 - 구매자 전화번호로 이지어드민 C/S 주문 목록을 불러와, 사용자가 고른 주문만 처리한다.
+  // 에이블리 취소철회 → 이지어드민 보류해제·전체정상복귀 → 송장출력 → 배송확인.
+  const searchWithdrawCandidates = useCallback(async (cancelSno, phone) => {
+    setWithdrawLoading(true);
+    setWithdrawError("");
+    setWithdrawPack(null);
+    try {
+      const res = await fetch(`${API}/post-shipment-cancel-stock-sms/withdraw/candidates`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ cancel_sno: cancelSno, phone }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (data.need_ezadmin_session) {
+        setWithdrawRow(null);
+        openEzadminModal();
+        throw new Error("이지어드민 세션이 필요합니다. 세션을 등록한 뒤 다시 눌러주세요.");
+      }
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "이지어드민 주문 조회 실패");
+      setWithdrawPacks(data.packs || []);
+      if ((data.packs || []).length === 1) setWithdrawPack(data.packs[0].pack);
+    } catch (err) {
+      setWithdrawPacks(null);
+      setWithdrawError(err.message || "이지어드민 주문 조회 실패");
+    } finally {
+      setWithdrawLoading(false);
+    }
+  }, [openEzadminModal]);
+
+  const openWithdraw = useCallback((row) => {
+    setWithdrawRow(row);
+    setWithdrawPhone(row.buyer_tel || "");
+    setWithdrawPacks(null);
+    setWithdrawError("");
+    searchWithdrawCandidates(row.cancel_sno, row.buyer_tel || "");
+  }, [searchWithdrawCandidates]);
+
+  const handleWithdraw = useCallback(async () => {
+    if (!withdrawRow || !withdrawPack) return;
+    const cancelSno = withdrawRow.cancel_sno;
+    const picked = (withdrawPacks || []).find((p) => p.pack === withdrawPack);
+    if (!window.confirm(`주문번호 ${picked?.order_id ?? ""} (${picked?.recv_name ?? ""})으로 에이블리 취소를 철회하고, 이지어드민 정상복귀 → 송장출력 → 배송확인까지 진행합니다. 되돌리기 어려운 작업입니다.\n\n진행하시겠습니까?`)) return;
+    // 팝업 차단을 피하려고 클릭 직후 동기적으로 인쇄 창을 먼저 연다 (서버 응답 뒤에 열면 차단된다).
+    const win = window.open("", "_blank");
+    if (!win) {
+      setWithdrawError("팝업이 차단되었습니다. 이 사이트의 팝업을 허용한 뒤 다시 시도해 주세요.");
+      return;
+    }
+    win.document.write("<p style='font-family:sans-serif'>취소철회 및 송장 출력 처리 중...</p>");
     setWithdrawingSno(cancelSno);
+    setWithdrawError("");
     setRepliesMessage("");
     setCloseErrors((prev) => {
       const next = { ...prev };
@@ -463,33 +517,44 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
       const res = await fetch(`${API}/post-shipment-cancel-stock-sms/withdraw`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ cancel_sno: cancelSno }),
+        body: JSON.stringify({ cancel_sno: cancelSno, pack: withdrawPack, phone: withdrawPhone }),
       });
-      if (handleUnauthorized(res)) return;
+      if (handleUnauthorized(res)) { win.close(); return; }
       const data = await res.json().catch(() => ({}));
       if (data.need_ezadmin_session) {
+        win.close();
+        setWithdrawRow(null);
         openEzadminModal();
         throw new Error("이지어드민 세션이 필요합니다. 세션을 등록한 뒤 다시 눌러주세요.");
       }
       if (!res.ok || !data.ok) throw new Error(data?.detail || "취소철회 실패");
-      setStockSmsLogs((prev) => prev.filter((row) => row.cancel_sno !== cancelSno));
-      setRepliesMessage(`취소철회 완료 (${data.steps.join(" → ")}) · ${data.trans_corp} ${data.trans_no}`);
-      const win = window.open("", "_blank");
-      if (win) {
-        win.document.write(data.html);
-        win.document.close();
-        win.focus();
-        win.print();
-      }
+      setWithdrawRow(null);
+      // 취소 접수번호가 새 번호로 바뀐 건도 있어서 서버 기준으로 목록을 다시 읽는다.
+      setStockSmsLogs((prev) => prev.filter((row) => row.cancel_sno !== cancelSno && row.cancel_sno !== data.cancel_sno));
+      loadStockSmsLogs();
+      const minusNote = data.stock_minus_error
+        ? ` · 오늘출발 재고 차감 실패(직접 확인 필요): ${data.stock_minus_error}`
+        : (data.stock_minus || []).length
+        ? ` · 오늘출발 재고 차감 ${data.stock_minus.map((m) => `${m.code} ${m.prev}→${m.stock}`).join(", ")}`
+        : "";
+      setRepliesMessage(`취소철회 완료 (${data.steps.join(" → ")}) · ${data.trans_corp} ${data.trans_no}${minusNote}`);
+      win.document.open();
+      win.document.write(data.html);
+      win.document.close();
+      setTimeout(() => win.print(), 1000);
     } catch (err) {
+      win.close();
       const msg = err.message || "취소철회 실패";
+      setWithdrawError(msg);
+      // 에이블리 철회 이후 단계에서 실패한 건은 취소 접수번호가 바뀌었을 수 있어, 목록을 새로 읽고 모달을 닫는다.
+      if (msg.includes("이어서 재시도")) setWithdrawRow(null);
       setRepliesMessage(msg);
       setCloseErrors((prev) => ({ ...prev, [cancelSno]: msg }));
       loadStockSmsLogs();
     } finally {
       setWithdrawingSno(null);
     }
-  }, [openEzadminModal, loadStockSmsLogs]);
+  }, [withdrawRow, withdrawPack, withdrawPacks, withdrawPhone, openEzadminModal, loadStockSmsLogs]);
 
   // 승인할 주문상품 정보가 없어 자동 완료가 불가능한 건을, 에이블리에서 직접 처리했다는 전제로
   // 발송내역 목록에서만 지운다 (에이블리 취소 승인 자체는 여기서 실행하지 않음).
@@ -1112,7 +1177,7 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                         </button>
                         <button
                           className={pageStyles.primaryBtn}
-                          onClick={() => handleWithdraw(row.cancel_sno)}
+                          onClick={() => openWithdraw(row)}
                           disabled={withdrawingSno === row.cancel_sno || closingSno === row.cancel_sno}
                         >
                           {withdrawingSno === row.cancel_sno ? "처리 중..." : "취소철회 및 송장출력"}
@@ -1144,6 +1209,74 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
           </div>
         </section>
       </div>
+
+      {withdrawRow && (
+        <div className={pageStyles.modalOverlay} onClick={() => { if (!withdrawingSno) setWithdrawRow(null); }}>
+          <div className={pageStyles.modal} style={{ width: "min(560px, 94vw)" }} onClick={(e) => e.stopPropagation()}>
+            <div className={pageStyles.modalHeader}>
+              <span className={pageStyles.modalTitle}>취소철회 및 송장출력 - 주문 선택</span>
+              <button type="button" className={pageStyles.secondaryBtn} onClick={() => setWithdrawRow(null)} disabled={Boolean(withdrawingSno)}>
+                닫기
+              </button>
+            </div>
+            <p className={pageStyles.subtitle}>
+              이지어드민 C/S 창에서 전화번호로 검색한 주문입니다 (최근 30일). 철회할 주문을 직접 선택하세요.
+            </p>
+            <div style={{ display: "flex", gap: "0.4rem", marginBottom: "0.6rem" }}>
+              <input
+                value={withdrawPhone}
+                placeholder="010-1234-5678"
+                onChange={(e) => setWithdrawPhone(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !withdrawLoading && searchWithdrawCandidates(withdrawRow.cancel_sno, withdrawPhone)}
+                style={{ flex: 1 }}
+              />
+              <button
+                className={pageStyles.secondaryBtn}
+                disabled={withdrawLoading || Boolean(withdrawingSno) || !withdrawPhone.trim()}
+                onClick={() => searchWithdrawCandidates(withdrawRow.cancel_sno, withdrawPhone)}
+              >
+                {withdrawLoading ? "조회 중..." : "검색"}
+              </button>
+            </div>
+            {withdrawError && <div style={{ color: "rgba(220,53,69,0.9)", fontSize: "0.85rem", marginBottom: "0.5rem" }}>{withdrawError}</div>}
+            {withdrawPacks && withdrawPacks.length === 0 && <div>이 번호로 검색된 주문이 없습니다.</div>}
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", maxHeight: "50vh", overflowY: "auto" }}>
+              {(withdrawPacks || []).map((p) => {
+                const cs = String(p.order_cs || "0").split(",")[0];
+                const tags = [p.hold !== "0" && "보류", cs !== "0" && (cs === "1" ? "취소" : `CS(${cs})`)].filter(Boolean);
+                return (
+                  <button
+                    type="button"
+                    key={p.pack}
+                    className={pageStyles.secondaryBtn}
+                    style={{
+                      textAlign: "left",
+                      borderColor: withdrawPack === p.pack ? "rgba(59,130,246,0.9)" : undefined,
+                      backgroundColor: withdrawPack === p.pack ? "rgba(59,130,246,0.1)" : undefined,
+                    }}
+                    onClick={() => setWithdrawPack(p.pack)}
+                    disabled={Boolean(withdrawingSno)}
+                  >
+                    <div>
+                      <strong>{p.recv_name || "-"}</strong> · {p.collect_date} · {p.shop_name} · 주문번호 {p.order_id}{" "}
+                      [{tags.length ? tags.join("·") : "정상"}]
+                    </div>
+                    <div style={{ fontSize: "0.8rem", opacity: 0.8 }}>
+                      {p.items.map((i) => `${i.name}${i.options ? ` ${i.options}` : ""} x${i.qty}`).join(" / ")}
+                    </div>
+                    {p.trans_no && <div style={{ fontSize: "0.8rem", opacity: 0.8 }}>{p.trans_corp} {p.trans_no}</div>}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ marginTop: "0.8rem", textAlign: "right" }}>
+              <button className={pageStyles.primaryBtn} onClick={handleWithdraw} disabled={!withdrawPack || Boolean(withdrawingSno)}>
+                {withdrawingSno ? "처리 중..." : "선택한 주문 취소철회 및 송장출력"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {replyModalRow && (
         <div className={pageStyles.modalOverlay} onClick={() => { if (replyingSno !== replyModalRow.cancel_sno) setReplyModalRow(null); }}>

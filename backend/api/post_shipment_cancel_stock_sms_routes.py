@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -356,19 +358,18 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
             conn.close()
         return {"ok": True, "cancel_sno": cancel_sno}
 
-    @router.post("/withdraw")
-    async def withdraw(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        """취소철회 및 송장출력 - 에이블리 취소철회 → 이지어드민 보류해제·전체정상복귀 → 송장출력 → 배송확인.
-        에이블리 철회는 되돌릴 수 없으므로 맨 앞에서 한 번만 하고, 이후 단계가 실패하면 같은 버튼으로
-        이어서 재시도한다(이미 철회된 건은 에이블리 단계를 건너뜀)."""
-        cancel_sno = str(payload.get("cancel_sno") or "").strip()
-        if not cancel_sno:
-            raise HTTPException(status_code=400, detail="cancel_sno is required")
+    def _ezadmin_keyword(phone: str) -> str:
+        """이지어드민에는 휴대폰 번호가 하이픈 형태(010-1234-5678)로 저장돼 있다."""
+        digits = re.sub(r"\D", "", phone or "")
+        if not re.fullmatch(r"01\d{8,9}", digits):
+            raise HTTPException(status_code=400, detail="휴대폰 번호를 정확히 입력해 주세요. (예: 010-1234-5678)")
+        return f"{digits[:3]}-{digits[3:-4]}-{digits[-4:]}"
 
+    def _load_pending_row(cancel_sno: str):
         conn = get_db()
         try:
             row = conn.execute(
-                "SELECT order_sno, action, closed_at FROM post_shipment_cancel_stock_review WHERE cancel_sno = ?",
+                "SELECT buyer_tel, order_sno, action, closed_at, stock_items FROM post_shipment_cancel_stock_review WHERE cancel_sno = ?",
                 (cancel_sno,),
             ).fetchone()
         finally:
@@ -377,18 +378,135 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
             raise HTTPException(status_code=404, detail="발송내역을 찾을 수 없습니다")
         if row["closed_at"]:
             raise HTTPException(status_code=409, detail="이미 처리 완료된 건입니다")
-        order_sno = str(row["order_sno"] or "").strip()
-        if not order_sno:
-            raise HTTPException(status_code=400, detail="주문번호가 없어 이지어드민 주문을 찾을 수 없습니다")
+        return row
+
+    @router.post("/withdraw/candidates")
+    async def withdraw_candidates(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """취소철회 대상 고르기 - 구매자 전화번호로 이지어드민 C/S 주문(합포) 목록을 불러온다.
+        한 고객이 여러 주문을 했을 수 있어, 어떤 주문을 철회할지는 화면에서 사용자가 고른다."""
+        cancel_sno = str(payload.get("cancel_sno") or "").strip()
+        if not cancel_sno:
+            raise HTTPException(status_code=400, detail="cancel_sno is required")
+        row = _load_pending_row(cancel_sno)
+        keyword = _ezadmin_keyword(str(payload.get("phone") or row["buyer_tel"] or ""))
+        phpsessid = (get_setting("ezadmin_phpsessid") or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_ezadmin_session": True}
+        try:
+            cells = (await ezo.search_packs(phpsessid, keyword, days=30, rows=20, search_type="6"))[:10]
+            details = await asyncio.gather(*(ezo.pack_rows(phpsessid, c["pack"]) for c in cells))
+        except ezo.SessionExpired:
+            return {"ok": False, "need_ezadmin_session": True}
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"이지어드민 조회 실패: {exc}")
+        packs = [ezo.describe_pack(c["pack"], c, rows, "") for c, rows in zip(cells, details)]
+        packs.sort(key=lambda p: p["collect_date"], reverse=True)
+        return {"ok": True, "phone": keyword, "packs": packs}
+
+    @router.post("/withdraw")
+    async def withdraw(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """취소철회 및 송장출력 - 에이블리 취소철회 → 이지어드민 보류해제·전체정상복귀 → 송장출력 → 배송확인.
+        이지어드민 주문(pack)은 /withdraw/candidates 목록에서 사용자가 고른 것만 처리한다.
+        에이블리 철회는 되돌릴 수 없으므로 맨 앞에서 한 번만 하고, 이후 단계가 실패하면 같은 버튼으로
+        이어서 재시도한다(이미 철회된 건은 에이블리 단계를 건너뜀)."""
+        cancel_sno = str(payload.get("cancel_sno") or "").strip()
+        if not cancel_sno:
+            raise HTTPException(status_code=400, detail="cancel_sno is required")
+        pack = str(payload.get("pack") or "").strip()
+        if not re.fullmatch(r"\d{1,12}", pack):
+            raise HTTPException(status_code=400, detail="철회할 이지어드민 주문을 선택해 주세요")
+        row = _load_pending_row(cancel_sno)
+        keyword = _ezadmin_keyword(str(payload.get("phone") or row["buyer_tel"] or ""))
 
         phpsessid = (get_setting("ezadmin_phpsessid") or "").strip()
         if not phpsessid:
             return {"ok": False, "need_ezadmin_session": True}
 
+        # 에이블리를 건드리기 전에, 고른 pack이 이 전화번호의 실제 주문인지 이지어드민에서 다시 확인한다.
+        try:
+            cell = next(
+                (c for c in await ezo.search_packs(phpsessid, keyword, days=30, rows=20, search_type="6")
+                 if str(c.get("pack")) == pack),
+                None,
+            )
+        except ezo.SessionExpired:
+            return {"ok": False, "need_ezadmin_session": True}
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"이지어드민 조회 실패: {exc}")
+        if cell is None:
+            raise HTTPException(status_code=404, detail="선택한 주문을 이지어드민에서 찾지 못했습니다. 목록을 다시 불러와 주세요.")
+
+        ably = AblyClient()  # 한 요청 안에서 재사용해 로그인을 한 번만 한다
+
+        # 오늘출발 재고 차감용 (옵션코드, 수량). 철회하면 취소 목록에서 사라지므로 철회 전에 한 번 읽어 저장해 둔다.
+        try:
+            stock_items = json.loads(row["stock_items"] or "[]")
+        except (TypeError, ValueError):
+            stock_items = []
+        if not stock_items and row["action"] != "withdrawn":
+            try:
+                end = datetime.now().strftime("%Y-%m-%d")
+                start = (datetime.now() - timedelta(days=_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+                cancels = await ably.list_order_cancels(
+                    cancel_type="cancel", processing_sub_status=["41", "42"], start_date=start, end_date=end,
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f"에이블리 취소 상품 조회 실패: {exc}")
+            cancel = next((c for c in cancels if str(c.get("sno")) == cancel_sno), None)
+            if cancel is None:
+                # 취소를 철회했다가 다시 접수되면 취소 접수번호가 새로 생긴다. 같은 주문의 진행 중 취소가
+                # 정확히 한 건일 때만 그 번호로 이어서 처리한다.
+                order_sno = str(row["order_sno"] or "").strip()
+
+                def _order_ids(c: dict) -> set[str]:
+                    return {
+                        str(v) for it in (c.get("order_items") or [])
+                        for v in (it.get("order_sno"), it.get("order_id")) if v
+                    }
+
+                same_order = [c for c in cancels if order_sno and order_sno in _order_ids(c)]
+                if len(same_order) != 1:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="에이블리 취소 목록에서 이 건을 찾지 못했습니다. 에이블리에서 이미 처리됐는지 확인해주세요.",
+                    )
+                cancel = same_order[0]
+                new_sno = str(cancel.get("sno") or "")
+                conn = get_db()
+                try:
+                    exists = conn.execute(
+                        "SELECT 1 FROM post_shipment_cancel_stock_review WHERE cancel_sno = ?", (new_sno,)
+                    ).fetchone()
+                    if exists:
+                        raise HTTPException(status_code=409, detail=f"취소 접수번호 {new_sno}는 이미 다른 발송내역에 있습니다.")
+                    conn.execute(
+                        "UPDATE post_shipment_cancel_stock_review SET cancel_sno = ? WHERE cancel_sno = ?",
+                        (new_sno, cancel_sno),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                cancel_sno = new_sno
+            qty_by_code: dict[str, int] = {}
+            for it in cancel.get("order_items") or []:
+                code = str(it.get("option_stock_sync_code") or "").strip()
+                if code:
+                    qty_by_code[code] = qty_by_code.get(code, 0) + int(it.get("ea") or it.get("quantity") or 1)
+            stock_items = [{"code": c, "ea": n} for c, n in qty_by_code.items()]
+            conn = get_db()
+            try:
+                conn.execute(
+                    "UPDATE post_shipment_cancel_stock_review SET stock_items = ? WHERE cancel_sno = ?",
+                    (json.dumps(stock_items, ensure_ascii=False), cancel_sno),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
         steps: list[str] = []
         if row["action"] != "withdrawn":
             try:
-                await AblyClient().withdraw_order_cancel(cancel_sno)
+                await ably.withdraw_order_cancel(cancel_sno)
             except NotImplementedError as exc:
                 raise HTTPException(status_code=501, detail=str(exc))
             except Exception as exc:
@@ -414,12 +532,6 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
             )
 
         try:
-            cells = [c for c in await ezo.search_packs(phpsessid, order_sno) if str(c.get("order_id")) == order_sno]
-            if len(cells) != 1:
-                fail("이지어드민 주문 찾기", f"주문번호 {order_sno}에 해당하는 합포가 {len(cells)}건입니다. 이지어드민에서 직접 처리해주세요.")
-            cell = cells[0]
-            pack = str(cell.get("pack") or "")
-
             if str(cell.get("hold", "") or "0") != "0":
                 result = await ezo.release_hold(phpsessid, pack)
                 if not ez_ok(result):
@@ -454,9 +566,24 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
             conn.commit()
         finally:
             conn.close()
+        # 오늘출발 재고 차감 - 철회·출력·배송확인이 끝난 뒤에 하고, 실패해도 위 처리는 되돌리지 않는다.
+        stock_minus: list[dict] = []
+        stock_minus_error = ""
+        if stock_items:
+            try:
+                changed = await ably.decrease_today_delivery_stock({i["code"]: int(i["ea"]) for i in stock_items})
+                stock_minus = [
+                    {"code": u["stock_sync_code"], "ea": u["_ea_minus"], "prev": u["_prev_stock"], "stock": u["stock"]}
+                    for u in changed
+                ]
+                if changed:
+                    steps.append("오늘출발 재고 차감")
+            except Exception as exc:
+                stock_minus_error = str(exc)
         return {
             "ok": True, "cancel_sno": cancel_sno, "pack": pack, "steps": steps, "html": html,
             "trans_corp": printed["trans_corp"], "trans_no": printed["trans_no"],
+            "stock_minus": stock_minus, "stock_minus_error": stock_minus_error,
         }
 
     @router.post("/reply")
