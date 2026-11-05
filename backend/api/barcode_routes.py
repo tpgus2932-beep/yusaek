@@ -2640,6 +2640,286 @@ def build_barcode_router(
             conn.close()
         return list_anomalies(user)
 
+    # ── 불량 등록 기록(상품명 + 사진 + 사유) — SQLite 저장 ─────────────────────
+    _DEFECT_PHOTO_MAX_COUNT = 10
+    _DEFECT_PHOTO_MAX_CHARS = 4_000_000  # base64 문자열 길이 상한(클라이언트에서 리사이즈 후 전송)
+    _DEFECT_PHOTO_RE = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\r\n]+)$")
+
+    def _defect_record_conn():
+        # 불량 사진·사유는 항상 로컬 SQLite(app.db)에 저장한다. Turso 설정과 무관.
+        # (get_normalization_db 는 main.py 에서 _get_automation_db = 항상 로컬 SQLite 로 주입된다.
+        #  주입이 없는 환경(테스트 등)에서만 공용 DB 로 대체.)
+        conn = (get_normalization_db or get_shared_db)()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS barcode_defect_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tab TEXT NOT NULL DEFAULT '',
+                code TEXT NOT NULL DEFAULT '',
+                product_name TEXT NOT NULL DEFAULT '',
+                qty INTEGER NOT NULL DEFAULT 1,
+                reason TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT '',
+                username TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS barcode_defect_record_photos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                record_id INTEGER NOT NULL,
+                mime TEXT NOT NULL DEFAULT 'image/jpeg',
+                data TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.commit()
+        return conn
+
+    def _defect_record_qty(value) -> int:
+        try:
+            return min(max(int(value), 1), 999)
+        except (TypeError, ValueError):
+            return 1
+
+    def _parse_defect_photos(photos) -> list[tuple[str, str]]:
+        if photos is None:
+            return []
+        if not isinstance(photos, list):
+            raise HTTPException(status_code=400, detail="photos 형식이 올바르지 않습니다")
+        parsed = []
+        for photo in photos:
+            text = str(photo or "")
+            if len(text) > _DEFECT_PHOTO_MAX_CHARS:
+                raise HTTPException(status_code=400, detail="사진 용량이 너무 큽니다")
+            match = _DEFECT_PHOTO_RE.match(text)
+            if not match:
+                raise HTTPException(status_code=400, detail="사진 형식이 올바르지 않습니다")
+            parsed.append((match.group(1), match.group(2)))
+        return parsed
+
+    def _defect_record_product_name(state, code: str) -> str:
+        # 원가베이스 표시명 → 현재 송장 상품명 순으로 찾는다 (불량 리스트 표시와 같은 우선순위).
+        base_name = (_build_defect_base_lookup().get(code, {}).get("g") or "").strip()
+        if base_name:
+            return base_name
+        det = _find_item_detail_by_code(state, code)
+        return f"{det.get('name', '')} {det.get('option', '')}".strip()
+
+    @router.get("/barcode/defect/record/lookup")
+    def lookup_defect_product(code: str = "", user: str = Depends(get_current_user)):
+        """불량 등록 전 상품 조회. 수량/기록을 전혀 바꾸지 않는다."""
+        state = get_barcode_state(user)
+        raw = (code or "").strip()
+        if not raw:
+            raise HTTPException(status_code=400, detail="code is required")
+        normalized = normalize_code(raw) or raw
+        name = _defect_record_product_name(state, normalized)
+        return {"ok": True, "code": normalized, "name": name, "found": bool(name)}
+
+    def _list_defect_records_for_tab(conn, tab: str) -> list[dict]:
+        rows = conn.execute(
+            "SELECT * FROM barcode_defect_records WHERE tab = ? ORDER BY id DESC",
+            (tab,),
+        ).fetchall()
+        records = [dict(row) for row in rows]
+        if not records:
+            return records
+        ids = [rec["id"] for rec in records]
+        marks = ",".join("?" for _ in ids)
+        photo_rows = conn.execute(
+            f"SELECT id, record_id FROM barcode_defect_record_photos WHERE record_id IN ({marks}) ORDER BY id",
+            ids,
+        ).fetchall()
+        photo_ids: dict[int, list[int]] = {}
+        for row in photo_rows:
+            photo_ids.setdefault(row["record_id"], []).append(row["id"])
+        for rec in records:
+            rec["photo_ids"] = photo_ids.get(rec["id"], [])
+        return records
+
+    def _defect_records_response(conn) -> dict:
+        return {"ok": True, "records": _list_defect_records_for_tab(conn, defect_tab_service.current_tab())}
+
+    @router.get("/barcode/defect/record/list")
+    def list_defect_records(user: str = Depends(get_current_user)):
+        conn = _defect_record_conn()
+        try:
+            return _defect_records_response(conn)
+        finally:
+            conn.close()
+
+    @router.get("/barcode/defect/record/photo/{photo_id}")
+    def get_defect_record_photo(photo_id: int, user: str = Depends(get_current_user)):
+        conn = _defect_record_conn()
+        try:
+            row = conn.execute(
+                "SELECT mime, data FROM barcode_defect_record_photos WHERE id = ?",
+                (photo_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="사진을 찾을 수 없습니다")
+        return {"ok": True, "data_url": f"data:{row['mime']};base64,{row['data']}"}
+
+    @router.post("/barcode/defect/record/add")
+    def add_defect_record(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        state = get_barcode_state(user)
+        raw = str(payload.get("code") or "").strip()
+        if not raw:
+            raise HTTPException(status_code=400, detail="code is required")
+        code = normalize_code(raw) or raw
+        # 등록 방식 3가지
+        #  1) 1개            : qty=1 (또는 생략)
+        #  2) 여러 개 일괄   : qty=N + reason/photos 한 세트 → 기록 1건(qty=N)에 전체 적용
+        #  3) 여러 개 개별   : entries=[{reason, photos}, ...] → 건마다 별도 기록(qty=1)
+        specs: list[tuple[int, str, list[tuple[str, str]]]] = []
+        entries = payload.get("entries")
+        if entries is not None:
+            if not isinstance(entries, list) or not entries:
+                raise HTTPException(status_code=400, detail="entries 형식이 올바르지 않습니다")
+            if len(entries) > 999:
+                raise HTTPException(status_code=400, detail="한 번에 등록할 수 있는 수량을 초과했습니다")
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise HTTPException(status_code=400, detail="entries 형식이 올바르지 않습니다")
+                specs.append((1, str(entry.get("reason") or "").strip(), _parse_defect_photos(entry.get("photos"))))
+        else:
+            specs.append(
+                (
+                    _defect_record_qty(payload.get("qty", 1)),
+                    str(payload.get("reason") or "").strip(),
+                    _parse_defect_photos(payload.get("photos")),
+                )
+            )
+        # 사진·사유가 비어 있어도 등록하려면 사용자가 팝업에서 확인했다는 표시(allow_incomplete)가 있어야 한다.
+        allow_incomplete = bool(payload.get("allow_incomplete"))
+        for idx, (_qty, reason, photos) in enumerate(specs, start=1):
+            if not allow_incomplete:
+                if not photos:
+                    raise HTTPException(status_code=400, detail=f"{idx}번째 불량: 사진을 1장 이상 첨부해 주세요")
+                if not reason:
+                    raise HTTPException(status_code=400, detail=f"{idx}번째 불량: 사유를 입력해 주세요")
+            if len(photos) > _DEFECT_PHOTO_MAX_COUNT:
+                raise HTTPException(status_code=400, detail=f"사진은 최대 {_DEFECT_PHOTO_MAX_COUNT}장까지 가능합니다")
+
+        product_name = _defect_record_product_name(state, code) or code
+        now = datetime.now(_KST).isoformat()
+        tab = defect_tab_service.current_tab()
+        conn = _defect_record_conn()
+        record_ids = []
+        try:
+            for qty, reason, photos in specs:
+                cur = conn.execute(
+                    "INSERT INTO barcode_defect_records (tab, code, product_name, qty, reason, created_at, updated_at, username)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (tab, code, product_name, qty, reason, now, now, user),
+                )
+                record_id = cur.lastrowid
+                record_ids.append(record_id)
+                for mime, data in photos:
+                    conn.execute(
+                        "INSERT INTO barcode_defect_record_photos (record_id, mime, data, created_at) VALUES (?, ?, ?, ?)",
+                        (record_id, mime, data, now),
+                    )
+            conn.commit()
+            result = _defect_records_response(conn)
+        finally:
+            conn.close()
+
+        # 사진·사유까지 모두 갖춘 이 시점에만 불량 수량에 반영한다 (스캔/조회 단계에서는 수량을 올리지 않는다).
+        # attach_existing: 이미 불량 수량이 잡혀 있는 상품에 사진·사유만 붙이는 경우라 수량은 올리지 않는다.
+        total_units = sum(spec[0] for spec in specs)
+        defect_counts = dict(get_shared_defect_counts())
+        if not payload.get("attach_existing"):
+            defect_counts[code] = defect_counts.get(code, 0) + total_units
+            set_shared_defect_counts(defect_counts)
+        inv = state.get("current_invoice")
+        result["record_ids"] = record_ids
+        result["code"] = code
+        result["defect_count"] = defect_counts.get(code, 0)
+        result["defects"] = _get_defect_list(state)
+        result["items"] = _get_all_items(state, inv) if inv else []
+        return result
+
+    @router.post("/barcode/defect/record/update")
+    def update_defect_record(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        try:
+            record_id = int(payload.get("id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="id is required")
+        add_photos = _parse_defect_photos(payload.get("add_photos"))
+        remove_ids = []
+        for value in payload.get("remove_photo_ids") or []:
+            try:
+                remove_ids.append(int(value))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="remove_photo_ids 형식이 올바르지 않습니다")
+
+        conn = _defect_record_conn()
+        try:
+            exists = conn.execute(
+                "SELECT id FROM barcode_defect_records WHERE id = ?", (record_id,)
+            ).fetchone()
+            if not exists:
+                raise HTTPException(status_code=404, detail="기록을 찾을 수 없습니다")
+            current_ids = [
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM barcode_defect_record_photos WHERE record_id = ?", (record_id,)
+                ).fetchall()
+            ]
+            remaining = len([pid for pid in current_ids if pid not in remove_ids]) + len(add_photos)
+            # 사진 없이 등록된 기록도 사유 등만 고칠 수 있어야 하므로 최소 장수는 강제하지 않는다.
+            if remaining > _DEFECT_PHOTO_MAX_COUNT:
+                raise HTTPException(status_code=400, detail=f"사진은 최대 {_DEFECT_PHOTO_MAX_COUNT}장까지 가능합니다")
+
+            now = datetime.now(_KST).isoformat()
+            sets, params = ["updated_at = ?"], [now]
+            if "qty" in payload:
+                sets.append("qty = ?")
+                params.append(_defect_record_qty(payload.get("qty")))
+            if "reason" in payload:
+                sets.append("reason = ?")
+                params.append(str(payload.get("reason") or "").strip())
+            conn.execute(
+                f"UPDATE barcode_defect_records SET {', '.join(sets)} WHERE id = ?",
+                (*params, record_id),
+            )
+            for pid in remove_ids:
+                conn.execute(
+                    "DELETE FROM barcode_defect_record_photos WHERE id = ? AND record_id = ?",
+                    (pid, record_id),
+                )
+            for mime, data in add_photos:
+                conn.execute(
+                    "INSERT INTO barcode_defect_record_photos (record_id, mime, data, created_at) VALUES (?, ?, ?, ?)",
+                    (record_id, mime, data, now),
+                )
+            conn.commit()
+            return _defect_records_response(conn)
+        finally:
+            conn.close()
+
+    @router.post("/barcode/defect/record/remove")
+    def remove_defect_record(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        try:
+            record_id = int(payload.get("id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="id is required")
+        conn = _defect_record_conn()
+        try:
+            conn.execute("DELETE FROM barcode_defect_record_photos WHERE record_id = ?", (record_id,))
+            conn.execute("DELETE FROM barcode_defect_records WHERE id = ?", (record_id,))
+            conn.commit()
+            return _defect_records_response(conn)
+        finally:
+            conn.close()
+
     _BAD_STOCK_CATEGORY_LETTERS = {
         "상의": ("A", "B", "C", "D", "E"),
         "하의": ("A", "B", "C", "D", "E"),

@@ -1,0 +1,338 @@
+/* 불량 사진·사유 등록 시트 / 기록 패널 공용 스타일 */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.sheet {
+  width: 100%;
+  max-width: 520px;
+  max-height: 92vh;
+  overflow-y: auto;
+  background: var(--bg-primary, #fff);
+  color: var(--text-primary, #111);
+  border-radius: 16px 16px 0 0;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.sheetHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.sheetTitle {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #dc2626;
+}
+
+.sheetSub {
+  font-size: 1rem;
+  font-weight: 700;
+  word-break: break-all;
+}
+
+.sheetCode {
+  font-size: 0.8rem;
+  color: var(--text-muted, #6b7280);
+}
+
+.laterBtn,
+.smallBtn,
+.chip {
+  border: 1px solid var(--border-color, #d1d5db);
+  background: var(--bg-secondary, #f3f4f6);
+  color: inherit;
+  border-radius: 8px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.laterBtn:disabled,
+.smallBtn:disabled,
+.chip:disabled {
+  opacity: 0.5;
+}
+
+.qtyRow {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.qtyLabel {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border-color, #d1d5db);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.stepper button {
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: var(--bg-secondary, #f3f4f6);
+  font-size: 1.1rem;
+  cursor: pointer;
+  color: inherit;
+}
+
+.stepper input,
+.qtyInput {
+  width: 52px;
+  height: 36px;
+  text-align: center;
+  border: none;
+  font-size: 1rem;
+  background: transparent;
+  color: inherit;
+}
+
+.qtyInput {
+  border: 1px solid var(--border-color, #d1d5db);
+  border-radius: 8px;
+}
+
+.batchToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-left: auto;
+}
+
+.hint {
+  font-size: 0.8rem;
+  color: var(--text-muted, #6b7280);
+}
+
+.entries {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.entryCard {
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 12px;
+  padding: 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.entryTitle {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: #dc2626;
+}
+
+.photoRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.thumbWrap {
+  position: relative;
+}
+
+.thumb {
+  width: 76px;
+  height: 76px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border-color, #d1d5db);
+  cursor: zoom-in;
+}
+
+.thumbLoading {
+  width: 76px;
+  height: 76px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  color: var(--text-muted, #6b7280);
+  border: 1px dashed var(--border-color, #d1d5db);
+  border-radius: 8px;
+}
+
+.thumbRemove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: none;
+  background: #dc2626;
+  color: #fff;
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.addPhotoBtn {
+  width: 76px;
+  height: 76px;
+  border: 2px dashed #dc2626;
+  border-radius: 8px;
+  background: rgba(220, 38, 38, 0.05);
+  color: #dc2626;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1rem;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.addPhotoPlus {
+  font-size: 1.6rem;
+  line-height: 1;
+}
+
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.chipOn {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #fff;
+}
+
+.reasonInput {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.55rem 0.7rem;
+  font-size: 1rem;
+  border: 1px solid var(--border-color, #d1d5db);
+  border-radius: 8px;
+  background: var(--bg-primary, #fff);
+  color: inherit;
+}
+
+.error {
+  color: #b91c1c;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.confirmBtn {
+  border: none;
+  border-radius: 10px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 1.05rem;
+  font-weight: 700;
+  padding: 0.8rem;
+  cursor: pointer;
+}
+
+.confirmBtn:disabled {
+  opacity: 0.6;
+}
+
+.zoomOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.zoomImg {
+  max-width: 96vw;
+  max-height: 92vh;
+  object-fit: contain;
+}
+
+/* 불량 리스트 행 아래 기록 패널 (기본은 접힘) */
+.panel {
+  flex-basis: 100%;
+  margin-top: 0.25rem;
+}
+
+.panelToggle {
+  border: none;
+  background: transparent;
+  color: var(--text-muted, #6b7280);
+  font-size: 0.8rem;
+  padding: 0.2rem 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.recordList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.3rem;
+}
+
+.recordItem {
+  border-left: 3px solid #dc2626;
+  padding-left: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.recordTop {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.recordQty {
+  font-weight: 700;
+  font-size: 0.85rem;
+  margin-right: 0.2rem;
+}
+
+.reasonText {
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.editBox {
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 10px;
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.rowBtns {
+  display: flex;
+  gap: 0.4rem;
+}

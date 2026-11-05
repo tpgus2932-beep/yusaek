@@ -3,6 +3,9 @@ import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import styles from "./BarcodePage.module.css";
 import LabelReprintPage from "./LabelReprintPage";
 import StockLogModal from "./StockLogModal";
+import DefectRecordSheet from "./DefectRecordSheet";
+import DefectRecordsPanel from "./DefectRecordsPanel";
+import DefectMatchModal from "./DefectMatchModal";
 import { getDownloadFilename } from "../../lib/download";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
@@ -99,6 +102,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
   const [defectSearchLoading, setDefectSearchLoading] = useState(false);
   const [defectSearchMessage, setDefectSearchMessage] = useState("");
   const [defectRecentCodes, setDefectRecentCodes] = useState([]);
+  const [defectSheet, setDefectSheet] = useState(null); // 스캔 직후 사진·사유 등록 시트 { code, label }
+  const [defectRecords, setDefectRecords] = useState([]); // 현재 탭의 사진·사유 기록 (SQLite)
+  const [defectMatchGroups, setDefectMatchGroups] = useState(null); // 불량 불러오기 직후 실물 매칭 모달용 [{ tab, rows }]
   const [showKimsungilList, setShowKimsungilList] = useState(false);
   const [kimsungilNameSort, setKimsungilNameSort] = useState(""); // ""(기본: 입고 우선) | "desc" | "asc"
   const [kimsungilList, setKimsungilList] = useState([]);
@@ -262,6 +268,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     refreshStatus();
     fetchDefectList();
     fetchKimsungilList();
+    setDefectRecords([]);
+    fetchDefectRecords();
   };
 
   const applyTabsConfig = (cfg) => {
@@ -505,22 +513,45 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
 
   const isProbablyInvoice = (s) => /^\d{10,}$/.test((s || "").trim());
 
+  // 상품코드로 상품을 조회해 사진·사유 등록 시트를 연다. 이 단계에서는 불량 수량이 전혀 바뀌지 않고,
+  // 시트에서 사진+사유를 갖춰 '확인'을 눌러야만 등록된다.
+  const openDefectSheetFor = async (rawCode) => {
+    const res = await fetch(`${API}/barcode/defect/record/lookup?code=${encodeURIComponent(rawCode)}`, { headers: tabHeaders() });
+    if (handleUnauthorized(res)) return;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.detail || "상품 조회 실패");
+    setDefectSheet({ code: data.code, label: data.name || "", found: Boolean(data.found) });
+  };
+
   const handleDefectAdd = async () => {
     const value = toEnglishKey(scanText.trim());
     if (!value) return;
     try {
-      const res = await fetch(`${API}/barcode/defect/add`, {
-        method: "POST", headers: { "Content-Type": "application/json", ...tabHeaders() },
-        body: JSON.stringify({ code: value }),
-      });
+      await openDefectSheetFor(value);
+    } catch (err) { pushLog(`불량 조회 실패: ${err.message || ""}`.trim()); }
+    finally { setScanText(""); }
+  };
+
+  const fetchDefectRecords = async () => {
+    try {
+      const tab = defectTabRef.current;
+      const res = await fetch(`${API}/barcode/defect/record/list`, { headers: tabHeaders() });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "불량 등록 실패");
-      setItems(data.items ?? items);      setDefectList(data.defects ?? defectList);
-      setDefectRecentCodes((prev) => [data.code, ...prev.filter((code) => code !== data.code)]);
-      pushLog(`불량 등록: ${data.code} (누적 ${data.defect_count})`);
-    } catch (err) { pushLog(`불량 등록 실패: ${err.message || ""}`.trim()); }
-    finally { setScanText(""); setTimeout(() => scanRef.current?.focus(), 0); }
+      if (!res.ok) throw new Error(data?.detail || "불량 기록 조회 실패");
+      if (tab !== defectTabRef.current) return; // 응답이 오는 사이 탭이 바뀌었으면 버린다
+      setDefectRecords(data.records ?? []);
+    } catch { /* ignore */ }
+  };
+
+  const handleDefectRecordSaved = (data) => {
+    setDefectRecords(data.records ?? []);
+    if (data.defects) setDefectList(data.defects);
+    if (data.items) setItems(data.items);
+    if (data.code) setDefectRecentCodes((prev) => [data.code, ...prev.filter((code) => code !== data.code)]);
+    setDefectSheet(null);
+    pushLog(`불량 등록: ${data.code || ""} (누적 ${data.defect_count ?? ""}) — 사진·사유 포함`.trim());
+    setTimeout(() => scanRef.current?.focus(), 0);
   };
 
   const searchDefectBaseByName = async () => {
@@ -994,19 +1025,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     const code = row?.code || row?.base_code;
     if (!code) return;
     try {
-      const res = await fetch(`${API}/barcode/defect/add`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...tabHeaders() },
-        body: JSON.stringify({ code }),
-      });
-      if (handleUnauthorized(res)) return;
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "불량 추가 실패");
-      setItems(data.items ?? items);
-           setDefectList(data.defects ?? defectList);
-      setDefectRecentCodes((prev) => [data.code, ...prev.filter((itemCode) => itemCode !== data.code)]);
-      setDefectSearchMessage(`불량 추가 완료: ${row.base_name || data.code}`);
-      pushLog(`불량 검색 추가: ${data.code} ${row.base_name || ""}`.trim());
+      // 검색에서 고른 상품도 사진·사유를 입력해야 등록된다 (시트에서 확인할 때 수량이 반영됨).
+      await openDefectSheetFor(code);
+      setDefectSearchMessage(`사진·사유를 입력하면 등록됩니다: ${row.base_name || code}`);
     } catch (err) {
       setDefectSearchMessage(err.message || "불량 추가 실패");
     }
@@ -1385,11 +1406,31 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     return data;
   };
 
-  const refreshAfterSummon = () => {
+  // 불러온(소환된) 불량을 탭별로 모아 실물 이중체크 모달에 넘긴다. KDG 탭은 불러오기 도중 새로 생길 수 있어 함께 조회한다.
+  const openDefectMatch = async () => {
+    const tabs = [...new Set([...defectTabs, KDG_TAB])];
+    try {
+      const groups = await Promise.all(tabs.map(async (tab) => {
+        const res = await fetch(`${API}/barcode/defect/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) } });
+        if (handleUnauthorized(res)) return { tab, rows: [] };
+        const data = await res.json().catch(() => ({}));
+        const rows = (data.defects ?? [])
+          .filter((d) => (d.kimsungil_summon_qty || 0) > 0)
+          .sort((a, b) => String(a.code || "").localeCompare(String(b.code || "")))
+          .map((d) => ({ code: d.code, label: renderDefectLabel(d), total: Number(d.kimsungil_summon_qty) || 0 }));
+        return { tab, rows };
+      }));
+      const filled = groups.filter((g) => g.rows.length > 0);
+      if (filled.length > 0) setDefectMatchGroups(filled);
+    } catch { /* 매칭 모달을 못 열어도 불러오기 자체는 이미 끝난 상태 */ }
+  };
+
+  const refreshAfterSummon = (moved = false) => {
     fetchDefectList();
     fetchKimsungilList();
     fetchSummonedAllTabs();
     setKimsungilSummonPicker(null);
+    if (moved) openDefectMatch();
   };
 
   const handleKimsungilSummon = async (tab) => {
@@ -1398,8 +1439,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     if (!window.confirm(`${tab}탭 김승일 ${info.kinds}종 ${info.total}개를 ${tab}탭 불량 목록으로 소환하겠습니까?\n(케이디지 상품은 KDG 탭으로 갑니다)`)) return;
     try {
       setKimsungilSummonLoading(true);
-      await summonOneTab(tab);
-      refreshAfterSummon();
+      const summoned = await summonOneTab(tab);
+      refreshAfterSummon((summoned?.moved_count || 0) > 0);
     } catch (err) {
       alert(err.message || "김승일 소환술 실패");
       pushLog(`김승일 소환술 실패: ${err.message || ""}`.trim());
@@ -1418,9 +1459,11 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     if (!window.confirm(`${targets.join(", ")}탭 김승일 ${kinds}종 ${total}개를 각 탭 불량 목록으로 소환하겠습니까?\n(케이디지 상품은 KDG 탭으로 갑니다)`)) return;
     setKimsungilSummonLoading(true);
     let done = 0;
+    let movedAny = false;
     try {
       for (const tab of targets) {
-        await summonOneTab(tab);
+        const summoned = await summonOneTab(tab);
+        if ((summoned?.moved_count || 0) > 0) movedAny = true;
         done += 1;
       }
     } catch (err) {
@@ -1428,7 +1471,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
       pushLog(`김승일 소환술 전체 실패: ${err.message || ""}`.trim());
     } finally {
       setKimsungilSummonLoading(false);
-      refreshAfterSummon();
+      refreshAfterSummon(movedAny);
     }
   };
 
@@ -2077,7 +2120,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
               >
                 {defectMode ? "🚨 불량 모드" : "불량 모드"}
               </button>
-              <button className={styles.secondaryBtn} onClick={() => { setShowDefectList(true); fetchDefectList(); fetchKimsungilList(); }}>
+              <button className={styles.secondaryBtn} onClick={() => { setShowDefectList(true); fetchDefectList(); fetchKimsungilList(); fetchDefectRecords(); }}>
                 불량 목록
                 {defectList.length > 0 && (
                   <span className={styles.inlineTagDanger} style={{ marginLeft: "0.35rem" }}>{defectList.length}</span>
@@ -3208,6 +3251,26 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
         </div>
       )}
 
+      {defectSheet && (
+        <DefectRecordSheet
+          code={defectSheet.code}
+          label={defectSheet.label}
+          initialQty={defectSheet.qty ?? 1}
+          attachExisting={Boolean(defectSheet.attachExisting)}
+          tabHeaders={tabHeaders}
+          onSaved={handleDefectRecordSaved}
+          onClose={() => { setDefectSheet(null); setTimeout(() => scanRef.current?.focus(), 0); }}
+        />
+      )}
+
+      {defectMatchGroups && (
+        <DefectMatchModal
+          groups={defectMatchGroups}
+          toKey={toEnglishKey}
+          onClose={() => { setDefectMatchGroups(null); setTimeout(() => scanRef.current?.focus(), 0); }}
+        />
+      )}
+
       {showDefectList && (
         <div className={styles.modalOverlay} onClick={() => setShowDefectList(false)}>
           <div className={`${styles.modal} ${styles.mobileCompactModal}`} onClick={(e) => e.stopPropagation()}>
@@ -3306,6 +3369,24 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                       <button className={styles.ghostBtn} onClick={() => handleDefectDec(item.code)}>-1</button>
                       <button className={styles.ghostBtn} onClick={() => handleDefectRemove(item.code)}>삭제</button>
                     </div>
+                    {(() => {
+                      // 불량 수량 중 아직 사진·사유 기록이 없는 개수 (기존 등록분 / 기록 없이 쌓인 불량)
+                      const recs = defectRecords.filter((r) => r.code === item.code);
+                      const unrecorded = (item.normal_qty ?? item.count) - recs.reduce((s, r) => s + (Number(r.qty) || 0), 0);
+                      return unrecorded > 0 ? (
+                        <button
+                          className={styles.ghostBtn}
+                          onClick={() => setDefectSheet({ code: item.code, label: renderDefectLabel(item), attachExisting: true, qty: unrecorded })}
+                        >
+                          {recs.length > 0 ? `사진·사유 추가 (${unrecorded}개)` : "사진·사유 등록"}
+                        </button>
+                      ) : null;
+                    })()}
+                    <DefectRecordsPanel
+                      records={defectRecords.filter((r) => r.code === item.code)}
+                      tabHeaders={tabHeaders}
+                      onChanged={setDefectRecords}
+                    />
                   </div>
                 ))}
               </div>
