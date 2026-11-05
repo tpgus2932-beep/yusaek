@@ -3,15 +3,17 @@ import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../..
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import BarcodePage from "../Barcode/BarcodePage";
 import StockCheckPage from "../Barcode/StockCheckPage";
+import HapbaePreMatch from "../Test/HapbaePreMatch";
 import MobileInvoiceDelete from "./MobileInvoiceDelete";
 import styles from "./MobileLogPage.module.css";
 
 const TABS = [
   { key: "barcode", label: "바코드" },
   { key: "log", label: "로그 확인" },
-  { key: "stock-check", label: "재고체크" },
   { key: "invoice-delete", label: "송장삭제" },
   { key: "receipt", label: "입고확인" },
+  { key: "stock-check", label: "재고체크" },
+  { key: "hapbae", label: "합배선매칭" },
 ];
 
 const request = async (path, body) => {
@@ -264,6 +266,7 @@ export default function MobileLogPage() {
       {tab === "log" && <main className={styles.main}><StockLog /></main>}
       {tab === "stock-check" && <StockCheckPage />}
       {tab === "invoice-delete" && <main className={styles.main}><MobileInvoiceDelete /></main>}
+      {tab === "hapbae" && <HapbaePreMatch />}
       {tab === "receipt" && <main className={styles.main}><ReceiptCheck /></main>}
     </div>
   );
