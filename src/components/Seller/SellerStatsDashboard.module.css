@@ -1,0 +1,216 @@
+.toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.segment {
+    display: inline-flex;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.segBtn {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.8rem;
+    border: none;
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.segBtnActive {
+    background: var(--accent-color, #4f7cff);
+    color: #fff;
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.45rem 0.8rem;
+    font-size: 0.8rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.spinning {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.error {
+    padding: 0.6rem 0.8rem;
+    margin-bottom: 0.75rem;
+    border-radius: var(--radius-sm);
+    background: rgba(239, 68, 68, 0.1);
+    color: #dc2626;
+    font-size: 0.85rem;
+}
+
+.notice {
+    padding: 0.6rem 0.8rem;
+    margin-bottom: 0.75rem;
+    border-radius: var(--radius-sm);
+    background: rgba(16, 185, 129, 0.1);
+    color: #047857;
+    font-size: 0.85rem;
+}
+
+.empty {
+    padding: 2rem 0;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.kpi {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.8rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+}
+
+.kpi span {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.kpi b {
+    font-size: 1.25rem;
+    color: var(--text-primary);
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.card {
+    padding: 0.8rem 1rem;
+    margin-bottom: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+}
+
+.grid .card {
+    margin-bottom: 0;
+}
+
+.cardTitle {
+    margin: 0 0 0.5rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.select {
+    margin-left: 0.4rem;
+    padding: 0.3rem 0.4rem;
+    font-size: 0.8rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.rankList {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.rankRow {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+}
+
+.rankNo {
+    flex: 0 0 1.4rem;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-align: right;
+    padding-top: 0.05rem;
+}
+
+.rankMain {
+    flex: 1;
+    min-width: 0;
+}
+
+.rankName {
+    display: block;
+    font-size: 0.83rem;
+    line-height: 1.3;
+    color: var(--text-primary);
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+}
+
+.rankBar {
+    height: 5px;
+    margin-top: 0.3rem;
+    border-radius: 3px;
+    background: var(--bg-secondary, rgba(128, 128, 128, 0.15));
+}
+
+.rankFill {
+    height: 100%;
+    border-radius: 3px;
+}
+
+.rankValue {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    min-width: 5.5rem;
+}
+
+.rankValue b {
+    font-size: 0.9rem;
+    color: var(--text-primary);
+}
+
+.rankValue small {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}

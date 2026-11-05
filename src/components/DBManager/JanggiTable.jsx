@@ -8,7 +8,10 @@ function _normalizePickup(v) { return String(v || "").replace(/\s+/g, "").trim()
 function _hasPickup(v) { const n = _normalizePickup(v); return n.includes("미송픽업") || (n.includes("미송") && n.includes("픽업")); }
 function _isMisong(v) { return _normalizePickup(v).includes("미송") && !_hasPickup(v); }
 
+// 로컬(한국) 기준 오늘 날짜 - toISOString은 UTC라 오전 9시 전에는 하루 전으로 나온다
+function _todayLocal() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
 const PAGE_SIZE = 50;
+function _parsePrice(v) { const n = parseFloat(String(v ?? "").replace(/[^\d.+-]/g, "")); return Number.isFinite(n) ? n : 0; }
 const COLS = ["거래처", "거래처상품명", "가격", "옵션", "사이즈", "개수", "날짜", "미송체크", "상품코드", "메모", "거래처합산"];
 
 /* ── 목록 탭 ─────────────────────────────────────────────────── */
@@ -18,7 +21,7 @@ function JanggiListView() {
   const [offset, setOffset] = useState(0);
   const [query, setQuery] = useState("");
   const [inputQuery, setInputQuery] = useState("");
-  const [dateFilter, setDateFilter] = useState("");
+  const [dateFilter, setDateFilter] = useState(_todayLocal);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [misongFilter, setMisongFilter] = useState("");
@@ -895,6 +898,21 @@ function JanggiListView() {
               </tr>
             ))}
           </tbody>
+          {sortedRows.length > 0 && (
+            <tfoot>
+              <tr>
+                <td style={{ position: "sticky", bottom: 0, background: "var(--surface, #f3f4f6)", borderTop: "2px solid var(--border, #d1d5db)" }} />
+                {COLS.map((col) => (
+                  <td
+                    key={col}
+                    style={{ fontWeight: 700, position: "sticky", bottom: 0, background: "var(--surface, #f3f4f6)", borderTop: "2px solid var(--border, #d1d5db)" }}
+                  >
+                    {col === "거래처" ? "페이지 합계" : col === "개수" ? Math.round(sortedRows.reduce((s, r) => s + _parsePrice(r.개수), 0)).toLocaleString() : col === "가격" ? Math.round(sortedRows.reduce((s, r) => s + _parsePrice(r.가격), 0)).toLocaleString() : ""}
+                  </td>
+                ))}
+              </tr>
+            </tfoot>
+          )}
         </table>
         {!rows.length && !loading && <div className={styles.empty}>조회된 데이터가 없습니다.</div>}
       </div>
@@ -1000,21 +1018,18 @@ function JanggiListView() {
 
 /* ── TOP비교 탭 ──────────────────────────────────────────────── */
 function JanggiTopComparison() {
-  const [dbDate, setDbDate] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("janggi_top_cache") || "{}").dbDate || null; } catch { return null; }
-  });
-  const [dbRows, setDbRows] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("janggi_top_cache") || "{}").dbRows || []; } catch { return []; }
-  });
+  // DB 금액은 항상 서버(DB)에서 직접 읽는다 - localStorage 캐시를 쓰면 DB와 값이 어긋난다
+  const [dbDate, setDbDate] = useState(null);
+  const [dbRows, setDbRows] = useState([]);
   const [topDate, setTopDate] = useState(null);
   const [topShops, setTopShops] = useState([]);
   const [topNotes, setTopNotes] = useState({});
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
-  const [dbLoaded, setDbLoaded] = useState(() => {
-    try { return !!JSON.parse(localStorage.getItem("janggi_top_cache") || "{}").loaded; } catch { return false; }
-  });
+  const [dbLoaded, setDbLoaded] = useState(false);
   const [topLoaded, setTopLoaded] = useState(false);
+  const [selDate, setSelDate] = useState(""); // 조회/비교 기준 날짜 (빈 값 = DB 최근날짜 / 오늘)
+  const selDateRef = useRef("");
   const [checkedRows, setCheckedRows] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem("janggi_top_checked") || "[]")); } catch { return new Set(); }
   });
@@ -1252,7 +1267,8 @@ function JanggiTopComparison() {
     }
   };
 
-  const loadDb = async () => {
+  const loadDb = async (dateArg) => {
+    const useDate = typeof dateArg === "string" ? dateArg : selDate;
     setLoading(true);
     setMessage("DB 조회 중...");
     setDbLoaded(false);
@@ -1263,7 +1279,7 @@ function JanggiTopComparison() {
     setDismissed(new Set());
     localStorage.removeItem("janggi_top_dismissed");
     try {
-      const res = await fetch(`${API}/wonbe/janggi/recent-summary`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/wonbe/janggi/recent-summary?date=${encodeURIComponent(useDate || "")}`, { headers: getAuthHeaders(), cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "DB 조회 실패");
       setDbDate(data.date);
@@ -1271,11 +1287,7 @@ function JanggiTopComparison() {
       setDbLoaded(true);
       setMessage("");
       fetchAccountSet();
-      localStorage.setItem("janggi_top_cache", JSON.stringify({
-        dbDate: data.date,
-        dbRows: data.rows || [],
-        loaded: true,
-      }));
+      try { localStorage.removeItem("janggi_top_cache"); } catch { /* ignore */ }
     } catch (err) {
       setMessage(err.message || "조회 실패");
     } finally {
@@ -1283,11 +1295,35 @@ function JanggiTopComparison() {
     }
   };
 
+  // 마운트 시 자동 조회 + 탭/창으로 돌아올 때 DB 금액만 조용히 재조회(TOP/확인 상태는 유지)
+  const refreshDbQuiet = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/wonbe/janggi/recent-summary?date=${encodeURIComponent(selDateRef.current || "")}`, { headers: getAuthHeaders(), cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setDbDate(data.date);
+        setDbRows(data.rows || []);
+        setDbLoaded(true);
+      }
+    } catch { /* 조용히 무시 */ }
+  }, []);
+
+  useEffect(() => {
+    refreshDbQuiet();
+    const onVisible = () => { if (document.visibilityState === "visible") refreshDbQuiet(); };
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [refreshDbQuiet]);
+
   const loadTop = async () => {
     setLoading(true);
     setMessage("TOP90 조회 중...");
     try {
-      const res = await fetch(`${API}/wonbe/janggi/top-shops`, { headers: getAuthHeaders() });
+      const res = await fetch(`${API}/wonbe/janggi/top-shops?date=${encodeURIComponent(selDate || dbDate || "")}`, { headers: getAuthHeaders() });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "TOP90 조회 실패");
       setTopDate(data.date);
@@ -1353,7 +1389,19 @@ function JanggiTopComparison() {
   return (
     <div className={topStyles.root}>
       <div className={topStyles.toolbar}>
-        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={loadDb} disabled={loading}>
+        <input
+          type="date"
+          value={selDate}
+          max={_todayLocal()}
+          onChange={(e) => { setSelDate(e.target.value); selDateRef.current = e.target.value; }}
+          disabled={loading}
+          title="조회/비교 기준 날짜 (비우면 DB 최근날짜 / 오늘)"
+          style={{ padding: "0.3rem 0.45rem", borderRadius: "6px", border: "1px solid var(--border-color)", background: "var(--bg-secondary)", color: "var(--text-primary)", fontSize: "0.8rem" }}
+        />
+        {selDate && (
+          <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => { setSelDate(""); selDateRef.current = ""; loadDb(""); }} disabled={loading} title="날짜 선택 해제 (DB 최근날짜로)">최근</button>
+        )}
+        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={() => loadDb()} disabled={loading}>
           <GitCompare size={13} />{loading && !topLoaded ? "조회 중..." : "조회"}
         </button>
         <button
@@ -1493,7 +1541,13 @@ function JanggiTopComparison() {
                         >
                           {r.거래처}
                         </td>
-                        <td style={resizedTdStyle("합산금액", { textAlign: "right", fontWeight: 600 })}>{r.합산 != null ? Math.round(r.합산).toLocaleString() : ""}</td>
+                        <td
+                          style={resizedTdStyle("합산금액", { textAlign: "right", fontWeight: 600 })}
+                          title={`DB ${r.건수 ?? "?"}건 합계 (일괄이체 ${Math.round(r.일괄이체 || 0).toLocaleString()}원 포함${r.파싱불가 ? `, 비정상 가격 ${r.파싱불가}건` : ""})`}
+                        >
+                          {r.합산 != null ? Math.round(r.합산).toLocaleString() : ""}
+                          {r.파싱불가 > 0 && <span style={{ color: "#dc2626" }} title="숫자가 아닌 가격 값이 있어 합계가 달라질 수 있음"> ⚠</span>}
+                        </td>
                         <td style={resizedTdStyle("확인")}>
                           <button
                             className={checked ? topStyles.confirmBtnDone : topStyles.confirmBtn}
@@ -1583,6 +1637,27 @@ function JanggiTopComparison() {
                 })}
                 {!sortedDbRows.length && <tr><td colSpan={topLoaded ? 5 : 4} style={{ textAlign: "center", color: "var(--text-muted)", padding: "1rem" }}>데이터 없음</td></tr>}
               </tbody>
+              {sortedDbRows.length > 0 && (
+                <tfoot>
+                  <tr>
+                    {[
+                      <td key="l" style={{ fontWeight: 700 }}>합계 ({sortedDbRows.length}개 거래처)</td>,
+                      <td key="a" style={{ textAlign: "right", fontWeight: 700 }}>
+                        {Math.round(sortedDbRows.reduce((s, r) => s + (Number(r.합산) || 0), 0)).toLocaleString()}
+                      </td>,
+                      <td key="e" colSpan={topLoaded ? 3 : 2} />,
+                    ].map((cell) => React.cloneElement(cell, {
+                      style: {
+                        ...cell.props.style,
+                        position: "sticky",
+                        bottom: 0,
+                        background: "var(--surface, #f3f4f6)",
+                        borderTop: "2px solid var(--border, #d1d5db)",
+                      },
+                    }))}
+                  </tr>
+                </tfoot>
+              )}
             </table>
             </div>
           </div>

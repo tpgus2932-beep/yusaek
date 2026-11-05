@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import date as date_cls, datetime, timedelta
@@ -16,6 +17,7 @@ _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
 # S700은 PHPSESSID만으로는 응답하지 않아 로그인 도메인/아이디 쿠키가 같이 필요하다 (shipping_eta_routes와 동일).
 _EZ_EXTRA_COOKIES = {"ezdomain": "yusaek", "ezuserid": "yusaek", "ezsave": "on"}
 _EZ_TIMEOUT = 300.0
+_SHIP_LOAD_CONCURRENCY = 4
 _KST = ZoneInfo("Asia/Seoul")
 _NUMBER_TITLE_RE = re.compile(r"\[\s*(\d+)\s*\]\s*\((\d{2}:\d{2}:\d{2})\)\s*개수\s*:\s*(\d+)")
 _PRODUCT_RE = re.compile(r"\[([A-Z]\d+)\](.*?)(?:-\[([^\]]*)\])?\s+(\d+)개")
@@ -187,7 +189,7 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
         except ValueError:
             raise HTTPException(status_code=400, detail="날짜 형식이 올바르지 않습니다.")
 
-    async def _ez_post(form: dict):
+    async def _ez_post(form: dict, client: httpx.AsyncClient | None = None):
         phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
         if not phpsessid:
             return None
@@ -200,11 +202,12 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
             "X-Requested-With": "XMLHttpRequest",
         }
         try:
-            async with httpx.AsyncClient(timeout=_EZ_TIMEOUT, verify=False, follow_redirects=True) as client:
-                res = await client.post(
-                    f"{_EZADMIN_BASE}/function.htm", headers=headers,
-                    cookies={"PHPSESSID": phpsessid, **_EZ_EXTRA_COOKIES}, data=form,
-                )
+            cookies = {"PHPSESSID": phpsessid, **_EZ_EXTRA_COOKIES}
+            if client is not None:
+                res = await client.post(f"{_EZADMIN_BASE}/function.htm", headers=headers, cookies=cookies, data=form)
+            else:
+                async with httpx.AsyncClient(timeout=_EZ_TIMEOUT, verify=False, follow_redirects=True) as own:
+                    res = await own.post(f"{_EZADMIN_BASE}/function.htm", headers=headers, cookies=cookies, data=form)
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"이지어드민 응답 오류: {type(e).__name__} {e}".strip())
         try:
@@ -718,7 +721,11 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
         totals = {"main": empty(), "stock": empty()}
         per_number = []
         sample_keys: list[str] = []
-        for num in sorted(assigned, key=int):
+        nums = sorted(assigned, key=int)
+        # 차수마다 이지어드민을 따로 부르므로 동시에 조회한다(너무 많이 몰리지 않게 동시 4건까지).
+        sem = asyncio.Semaphore(_SHIP_LOAD_CONCURRENCY)
+
+        async def fetch_number(client: httpx.AsyncClient, num: str):
             par = (
                 f"orderReserve=0&priorityDeliv=0"
                 f"&numberDate={d.year}-{d.month}-{d.day}"
@@ -727,11 +734,18 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
                 f"&agencyTemplate=20004&check_address=2"
                 f"&teamf_transType=tonight&kakaoT_type=0&deliv_today_type=0&hanjin_deliv_type=GN"
             )
-            result = await _ez_post({
-                "template": "S700", "action": "get_success_order", "_search": "false",
-                "nd": str(int(datetime.now().timestamp() * 1000)), "rows": "999999", "page": "1",
-                "sidx": "", "sord": "asc", "readonly": "T", "par": par,
-            })
+            async with sem:
+                result = await _ez_post({
+                    "template": "S700", "action": "get_success_order", "_search": "false",
+                    "nd": str(int(datetime.now().timestamp() * 1000)), "rows": "999999", "page": "1",
+                    "sidx": "", "sord": "asc", "readonly": "T", "par": par,
+                }, client)
+            return num, result
+
+        async with httpx.AsyncClient(timeout=_EZ_TIMEOUT, verify=False, follow_redirects=True) as client:
+            fetched = await asyncio.gather(*(fetch_number(client, n) for n in nums))
+
+        for num, result in fetched:
             if result is None or result is False:
                 return {"ok": False, "need_session": True}
             rows = result.get("rows", []) if isinstance(result, dict) else []

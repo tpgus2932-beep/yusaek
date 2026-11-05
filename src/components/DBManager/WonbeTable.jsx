@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, RefreshCw, Upload, RefreshCcw, PencilLine, Check, X, SlidersHorizontal, Trash2, CloudUpload } from "lucide-react";
+import { Download, RefreshCw, RefreshCcw, PencilLine, Check, X, SlidersHorizontal, Trash2, CloudUpload } from "lucide-react";
 import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
 const DEFAULT_PAGE_SIZE = 50;
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500];
 const EDITABLE_COLS = ["상품명합", "거래처합", "거래처", "거래처상품명", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"];
-const ALL_COLS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가", "지그재그상품번호", "아이디", "대표상품코드", "카테고리"];
+const ALL_COLS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "이벤트전 할인가", "이벤트 할인가", "판매가", "아이디", "대표상품코드", "카테고리"];
 const VISIBLE_COLS_STORAGE_KEY = "wonbe_visible_cols";
 const PAGE_SIZE_STORAGE_KEY = "wonbe_page_size";
 
@@ -25,7 +25,6 @@ export default function WonbeTable() {
   const [syncing, setSyncing] = useState(false);
   const [deletingByDate, setDeletingByDate] = useState(false);
   const [snoSyncing, setSnoSyncing] = useState(false);
-  const [zigzagSyncing, setZigzagSyncing] = useState(false);
   const [repCodeSyncing, setRepCodeSyncing] = useState(false);
   const [catOpen, setCatOpen] = useState(false);
   const [catItems, setCatItems] = useState([]);
@@ -37,22 +36,65 @@ export default function WonbeTable() {
   const [rnBusy, setRnBusy] = useState(false);
   const [rnProgress, setRnProgress] = useState(null); // { done, total }
   const [rnForce, setRnForce] = useState(false); // true면 이미 올린 상품도 전부 다시 올린다
+  const [rnCheckMsg, setRnCheckMsg] = useState(""); // 전체 재조회 진행 문구
+  const [rnCheck, setRnCheck] = useState(null); // 전체 재조회 결과 { checked, same, diff, unknown, diff_items }
   const [rnCats, setRnCats] = useState(["상의", "하의", "아우터", "악세사리"]);
   const [regDateSyncing, setRegDateSyncing] = useState(false);
-  const [countrySyncing, setCountrySyncing] = useState(false);
-  const [countryProgress, setCountryProgress] = useState(null); // { total, done, matched }
-  const countryPollRef = useRef(null);
   const [message, setMessage] = useState("");
   const [rawUnexpected, setRawUnexpected] = useState(null);
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const [syncStartDate, setSyncStartDate] = useState(todayStr);
-  const [syncEndDate, setSyncEndDate] = useState(todayStr);
+  const [tagGroups, setTagGroups] = useState(null); // 동기화 직후 대형태그/번호 지정 리스트
+  const [tagApplying, setTagApplying] = useState(false);
+  // 이지어드민 동기화 기간: 직접 입력 없이 최근 3일 / 7일 / 한달(30일) 중에서 고른다 (오늘 포함).
+  const SYNC_PERIODS = [
+    { days: 3, label: "3일" },
+    { days: 7, label: "7일" },
+    { days: 30, label: "한달" },
+  ];
+  const [syncMenu, setSyncMenu] = useState(null); // 열려 있는 드롭다운: "sync" | "delete" | null
+  const syncMenuRef = useRef(null);
+  const [fillMenuOpen, setFillMenuOpen] = useState(false);
+  const [ablyPriceMenuOpen, setAblyPriceMenuOpen] = useState(false);
+  const ablyPriceMenuRef = useRef(null);
+  useEffect(() => {
+    if (!ablyPriceMenuOpen) return undefined;
+    const onClickOutside = (e) => {
+      if (ablyPriceMenuRef.current && !ablyPriceMenuRef.current.contains(e.target)) setAblyPriceMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [ablyPriceMenuOpen]);
+  const fillMenuRef = useRef(null);
+  useEffect(() => {
+    if (!fillMenuOpen) return undefined;
+    const onClickOutside = (e) => {
+      if (fillMenuRef.current && !fillMenuRef.current.contains(e.target)) setFillMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [fillMenuOpen]);
+  useEffect(() => {
+    if (!syncMenu) return undefined;
+    const onClickOutside = (e) => {
+      if (syncMenuRef.current && !syncMenuRef.current.contains(e.target)) setSyncMenu(null);
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [syncMenu]);
+  const syncRange = (days) => {
+    const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - (days - 1));
+    return { start: fmt(start), end: fmt(end) };
+  };
   const [lastSync, setLastSync] = useState(null);
   const [editing, setEditing] = useState(null); // { code, col, value }
   const inputRef = useRef(null);
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
   const [selectedCodes, setSelectedCodes] = useState(new Set());
+  // 상품명 일괄변경 계획의 code는 대표상품코드라서, 체크한 행(상품코드)의 대표상품코드로 바꿔 비교한다.
+  const selectedReps = useMemo(() => new Set(rows.filter((r) => selectedCodes.has(r["상품코드"])).map((r) => String(r["대표상품코드"] ?? "").trim()).filter(Boolean)), [rows, selectedCodes]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
   // 헤더 일괄수정
@@ -81,7 +123,7 @@ export default function WonbeTable() {
   const [excludeSaving, setExcludeSaving] = useState(false);
   const excludePanelRef = useRef(null);
 
-  // 이벤트전할인가 채우기(원가기준)에서 쓰는 택배비 설정값
+  // 판매가 설정(원가기준)에서 쓰는 택배비 설정값
   const [savedShippingFee, setSavedShippingFee] = useState(2060);
 
   // 그룹 (체크한 상품을 묶어서 그룹별로만 필터링해서 보기)
@@ -508,61 +550,6 @@ export default function WonbeTable() {
     }
   };
 
-  const handleImportFile = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    e.target.value = "";
-    setLoading(true);
-    setMessage("");
-    try {
-      const form = new FormData();
-      form.append("file", file);
-      const res = await fetch(`${API}/wonbe/import`, {
-        method: "POST",
-        headers: getAuthHeaders(),
-        body: form,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) throw new Error(data?.detail || "임포트 실패");
-      setMessage(`임포트 완료: ${data.count}행`);
-      setOffset(0);
-      setQuery("");
-      setInputQuery("");
-      await fetchRows("", 0);
-    } catch (err) {
-      setMessage(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const [fillLoading, setFillLoading] = useState(false);
-
-  const handleFillFromExcel = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    e.target.value = "";
-    setFillLoading(true);
-    setMessage("");
-    try {
-      const form = new FormData();
-      form.append("file", file);
-      const res = await fetch(`${API}/wonbe/fill-from-excel`, {
-        method: "POST",
-        headers: getAuthHeaders(),
-        body: form,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) throw new Error(data?.detail || "채우기 실패");
-      setMessage(`[${data.match_col}] 매칭 → [${data.target_col}] 채우기 완료: ${data.matched}/${data.total}건 (미매칭 ${data.unmatched}건)`);
-      await fetchRows(query, offset, emptyCol);
-    } catch (err) {
-      setMessage(err.message);
-    } finally {
-      setFillLoading(false);
-    }
-  };
-
   const [eventDiscountLoading, setEventDiscountLoading] = useState(false);
 
   const handleFillEventDiscount = async () => {
@@ -626,10 +613,10 @@ export default function WonbeTable() {
       `${label}에 대해 원가 기준으로 [이벤트전 할인가]를 계산해 채웁니다.\n` +
       `P = (원가×1.10 + 택배비) ÷ (1 − 수수료율 8.756% − 목표순마진율), 10원 단위 올림.\n\n` +
       `목표순마진율(%)을 입력하세요:`,
-      "30"
+      "35"
     );
     if (marginInput === null) return;
-    const marginPercent = marginInput.trim() === "" ? 30 : Number(marginInput);
+    const marginPercent = marginInput.trim() === "" ? 35 : Number(marginInput);
     if (!Number.isFinite(marginPercent)) {
       setMessage("목표순마진율 값이 올바르지 않습니다.");
       return;
@@ -716,14 +703,16 @@ export default function WonbeTable() {
     }
   };
 
-  const [priceSource, setPriceSource] = useState("이벤트전 할인가");
   const [pricePushLoading, setPricePushLoading] = useState(false);
 
-  const handlePushPriceToAbly = async () => {
+  // priceSource: "이벤트전 할인가"(= 판매가) | "이벤트 할인가"(= 이벤트 판매가) - 드롭다운에서 고른 항목
+  const handlePushPriceToAbly = async (priceSource) => {
+    setAblyPriceMenuOpen(false);
     const codes = Array.from(selectedCodes);
     const label = codes.length ? `체크한 ${codes.length}건` : (query ? `"${query}" 검색 결과` : "전체");
+    const sourceName = priceSource === "이벤트 할인가" ? "이벤트 판매가" : "판매가";
     if (!window.confirm(
-      `${label} 상품의 [판매가]와 [${priceSource}]를 에이블리 실제 상품가로 변경합니다.\n` +
+      `${label} 상품을 [${sourceName}] 기준으로 에이블리 실제 상품가로 변경합니다.\n` +
       `(에이블리상품번호 기준, 최대 1000개씩 배치 전송 — 실제 판매중인 상품가가 바뀝니다)\n진행하시겠습니까?`
     )) return;
     setPricePushLoading(true);
@@ -737,45 +726,13 @@ export default function WonbeTable() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "에이블리 상품가 변경 실패");
       setMessage(
-        `[${data.source}] 기준 에이블리 상품가 변경 완료: 성공 ${data.success_row_count}건 / 실패 ${data.error_row_count}건 ` +
+        `[${sourceName}] 기준 에이블리 상품가 변경 완료: 성공 ${data.success_row_count}건 / 실패 ${data.error_row_count}건 ` +
         `(요청 ${data.requested}건, 제외 - 값이상 ${data.skipped_invalid}건 · 중복상품 ${data.skipped_duplicate}건 · 제외그룹 ${data.skipped_group_excluded ?? 0}건)`
       );
     } catch (err) {
       setMessage(err.message);
     } finally {
       setPricePushLoading(false);
-    }
-  };
-
-  const [zigzagPriceSource, setZigzagPriceSource] = useState("이벤트전 할인가");
-  const [zigzagPricePushLoading, setZigzagPricePushLoading] = useState(false);
-
-  const handlePushPriceToZigzag = async () => {
-    const codes = Array.from(selectedCodes);
-    const label = codes.length ? `체크한 ${codes.length}건` : (query ? `"${query}" 검색 결과` : "전체");
-    if (!window.confirm(
-      `${label} 상품의 [${zigzagPriceSource}]를 지그재그 판매가로 변경합니다.\n` +
-      `(지그재그상품번호 기준, 엑셀 일괄수정 업로드 — 실제 판매중인 상품가가 바뀝니다)\n진행하시겠습니까?`
-    )) return;
-    setZigzagPricePushLoading(true);
-    setMessage("");
-    try {
-      const res = await fetch(`${API}/wonbe/push-price-to-zigzag`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify(codes.length ? { source: zigzagPriceSource, codes } : { source: zigzagPriceSource, q: query }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) throw new Error(data?.detail || "지그재그 상품가 변경 실패");
-      const statusLabel = data.status ? ` (지그재그 처리결과: ${data.status})` : " (처리결과 확인 전 - 지그재그 파트너센터 엑셀 업로드 내역에서 확인해주세요)";
-      setMessage(
-        `[${data.source}] 기준 지그재그 상품가 변경 요청 완료: ${data.requested}건${statusLabel} ` +
-        `(제외 - 값이상 ${data.skipped_invalid}건 · 중복상품 ${data.skipped_duplicate}건 · 제외그룹 ${data.skipped_group_excluded ?? 0}건)`
-      );
-    } catch (err) {
-      setMessage(err.message);
-    } finally {
-      setZigzagPricePushLoading(false);
     }
   };
 
@@ -820,7 +777,9 @@ export default function WonbeTable() {
     }
   };
 
-  const handleSyncEzadmin = async () => {
+  const handleSyncEzadmin = async (days) => {
+    setSyncMenu(null);
+    const range = syncRange(days);
     setSyncing(true);
     setMessage("");
     setRawUnexpected(null);
@@ -828,7 +787,7 @@ export default function WonbeTable() {
       const res = await fetch(`${API}/wonbe/sync-from-ezadmin`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ start_date: syncStartDate, end_date: syncEndDate }),
+        body: JSON.stringify({ start_date: range.start, end_date: range.end }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
@@ -849,6 +808,9 @@ export default function WonbeTable() {
       setQuery("");
       setInputQuery("");
       await fetchRows("", 0);
+      if (Array.isArray(data.groups) && data.groups.length) {
+        setTagGroups(data.groups.map((g) => ({ ...g, checked: false, number: 1 })));
+      }
     } catch (err) {
       setMessage(err.message);
     } finally {
@@ -856,15 +818,44 @@ export default function WonbeTable() {
     }
   };
 
-  const handleDeleteByRegisteredDate = async () => {
-    if (!window.confirm(`"${syncStartDate} ~ ${syncEndDate}" 범위의 등록일 데이터를 삭제합니다.\n진행하시겠습니까?`)) return;
+  const handleApplyTagGroups = async () => {
+    const items = (tagGroups || []).filter((g) => g.checked).map((g) => ({ name: g.name, codes: g.codes, ids: g.ids, number: g.number }));
+    if (!items.length) { setMessage("적용할 상품을 선택해주세요."); return; }
+    setTagApplying(true);
+    try {
+      const res = await fetch(`${API}/wonbe/ezadmin-apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ items }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) { setMessage("이지어드민 세션이 없습니다."); return; }
+      if (!res.ok) throw new Error(data?.detail || "적용 실패");
+      setMessage(
+        `이지어드민 상품명 변경 ${data.uploaded}건 (오류 ${data.err_cnt ?? 0})` +
+        (data.detail ? ` · ${data.detail}` : ` · 대형태그 ${data.tag_applied}건 적용` + (data.tag_failed ? ` (실패 ${data.tag_failed})` : "")) +
+        (data.unresolved ? ` · 아이디 못 찾은 코드 ${data.unresolved}건` : "")
+      );
+      if (data.err_preview) setRawUnexpected({ 보낸값: data.sent_sample, 이지어드민응답: data.err_preview });
+      if (data.ok) setTagGroups(null);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setTagApplying(false);
+    }
+  };
+
+  const handleDeleteByRegisteredDate = async (days) => {
+    setSyncMenu(null);
+    const range = syncRange(days);
+    if (!window.confirm(`"${range.start} ~ ${range.end}" 범위의 등록일 데이터를 삭제합니다.\n진행하시겠습니까?`)) return;
     setDeletingByDate(true);
     setMessage("");
     try {
       const res = await fetch(`${API}/wonbe/by-registered-date`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ start: syncStartDate, end: syncEndDate }),
+        body: JSON.stringify({ start: range.start, end: range.end }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "삭제 실패");
@@ -897,28 +888,6 @@ export default function WonbeTable() {
       setMessage(err.message);
     } finally {
       setSnoSyncing(false);
-    }
-  };
-
-  const handleSyncZigzagId = async () => {
-    const codes = Array.from(selectedCodes);
-    setZigzagSyncing(true);
-    setMessage("");
-    try {
-      const res = await fetch(`${API}/wonbe/sync-zigzag-id`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify(codes.length ? { codes } : {}),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) throw new Error(data?.detail || "지그재그상품번호 동기화 실패");
-      const scopeNote = codes.length ? ` (체크한 ${codes.length}건 대상)` : "";
-      setMessage(`지그재그상품번호 동기화 완료${scopeNote}: 지그재그 ${data.fetched_products}건 조회 · ${data.considered}건 중 ${data.matched}건 매칭 (미매칭 ${data.unmatched}건)`);
-      await fetchRows(query, offset, emptyCol);
-    } catch (err) {
-      setMessage(err.message);
-    } finally {
-      setZigzagSyncing(false);
     }
   };
 
@@ -1078,6 +1047,39 @@ export default function WonbeTable() {
     }
   };
 
+  // 이지어드민의 현재 상품명을 전부 읽어 계획과 비교한다. "이미 올림" 기록만 믿지 않고 실제 이름으로 다시 확인한다.
+  const recheckRename = async () => {
+    setRnBusy(true);
+    setRnCheck(null);
+    setRnCheckMsg("이지어드민 상품명 읽는 중...");
+    try {
+      const res = await fetch(`${API}/wonbe/name-rename/recheck`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ categories: rnCats }),
+      });
+      let st = await res.json().catch(() => ({}));
+      if (st?.need_session) { setMessage("이지어드민 세션이 없거나 만료됐습니다. EZAdmin 설정에서 PHPSESSID를 등록해주세요."); return; }
+      if (!res.ok || !st.ok) throw new Error(st?.detail || "전체 재조회 실패");
+      while (st.running) {
+        setRnCheckMsg(st.pages ? `이지어드민 상품명 읽는 중... (${st.page}/${st.pages}쪽)` : "이지어드민 상품명 읽는 중... (몇 분 걸릴 수 있어요)");
+        await new Promise((r) => setTimeout(r, 1500));
+        const sr = await fetch(`${API}/wonbe/name-rename/recheck/status`, { headers: getAuthHeaders() });
+        st = await sr.json().catch(() => ({ running: false, error: "상태 조회 실패" }));
+      }
+      if (st.session_expired) { setMessage("재조회 중 이지어드민 세션이 만료됐습니다. PHPSESSID를 다시 등록해주세요."); return; }
+      if (st.error) throw new Error(`전체 재조회 오류: ${st.error}`);
+      setRnCheck(st);
+      setRnForce(false);
+      await loadRenamePlan(rnCats, false); // 기록이 바로잡혔으니 실제로 다른 상품만 변경 대상에 나온다
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setRnCheckMsg("");
+      setRnBusy(false);
+    }
+  };
+
   const setColorLetter = async (category, color, letter) => {
     setRnBusy(true);
     try {
@@ -1097,11 +1099,12 @@ export default function WonbeTable() {
   };
 
   const uploadRename = async () => {
-    if (!rnPlan?.items?.length) return;
-    if (!window.confirm(`[${rnCats.join(", ")}] EZAdmin 상품 ${rnPlan.items.length}개의 상품명을 변경합니다. (실제 상품명이 바뀝니다)
+    const targets = selectedCodes.size ? rnPlan?.items?.filter((it) => selectedReps.has(it.code)) : rnPlan?.items;
+    if (!targets?.length) return;
+    if (!window.confirm(`[${rnCats.join(", ")}] ${selectedCodes.size ? "체크한 " : ""}EZAdmin 상품 ${targets.length}개의 상품명을 변경합니다. (실제 상품명이 바뀝니다)
 진행하시겠습니까?`)) return;
     setRnBusy(true);
-    const codes = rnPlan.items.map((it) => it.code);
+    const codes = targets.map((it) => it.code);
     const chunkSize = 200;
     let uploaded = 0;
     let errCnt = 0;
@@ -1154,52 +1157,6 @@ export default function WonbeTable() {
       setMessage(err.message);
     } finally {
       setRegDateSyncing(false);
-    }
-  };
-
-  const stopCountryPolling = () => {
-    if (countryPollRef.current) {
-      clearInterval(countryPollRef.current);
-      countryPollRef.current = null;
-    }
-  };
-
-  useEffect(() => stopCountryPolling, []);
-
-  const handleSyncCountry = async () => {
-    const codes = Array.from(selectedCodes);
-    const label = codes.length ? `체크한 ${codes.length}건` : "에이블리상품번호가 있는 모든 상품";
-    if (!window.confirm(`${label}의 상세정보를 개별 조회해서 제조국을 채웁니다.\n상품 수에 따라 시간이 걸릴 수 있습니다. 진행하시겠습니까?`)) return;
-    setCountrySyncing(true);
-    setMessage("");
-    setCountryProgress({ total: 0, done: 0, matched: 0 });
-
-    stopCountryPolling();
-    countryPollRef.current = setInterval(async () => {
-      try {
-        const res = await fetch(`${API}/wonbe/sync-country/progress`, { headers: getAuthHeaders() });
-        const data = await res.json().catch(() => null);
-        if (data) setCountryProgress({ total: data.total, done: data.done, matched: data.matched });
-      } catch { /* noop */ }
-    }, 700);
-
-    try {
-      const res = await fetch(`${API}/wonbe/sync-country`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify(codes.length ? { codes } : {}),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) throw new Error(data?.detail || "제조국 채우기 실패");
-      const scopeNote = codes.length ? ` (체크한 ${codes.length}건 대상)` : "";
-      setMessage(`제조국 채우기 완료${scopeNote}: 상품코드 ${data.considered}건 (고유 상품번호 ${data.unique_snos}건 조회) 중 ${data.matched}건 채움 (미매칭 ${data.unmatched}건)`);
-      await fetchRows(query, offset, emptyCol);
-    } catch (err) {
-      setMessage(err.message);
-    } finally {
-      stopCountryPolling();
-      setCountrySyncing(false);
-      setCountryProgress(null);
     }
   };
 
@@ -1410,36 +1367,15 @@ export default function WonbeTable() {
             ))}
           </select>
         </div>
-        <div className={styles.syncDateGroup}>
-          <span className={styles.syncDateLabel}>등록일</span>
-          <input type="date" className={styles.syncDateInput} value={syncStartDate} onChange={(e) => setSyncStartDate(e.target.value)} disabled={syncing} />
-          <span className={styles.syncDateSep}>~</span>
-          <input type="date" className={styles.syncDateInput} value={syncEndDate} onChange={(e) => setSyncEndDate(e.target.value)} disabled={syncing} />
-          <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncEzadmin} disabled={loading || syncing}>
-            <RefreshCcw size={13} />{syncing ? "동기화 중..." : "이지어드민 동기화"}
-          </button>
-          <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={handleDeleteByRegisteredDate} disabled={loading || deletingByDate}>
-            <Trash2 size={13} />{deletingByDate ? "삭제 중..." : "삭제"}
-          </button>
-        </div>
-        <label className={styles.fileLabel}>
-          <input type="file" accept=".xlsx,.xls,.xlsm" onChange={handleImportFile} disabled={loading} />
-          <Upload size={13} />xlsx 임포트 (전체 교체)
-        </label>
-        <label className={styles.fileLabel} title="A열 헤더=매칭 컬럼, B열 헤더=채울 컬럼 (예: A열 헤더 '상품코드' / B열 헤더 '이벤트전 할인가')">
-          <input type="file" accept=".xlsx,.xls,.xlsm" onChange={handleFillFromExcel} disabled={fillLoading} />
-          <Upload size={13} />{fillLoading ? "채우는 중..." : "엑셀로 값 채우기"}
-        </label>
-        <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={handleExport} disabled={loading}>
-          <Download size={13} />xls 내보내기
-        </button>
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "0.5rem", width: "100%" }}>
+          <span style={{ fontSize: "0.72rem", fontWeight: 700, color: "#6b7280", minWidth: "84px" }}>가격 설정</span>
         <button
           className={`${styles.btn} ${styles.btnPrimary}`}
-          onClick={handlePushToDeploy}
-          disabled={loading || deploySyncing}
-          title="로컬 원가베이스유를 Turso로 전송해 배포앱(발주추천 등)에서 읽을 수 있게 합니다"
+          onClick={handleFillEventPreDiscountPrice}
+          disabled={loading || preDiscountPriceLoading}
+          title="원가로 P = (원가×1.10 + 택배비) ÷ (1 − 수수료율 8.756% − 목표순마진율)을 역산해 이벤트전 할인가를 채웁니다 (10원 단위 올림)"
         >
-          <CloudUpload size={13} />{deploySyncing ? "전송 중..." : "배포앱전송"}
+          <RefreshCcw size={13} />{preDiscountPriceLoading ? "설정 중..." : "판매가 설정"}
         </button>
         <button
           className={`${styles.btn} ${styles.btnPrimary}`}
@@ -1447,7 +1383,7 @@ export default function WonbeTable() {
           disabled={loading || eventDiscountLoading}
           title="이벤트전 할인가에 퍼센트를 올린 값을 이벤트 할인가에 채웁니다"
         >
-          <RefreshCcw size={13} />{eventDiscountLoading ? "채우는 중..." : "이벤트할인가 채우기"}
+          <RefreshCcw size={13} />{eventDiscountLoading ? "설정 중..." : "이벤트 판매가 설정"}
         </button>
         <button
           className={`${styles.btn} ${styles.btnPrimary}`}
@@ -1456,14 +1392,6 @@ export default function WonbeTable() {
           title="원가 구간별 배수(3000~5500원 5배 / 5600~7500원 4배 / 7600원~ 3배)로 판매가를 채웁니다 (일괄제외 그룹 상품은 제외)"
         >
           <RefreshCcw size={13} />{salePriceLoading ? "채우는 중..." : "판매가 채우기"}
-        </button>
-        <button
-          className={`${styles.btn} ${styles.btnPrimary}`}
-          onClick={handleFillEventPreDiscountPrice}
-          disabled={loading || preDiscountPriceLoading}
-          title="원가로 P = (원가×1.10 + 택배비) ÷ (1 − 수수료율 8.756% − 목표순마진율)을 역산해 이벤트전 할인가를 채웁니다 (10원 단위 올림)"
-        >
-          <RefreshCcw size={13} />{preDiscountPriceLoading ? "채우는 중..." : "이벤트전할인가 채우기(원가기준)"}
         </button>
         <div style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
           <button
@@ -1501,7 +1429,7 @@ export default function WonbeTable() {
           <button
             className={`${styles.btn} ${styles.btnSecondary}`}
             onClick={() => setExcludePanelOpen((v) => !v)}
-            title="이벤트할인가 채우기 / 이벤트전할인가 채우기(원가기준)에서 제외할 에이블리상품번호"
+            title="이벤트 판매가 설정 / 판매가 설정에서 제외할 에이블리상품번호"
           >
             <SlidersHorizontal size={13} />할인가 제외품목 ({excludeIds.length})
           </button>
@@ -1515,7 +1443,7 @@ export default function WonbeTable() {
               }}
             >
               <span style={{ fontSize: "0.72rem", color: "#6b7280" }}>
-                에이블리상품번호를 한 줄에 하나씩(또는 콤마로 구분) 입력하세요. 이벤트할인가 / 이벤트전할인가 채우기에서 제외됩니다.
+                에이블리상품번호를 한 줄에 하나씩(또는 콤마로 구분) 입력하세요. 이벤트 판매가 설정 / 판매가 설정에서 제외됩니다.
               </span>
               <textarea
                 value={excludeText}
@@ -1534,46 +1462,26 @@ export default function WonbeTable() {
             </div>
           )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
-          <select
-            className={styles.searchInput}
-            value={priceSource}
-            onChange={(e) => setPriceSource(e.target.value)}
-            style={{ minWidth: "130px" }}
-            disabled={pricePushLoading}
-          >
-            <option value="이벤트전 할인가">이벤트전 할인가로 변경</option>
-            <option value="이벤트 할인가">이벤트 할인가로 변경</option>
-          </select>
-          <button
-            className={`${styles.btn} ${styles.btnDanger}`}
-            onClick={handlePushPriceToAbly}
-            disabled={loading || pricePushLoading}
-            title="판매가 + 선택한 할인가를 에이블리 실제 상품가로 일괄 변경합니다 (일괄제외 그룹 상품은 제외)"
-          >
-            <RefreshCcw size={13} />{pricePushLoading ? "변경 중..." : "에이블리 상품가 변경"}
-          </button>
         </div>
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "0.5rem", width: "100%" }}>
+          <span style={{ fontSize: "0.72rem", fontWeight: 700, color: "#6b7280", minWidth: "84px" }}>상품가 변경</span>
         <div style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
-          <select
-            className={styles.searchInput}
-            value={zigzagPriceSource}
-            onChange={(e) => setZigzagPriceSource(e.target.value)}
-            style={{ minWidth: "130px" }}
-            disabled={zigzagPricePushLoading}
-          >
-            <option value="판매가">판매가로 변경</option>
-            <option value="이벤트전 할인가">이벤트전 할인가로 변경</option>
-            <option value="이벤트 할인가">이벤트 할인가로 변경</option>
-          </select>
-          <button
-            className={`${styles.btn} ${styles.btnDanger}`}
-            onClick={handlePushPriceToZigzag}
-            disabled={loading || zigzagPricePushLoading}
-            title="선택한 가격을 지그재그 실제 상품가로 일괄 변경합니다 (엑셀 업로드, 일괄제외 그룹 상품은 제외)"
-          >
-            <RefreshCcw size={13} />{zigzagPricePushLoading ? "변경 중..." : "지그재그 상품가 변경"}
-          </button>
+          <div ref={ablyPriceMenuRef} style={{ position: "relative" }}>
+            <button
+              className={`${styles.btn} ${styles.btnDanger}`}
+              onClick={() => setAblyPriceMenuOpen((v) => !v)}
+              disabled={loading || pricePushLoading}
+              title="누르면 판매가 / 이벤트 판매가 중 하나를 골라 에이블리 실제 상품가로 일괄 변경합니다 (일괄제외 그룹 상품은 제외)"
+            >
+              <RefreshCcw size={13} />{pricePushLoading ? "변경 중..." : "에이블리 상품가 변경 ▾"}
+            </button>
+            {ablyPriceMenuOpen && (
+              <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 20, background: "#fff", border: "1px solid #d1d5db", borderRadius: "6px", padding: "4px", boxShadow: "0 4px 12px rgba(0,0,0,0.12)", display: "flex", flexDirection: "column", gap: "2px", minWidth: "150px" }}>
+                <button type="button" style={{ textAlign: "left", padding: "6px 10px", fontSize: "0.82rem", border: "none", background: "transparent", cursor: "pointer", borderRadius: "4px", whiteSpace: "nowrap" }} onClick={() => handlePushPriceToAbly("이벤트전 할인가")}>판매가로 변경</button>
+                <button type="button" style={{ textAlign: "left", padding: "6px 10px", fontSize: "0.82rem", border: "none", background: "transparent", cursor: "pointer", borderRadius: "4px", whiteSpace: "nowrap" }} onClick={() => handlePushPriceToAbly("이벤트 할인가")}>이벤트 판매가로 변경</button>
+              </div>
+            )}
+          </div>
         </div>
         <button
           className={`${styles.btn} ${styles.btnDanger}`}
@@ -1591,42 +1499,86 @@ export default function WonbeTable() {
         >
           <RefreshCcw size={13} />{amoodPriceLoading ? "되돌리는 중..." : "아무드 상품가 되돌리기"}
         </button>
-        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncAblySno} disabled={loading || snoSyncing} title={selectedCodes.size ? `체크한 ${selectedCodes.size}건만 동기화합니다` : "전체 상품을 대상으로 동기화합니다 (체크하면 체크한 건만 진행)"}>
-          <RefreshCcw size={13} />{snoSyncing ? "동기화 중..." : "에이블리상품번호 채우기"}
-        </button>
-        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncZigzagId} disabled={loading || zigzagSyncing} title={selectedCodes.size ? `체크한 ${selectedCodes.size}건만 동기화합니다` : "상품명으로 지그재그 상품과 매칭해 지그재그상품번호를 채웁니다 (체크하면 체크한 건만 진행)"}>
-          <RefreshCcw size={13} />{zigzagSyncing ? "동기화 중..." : "지그재그상품번호 채우기"}
-        </button>
-        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleFillRepCode} disabled={loading || repCodeSyncing} title={selectedCodes.size ? `체크한 ${selectedCodes.size}건만 채웁니다` : "대표상품코드가 비어있는 전체 상품을 EZAdmin에서 조회해 채웁니다 (체크하면 체크한 건만 진행)"}>
-          <RefreshCcw size={13} />{repCodeSyncing ? "채우는 중..." : "대표상품코드 채우기"}
-        </button>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "0.5rem", width: "100%" }}>
+          <span style={{ fontSize: "0.72rem", fontWeight: 700, color: "#6b7280", minWidth: "84px" }}>데이터 채우기</span>
+        <div ref={fillMenuRef} style={{ position: "relative" }}>
+          <button
+            className={`${styles.btn} ${styles.btnPrimary}`}
+            onClick={() => setFillMenuOpen((v) => !v)}
+            disabled={loading || snoSyncing || repCodeSyncing || regDateSyncing}
+            title={selectedCodes.size ? `체크한 ${selectedCodes.size}건만 채웁니다` : "누르면 채울 항목을 골라 전체 상품을 대상으로 채웁니다 (체크하면 체크한 건만 진행)"}
+          >
+            <RefreshCcw size={13} />{snoSyncing || repCodeSyncing || regDateSyncing ? "채우는 중..." : "채우기 ▾"}
+          </button>
+          {fillMenuOpen && (
+            <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 20, background: "#fff", border: "1px solid #d1d5db", borderRadius: "6px", padding: "4px", boxShadow: "0 4px 12px rgba(0,0,0,0.12)", display: "flex", flexDirection: "column", gap: "2px", minWidth: "170px" }}>
+              <button type="button" style={{ textAlign: "left", padding: "6px 10px", fontSize: "0.82rem", border: "none", background: "transparent", cursor: "pointer", borderRadius: "4px", whiteSpace: "nowrap" }} onClick={() => { setFillMenuOpen(false); handleSyncAblySno(); }}>에이블리상품번호 채우기</button>
+              <button type="button" style={{ textAlign: "left", padding: "6px 10px", fontSize: "0.82rem", border: "none", background: "transparent", cursor: "pointer", borderRadius: "4px", whiteSpace: "nowrap" }} onClick={() => { setFillMenuOpen(false); handleFillRepCode(); }}>대표상품코드 채우기</button>
+              <button type="button" style={{ textAlign: "left", padding: "6px 10px", fontSize: "0.82rem", border: "none", background: "transparent", cursor: "pointer", borderRadius: "4px", whiteSpace: "nowrap" }} onClick={() => { setFillMenuOpen(false); handleSyncRegistrationDate(); }}>등록일 채우기</button>
+            </div>
+          )}
+        </div>
         <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={openRename} disabled={loading} title="카테고리(상의 A/하의 B/아우터 C)+컬러 글자를 상품명 앞에 붙여 EZAdmin 상품명을 일괄 변경합니다">
           상품명 일괄변경
         </button>
         <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={openCategoryMatch} disabled={loading} title="유니크한 상품명을 상의/하의/아우터로 분류해 카테고리를 채웁니다 (F9로 적용)">
           카테고리 매칭
         </button>
-        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncRegistrationDate} disabled={loading || regDateSyncing} title={selectedCodes.size ? `체크한 ${selectedCodes.size}건만 채웁니다` : "전체 상품을 대상으로 채웁니다 (체크하면 체크한 건만 진행)"}>
-          <RefreshCcw size={13} />{regDateSyncing ? "채우는 중..." : "등록일 채우기"}
-        </button>
-        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={handleSyncCountry} disabled={loading || countrySyncing} title={selectedCodes.size ? `체크한 ${selectedCodes.size}건만 채웁니다` : "전체 상품을 대상으로 채웁니다 (체크하면 체크한 건만 진행)"}>
-          <RefreshCcw size={13} />{countrySyncing ? "채우는 중..." : "제조국 채우기"}
-        </button>
-        {countrySyncing && countryProgress && (
-          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <div style={{ width: "100px", height: "6px", background: "#e5e7eb", borderRadius: "999px", overflow: "hidden" }}>
-              <div
-                style={{
-                  width: countryProgress.total ? `${Math.min(100, (countryProgress.done / countryProgress.total) * 100)}%` : "0%",
-                  height: "100%", background: "#7c3aed", transition: "width 0.3s ease",
-                }}
-              />
-            </div>
-            <span style={{ fontSize: "0.72rem", color: "#6b7280", whiteSpace: "nowrap" }}>
-              {countryProgress.done}/{countryProgress.total || "?"} · 매칭 {countryProgress.matched}
-            </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "0.5rem", width: "100%" }}>
+          <span style={{ fontSize: "0.72rem", fontWeight: 700, color: "#6b7280", minWidth: "84px" }}>동기화 · 내보내기</span>
+        <div ref={syncMenuRef} style={{ display: "flex", alignItems: "center", gap: "0.5rem", position: "relative" }}>
+          <div style={{ position: "relative" }}>
+            <button
+              className={`${styles.btn} ${styles.btnPrimary}`}
+              onClick={() => setSyncMenu((v) => (v === "sync" ? null : "sync"))}
+              disabled={loading || syncing}
+              title="누르면 기간(3일 / 7일 / 한달)을 골라 바로 동기화합니다"
+            >
+              <RefreshCcw size={13} />{syncing ? "동기화 중..." : "이지어드민 동기화 ▾"}
+            </button>
+            {syncMenu === "sync" && (
+              <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 20, background: "#fff", border: "1px solid #d1d5db", borderRadius: "6px", padding: "4px", boxShadow: "0 4px 12px rgba(0,0,0,0.12)", display: "flex", flexDirection: "column", gap: "2px", minWidth: "120px" }}>
+                {SYNC_PERIODS.map((p) => (
+                  <button key={p.days} type="button" style={{ textAlign: "left", padding: "6px 10px", fontSize: "0.82rem", border: "none", background: "transparent", cursor: "pointer", borderRadius: "4px" }} onClick={() => handleSyncEzadmin(p.days)} title={`오늘 포함 최근 ${p.days}일`}>
+                    최근 {p.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-        )}
+          <div style={{ position: "relative" }}>
+            <button
+              className={`${styles.btn} ${styles.btnSecondary}`}
+              onClick={() => setSyncMenu((v) => (v === "delete" ? null : "delete"))}
+              disabled={loading || deletingByDate}
+              title="등록일이 선택한 기간에 속하는 데이터를 삭제합니다"
+            >
+              <Trash2 size={13} />{deletingByDate ? "삭제 중..." : "등록일 삭제 ▾"}
+            </button>
+            {syncMenu === "delete" && (
+              <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 20, background: "#fff", border: "1px solid #d1d5db", borderRadius: "6px", padding: "4px", boxShadow: "0 4px 12px rgba(0,0,0,0.12)", display: "flex", flexDirection: "column", gap: "2px", minWidth: "120px" }}>
+                {SYNC_PERIODS.map((p) => (
+                  <button key={p.days} type="button" style={{ textAlign: "left", padding: "6px 10px", fontSize: "0.82rem", border: "none", background: "transparent", cursor: "pointer", borderRadius: "4px" }} onClick={() => handleDeleteByRegisteredDate(p.days)} title={`오늘 포함 최근 ${p.days}일`}>
+                    최근 {p.label} 삭제
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={handleExport} disabled={loading}>
+          <Download size={13} />xls 내보내기
+        </button>
+        <button
+          className={`${styles.btn} ${styles.btnPrimary}`}
+          onClick={handlePushToDeploy}
+          disabled={loading || deploySyncing}
+          title="로컬 원가베이스유를 Turso로 전송해 배포앱(발주추천 등)에서 읽을 수 있게 합니다"
+        >
+          <CloudUpload size={13} />{deploySyncing ? "전송 중..." : "배포앱전송"}
+        </button>
         <div ref={colPanelRef} style={{ position: "relative" }}>
           <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setColPanelOpen((v) => !v)}>
             <SlidersHorizontal size={13} />열 선택 ({displayCols.length}/{ALL_COLS.length})
@@ -1652,11 +1604,40 @@ export default function WonbeTable() {
             </div>
           )}
         </div>
+        </div>
       </div>
 
       {message && <div className={styles.message}>{message}</div>}
       {rawUnexpected && (
         <pre className={styles.rawBlock}>{JSON.stringify(rawUnexpected, null, 2)}</pre>
+      )}
+      {tagGroups && (
+        <div style={{ border: "1px solid #ccc", borderRadius: 6, padding: 12, margin: "8px 0", maxHeight: 360, overflow: "auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+            <strong>이지어드민 대형태그 / 상품명 번호 ({tagGroups.length}개 상품)</strong>
+            <span>
+              <button onClick={handleApplyTagGroups} disabled={tagApplying}>{tagApplying ? "적용 중..." : "선택 적용"}</button>{" "}
+              <button onClick={() => setTagGroups(null)} disabled={tagApplying}>닫기</button>
+            </span>
+          </div>
+          {tagGroups.map((g, i) => (
+            <div key={g.name + i} style={{ display: "flex", gap: 8, alignItems: "center", padding: "2px 0" }}>
+              <input
+                type="checkbox"
+                checked={g.checked}
+                onChange={(e) => setTagGroups((p) => p.map((x, j) => (j === i ? { ...x, checked: e.target.checked } : x)))}
+              />
+              <select
+                value={g.number}
+                onChange={(e) => setTagGroups((p) => p.map((x, j) => (j === i ? { ...x, number: Number(e.target.value) } : x)))}
+              >
+                {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <span>{g.name}</span>
+              <span style={{ color: "#888" }}>({g.count}코드)</span>
+            </div>
+          ))}
+        </div>
       )}
 
       <div className={styles.tableWrap}>
@@ -1853,7 +1834,26 @@ export default function WonbeTable() {
                 <input type="checkbox" checked={rnForce} disabled={rnBusy} onChange={toggleRnForce} /> 이미 올린 상품도 전부 다시 올리기
               </label>
               <span>
-                변경 대상 {rnPlan.items.length}개 · 이미 반영 {rnPlan.already_applied || 0}개 제외 · 컬러 미매칭 {rnPlan.unmatched_colors.length}개 · 충돌 {rnPlan.conflicts.length}개 ·
+                <button
+                  className={`${styles.btn} ${styles.btnSecondary}`}
+                  onClick={recheckRename}
+                  disabled={rnBusy || !rnCats.length}
+                  title="이지어드민의 현재 상품명을 전부 읽어서, 계획과 실제로 다른 상품만 변경 대상으로 다시 올립니다"
+                >
+                  전체 재조회
+                </button>
+                {rnCheckMsg && <span style={{ marginLeft: 8 }}>{rnCheckMsg}</span>}
+              </span>
+              {rnCheck && (
+                <span>
+                  재조회 결과: 확인 {rnCheck.checked}개 중 일치 {rnCheck.same} · <strong>다름 {rnCheck.diff}</strong> · 이지어드민에서 못 찾음 {rnCheck.unknown}
+                  {rnCheck.diff_items?.length > 0 && (
+                    <> (예: {rnCheck.diff_items.slice(0, 3).map((d) => `${d.actual} → ${d.new}`).join(" / ")})</>
+                  )}
+                </span>
+              )}
+              <span>
+                변경 대상 {rnPlan.items.length}개{selectedCodes.size > 0 && ` (체크한 ${rnPlan.items.filter((it) => selectedReps.has(it.code)).length}개만 변경${rnPlan.conflicts.filter((c) => selectedReps.has(c)).length ? ` · 체크한 것 중 충돌 ${rnPlan.conflicts.filter((c) => selectedReps.has(c)).length}개 제외: ${rnPlan.conflicts.filter((c) => selectedReps.has(c)).join(", ")}` : ""})`} · 이미 반영 {rnPlan.already_applied || 0}개 제외 · 컬러 미매칭 {rnPlan.unmatched_colors.length}개 · 충돌 {rnPlan.conflicts.length}개 ·
                 제외(대표상품코드/카테고리 없음) {rnPlan.skipped_no_rep_or_category}행
               </span>
             </div>
@@ -1894,8 +1894,8 @@ export default function WonbeTable() {
                 </div>
               )}
               <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setRnOpen(false)} disabled={rnBusy}>닫기</button>
-              <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={uploadRename} disabled={rnBusy || !rnCats.length || rnPlan.unmatched_colors.length > 0 || rnPlan.items.length === 0}>
-                {rnBusy ? "처리 중..." : "EZAdmin에 업로드"}
+              <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={uploadRename} disabled={rnBusy || !rnCats.length || rnPlan.unmatched_colors.length > 0 || rnPlan.items.length === 0 || (selectedCodes.size > 0 && !rnPlan.items.some((it) => selectedReps.has(it.code)))}>
+                {rnBusy ? "처리 중..." : selectedCodes.size ? `체크한 ${rnPlan.items.filter((it) => selectedReps.has(it.code)).length}개만 EZAdmin에 업로드` : "EZAdmin에 업로드"}
               </button>
             </div>
           </div>

@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import BarcodePage from "./BarcodePage";
 import AmoodBarcodePage from "./AmoodBarcodePage";
 import PostShipmentCancelPage from "./PostShipmentCancelPage";
-import ShippingEtaPage from "./ShippingEtaPage";
+import StockCheckPage from "./StockCheckPage";
 import InvoicePrintPage from "./InvoicePrintPage";
 import LeadTimePage from "./LeadTimePage";
 import styles from "./BarcodePage.module.css";
@@ -11,7 +11,7 @@ const TABS = [
   { key: "barcode", label: "바코드" },
   { key: "amood", label: "아무드" },
   { key: "post-shipment-cancel", label: "배송후취소" },
-  { key: "shipping-eta", label: "출고예상" },
+  { key: "stock-check", label: "재고체크" },
   { key: "invoice-print", label: "송장출력" },
   { key: "lead-time", label: "리드타임" },
 ];
@@ -46,8 +46,8 @@ export default function BarcodeTabs({ onOpenTestTab = null, onTransferAmoodHapba
     return <PostShipmentCancelPage headerExtra={headerExtra} />;
   }
 
-  if (activeTab === "shipping-eta") {
-    return <ShippingEtaPage headerExtra={headerExtra} />;
+  if (activeTab === "stock-check") {
+    return <StockCheckPage headerExtra={headerExtra} />;
   }
 
   if (activeTab === "invoice-print") {

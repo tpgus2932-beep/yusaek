@@ -16,6 +16,7 @@
     "lucide-react": "^0.563.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "recharts": "^3.10.1",
     "xlsx": "^0.18.5",
     "xlsx-js-style": "^1.2.0"
   },

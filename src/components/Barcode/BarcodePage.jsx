@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import styles from "./BarcodePage.module.css";
 import LabelReprintPage from "./LabelReprintPage";
+import StockLogModal from "./StockLogModal";
 import { getDownloadFilename } from "../../lib/download";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
 const BASE_DEFECT_TABS = ["A", "B", "C"];
+const KDG_TAB = "KDG"; // 케이디지 상품은 불량 불러오기 때 항상 이 탭으로 간다 (서버와 같은 이름)
 const DEFECT_TAB_STORAGE_KEY = "barcodeDefectTab";
 const loadDefectTab = () => {
   try {
@@ -61,7 +63,8 @@ const badStockZoneLabel = (zone) => {
   return cat ? `${cat} ${zone.slice(cat.length)}` : zone;
 };
 
-export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
+// mobileLite: 모바일 전용 화면(/bacode)에서 확장주문검색·입고 파일 카드와 송장삭제·로그 확인·라벨 재출력·불량관리·이상현상·악성재고 버튼을 숨긴다.
+export default function BarcodePage({ title = "Barcode", headerExtra = null, mobileLite = false }) {
   const [file, setFile] = useState(null);
   const [uploadMsg, setUploadMsg] = useState("");
   const [count, setCount] = useState(null);
@@ -104,6 +107,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [kimsungilSearchLoading, setKimsungilSearchLoading] = useState(false);
   const [kimsungilSearchMessage, setKimsungilSearchMessage] = useState("");
   const [kimsungilSummonLoading, setKimsungilSummonLoading] = useState(false);
+  const [purchaseModePicker, setPurchaseModePicker] = useState(false); // 매입관리 보내기 범위 선택 창
+  const [kimsungilSummonPicker, setKimsungilSummonPicker] = useState(null); // { tabs, counts: { 탭: {kinds,total}|null|"?" } }
   const [unifiedQuery, setUnifiedQuery] = useState("");
   const [unifiedRows, setUnifiedRows] = useState(null); // null = 아직 검색 안 함
   const [unifiedLoading, setUnifiedLoading] = useState(false);
@@ -126,6 +131,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [badStockZone, setBadStockZone] = useState("상의A");
   const [badStockList, setBadStockList] = useState([]);
   const [badStockCustomZones, setBadStockCustomZones] = useState([]);
+  const [badStockLastDeduct, setBadStockLastDeduct] = useState(null); // 출고상품삭제 마지막 실행 {at, user, kinds, total}
   const [badStockMoveIds, setBadStockMoveIds] = useState([]);
   const [badStockMoveTarget, setBadStockMoveTarget] = useState("");
   const [badStockScan, setBadStockScan] = useState("");
@@ -183,17 +189,19 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [showLabelReprint, setShowLabelReprint] = useState(false);
   const [showStockLog, setShowStockLog] = useState(false);
-  const [stockLogCode, setStockLogCode] = useState("");
-  const [stockLogStart, setStockLogStart] = useState(() => {
-    const d = new Date(); d.setMonth(d.getMonth() - 1);
-    return d.toLocaleDateString("sv-SE");
-  });
-  const [stockLogEnd, setStockLogEnd] = useState(() => new Date().toLocaleDateString("sv-SE"));
-  const [stockLogReason, setStockLogReason] = useState("");
-  const [stockLogType, setStockLogType] = useState("");
-  const [stockLogLoading, setStockLogLoading] = useState(false);
-  const [stockLogError, setStockLogError] = useState("");
-  const [stockLogResult, setStockLogResult] = useState(null);
+
+  // 불량 목록/불량관리 모달이 떠 있는 동안 뒤의 페이지가 같이 스크롤되지 않게 잠근다.
+  useEffect(() => {
+    if (!showDefectList && !showKimsungilList) return undefined;
+    const prevBody = document.body.style.overflow;
+    const prevHtml = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prevBody;
+      document.documentElement.style.overflow = prevHtml;
+    };
+  }, [showDefectList, showKimsungilList]);
   const [invoiceBulkMode, setInvoiceBulkMode] = useState(false);
   const [invoiceStockOutEnabled, setInvoiceStockOutEnabled] = useState(true);
   const [invoiceStockOutMemo, setInvoiceStockOutMemo] = useState("");
@@ -591,6 +599,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (!res.ok) throw new Error(data?.detail || "악성재고 불러오기 실패");
       setBadStockList(data.items ?? []);
       setBadStockCustomZones(data.custom_zones ?? []);
+      setBadStockLastDeduct(data.last_deduct ?? null);
     } catch (err) {
       setBadStockMessage(err.message || "악성재고 불러오기 실패");
     }
@@ -622,6 +631,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       if (!res.ok) throw new Error(data?.detail || "악성재고 처리 실패");
       setBadStockList(data.items ?? []);
       if (data.custom_zones) setBadStockCustomZones(data.custom_zones);
+      if ("last_deduct" in data) setBadStockLastDeduct(data.last_deduct ?? null);
       return data;
     } catch (err) {
       setBadStockMessage(err.message || "악성재고 처리 실패");
@@ -731,6 +741,16 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     }
   };
 
+  // 출고상품삭제 마지막 실행 표시: 오늘이면 "오늘 14:32", 아니면 "10/29 14:32".
+  const describeLastDeduct = (last) => {
+    if (!last?.at) return null;
+    const [day, time] = String(last.at).split("T");
+    const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Seoul" });
+    const isToday = day === today;
+    const when = `${isToday ? "오늘" : day.slice(5).replace("-", "/")} ${(time || "").slice(0, 5)}`;
+    return { isToday, text: `${when} ${last.user || ""} · ${last.kinds ?? 0}종 ${last.total ?? 0}개 차감`.replace(/\s+/g, " ") };
+  };
+
   // 확장주문검색에 올라온 주문에 악성재고 상품이 있으면 주문 수량만큼 악성재고에서 차감/삭제한다.
   const deductShippedBadStock = async () => {
     setBadStockMessage("");
@@ -746,7 +766,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     const restoreText = restoreList.length
       ? `\n\n[이지어드민 상품명 원복 ${restoreList.length}종]\n${restoreList.slice(0, 8).map((r) => `${r.renamed_name} → ${r.original_name}`).join("\n")}${restoreList.length > 8 ? `\n... 외 ${restoreList.length - 8}종` : ""}`
       : "";
-    if (!window.confirm(`${preview.deducted_items.length}종, 합계 ${preview.deducted_total}개를 악성재고에서 차감합니다. (0이 되면 삭제)\n\n${lines}${more}${restoreText}\n\n진행하시겠습니까?`)) return;
+    const prev = describeLastDeduct(preview.last_deduct);
+    const prevText = prev?.isToday ? `⚠ 오늘 이미 실행했습니다 (${prev.text}). 같은 주문으로 또 누르면 이중 차감될 수 있습니다.\n\n` : "";
+    if (!window.confirm(`${prevText}${preview.deducted_items.length}종, 합계 ${preview.deducted_total}개를 악성재고에서 차감합니다. (0이 되면 삭제)\n\n${lines}${more}${restoreText}\n\n진행하시겠습니까?`)) return;
     const data = await callBadStockApi("deduct-shipped", {});
     if (!data) return;
     const restored = (data.restored_items ?? []).filter((r) => r.status === "done");
@@ -759,7 +781,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
   };
 
   // 악성재고 상품의 이지어드민 상품명 앞에 구역 접두어(A구역 ZA, B구역 ZB ...)를 붙인다.
-  const renameBadStockProducts = async () => {
+  // recheckAll(전체 재조회)이면 "이미 바꾼 기록"을 믿지 않고 모든 악성재고 상품의 현재 이름을 이지어드민에서 다시 읽어 비교한다.
+  const renameBadStockProducts = async (recheckAll = false) => {
     const call = async (dryRun) => {
       // 요청이 끝날 때까지 서버의 진행도(읽은 수/변경한 수)를 주기적으로 읽어 메시지에 보여준다.
       let polling = true;
@@ -777,7 +800,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
         const res = await fetch(`${API}/barcode/bad-stock/rename-products`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...tabHeaders() },
-          body: JSON.stringify({ dry_run: dryRun }),
+          body: JSON.stringify({ dry_run: dryRun, recheck_all: recheckAll }),
         });
         if (handleUnauthorized(res)) return null;
         const data = await res.json().catch(() => ({}));
@@ -790,7 +813,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       }
     };
     setBadStockRenaming(true);
-    setBadStockMessage("이지어드민에서 상품명 확인 중...");
+    setBadStockMessage(recheckAll ? "전체 재조회: 이지어드민에서 모든 악성재고 상품명을 다시 읽는 중... (시간이 걸립니다)" : "이지어드민에서 상품명 확인 중...");
     try {
       const preview = await call(true);
       if (!preview) return;
@@ -1330,26 +1353,82 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     }
   };
 
-  const handleKimsungilSummon = async () => {
-    const summonable = kimsungilList.filter((i) => (i.incoming_qty || 0) > 0);
-    if (summonable.length === 0) { alert("입고된(배지가 뜬) 김승일 상품이 없습니다."); return; }
-    if (!window.confirm(`김승일 ${summonable.length}종을 불량 목록으로 소환하겠습니까?`)) return;
+  // "불량 불러오기": 어느 탭의 김승일 리스트를 불러올지 고른다. 탭별로 불러올 수 있는(입고된) 종/개수를 함께 보여준다.
+  const openKimsungilSummonPicker = async () => {
+    const tabs = defectTabs;
+    setKimsungilSummonPicker({ tabs, counts: Object.fromEntries(tabs.map((t) => [t, null])) });
+    const counts = Object.fromEntries(tabs.map((t) => [t, null]));
+    await Promise.all(tabs.map(async (tab) => {
+      try {
+        const res = await fetch(`${API}/barcode/kimsungil/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) } });
+        const data = await res.json().catch(() => ({}));
+        // KDG 탭은 입고 파일 없이도 목록 전체를 불러올 수 있다 (서버와 같은 규칙).
+        const ready = (data.kimsungil ?? []).filter((i) => tab === KDG_TAB || (i.incoming_qty || 0) > 0);
+        counts[tab] = { kinds: ready.length, total: ready.reduce((s, i) => s + (Number(i.count) || 0), 0) };
+      } catch {
+        counts[tab] = "?";
+      }
+      setKimsungilSummonPicker((prev) => (prev ? { ...prev, counts: { ...counts } } : prev));
+    }));
+  };
+
+  // 한 탭의 김승일 리스트를 불량으로 소환한다. 케이디지(KDG) 상품은 서버가 알아서 KDG 탭으로 보낸다. 실패하면 throw.
+  const summonOneTab = async (tab) => {
+    const res = await fetch(`${API}/barcode/kimsungil/summon-to-defect`, {
+      method: "POST", headers: { ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) },
+    });
+    if (handleUnauthorized(res)) throw new Error("로그인이 필요합니다.");
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.detail || "김승일 소환술 실패");
+    if (data.tabs) applyTabsConfig(data.tabs); // KDG 탭이 새로 생겼으면 탭 목록에 반영
+    pushLog(`김승일 소환술(${tab}탭): ${data.moved_count}종 ${data.moved_total}개 불량 이동${data.kdg_moved_count ? ` (KDG 탭 ${data.kdg_moved_count}종)` : ""}`);
+    return data;
+  };
+
+  const refreshAfterSummon = () => {
+    fetchDefectList();
+    fetchKimsungilList();
+    fetchSummonedAllTabs();
+    setKimsungilSummonPicker(null);
+  };
+
+  const handleKimsungilSummon = async (tab) => {
+    const info = kimsungilSummonPicker?.counts?.[tab];
+    if (!info || info === "?" || info.kinds === 0) { alert(tab === KDG_TAB ? "KDG 탭 김승일 리스트가 비어 있습니다." : `${tab}탭에는 입고된(배지가 뜬) 김승일 상품이 없습니다.`); return; }
+    if (!window.confirm(`${tab}탭 김승일 ${info.kinds}종 ${info.total}개를 ${tab}탭 불량 목록으로 소환하겠습니까?\n(케이디지 상품은 KDG 탭으로 갑니다)`)) return;
     try {
       setKimsungilSummonLoading(true);
-      const res = await fetch(`${API}/barcode/kimsungil/summon-to-defect`, {
-        method: "POST", headers: tabHeaders(),
-      });
-      if (handleUnauthorized(res)) return;
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "김승일 소환술 실패");
-      setDefectList(data.defects ?? defectList);
-      setKimsungilList(data.kimsungil ?? kimsungilList);
-      pushLog(`김승일 소환술: ${data.moved_count}종 ${data.moved_total}개 불량 이동`);
+      await summonOneTab(tab);
+      refreshAfterSummon();
     } catch (err) {
       alert(err.message || "김승일 소환술 실패");
       pushLog(`김승일 소환술 실패: ${err.message || ""}`.trim());
     } finally {
       setKimsungilSummonLoading(false);
+    }
+  };
+
+  // 전체 선택: 불러올 상품이 있는 모든 탭을 차례로 소환한다 (공유 저장소라 동시에 보내지 않고 하나씩).
+  const handleKimsungilSummonAll = async () => {
+    const counts = kimsungilSummonPicker?.counts ?? {};
+    const targets = (kimsungilSummonPicker?.tabs ?? []).filter((t) => counts[t] && counts[t] !== "?" && counts[t].kinds > 0);
+    if (targets.length === 0) { alert("입고된(배지가 뜬) 김승일 상품이 없습니다."); return; }
+    const kinds = targets.reduce((s, t) => s + counts[t].kinds, 0);
+    const total = targets.reduce((s, t) => s + counts[t].total, 0);
+    if (!window.confirm(`${targets.join(", ")}탭 김승일 ${kinds}종 ${total}개를 각 탭 불량 목록으로 소환하겠습니까?\n(케이디지 상품은 KDG 탭으로 갑니다)`)) return;
+    setKimsungilSummonLoading(true);
+    let done = 0;
+    try {
+      for (const tab of targets) {
+        await summonOneTab(tab);
+        done += 1;
+      }
+    } catch (err) {
+      alert(`${err.message || "김승일 소환술 실패"}${done ? ` (${done}/${targets.length}개 탭은 이미 불러옴)` : ""}`);
+      pushLog(`김승일 소환술 전체 실패: ${err.message || ""}`.trim());
+    } finally {
+      setKimsungilSummonLoading(false);
+      refreshAfterSummon();
     }
   };
 
@@ -1476,8 +1555,11 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
   const handleDefectPrint = async () => {
     try {
-      // A/B/C 탭 전체에서 김승일 소환술 항목만 모아, 같은 코드는 수량을 합친다.
-      const perTab = await Promise.all(defectTabs.map(async (tab) => {
+      // KDG 탭에서 누르면 KDG 탭 것만, 그 외 탭에서 누르면 KDG를 뺀 나머지 탭 전체를 코드별로 합쳐 출력한다.
+      const printTabs = defectTabRef.current === KDG_TAB
+        ? [KDG_TAB]
+        : defectTabs.filter((tab) => tab !== KDG_TAB);
+      const perTab = await Promise.all(printTabs.map(async (tab) => {
         const res = await fetch(`${API}/barcode/defect/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) } });
         if (handleUnauthorized(res)) return null;
         const data = await res.json().catch(() => ({}));
@@ -1554,15 +1636,26 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     }
   };
 
-  const handleDefectPurchaseManager = async () => {
+  // 매입관리로 넘길 수량: normal=직접 찍은 불량만, summon=김승일 소환술로 들어온 것만, all=둘 다(count).
+  const purchaseQty = (item, mode) => {
+    if (mode === "normal") return Number(item.normal_qty ?? item.count) || 0;
+    if (mode === "summon") return Number(item.kimsungil_summon_qty) || 0;
+    return Number(item.count) || 0;
+  };
+
+  const handleDefectPurchaseManager = async (mode = "all") => {
+    setPurchaseModePicker(false);
     try {
-      // 화면에 보이는 불량리스트의 코드/수량을 그대로 보낸다
+      // 선택한 범위의 불량리스트 코드/수량을 보낸다
       const counts = {};
       defectList.forEach((item) => {
         const code = String(item.code || "").trim();
-        const qty = Number(item.count) || 0;
+        const qty = purchaseQty(item, mode);
         if (code && qty > 0) counts[code] = (counts[code] || 0) + qty;
       });
+      if (Object.keys(counts).length === 0) {
+        throw new Error("선택한 범위에 매입관리로 보낼 불량 항목이 없습니다.");
+      }
       const res = await fetch(`${API}/barcode/defect/purchase-manager-handoff`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...tabHeaders() },
@@ -1688,6 +1781,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       onStep?.(idx, "running");
       const stockData = await invoicePostJson(`${API}/barcode/invoice/stock-out`, {
         products: preview.products,
+        invoice_no: preview.invoice_no,
         memo: stockOutMemo,
       });
       const stockOk = stockData.results?.every((r) => r.ok) ?? true;
@@ -1699,41 +1793,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
     onStep?.(idx, "running");
     await invoicePostJson(`${API}/barcode/invoice/rollback`, { sno_list: preview.sno_list });
     onStep?.(idx, "done");
-  };
-
-  // "입고요청전표2 자동입고: (2262 : 승일)" 형식은 입고전표, 그 외 숫자가 들어간 사유는 반품입고로 묶는다.
-  const stockLogReasonGroup = (reason) => {
-    const r = (reason || "").trim();
-    if (/^입고요청전표\d*\s*자동입고\s*:\s*\(\s*\d+\s*:/.test(r)) return "입고전표";
-    if (/\d/.test(r)) return "반품입고";
-    return r;
-  };
-  const stockLogFiltered = (stockLogResult?.logs || []).filter(
-    (l) => (!stockLogReason || stockLogReasonGroup(l.사유) === stockLogReason) && (!stockLogType || l.구분 === stockLogType)
-  );
-
-  const handleStockLogSearch = async () => {
-    const code = stockLogCode.trim();
-    if (!code) { setStockLogError("상품코드를 입력하세요."); return; }
-    setStockLogLoading(true);
-    setStockLogError("");
-    try {
-      const res = await fetch(`${API}/barcode/stock-log`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ product_code: code, start_date: stockLogStart, end_date: stockLogEnd }),
-      });
-      if (handleUnauthorized(res)) return;
-      const data = await res.json().catch(() => ({}));
-      if (data?.need_session) { openEzadminModal(handleStockLogSearch); return; }
-      if (!res.ok) throw new Error(data?.detail || "로그 조회 실패");
-      setStockLogResult(data);
-    } catch (err) {
-      setStockLogResult(null);
-      setStockLogError(err.message || "로그 조회 실패");
-    } finally {
-      setStockLogLoading(false);
-    }
   };
 
   const openInvoiceDeleteModal = () => {
@@ -1898,6 +1957,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
       <div className={styles.stack}>
         {/* 파일 업로드 - 2열 그리드 */}
+        {!mobileLite && (
         <div className={styles.dualGrid}>
           {/* 송장 파일 */}
           <section className={`${styles.card} ${styles.dualCard}`}>
@@ -1995,6 +2055,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
             )}
           </section>
         </div>
+        )}
 
         {/* 스캔 - 전체 폭 */}
         <section className={styles.card}
@@ -2002,9 +2063,13 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
           <div className={styles.cardHeader}>
             <h3 className={styles.cardTitle}>스캔</h3>
             <div className={styles.headerActions}>
-              <button className={styles.secondaryBtn} onClick={openInvoiceDeleteModal}>송장삭제</button>
-              <button className={styles.secondaryBtn} onClick={() => setShowStockLog(true)}>로그 확인</button>
-              <button className={styles.secondaryBtn} onClick={() => setShowLabelReprint(true)}>라벨 재출력</button>
+              {!mobileLite && (
+                <>
+                  <button className={styles.secondaryBtn} onClick={openInvoiceDeleteModal}>송장삭제</button>
+                  <button className={styles.secondaryBtn} onClick={() => setShowStockLog(true)}>로그 확인</button>
+                  <button className={styles.secondaryBtn} onClick={() => setShowLabelReprint(true)}>라벨 재출력</button>
+                </>
+              )}
               <button
                 className={`${styles.toggleBtn} ${defectMode ? styles.toggleOn : ""}`}
                 onClick={() => setDefectMode((v) => !v)}
@@ -2018,6 +2083,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                   <span className={styles.inlineTagDanger} style={{ marginLeft: "0.35rem" }}>{defectList.length}</span>
                 )}
               </button>
+              {!mobileLite && (
+              <>
               <button className={styles.secondaryBtn} onClick={() => { setShowKimsungilList(true); fetchKimsungilList(); fetchAllTabStats(); }}>
                 불량관리
                 {kimsungilList.filter(i => (i.incoming_qty || 0) > 0).length > 0 && (
@@ -2030,6 +2097,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               <button className={styles.secondaryBtn} onClick={openBadStockModal}>
                 악성재고
               </button>
+              </>
+              )}
             </div>
           </div>
 
@@ -2155,96 +2224,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
 
       {showLabelReprint && <LabelReprintPage onClose={() => setShowLabelReprint(false)} />}
 
-      {/* 로그 확인 모달 (EZAdmin 재고내역) */}
-      {showStockLog && (
-        <div className={styles.modalOverlay} onClick={() => setShowStockLog(false)}>
-          <div className={`${styles.modal} ${styles.modalWide}`} style={{ height: "90vh" }} onClick={(e) => e.stopPropagation()}>
-            <div className={styles.modalHeader}>
-              <h4 className={styles.modalTitle}>로그 확인</h4>
-              <div className={styles.modalActions}>
-                <button className={styles.secondaryBtn} onClick={() => setShowStockLog(false)}>닫기</button>
-              </div>
-            </div>
-            <div className={styles.uploadRow}>
-              <input
-                value={stockLogCode}
-                onChange={(e) => setStockLogCode(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleStockLogSearch(); }}
-                placeholder="상품코드 입력 (예: S09888)"
-                className={styles.searchInput}
-                disabled={stockLogLoading}
-                autoFocus
-              />
-              <input type="date" className={styles.searchInput} style={{ maxWidth: "11rem" }} value={stockLogStart} max={stockLogEnd} onChange={(e) => setStockLogStart(e.target.value)} disabled={stockLogLoading} />
-              <span>~</span>
-              <input type="date" className={styles.searchInput} style={{ maxWidth: "11rem" }} value={stockLogEnd} min={stockLogStart} onChange={(e) => setStockLogEnd(e.target.value)} disabled={stockLogLoading} />
-              <button className={styles.primaryBtn} onClick={handleStockLogSearch} disabled={stockLogLoading}>
-                {stockLogLoading ? "조회 중..." : "로그 조회"}
-              </button>
-              <select
-                value={stockLogType}
-                onChange={(e) => setStockLogType(e.target.value)}
-                className={styles.searchInput}
-                style={{ maxWidth: "9rem" }}
-              >
-                <option value="">구분 전체</option>
-                {[...new Set((stockLogResult?.logs || []).map((l) => l.구분).filter(Boolean))].map((r) => (
-                  <option key={r} value={r}>{r}</option>
-                ))}
-              </select>
-              <select
-                value={stockLogReason}
-                onChange={(e) => setStockLogReason(e.target.value)}
-                className={styles.searchInput}
-                style={{ maxWidth: "16rem" }}
-              >
-                <option value="">사유 전체</option>
-                {[...new Set((stockLogResult?.logs || []).map((l) => stockLogReasonGroup(l.사유)).filter(Boolean))].map((r) => (
-                  <option key={r} value={r}>{r}</option>
-                ))}
-              </select>
-              {stockLogResult && (
-                <span className={styles.metaLabel}>
-                  {stockLogResult.product_code} · {stockLogResult.start_date} ~ {stockLogResult.end_date} ·{" "}
-                  {stockLogReason || stockLogType ? `${stockLogFiltered.length} / ` : ""}{stockLogResult.count}건
-                </span>
-              )}
-            </div>
-            {stockLogError && (
-              <div className={styles.statusMsg} style={{ borderColor: "rgba(220,53,69,0.4)", backgroundColor: "rgba(220,53,69,0.07)" }}>
-                <strong>{stockLogError}</strong>
-              </div>
-            )}
-            <div className={styles.tableWrap} style={{ flex: 1, minHeight: 0, overflowX: "hidden" }}>
-              <table className={`${styles.table} ${styles.stockLogTable}`}>
-                <thead>
-                  <tr>
-                    {["일시", "구분", "수량", "재고", "수령자", "주문자", "사유"].map((h) => (
-                      <th key={h} style={{ position: "sticky", top: 0 }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {stockLogFiltered.map((l, i) => (
-                    <tr key={i}>
-                      <td style={{ whiteSpace: "nowrap" }}>{l.일시}</td>
-                      <td>{l.구분}</td>
-                      <td>{l.수량}</td>
-                      <td>{l.재고}</td>
-                      <td>{l.수령자}</td>
-                      <td>{l.주문자}</td>
-                      <td>{l.사유}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {stockLogResult && stockLogFiltered.length === 0 && (
-                <div style={{ padding: "1.5rem", textAlign: "center" }}>조회된 로그가 없습니다.</div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <StockLogModal open={showStockLog} onClose={() => setShowStockLog(false)} />
 
       {/* 불량 리스트 모달 */}
       {showInvoiceModal && (
@@ -2522,8 +2502,28 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                   {badStockChecking ? "확인 중..." : "이지어드민 재고 비교"}
                 </button>
                 <button className={styles.secondaryBtn} onClick={deductShippedBadStock}>출고상품삭제</button>
-                <button className={styles.secondaryBtn} onClick={renameBadStockProducts} disabled={badStockRenaming}>
+                {(() => {
+                  const last = describeLastDeduct(badStockLastDeduct);
+                  return (
+                    <span
+                      className={styles.pill}
+                      style={last?.isToday ? { background: "#16a34a", color: "#fff" } : undefined}
+                      title={last ? "출고상품삭제 마지막 실행" : "출고상품삭제를 실행한 기록이 없습니다"}
+                    >
+                      {last ? `${last.isToday ? "✔ " : ""}${last.text}` : "출고상품삭제 기록 없음"}
+                    </span>
+                  );
+                })()}
+                <button className={styles.secondaryBtn} onClick={() => renameBadStockProducts(false)} disabled={badStockRenaming}>
                   {badStockRenaming ? "처리 중..." : "악성재고 상품명 변경"}
+                </button>
+                <button
+                  className={styles.secondaryBtn}
+                  onClick={() => renameBadStockProducts(true)}
+                  disabled={badStockRenaming}
+                  title="이미 바꿨다고 기록된 상품도 포함해, 모든 악성재고 상품의 현재 이지어드민 상품명을 다시 읽어 확인합니다"
+                >
+                  전체 재조회
                 </button>
                 <button className={styles.secondaryBtn} onClick={() => setShowBadStockModal(false)}>닫기</button>
               </div>
@@ -3120,19 +3120,107 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
         </div>
       )}
 
+      {purchaseModePicker && (
+        <div className={styles.modalOverlay} style={{ zIndex: 1100 }} onClick={() => setPurchaseModePicker(false)}>
+          <div className={styles.modal} style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <h4 className={styles.modalTitle}>매입관리로 보낼 항목 ({defectTab}탭)</h4>
+              <div className={styles.modalActions}>
+                <button className={styles.secondaryBtn} onClick={() => setPurchaseModePicker(false)}>닫기</button>
+              </div>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+              {[
+                ["normal", "불량 항목", "직접 찍은 불량만"],
+                ["summon", "소환술 항목", "김승일 소환술로 들어온 것만"],
+                ["all", "둘 다", "불량 + 소환술 전부"],
+              ].map(([mode, label, desc]) => {
+                const rows = defectList.filter((i) => purchaseQty(i, mode) > 0);
+                const total = rows.reduce((s, i) => s + purchaseQty(i, mode), 0);
+                return (
+                  <button
+                    key={mode}
+                    className={mode === "all" ? styles.primaryBtn : styles.secondaryBtn}
+                    style={{ flex: "1 1 130px", padding: "14px 8px", fontWeight: 700, opacity: rows.length === 0 ? 0.5 : 1 }}
+                    disabled={rows.length === 0}
+                    onClick={() => handleDefectPurchaseManager(mode)}
+                  >
+                    {label}
+                    <div style={{ fontSize: "0.8rem", fontWeight: 500 }}>{desc}</div>
+                    <div style={{ fontSize: "0.85rem", fontWeight: 600 }}>{rows.length === 0 ? "없음" : `${rows.length}종 ${total}개`}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {kimsungilSummonPicker && (
+        <div className={styles.modalOverlay} style={{ zIndex: 1100 }} onClick={() => setKimsungilSummonPicker(null)}>
+          <div className={styles.modal} style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <h4 className={styles.modalTitle}>불러올 탭 선택</h4>
+              <div className={styles.modalActions}>
+                <button className={styles.secondaryBtn} onClick={() => setKimsungilSummonPicker(null)}>닫기</button>
+              </div>
+            </div>
+            <p className={styles.subtitle} style={{ marginBottom: "0.75rem" }}>선택한 탭의 김승일 리스트 중 입고된 상품을 그 탭의 불량 목록으로 불러옵니다. 케이디지(KDG) 상품은 어느 탭에서 불러와도 KDG 탭으로 가고, KDG 탭은 입고 여부와 관계없이 전부 불러옵니다.</p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+              {(() => {
+                const counts = kimsungilSummonPicker.counts;
+                const loaded = kimsungilSummonPicker.tabs.every((t) => counts[t] !== null);
+                const ready = kimsungilSummonPicker.tabs.filter((t) => counts[t] && counts[t] !== "?" && counts[t].kinds > 0);
+                return (
+                  <button
+                    className={styles.primaryBtn}
+                    style={{ flex: "1 1 100%", padding: "12px 8px", fontWeight: 700 }}
+                    disabled={kimsungilSummonLoading || !loaded || ready.length === 0}
+                    onClick={handleKimsungilSummonAll}
+                  >
+                    전체 선택
+                    <div style={{ fontSize: "0.8rem", fontWeight: 500 }}>
+                      {!loaded ? "조회 중..." : ready.length === 0 ? "불러올 상품 없음" : `${ready.length}개 탭 · ${ready.reduce((s, t) => s + counts[t].kinds, 0)}종 ${ready.reduce((s, t) => s + counts[t].total, 0)}개`}
+                    </div>
+                  </button>
+                );
+              })()}
+              {kimsungilSummonPicker.tabs.map((tab) => {
+                const info = kimsungilSummonPicker.counts[tab];
+                const none = info && info !== "?" && info.kinds === 0;
+                return (
+                  <button
+                    key={tab}
+                    className={styles.secondaryBtn}
+                    style={{ flex: "1 1 90px", padding: "14px 8px", fontWeight: 700, opacity: none ? 0.5 : 1, color: redTabs.includes(tab) ? "#ef4444" : undefined }}
+                    disabled={kimsungilSummonLoading || info === null || none}
+                    onClick={() => handleKimsungilSummon(tab)}
+                  >
+                    {tab}탭
+                    <div style={{ fontSize: "0.8rem", fontWeight: 500 }}>
+                      {info === null ? "조회 중..." : info === "?" ? "?" : none ? "불러올 상품 없음" : `${info.kinds}종 ${info.total}개`}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {showDefectList && (
         <div className={styles.modalOverlay} onClick={() => setShowDefectList(false)}>
-          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+          <div className={`${styles.modal} ${styles.mobileCompactModal}`} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHeader}>
               <h4 className={styles.modalTitle}>불량 리스트 ({defectTab})</h4>
               <div className={styles.modalActions}>
                 <button className={styles.secondaryBtn} onClick={handleDefectExport}>내보내기</button>
                 <button className={styles.secondaryBtn} onClick={handleDefectPrint}>불량출력</button>
-                <button className={styles.secondaryBtn} onClick={handleDefectPurchaseManager} disabled={defectList.length === 0}>매입관리</button>
+                <button className={styles.secondaryBtn} onClick={() => setPurchaseModePicker(true)} disabled={defectList.length === 0}>매입관리</button>
                 <button
                   className={styles.secondaryBtn}
-                  onClick={handleKimsungilSummon}
-                  disabled={kimsungilSummonLoading || kimsungilList.filter((i) => (i.incoming_qty || 0) > 0).length === 0}
+                  onClick={openKimsungilSummonPicker}
+                  disabled={kimsungilSummonLoading}
                 >
                   {kimsungilSummonLoading ? "불러오는 중..." : "불량 불러오기"}
                 </button>
@@ -3174,7 +3262,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 )}
               </div>
             )}
-            <div className={styles.uploadRow}>
+            <div className={`${styles.uploadRow} ${styles.mobileInlineRow}`}>
               <input
                 value={defectSearchQuery}
                 onChange={(e) => setDefectSearchQuery(e.target.value)}
@@ -3254,7 +3342,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
       {/* 김승일 리스트 모달 */}
       {showKimsungilList && (
         <div className={styles.modalOverlay} onClick={() => setShowKimsungilList(false)}>
-          <div className={styles.modal} style={{ width: "min(1100px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
+          <div className={`${styles.modal} ${styles.mobileCompactModal}`} style={{ width: "min(1100px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHeader}>
               <h4 className={styles.modalTitle}>불량관리 리스트 ({defectTab})</h4>
               <div className={styles.modalActions}>
@@ -3268,7 +3356,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
                 <button className={styles.secondaryBtn} onClick={() => setShowKimsungilList(false)}>닫기</button>
               </div>
             </div>
-            <div className={styles.uploadRow}>
+            <div className={`${styles.uploadRow} ${styles.mobileInlineRow}`}>
               <input
                 value={unifiedQuery}
                 onChange={(e) => setUnifiedQuery(e.target.value)}
@@ -3298,7 +3386,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null }) {
               </div>
             )}
             {renderDefectTabs(true)}
-            <div className={styles.uploadRow}>
+            <div className={`${styles.uploadRow} ${styles.mobileInlineRow}`}>
               <input
                 value={kimsungilSearchQuery}
                 onChange={(e) => setKimsungilSearchQuery(e.target.value)}

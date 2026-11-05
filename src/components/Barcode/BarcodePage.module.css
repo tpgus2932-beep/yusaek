@@ -888,3 +888,226 @@
 .stockLogTable td:nth-last-child(2) {
   width: 22%;
 }
+
+/* 로그 확인 모달 모바일 최적화: 입력칸 세로 배치, 입고/출고/라벨 버튼 한 줄, 표는 카드형으로 */
+@media (max-width: 640px) {
+  .stockLogModal {
+    height: 94dvh !important;
+    max-height: 94dvh;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    gap: 0.6rem;
+  }
+
+  .stockLogModal,
+  .stockLogModal .tableWrap {
+    overscroll-behavior: contain;
+  }
+
+  .stockLogModal .searchInput {
+    max-width: none !important;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .stockAdjRow {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .stockAdjRow .searchInput {
+    flex: 1 1 5rem;
+    width: auto;
+  }
+
+  .stockAdjRow button {
+    flex: 1 1 28%;
+  }
+
+  .stockLogModal .tableWrap {
+    border: none;
+    overflow-x: hidden;
+  }
+
+  .stockLogModal .table {
+    min-width: 0;
+  }
+
+  .stockLogModal table thead {
+    display: none;
+  }
+
+  .stockLogModal table tbody tr {
+    display: block;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 0.4rem 0.75rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .stockLogModal table tbody td {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    width: auto !important;
+    padding: 0.2rem 0 !important;
+    font-size: 0.9rem;
+    text-align: right;
+    border: none;
+  }
+
+  .stockLogModal table tbody td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    color: var(--text-secondary, #888);
+    font-weight: 500;
+    text-align: left;
+  }
+}
+
+/* 로그 확인 모달: 위쪽 입력 영역을 촘촘하게 줄여 아래 로그 목록이 더 많이 보이게 한다 */
+@media (max-width: 640px) {
+  .stockLogModal {
+    padding: 0.6rem;
+    gap: 0.4rem;
+  }
+
+  .stockLogModal .modalTitle {
+    font-size: 1rem;
+  }
+
+  .stockLogModal .primaryBtn,
+  .stockLogModal .secondaryBtn {
+    min-height: 34px;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.85rem;
+  }
+
+  .stockLogModal .searchInput {
+    min-height: 34px;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.9rem;
+  }
+
+  .stockLogModal .stockLogSearchRow {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.35rem;
+  }
+
+  .stockLogModal .stockLogSearchRow > input:first-child,
+  .stockLogModal .stockLogSearchRow > .primaryBtn,
+  .stockLogModal .stockLogSearchRow > .metaLabel {
+    grid-column: 1 / -1;
+  }
+
+  .stockLogModal .stockLogTilde {
+    display: none;
+  }
+
+  .stockLogModal .stockAdjRow {
+    gap: 0.35rem;
+  }
+
+  .stockLogModal .stockLogCandWrap {
+    max-height: 28% !important;
+  }
+
+  .stockLogModal table tbody tr {
+    padding: 0.25rem 0.6rem;
+    margin-bottom: 0.35rem;
+  }
+
+  .stockLogModal table tbody td {
+    font-size: 0.82rem;
+    padding: 0.1rem 0 !important;
+  }
+}
+
+/* 불량 목록 / 불량관리 모달 모바일 최적화 (로그 확인 모달과 같은 촘촘한 비율) */
+@media (max-width: 640px) {
+  .mobileCompactModal {
+    width: 100% !important;
+    height: 94dvh;
+    max-height: 94dvh;
+    padding: 0.6rem;
+    gap: 0.4rem;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    overscroll-behavior: contain;
+  }
+
+  .mobileCompactModal .modalBody {
+    overscroll-behavior: contain;
+  }
+
+  .mobileCompactModal .modalHeader {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.4rem;
+  }
+
+  .mobileCompactModal .modalTitle {
+    font-size: 1rem;
+  }
+
+  .mobileCompactModal .modalActions {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.3rem;
+  }
+
+  .mobileCompactModal .modalActions .pill {
+    grid-column: 1 / -1;
+    text-align: center;
+  }
+
+  .mobileCompactModal .primaryBtn,
+  .mobileCompactModal .secondaryBtn {
+    min-height: 34px;
+    padding: 0.3rem 0.4rem;
+    font-size: 0.82rem;
+  }
+
+  .mobileCompactModal .searchInput {
+    min-height: 34px;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.9rem;
+  }
+
+  .mobileCompactModal .mobileInlineRow {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .mobileCompactModal .mobileInlineRow .searchInput {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
+
+  .mobileCompactModal .mobileInlineRow button {
+    flex: 0 0 auto;
+  }
+
+  .mobileCompactModal .defectLine {
+    gap: 0.3rem;
+    font-size: 0.85rem;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .mobileCompactModal .defectText {
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+
+  .mobileCompactModal .defectActions {
+    margin-left: 0;
+  }
+
+  .mobileCompactModal .ghostBtn {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.8rem;
+  }
+}

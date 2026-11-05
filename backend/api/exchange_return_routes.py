@@ -12,6 +12,7 @@ import xlwt
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from services.checklist_progress import clear_progress, set_progress
+from services.seller_return_store import exchange_row, is_seller_exchange, record_safely
 
 ABLY_BASE = "https://api.a-bly.com"
 LLOGIS_LOGIN_URL = "https://partner.alps.llogis.com/auth/login"
@@ -35,7 +36,7 @@ _BROWSER_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 _BROWSER_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
-def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, enqueue_sms=None, set_setting=None):
+def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, enqueue_sms=None, set_setting=None, get_stats_db=None):
     router = APIRouter(prefix="/exchange-return")
 
     def _browser_time_flag(now: datetime) -> str:
@@ -467,6 +468,10 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
             end_date = datetime.now(_KST).strftime("%Y-%m-%d")
         if not start_date:
             start_date = (datetime.now(_KST) - timedelta(days=365)).strftime("%Y-%m-%d")
+        # 상품준비중(status 9) 건은 교환 요청일이 오래됐어도 송장 입력 대상이다.
+        # 호출자가 좁은 기간(대시보드는 최근 30일)을 보내도 최소 1년은 조회한다.
+        year_ago = (datetime.now(_KST) - timedelta(days=365)).strftime("%Y-%m-%d")
+        start_date = min(start_date, year_ago)
 
         ez_headers = {
             "User-Agent": "Mozilla/5.0",
@@ -812,6 +817,38 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                             pass
         return sms_queued
 
+    _HOLD_KEY = "exchange_seller_fault_holds"
+
+    def _load_seller_fault_holds() -> set[str]:
+        """'대기상태'로 미뤄둔 판매자 부담 교환건의 exchange_sno 집합."""
+        try:
+            raw = get_setting(_HOLD_KEY)
+            data = json.loads(raw) if raw else []
+            return {str(x) for x in data}
+        except Exception:
+            return set()
+
+    def _save_seller_fault_holds(holds: set[str]) -> None:
+        if set_setting:
+            set_setting(_HOLD_KEY, json.dumps(sorted(holds)))
+
+    @router.post("/seller-fault-hold")
+    async def exchange_seller_fault_hold(payload: dict = Body(...), user=Depends(get_current_user)):
+        """판매자 부담 교환건을 대기상태로 표시/해제한다. 같은 주문의 나머지 상품이
+        올 때까지 개별 실행을 미뤄두기 위한 표시이며 에이블리 상태는 건드리지 않는다."""
+        snos = {str(s) for s in (payload.get("exchange_snos") or []) if s}
+        if not snos:
+            raise HTTPException(status_code=400, detail="exchange_snos가 필요합니다.")
+        if not set_setting:
+            raise HTTPException(status_code=500, detail="설정 저장소를 사용할 수 없습니다.")
+        holds = _load_seller_fault_holds()
+        if payload.get("hold", True):
+            holds |= snos
+        else:
+            holds -= snos
+        _save_seller_fault_holds(holds)
+        return {"ok": True, "holds": sorted(holds)}
+
     @router.get("/seller-fault-pending")
     async def exchange_seller_fault_pending(user=Depends(get_current_user)):
         """판매자 부담(reason_code=2, 상품 하자)으로 교환회수 자동처리에서 제외된
@@ -842,12 +879,13 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                         "per_page": 30,
                         "requested_at_start": f"{start_date} 00:00:00",
                         "requested_at_end": f"{end_date} 23:59:59",
-                        "status[]": 2,
+                        "status[]": [2],
                     },
                 )
                 res.raise_for_status()
                 data = res.json()
                 for ex in data.get("exchanges", []):
+                    # 자동처리(process_exchange_pickup)에서 제외되는 기준과 동일: 상품 하자(2)
                     if ex.get("reason_code") != 2:
                         continue
                     items_list = ex.get("exchange_items") or []
@@ -857,6 +895,7 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                     order_item = first.get("order_item") or {}
                     seller_fault_exchanges.append({
                         "exchange_sno": ex.get("exchange_sno") or ex.get("sno"),
+                        "order_sno": str(ex.get("order_sno") or order_item.get("order_sno") or "").strip(),
                         "reason_code": ex.get("reason_code"),
                         "detail_reason": ex.get("detail_reason") or "",
                         "images": ex.get("exchange_reason_image_urls") or [],
@@ -895,9 +934,12 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                 *(_fetch_detail(client, ex["order_item_sno"]) for ex in seller_fault_exchanges)
             )
 
+        held = _load_seller_fault_holds()
         items_out = [
             {
+                "hold": str(ex["exchange_sno"]) in held,
                 "exchange_sno": ex["exchange_sno"],
+                "order_sno": ex["order_sno"],
                 "reason_code": ex["reason_code"],
                 "reason": "상품 하자/오배송",
                 "detail_reason": ex["detail_reason"],
@@ -957,7 +999,72 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                 "goods_name": str(payload.get("goods_name") or "").strip(),
             }])
 
+        holds = _load_seller_fault_holds()
+        if str(payload.get("exchange_sno")) in holds:
+            _save_seller_fault_holds(holds - {str(payload.get("exchange_sno"))})
+
         return {"ok": True, "invoice_count": 1, "approve_status": approve_status, "sms_queued": sms_queued}
+
+    @router.post("/process-exchange-pickup-group")
+    async def process_exchange_pickup_group(payload: dict = Body(...), user=Depends(get_current_user)):
+        """같은 주문의 판매자 부담 교환건 여러 개를 한 번에 회수접수한다.
+        송장은 중복 제거해 EZAdmin에 한 번만 등록하고, 에이블리 교환승인은 한 요청으로,
+        문자는 고객당 한 번만 보낸다. 성공하면 해당 건의 대기상태도 해제한다."""
+        phpsessid = get_setting(_EZADMIN_SESSION_KEY)
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        items = payload.get("items") or []
+        if not items:
+            raise HTTPException(status_code=400, detail="처리할 건이 없습니다.")
+        invoices = list(dict.fromkeys(str(i.get("invoice") or "").strip() for i in items if str(i.get("invoice") or "").strip()))
+        if not invoices:
+            raise HTTPException(status_code=400, detail="송장번호가 필요합니다.")
+
+        try:
+            token = await _ably_login()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
+
+        ez_result = await _register_exchange_ezadmin(phpsessid, invoices)
+        if not ez_result.get("ok"):
+            return ez_result
+
+        exchanges = [
+            {
+                "exchange_sno": i.get("exchange_sno"),
+                "reason_code": i.get("reason_code"),
+                "exchange_items": i.get("exchange_items") or [],
+                "return_delivery": i.get("return_delivery") or {},
+                "exchange_delivery": i.get("exchange_delivery") or {},
+            }
+            for i in items
+        ]
+        approve_status = await _approve_exchanges_ably(token, exchanges)
+
+        recipients: dict[str, dict] = {}
+        for i in items:
+            tel = "".join(ch for ch in str(i.get("buyer_tel") or "") if ch.isdigit())
+            if tel and tel not in recipients:
+                recipients[tel] = {
+                    "tel": tel,
+                    "name": str(i.get("buyer_name") or "").strip(),
+                    "goods_name": str(i.get("goods_name") or "").strip(),
+                }
+        sms_queued = _send_exchange_pickup_sms(list(recipients.values()))
+
+        holds = _load_seller_fault_holds()
+        done = {str(i.get("exchange_sno")) for i in items}
+        if holds & done:
+            _save_seller_fault_holds(holds - done)
+
+        return {
+            "ok": True,
+            "exchange_count": len(exchanges),
+            "invoice_count": len(invoices),
+            "approve_status": approve_status,
+            "sms_queued": sms_queued,
+        }
 
     @router.post("/process-exchange-pickup")
     async def process_exchange_pickup(user=Depends(get_current_user)):
@@ -994,6 +1101,7 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
 
         # 교환요청(status=2) 목록 조회
         exchanges = []
+        seller_rows: list[dict] = []
         page = 1
         async with httpx.AsyncClient(timeout=30.0) as client:
             while True:
@@ -1014,6 +1122,9 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                     items_list = ex.get("exchange_items") or []
                     if not items_list:
                         continue
+                    # 판매자 건 통계용 저장 (사이드메뉴 반품과 같은 판별: reason_code 2·3)
+                    if is_seller_exchange(ex):
+                        seller_rows.append(exchange_row(ex, "auto-exchange"))
                     exchanges.append({
                         "exchange_sno": ex.get("sno") or ex.get("exchange_sno"),
                         "reason_code": ex.get("reason_code"),
@@ -1026,6 +1137,8 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                 if page >= data.get("max_page_number", 1):
                     break
                 page += 1
+
+        record_safely(get_stats_db or get_db, seller_rows)
 
         if not exchanges:
             return {"ok": False, "error": "처리할 교환요청이 없습니다"}

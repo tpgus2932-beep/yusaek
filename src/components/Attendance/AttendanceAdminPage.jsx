@@ -1426,7 +1426,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
         fetch(`${COLLAB_API_BASE}/attendance/piece-work-records?${pieceParams}`),
         fetch(`${COLLAB_API_BASE}/attendance/studio-payments?${studioParams}`),
         ...members.map((member) => {
-          const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, name: member.name });
+          const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, name: member.name, exclude_daily: '1' });
           return fetch(`${COLLAB_API_BASE}/attendance/records?${params}`);
         }),
       ]);
@@ -1813,16 +1813,36 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
             memberName: salaryMember,
           }));
         } else {
-          const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, name: salaryMember });
+          const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, name: salaryMember, exclude_daily: '1' });
           const res = await fetch(`${COLLAB_API_BASE}/attendance/records?${params}`);
           if (!res.ok) throw new Error('출퇴근 기록 조회 실패');
           const fetched = await res.json();
-          setSalaryResult(calcSalaryData(fetched, {
+          const memberCfg = {
             ...cfg,
             memberName: salaryMember,
             hourlyRate: salaryHourlyRate,
             hourlyRateHistory: member?.hourlyRateHistory || [],
-          }));
+          };
+          const result = calcSalaryData(fetched, memberCfg);
+          // 일일알바로 따로 지급된 날은 이 급여에서 빠졌으니, 명세서에 어떤 날이 빠졌는지 같이 보여준다.
+          const dailyParams = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo });
+          const dailyRes = await fetch(`${COLLAB_API_BASE}/attendance/daily-workers?${dailyParams}`);
+          if (dailyRes.ok) {
+            const sameName = (await dailyRes.json())
+              .filter((entry) => entry.name === salaryMember)
+              .sort((a, b) => a.date.localeCompare(b.date));
+            if (sameName.length) {
+              const excluded = calcSalaryData(
+                sameName.flatMap((entry) => [
+                  { date: entry.date, type: '출근', timestamp: entry.checkInTimestamp },
+                  { date: entry.date, type: '퇴근', timestamp: entry.checkOutTimestamp },
+                ]),
+                memberCfg,
+              );
+              result.excludedDaily = { dates: sameName.map((entry) => entry.date.slice(5)), hours: excluded.monthlyHours };
+            }
+          }
+          setSalaryResult(result);
         }
       } else {
         if (!members.length) throw new Error('직원 목록이 없습니다.');
@@ -1849,7 +1869,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
               allowances: fixedAllowancesByMember[mem.id] || [],
             });
           }
-          const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, name: mem.name });
+          const params = new URLSearchParams({ pin, date_from: dateFrom, date_to: dateTo, name: mem.name, exclude_daily: '1' });
           const res = await fetch(`${COLLAB_API_BASE}/attendance/records?${params}`);
           if (!res.ok) throw new Error(`${mem.name} 조회 실패`);
           const fetched = await res.json();
@@ -2689,6 +2709,12 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
                         <span className={styles.slipKey}>월 근무시간</span>
                         <span className={styles.slipVal}>{salaryResult.monthlyHours.toFixed(1)}H</span>
                       </div>
+                      {salaryResult.excludedDaily && (
+                        <div className={styles.slipRow}>
+                          <span className={styles.slipKey}>일일알바 제외 ({salaryResult.excludedDaily.dates.join(', ')})</span>
+                          <span className={styles.slipVal}>{salaryResult.excludedDaily.hours.toFixed(1)}H</span>
+                        </div>
+                      )}
                       <div className={styles.slipRow}>
                         <span className={styles.slipKey}>기본급</span>
                         <span className={styles.slipVal}>{salaryResult.basicPay.toLocaleString()}원</span>

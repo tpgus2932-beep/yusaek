@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Clipboard, Download, History, RefreshCw, Trash2, X } from "lucide-react";
+import { Clipboard, Download, History, RefreshCw, Search, Trash2, X } from "lucide-react";
 import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
@@ -28,6 +28,12 @@ export default function IchaeTable() {
   const [showLogs, setShowLogs] = useState(false);
   const [logs, setLogs] = useState([]);
   const [logsLoading, setLogsLoading] = useState(false);
+  const [histStart, setHistStart] = useState("");
+  const [histEnd, setHistEnd] = useState("");
+  const [histVendor, setHistVendor] = useState("");
+  const [histRows, setHistRows] = useState(null); // null = 아직 조회 안 함
+  const [histLoading, setHistLoading] = useState(false);
+  const [histMessage, setHistMessage] = useState("");
   const inputRef = useRef(null);
 
   const fetchDates = useCallback(async () => {
@@ -134,6 +140,36 @@ export default function IchaeTable() {
     setShowLogs(true);
     fetchLogs(dateFilter);
   };
+
+  // ── 거래처별 일자별 이체금액 조회 (날짜 범위 + 거래처명 부분일치) ──
+  const searchHistory = async () => {
+    const vendor = histVendor.trim();
+    if (!vendor) {
+      setHistMessage("거래처명을 입력하세요.");
+      return;
+    }
+    if (histStart && histEnd && histStart > histEnd) {
+      setHistMessage("시작일이 종료일보다 늦습니다.");
+      return;
+    }
+    setHistLoading(true);
+    setHistMessage("");
+    try {
+      const params = new URLSearchParams({ vendor, start: histStart, end: histEnd });
+      const res = await fetch(`${API}/wonbe/ichae/vendor-history?${params}`, { headers: getAuthHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "조회 실패");
+      setHistRows(data.rows || []);
+      if (!(data.rows || []).length) setHistMessage("조건에 맞는 이체 내역이 없습니다.");
+    } catch (err) {
+      setHistRows(null);
+      setHistMessage(err.message);
+    } finally {
+      setHistLoading(false);
+    }
+  };
+
+  const histTotal = (histRows || []).reduce((sum, r) => sum + (Number(r.금액) || 0), 0);
 
   const totalAmount = rows.reduce((sum, r) => sum + (typeof r.C === "number" ? r.C : 0), 0);
 
@@ -254,6 +290,65 @@ export default function IchaeTable() {
           </span>
         )}
       </div>
+
+      <div className={styles.controls}>
+        <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>거래처별 일자 조회</span>
+        <input type="date" className={styles.dateInput} value={histStart} onChange={(e) => setHistStart(e.target.value)} aria-label="시작일" />
+        <span>~</span>
+        <input type="date" className={styles.dateInput} value={histEnd} onChange={(e) => setHistEnd(e.target.value)} aria-label="종료일" />
+        <input
+          className={styles.searchInput}
+          style={{ minWidth: "11rem" }}
+          placeholder="거래처명 검색 (Enter)"
+          value={histVendor}
+          onChange={(e) => setHistVendor(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") searchHistory(); }}
+          aria-label="거래처명 검색"
+        />
+        <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={searchHistory} disabled={histLoading}>
+          <Search size={13} />일자별 조회
+        </button>
+        {histRows !== null && (
+          <button
+            className={`${styles.btn} ${styles.btnSecondary}`}
+            onClick={() => { setHistRows(null); setHistMessage(""); }}
+          >
+            <X size={13} />닫기
+          </button>
+        )}
+      </div>
+
+      {histMessage && <div className={styles.message}>{histMessage}</div>}
+
+      {histRows && histRows.length > 0 && (
+        <div className={styles.tableWrap} style={{ marginBottom: "0.8rem", maxHeight: "40vh" }}>
+          <table className={styles.table}>
+            <thead>
+              <tr>
+                <th>날짜</th>
+                <th>거래처명</th>
+                <th style={{ textAlign: "right" }}>이체금액</th>
+                <th style={{ textAlign: "right" }}>건수</th>
+              </tr>
+            </thead>
+            <tbody>
+              {histRows.map((r) => (
+                <tr key={`${r.날짜}|${r.거래처명}`}>
+                  <td>{r.날짜}</td>
+                  <td>{r.거래처명}</td>
+                  <td style={{ textAlign: "right" }}>{(Number(r.금액) || 0).toLocaleString()}원</td>
+                  <td style={{ textAlign: "right" }}>{r.건수}</td>
+                </tr>
+              ))}
+              <tr style={{ fontWeight: 700 }}>
+                <td colSpan={2}>합계 ({histRows.length}일/건)</td>
+                <td style={{ textAlign: "right" }}>{histTotal.toLocaleString()}원</td>
+                <td />
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {message && <div className={styles.message}>{message}</div>}
 

@@ -1,0 +1,20 @@
+.page { padding: 24px; display: flex; flex-direction: column; gap: 16px; overflow: auto; }
+.top { display: flex; align-items: center; gap: 8px; }
+.title { margin: 0 12px 0 0; font-size: 20px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 6px 12px; border: 1px solid var(--border-color, #ddd); border-radius: 999px; background: transparent; color: inherit; cursor: pointer; }
+.chipActive { background: #4f7cff; border-color: #4f7cff; color: #fff; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.card { display: flex; flex-direction: column; gap: 6px; padding: 16px; border: 1px solid var(--border-color, #ddd); border-radius: 12px; }
+.card span { font-size: 13px; opacity: 0.7; }
+.card b { font-size: 28px; }
+.row { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.table { border-collapse: collapse; min-width: 260px; }
+.table th, .table td { padding: 8px 14px; border-bottom: 1px solid var(--border-color, #ddd); text-align: left; }
+.error { color: #ef4444; }
+.note { font-size: 12px; opacity: 0.6; }
+.sub { margin: 12px 0 0; font-size: 16px; }
+.muted { font-size: 12px; opacity: 0.6; }
+.group { border: 1px solid var(--border-color, #ddd); border-radius: 10px; overflow: hidden; }
+.groupHead { display: flex; justify-content: space-between; width: 100%; padding: 10px 14px; background: transparent; border: 0; color: inherit; cursor: pointer; text-align: left; }
+.tabs { display: flex; gap: 8px; padding: 16px 24px 0; }
+.live { color: #16a34a; font-weight: 600; }

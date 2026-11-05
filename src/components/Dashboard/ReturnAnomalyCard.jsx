@@ -280,6 +280,19 @@ export default function ReturnAnomalyCard() {
                             <div className={styles.anomalyField}>
                                 <span className={styles.anomalyFieldLabel}>주문번호</span>
                                 {item.orderNo || '-'}
+                                <span
+                                    style={{
+                                        marginLeft: '0.4rem',
+                                        fontSize: '0.62rem',
+                                        fontWeight: 700,
+                                        padding: '0.14rem 0.45rem',
+                                        borderRadius: '999px',
+                                        background: item.isSeller ? 'rgba(239,68,68,0.12)' : 'rgba(128,128,128,0.15)',
+                                        color: item.isSeller ? '#dc2626' : 'var(--text-muted, #6b7280)',
+                                    }}
+                                >
+                                    {item.isSeller ? '판매자' : '고객'}
+                                </span>
                             </div>
                             <div className={styles.anomalyField}>
                                 <span className={styles.anomalyFieldLabel}>상품명</span>

@@ -419,8 +419,9 @@ async def _kdg_find_sheet_seq(
     return sorted(matches, key=_sort_key)[-1] if matches else None
 
 
-def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, get_db):
+def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, get_db, get_shared_db=None):
     router = APIRouter(prefix="/noye-kimsungil")
+    get_progress_db = get_shared_db or get_db
 
     def _init_purchase_manager_table(conn):
         conn.execute("""
@@ -1411,6 +1412,85 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
             """, (state_json, user))
             conn.commit()
             return {"ok": True}
+        finally:
+            conn.close()
+
+    # ---- 오늘출발 4단계(불러오기/초기화/오출로변경/오출마이너스) 실행 진행 기록 ----
+    _TODAY_STEPS = ("load", "reset", "delivery", "minus")
+
+    def _init_today_progress_table(conn):
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS today_run_progress (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                load_at TEXT, load_by TEXT,
+                reset_at TEXT, reset_by TEXT,
+                delivery_at TEXT, delivery_by TEXT,
+                minus_at TEXT, minus_by TEXT,
+                cycle_complete INTEGER NOT NULL DEFAULT 0,
+                completed_at TEXT, completed_by TEXT
+            )
+        """)
+        conn.execute("INSERT OR IGNORE INTO today_run_progress (id) VALUES (1)")
+        conn.commit()
+
+    def _today_progress_payload(conn) -> dict:
+        row = conn.execute("SELECT * FROM today_run_progress WHERE id = 1").fetchone()
+        steps = {s: {"at": row[f"{s}_at"], "by": row[f"{s}_by"]} for s in _TODAY_STEPS}
+        return {
+            "ok": True,
+            "steps": steps,
+            "done_count": sum(1 for s in _TODAY_STEPS if row[f"{s}_at"]),
+            "cycle_complete": bool(row["cycle_complete"]),
+            "completed_at": row["completed_at"],
+            "completed_by": row["completed_by"],
+        }
+
+    @router.get("/today/run-progress")
+    def today_run_progress(user: str = Depends(get_current_user)):
+        conn = get_progress_db()
+        try:
+            _init_today_progress_table(conn)
+            return _today_progress_payload(conn)
+        finally:
+            conn.close()
+
+    @router.post("/today/run-progress")
+    def today_run_progress_report(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        step = str(payload.get("step") or "").strip()
+        if step not in _TODAY_STEPS:
+            raise HTTPException(status_code=400, detail="step은 load/reset/delivery/minus 중 하나여야 합니다.")
+        now = datetime.now(_KST).isoformat()
+        conn = get_progress_db()
+        try:
+            _init_today_progress_table(conn)
+            row = conn.execute("SELECT * FROM today_run_progress WHERE id = 1").fetchone()
+            if step == "load":
+                # 새 작업 시작: 단계 기록만 초기화하고 이전 실행완료 시각은 다음 완료 때까지 유지
+                conn.execute(
+                    """
+                    UPDATE today_run_progress SET
+                        load_at = ?, load_by = ?,
+                        reset_at = NULL, reset_by = NULL,
+                        delivery_at = NULL, delivery_by = NULL,
+                        minus_at = NULL, minus_by = NULL,
+                        cycle_complete = 0
+                    WHERE id = 1
+                    """,
+                    (now, user),
+                )
+            elif not row["cycle_complete"]:
+                conn.execute(
+                    f"UPDATE today_run_progress SET {step}_at = ?, {step}_by = ? WHERE id = 1",
+                    (now, user),
+                )
+                row = conn.execute("SELECT * FROM today_run_progress WHERE id = 1").fetchone()
+                if all(row[f"{s}_at"] for s in _TODAY_STEPS):
+                    conn.execute(
+                        "UPDATE today_run_progress SET cycle_complete = 1, completed_at = ?, completed_by = ? WHERE id = 1",
+                        (now, user),
+                    )
+            conn.commit()
+            return _today_progress_payload(conn)
         finally:
             conn.close()
 

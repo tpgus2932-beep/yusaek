@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import JsBarcode from 'jsbarcode';
+import { Search, X } from 'lucide-react';
 import pageStyles from './BarcodePage.module.css';
 import styles from './ReturnsPage.module.css';
 import { getDownloadFilename } from '../../lib/download';
@@ -135,12 +136,16 @@ const ReturnsPage = () => {
     const [regatherItems, setRegatherItems] = useState([]);
     const [regatherLoading, setRegatherLoading] = useState(false);
     const [regatherForm, setRegatherForm] = useState({ invoice: '', return_invoice: '', goods_name: '', buyer_tel: '' });
+    const [productSearch, setProductSearch] = useState(''); // 대기 탭 공통 상품명 검색어
     const [specialNoteModalOpen, setSpecialNoteModalOpen] = useState(false);
     const [specialNoteList, setSpecialNoteList] = useState([]);
     const [specialNoteListLoading, setSpecialNoteListLoading] = useState(false);
     const [specialNoteInvoiceInput, setSpecialNoteInvoiceInput] = useState('');
     const [specialNoteTextInput, setSpecialNoteTextInput] = useState('');
     const [specialNoteSaving, setSpecialNoteSaving] = useState(false);
+    const [sendNoteInvoices, setSendNoteInvoices] = useState([]);
+    const [sendNoteText, setSendNoteText] = useState('');
+    const [sendNoteSaving, setSendNoteSaving] = useState(false);
     // 스캔으로 특이사항이 걸린 송장번호들 - 해당 특이사항이 삭제되기 전까지는
     // 다른 걸 스캔해도 계속 빨간색으로 남아있어야 해서(사용자 요청), 마지막
     // 1건이 아니라 누적 Set으로 들고 있다가 삭제 시에만 지운다.
@@ -500,7 +505,40 @@ const ReturnsPage = () => {
         }
     };
 
-    const handleAblyRefundSubmit = async (selectedItems) => {
+    const [selectedHold, setSelectedHold] = useState(new Set());
+    const [holdSearch, setHoldSearch] = useState('');
+    const [holdLoading, setHoldLoading] = useState(false);
+
+    // 선택 건을 '대기상태'로 표시/해제 (같은 주문의 나머지 상품이 올 때까지 환불 요청을 미뤄둠)
+    const handleAblyHold = async (selectedItems, hold = true) => {
+        const ids = (selectedItems || []).map((i) => i.id);
+        if (!ids.length) return;
+        setHoldLoading(true);
+        try {
+            const res = await fetch(`${API}/returns/ably-hold`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ ids, hold }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.detail || '처리 실패');
+            if (data?.queues) setQueues(normalizeQueues(data.queues));
+            setMessage(hold ? `${ids.length}건을 대기상태로 보냈습니다.` : `${ids.length}건의 대기상태를 해제했습니다.`);
+        } catch (err) {
+            setMessage(err.message || '대기상태 처리 실패');
+        } finally {
+            setHoldLoading(false);
+        }
+    };
+
+    const handleAblyRefundSubmit = async (rawItems, { fromHold = false } = {}) => {
+        let selectedItems = rawItems;
+        if (!fromHold) {
+            // 대기상태 건은 '대기상태' 탭에서 같은 주문 건과 함께 넘긴다.
+            selectedItems = (rawItems || []).filter((i) => !i.ably_hold);
+            const skipped = (rawItems || []).length - selectedItems.length;
+            if (skipped > 0) setMessage(`대기상태 ${skipped}건은 제외했습니다. (대기상태 탭에서 처리)`);
+        }
         if (!selectedItems || !selectedItems.length) return;
         setRefundLoading(true);
         setRefundResults(null);
@@ -765,7 +803,10 @@ const ReturnsPage = () => {
     // 상품명 / [옵션] / 상품코드 바코드 라벨 인쇄 (image.png 레이아웃 참고)
     const printProductLabels = async (rawLabels) => {
         // 라벨 거래처 관리의 접두어·(거래처상품명)을 반품/교환 라벨에도 똑같이 적용한다.
-        const valid = (await decorateLabels(rawLabels)).filter((l) => l.code);
+        // tabMark(불량관리 탭 이름, 예: C)가 있으면 그 상품 라벨 바로 뒤에 "C박스" 글자 라벨을 한 장 더 낸다.
+        const valid = (await decorateLabels(rawLabels))
+            .filter((l) => l.code || l.box)
+            .flatMap(({ tabMark, ...l }) => (tabMark ? [l, { box: `${tabMark}박스` }] : [l]));
         if (!valid.length) return;
         if (serverPrint) {
             // 이 PC(에이전트) 또는 백엔드 PC의 프린터로 대화상자 없이 직접 출력, 실패하면 브라우저 인쇄로 대체
@@ -793,7 +834,11 @@ const ReturnsPage = () => {
     };
 
     const printProductLabelsInBrowser = (valid) => {
-        const cardsHtml = valid.map((l) => `
+        const cardsHtml = valid.map((l) => l.box ? `
+            <div class="card">
+                <div class="box">${escapeHtml(l.box)}</div>
+            </div>
+        ` : `
             <div class="card">
                 <div class="title">${escapeHtml(l.title)}</div>
                 ${l.clientLine ? `<div class="client">${escapeHtml(l.clientLine)}</div>` : ''}
@@ -820,8 +865,9 @@ body { background: #fff; font-family: sans-serif; }
 }
 .card:last-child { page-break-after: auto; break-after: auto; }
 .title { font-size: 9pt; font-weight: 700; line-height: 1.2; color: #111; }
-.option { font-size: 8pt; margin-top: 0.8mm; color: #111; }
-.client { font-size: 8pt; margin-top: 0.8mm; color: #111; line-height: 1.2; }
+.box { font-size: 26pt; font-weight: 800; color: #000; }
+.option { font-size: 8pt; font-weight: 700; margin-top: 0.8mm; color: #111; }
+.client { font-size: 8pt; font-weight: 700; margin-top: 0.8mm; color: #111; line-height: 1.2; }
 .barcode { margin-top: 1.5mm; width: 100%; }
 .barcode svg { width: 100%; height: 8mm; display: block; }
 </style>
@@ -925,13 +971,36 @@ body { background: #fff; font-family: sans-serif; }
                 logProcessingActions(queue, 'ezadmin_stockin', '이지어드민 입고처리', logEntries);
             }
             const okResults = data.results.filter((r) => r.ok);
-            setMessage(`이지어드민 입고처리 완료: ${okResults.length}/${data.results.length}건 성공`);
+            let msg = `이지어드민 입고처리 완료: ${okResults.length}/${data.results.length}건 성공`;
+            // 악성재고에 이미 있는 상품이면 그 탭에 수량을 더하고, 라벨은 악성재고 접두어(ZA 등)를 붙여 뽑는다.
+            let badItems = {};
+            const stockedCodes = okResults.map((r) => r.product_id).filter(Boolean);
+            if (stockedCodes.length) {
+                try {
+                    const badRes = await fetch(`${API}/barcode/bad-stock/returns-stockin`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                        body: JSON.stringify({ codes: stockedCodes }),
+                    });
+                    const badData = await badRes.json().catch(() => ({}));
+                    if (!badRes.ok || !badData?.ok) throw new Error(badData?.detail || '악성재고 반영 실패');
+                    badItems = badData.items || {};
+                    const badCount = Object.keys(badItems).length;
+                    if (badCount) msg += ` · 악성재고 ${badCount}종 탭에 추가`;
+                } catch (badErr) {
+                    msg += ` · ⚠ 악성재고 반영 실패(${badErr.message}) — 악성재고 상품은 수동으로 확인하세요`;
+                }
+            }
+            setMessage(msg);
             const labels = okResults.map((r) => {
                 const src = selectedItems.find((i) => i.id === r.id);
+                const bad = badItems[r.product_id];
+                const title = labelTitle(src);
                 return {
-                    title: labelTitle(src),
+                    title: bad ? `${bad.prefix} ${title}` : title,
                     option: src?.option_raw ? `[${src.option_raw.replace(/\//g, '-')}]` : '',
                     code: r.product_id || '',
+                    ...(bad ? { alreadyPrefixed: true } : {}),
                 };
             });
             printProductLabels(labels);
@@ -1016,6 +1085,14 @@ body { background: #fff; font-family: sans-serif; }
         setDefectTabPicker(null);
     };
 
+    // 구역라벨출력: 탭(A/B/C…)을 고르면 "C박스" 같은 글자 라벨만 한 장 출력한다.
+    const handlePrintZoneLabel = async () => {
+        const tab = await pickDefectTab();
+        if (!tab) return;
+        await printProductLabels([{ box: `${tab}박스` }]);
+        setMessage(`구역라벨 출력: ${tab}박스`);
+    };
+
     const handleSendToKimsungil = async (selectedItems, queue) => {
         if (!selectedItems || !selectedItems.length) return;
         const defectTab = await pickDefectTab();
@@ -1049,6 +1126,7 @@ body { background: #fff; font-family: sans-serif; }
                         title: labelTitle(src),
                         option: src.option_raw ? `[${src.option_raw.replace(/\//g, '-')}]` : '',
                         code,
+                        tabMark: defectTab,
                     });
                 } else {
                     const data = await res.json().catch(() => ({}));
@@ -1275,6 +1353,8 @@ body { background: #fff; font-family: sans-serif; }
     const handleLoadAllApis = async () => {
         setIsLoadingAllApis(true);
         setMessage('');
+        // 스캔 통계용: 이 시점부터 스캔 세션이 시작된다 (5분간 스캔이 없으면 끊김)
+        fetch(`${API}/returns/stats/start`, { method: 'POST', headers: getAuthHeaders() }).catch(() => {});
         const results = [];
         for (const [label, fetchFn] of [
             ['롯데', fetchLotteFromApi],
@@ -1661,6 +1741,7 @@ body { background: #fff; font-family: sans-serif; }
                         title: product.name || code,
                         option: optionRaw ? `[${optionRaw.replace(/\//g, '-')}]` : '',
                         code,
+                        tabMark: defectTab,
                     });
                 } else {
                     const data = await res.json().catch(() => ({}));
@@ -1920,6 +2001,17 @@ body { background: #fff; font-family: sans-serif; }
                                 >
                                     {item.name || formatSnapshotTime(item.updated_at)}
                                     {item.username && <span style={{ marginLeft: 8, opacity: 0.6, fontSize: '0.75rem' }}>{item.username} · {formatSnapshotTime(item.updated_at)}</span>}
+                                    <span
+                                        title={item.real_ingo_done_at ? `원베양식 실입고 완료 (${formatSnapshotTime(item.real_ingo_done_at)})` : '원베양식 실입고 전'}
+                                        style={{
+                                            marginLeft: 8,
+                                            fontSize: '0.7rem',
+                                            fontWeight: 600,
+                                            color: item.real_ingo_done_at ? '#16a34a' : '#9ca3af',
+                                        }}
+                                    >
+                                        {item.real_ingo_done_at ? '실입고 완료' : '실입고 전'}
+                                    </span>
                                 </button>
                                 <button
                                     type="button"
@@ -2020,6 +2112,44 @@ body { background: #fff; font-family: sans-serif; }
             setMessage(err.message || '특이사항 등록 실패');
         } finally {
             setSpecialNoteSaving(false);
+        }
+    };
+
+    const openSendSpecialNote = (selectedItems) => {
+        const invoices = [...new Set(selectedItems.map((i) => String(i.match || '').trim()).filter(Boolean))];
+        if (invoices.length === 0) {
+            setMessage('선택한 항목에 원송장번호(요청메모)가 없어 특이사항을 보낼 수 없습니다.');
+            return;
+        }
+        setSendNoteInvoices(invoices);
+        setSendNoteText('');
+    };
+
+    const handleSendSpecialNote = async () => {
+        const note = sendNoteText.trim();
+        if (!note || sendNoteInvoices.length === 0) return;
+        setSendNoteSaving(true);
+        try {
+            let ok = 0;
+            let lastError = '';
+            for (const invoiceNo of sendNoteInvoices) {
+                const res = await fetch(`${API}/return-special-notes/add`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                    body: JSON.stringify({ invoice_no: invoiceNo, note }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok) ok += 1;
+                else lastError = data?.detail || '특이사항 전송 실패';
+            }
+            setMessage(lastError ? `특이사항 ${ok}/${sendNoteInvoices.length}건 전송 (${lastError})` : `특이사항 ${ok}건 전송 완료`);
+            setSendNoteInvoices([]);
+            setSendNoteText('');
+            if (specialNoteModalOpen) fetchSpecialNotes();
+        } catch (err) {
+            setMessage(err.message || '특이사항 전송 실패');
+        } finally {
+            setSendNoteSaving(false);
         }
     };
 
@@ -2343,6 +2473,16 @@ body { background: #fff; font-family: sans-serif; }
                                             가져옴
                                         </span>
                                     )}
+                                    {item.ably_hold && (
+                                        <span style={{ display: 'inline-block', marginRight: 6, padding: '0 6px', borderRadius: 999, background: '#6366f1', color: '#fff', fontSize: '0.7rem', fontWeight: 700 }}>
+                                            대기
+                                        </span>
+                                    )}
+                                    {item.hold_waiting && (
+                                        <span title="같은 주문에 대기상태로 보낸 상품이 있습니다" style={{ display: 'inline-block', marginRight: 6, padding: '0 6px', borderRadius: 999, background: '#dc2626', color: '#fff', fontSize: '0.7rem', fontWeight: 700 }}>
+                                            대기 상품 있음
+                                        </span>
+                                    )}
                                     {item.scan}
                                 </td>
                                 <td>{item.match}</td>
@@ -2454,7 +2594,11 @@ body { background: #fff; font-family: sans-serif; }
         );
     };
 
-    const renderQueueTab = (items, selectedIds, setSelectedIds, extraActions, showSmsAction, queueKey) => {
+    const renderQueueTab = (allItems, selectedIds, setSelectedIds, extraActions, showSmsAction, queueKey) => {
+        const keyword = productSearch.trim().toLowerCase();
+        const items = keyword
+            ? allItems.filter((item) => `${item.item_text || ''} ${item.goods_name || ''}`.toLowerCase().includes(keyword))
+            : allItems;
         const handleToggleOne = (id) => {
             setSelectedIds((prev) => {
                 const next = new Set(prev);
@@ -2464,10 +2608,43 @@ body { background: #fff; font-family: sans-serif; }
         };
         const handleToggleAll = () => {
             const allChecked = items.length > 0 && items.every((item) => selectedIds.has(item.id));
-            setSelectedIds(allChecked ? new Set() : new Set(items.map((item) => item.id)));
+            // 검색 중에는 화면에 보이는 항목만 선택/해제하고, 가려진 항목의 선택 상태는 건드리지 않는다.
+            setSelectedIds((prev) => {
+                const next = new Set(prev);
+                items.forEach((item) => (allChecked ? next.delete(item.id) : next.add(item.id)));
+                return next;
+            });
         };
         return (
             <>
+                <div className={styles.productSearchRow}>
+                    <label className={styles.productSearch}>
+                        <Search size={15} aria-hidden="true" />
+                        <input
+                            type="text"
+                            value={productSearch}
+                            onChange={(e) => setProductSearch(e.target.value)}
+                            placeholder="상품명 검색"
+                            aria-label="상품명 검색"
+                        />
+                        {productSearch && (
+                            <button
+                                type="button"
+                                className={styles.productSearchClear}
+                                onClick={() => setProductSearch('')}
+                                aria-label="검색어 지우기"
+                            >
+                                <X size={13} />
+                            </button>
+                        )}
+                    </label>
+                    {keyword && (
+                        <span className={styles.productSearchInfo}>
+                            <strong>{items.length}</strong> / {allItems.length}건
+                            {items.length < allItems.length && selectedIds.size > 0 && ' · 선택 건수에는 가려진 항목도 포함'}
+                        </span>
+                    )}
+                </div>
                 {items.length > 0 && (
                     <div className={`${pageStyles.uploadRow} ${styles.compactActions}`}>
                         <button
@@ -2477,6 +2654,22 @@ body { background: #fff; font-family: sans-serif; }
                             disabled={deleteLoading || selectedIds.size === 0}
                         >
                             선택 삭제 ({selectedIds.size})
+                        </button>
+                        <button
+                            type="button"
+                            className={pageStyles.secondaryBtn}
+                            onClick={() => handleAblyHold(allItems.filter((i) => selectedIds.has(i.id)), true)}
+                            disabled={holdLoading || selectedIds.size === 0}
+                        >
+                            대기상태로 보내기 ({selectedIds.size})
+                        </button>
+                        <button
+                            type="button"
+                            className={pageStyles.secondaryBtn}
+                            onClick={() => openSendSpecialNote(allItems.filter((i) => selectedIds.has(i.id)))}
+                            disabled={selectedIds.size === 0}
+                        >
+                            특이사항 보내기 ({selectedIds.size})
                         </button>
                         {extraActions}
                     </div>
@@ -2600,6 +2793,14 @@ body { background: #fff; font-family: sans-serif; }
                         >
                             판매자 가져오기
                         </button>
+                        <button
+                            type="button"
+                            className={pageStyles.secondaryBtn}
+                            onClick={handlePrintZoneLabel}
+                            title="A·B·C 등 탭을 골라 'C박스' 같은 구역 라벨을 출력합니다"
+                        >
+                            구역라벨출력
+                        </button>
                     </div>
                     {savedAt && <div className={pageStyles.metaLabel}>마지막 임시저장: {savedAt}</div>}
 
@@ -2720,6 +2921,7 @@ body { background: #fff; font-family: sans-serif; }
                                 ['exchange_customer', '교환고객'],
                                 ['unmatched', '미매칭 대기'],
                                 ['regather', '오회수'],
+                                ['hold', '대기상태'],
                                 ['onebe', '원베양식(고객대기)'],
                                 ['processing_log', '처리기록'],
                                 ['inspection', '입고검수'],
@@ -2751,6 +2953,116 @@ body { background: #fff; font-family: sans-serif; }
 
                     {activeTab !== 'onebe' && activeTab !== 'processing_log' && activeTab !== 'inspection' && (
                         <>
+                            {activeTab === 'hold' && (() => {
+                                const pool = [...(queues.seller || []), ...(queues.customer || [])];
+                                const heldOrders = new Set(pool.filter((i) => i.ably_hold && i.order_no).map((i) => i.order_no));
+                                // 대기 건 + 같은 주문번호로 이미 도착한 건을 한 화면에서 함께 본다.
+                                const base = pool.filter((i) => !i.ably_refund_done && (i.ably_hold || (i.order_no && heldOrders.has(i.order_no))));
+                                const kw = holdSearch.trim().toLowerCase();
+                                const items = (kw
+                                    ? base.filter((i) => `${i.order_no || ''} ${i.scan || ''} ${i.match || ''} ${i.item_text || ''} ${i.goods_name || ''}`.toLowerCase().includes(kw))
+                                    : base
+                                ).slice().sort((a, b) => String(a.order_no || '').localeCompare(String(b.order_no || '')));
+                                const selectedItems = items.filter((i) => selectedHold.has(i.id));
+                                const allChecked = items.length > 0 && items.every((i) => selectedHold.has(i.id));
+                                const submitRefund = () => {
+                                    // 선택한 주문의 다른 상품이 빠져 있으면 한 번 더 확인한다.
+                                    const orders = new Set(selectedItems.map((i) => i.order_no).filter(Boolean));
+                                    const missing = pool.filter((i) => i.order_no && orders.has(i.order_no) && !i.ably_refund_done && !selectedHold.has(i.id));
+                                    const heldMissing = missing.filter((i) => i.ably_hold);
+                                    if (heldMissing.length > 0 && !window.confirm(`같은 주문의 대기 ${heldMissing.length}건이 선택되지 않았습니다. 그래도 환불 요청할까요?`)) return;
+                                    handleAblyRefundSubmit(selectedItems, { fromHold: true });
+                                };
+                                return (
+                                    <>
+                                        <div className={styles.productSearchRow}>
+                                            <label className={styles.productSearch}>
+                                                <Search size={15} aria-hidden="true" />
+                                                <input
+                                                    type="text"
+                                                    value={holdSearch}
+                                                    onChange={(e) => setHoldSearch(e.target.value)}
+                                                    placeholder="주문번호 / 송장 / 상품명 검색"
+                                                    aria-label="대기상태 검색"
+                                                />
+                                            </label>
+                                            <span className={styles.productSearchInfo}>대기 {base.filter((i) => i.ably_hold).length}건 · 같은 주문 도착 {base.filter((i) => !i.ably_hold).length}건</span>
+                                        </div>
+                                        {items.length === 0 ? (
+                                            <div className={pageStyles.empty}>대기상태 건이 없습니다. 판매자/고객 대기 탭에서 "대기상태로 보내기"를 사용하세요.</div>
+                                        ) : (
+                                            <>
+                                                <div className={`${pageStyles.uploadRow} ${styles.compactActions}`}>
+                                                    <button
+                                                        type="button"
+                                                        className={pageStyles.primaryBtn}
+                                                        onClick={submitRefund}
+                                                        disabled={refundLoading || selectedHold.size === 0}
+                                                    >
+                                                        {refundLoading ? '처리 중...' : `에이블리 환불 요청 (${selectedHold.size}건 선택)`}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className={pageStyles.secondaryBtn}
+                                                        onClick={() => handleAblyHold(selectedItems.filter((i) => i.ably_hold), false)}
+                                                        disabled={holdLoading || !selectedItems.some((i) => i.ably_hold)}
+                                                    >
+                                                        대기 해제
+                                                    </button>
+                                                </div>
+                                                <div className={pageStyles.tableWrap}>
+                                                    <table className={pageStyles.table}>
+                                                        <thead>
+                                                            <tr>
+                                                                <th style={{ width: '32px', textAlign: 'center' }}>
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={allChecked}
+                                                                        onChange={() => setSelectedHold(allChecked ? new Set() : new Set(items.map((i) => i.id)))}
+                                                                    />
+                                                                </th>
+                                                                <th>주문번호</th>
+                                                                <th>상태</th>
+                                                                <th>스캔송장</th>
+                                                                <th>가공데이터</th>
+                                                                <th>입고수량</th>
+                                                                <th>분류</th>
+                                                                <th>환불처리</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            {items.map((item) => (
+                                                                <tr key={item.id} style={selectedHold.has(item.id) ? { background: 'var(--bg-secondary)' } : undefined}>
+                                                                    <td style={{ textAlign: 'center' }}>
+                                                                        <input
+                                                                            type="checkbox"
+                                                                            checked={selectedHold.has(item.id)}
+                                                                            onChange={() => setSelectedHold((prev) => {
+                                                                                const next = new Set(prev);
+                                                                                next.has(item.id) ? next.delete(item.id) : next.add(item.id);
+                                                                                return next;
+                                                                            })}
+                                                                        />
+                                                                    </td>
+                                                                    <td>{item.order_no || '-'}</td>
+                                                                    <td style={{ fontWeight: 600, color: item.ably_hold ? '#6366f1' : '#16a34a' }}>
+                                                                        {item.ably_hold ? '대기' : '도착'}
+                                                                    </td>
+                                                                    <td>{item.scan}</td>
+                                                                    <td>{item.item_text}</td>
+                                                                    <td>{item.qty}</td>
+                                                                    <td>{item.type}</td>
+                                                                    <td style={{ color: item.ably_refund_error ? '#dc2626' : undefined }}>{item.ably_refund_error || ''}</td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </>
+                                        )}
+                                    </>
+                                );
+                            })()}
                             {activeTab === 'all' && renderQueueTab(queues.all, selectedAll, setSelectedAll)}
                             {activeTab === 'seller' && renderQueueTab(queues.seller, selectedSeller, setSelectedSeller, (
                                 <>
@@ -2831,6 +3143,14 @@ body { background: #fff; font-family: sans-serif; }
                                                 disabled={deleteLoading || selectedCustomer.size === 0}
                                             >
                                                 선택 삭제 ({selectedCustomer.size})
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.secondaryBtn}
+                                                onClick={() => handleAblyHold(items.filter((i) => selectedCustomer.has(i.id)), true)}
+                                                disabled={holdLoading || selectedCustomer.size === 0}
+                                            >
+                                                대기상태로 보내기 ({selectedCustomer.size})
                                             </button>
                                             <button
                                                 type="button"
@@ -2937,7 +3257,19 @@ body { background: #fff; font-family: sans-serif; }
                                                                 }}
                                                             />
                                                         </td>
-                                                        <td>{item.scan}</td>
+                                                        <td>
+                                                            {item.ably_hold && (
+                                                                <span style={{ display: 'inline-block', marginRight: 6, padding: '0 6px', borderRadius: 999, background: '#6366f1', color: '#fff', fontSize: '0.7rem', fontWeight: 700 }}>
+                                                                    대기
+                                                                </span>
+                                                            )}
+                                                            {item.hold_waiting && (
+                                                                <span title="같은 주문에 대기상태로 보낸 상품이 있습니다" style={{ display: 'inline-block', marginRight: 6, padding: '0 6px', borderRadius: 999, background: '#dc2626', color: '#fff', fontSize: '0.7rem', fontWeight: 700 }}>
+                                                                    대기 상품 있음
+                                                                </span>
+                                                            )}
+                                                            {item.scan}
+                                                        </td>
                                                         <td>{item.match}</td>
                                                         <td>{item.item_text}{renderChangedMark(item)}</td>
                                                         <td>{item.qty}</td>
@@ -3156,6 +3488,14 @@ body { background: #fff; font-family: sans-serif; }
                                                 disabled={regatherExecuteLoading || selectedExchangeCustomer.size === 0}
                                             >
                                                 {regatherExecuteLoading ? '처리 중...' : `오회수 (${selectedExchangeCustomer.size}건 선택)`}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className={pageStyles.primaryBtn}
+                                                onClick={() => handlePrintBarcodesOnly(queues.exchange_customer.filter((i) => selectedExchangeCustomer.has(i.id)))}
+                                                disabled={labelPrintLoading || selectedExchangeCustomer.size === 0}
+                                            >
+                                                {labelPrintLoading ? '처리 중...' : `바코드 출력 (${selectedExchangeCustomer.size}건 선택)`}
                                             </button>
                                             <button
                                                 type="button"
@@ -3844,6 +4184,39 @@ body { background: #fff; font-family: sans-serif; }
                                     ))}
                                 </div>
                             ))}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {sendNoteInvoices.length > 0 && (
+                <div
+                    onClick={() => !sendNoteSaving && setSendNoteInvoices([])}
+                    style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ background: 'var(--bg-primary, #fff)', borderRadius: 8, width: 'min(480px, 90vw)', padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}
+                    >
+                        <strong>특이사항 보내기 ({sendNoteInvoices.length}건)</strong>
+                        <div style={{ fontSize: 12, color: 'var(--text-secondary, #6b7280)', wordBreak: 'break-all' }}>
+                            {sendNoteInvoices.join(', ')}
+                        </div>
+                        <textarea
+                            autoFocus
+                            value={sendNoteText}
+                            onChange={(e) => setSendNoteText(e.target.value)}
+                            placeholder="특이사항 메모를 입력하세요"
+                            rows={4}
+                            style={{ padding: '8px 10px', border: '1px solid var(--border-color, #e5e7eb)', borderRadius: 6, resize: 'vertical', font: 'inherit' }}
+                        />
+                        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                            <button type="button" className={pageStyles.secondaryBtn} onClick={() => setSendNoteInvoices([])} disabled={sendNoteSaving}>
+                                취소
+                            </button>
+                            <button type="button" className={pageStyles.primaryBtn} onClick={handleSendSpecialNote} disabled={sendNoteSaving || !sendNoteText.trim()}>
+                                {sendNoteSaving ? '전송 중...' : '보내기'}
+                            </button>
                         </div>
                     </div>
                 </div>

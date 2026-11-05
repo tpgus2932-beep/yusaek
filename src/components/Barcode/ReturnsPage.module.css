@@ -130,3 +130,61 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+.productSearchRow {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+
+.productSearch {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: min(340px, 100%);
+  padding: 0 0.6rem 0 0.8rem;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 999px;
+  background: var(--bg-secondary, #f8f8f8);
+  color: var(--text-muted, #888);
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+
+.productSearch:focus-within {
+  border-color: var(--text-primary, #111);
+  background: var(--bg-primary, #fff);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.06);
+  color: var(--text-primary, #111);
+}
+
+.productSearch input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary, #111);
+  font-size: 0.875rem;
+}
+
+.productSearchClear {
+  display: grid;
+  place-items: center;
+  padding: 0.2rem;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.08);
+  color: inherit;
+  cursor: pointer;
+}
+
+.productSearchClear:hover {
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.productSearchInfo {
+  font-size: 0.8rem;
+  color: var(--text-muted, #888);
+}

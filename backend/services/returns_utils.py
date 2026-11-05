@@ -138,6 +138,10 @@ class ReturnState:
         self.customer_export_df: pd.DataFrame = pd.DataFrame()
         self.last_type: str = "-"
         self.next_id: int = 1
+        # 원베양식 실입고(EZAdmin I200) 완료 시각(ISO). 원베양식을 새로 만들거나 비우면 지운다.
+        self.real_ingo_done_at: str = ""
+        # 마지막으로 불러온 임시저장 id - 실입고 성공 시 그 저장본에도 표시하기 위함.
+        self.loaded_snapshot_id: int | None = None
 
 
 def _return_df_to_json(df: pd.DataFrame | None) -> str | None:
@@ -175,6 +179,7 @@ def _return_state_to_payload(state: ReturnState) -> dict:
         "customer_export_df": _return_df_to_json(state.customer_export_df),
         "last_type": state.last_type,
         "next_id": state.next_id,
+        "real_ingo_done_at": state.real_ingo_done_at,
     }
 
 
@@ -201,6 +206,7 @@ def _load_return_state_from_payload(state: ReturnState, payload: dict | None):
     customer_export_df = _return_df_from_json(payload.get("customer_export_df"))
     state.customer_export_df = customer_export_df if customer_export_df is not None else pd.DataFrame()
     state.last_type = str(payload.get("last_type") or "-")
+    state.real_ingo_done_at = str(payload.get("real_ingo_done_at") or "")
     try:
         state.next_id = max(int(payload.get("next_id") or 1), 1)
     except Exception:
@@ -288,6 +294,19 @@ def _return_queue_payload(state: ReturnState) -> dict:
         seen_scans.add(scan)
         deduped_unmatched.append(item)
     state.queue_unmatched = deduped_unmatched
+
+    # '대기상태'로 보낸 건과 같은 주문번호의 다른 건이 도착하면 hold_waiting 으로 표시해
+    # 화면에서 "이 주문에 대기 중인 상품이 있음" 배지를 띄운다.
+    def _order_key(it: dict) -> str:
+        return str(it.get("order_no") or it.get("order_sno") or "").strip()
+
+    held_orders = {_order_key(it) for it in state.all_items if it.get("ably_hold")}
+    held_orders.discard("")
+    for it in state.all_items:
+        if not it.get("ably_hold") and _order_key(it) in held_orders:
+            it["hold_waiting"] = True
+        else:
+            it.pop("hold_waiting", None)
 
     return {
         "seller": state.queue_seller,

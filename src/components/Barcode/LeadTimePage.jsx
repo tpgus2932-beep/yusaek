@@ -29,6 +29,14 @@ function todayStr() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+function shiftDate(value, days) {
+  const [y, m, d] = String(value).split("-").map(Number);
+  if (!y || !m || !d) return value;
+  const t = new Date(y, m - 1, d + days);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`;
+}
+
 function toMin(slot) {
   const [h, m] = slot.split(":").map(Number);
   return h * 60 + m;
@@ -591,7 +599,11 @@ export default function LeadTimePage({ headerExtra = null }) {
           <div className={pageStyles.cardHeader}>
             <h3 className={pageStyles.cardTitle}>예상 종료</h3>
             <div className={styles.controls}>
-              <input type="date" className={styles.input} value={date} onChange={(e) => setDate(e.target.value)} />
+              <div className={styles.dateNav}>
+                <button type="button" className={styles.dateArrow} aria-label="전날" onClick={() => setDate((v) => shiftDate(v, -1))}>◀</button>
+                <input type="date" className={styles.input} value={date} onChange={(e) => setDate(e.target.value)} />
+                <button type="button" className={styles.dateArrow} aria-label="다음날" onClick={() => setDate((v) => shiftDate(v, 1))}>▶</button>
+              </div>
             </div>
           </div>
           <div className={styles.summary}>

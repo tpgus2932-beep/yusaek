@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import styles from "./NoyeKimPage.module.css";
 import { getDownloadFilename } from "../../lib/download";
@@ -125,6 +125,20 @@ const TODAY_CHECK_REASON_LABELS = {
 
 function getTodayCheckReasonLabel(reason) {
   return TODAY_CHECK_REASON_LABELS[reason] || "알림";
+}
+
+const TODAY_STEP_LABELS = [
+  ["load", "불러오기"],
+  ["reset", "초기화"],
+  ["delivery", "오출로변경"],
+  ["minus", "오출마이너스"],
+];
+
+// 서버 시각(ISO)을 KST "YYYY-MM-DD HH:mm"으로 표시
+function formatTodayRunTime(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString("sv-SE", { timeZone: "Asia/Seoul" }).slice(0, 16);
 }
 
 function getTodayCheckBadgeClass(reason, styles) {
@@ -421,6 +435,34 @@ export default function NoyeKimPage() {
   const [todayEzadminLoading, setTodayEzadminLoading] = useState(false);
   const { openModal: openEzadminModal } = useEzadminSession();
   const [ablyMinusLoading, setAblyMinusLoading] = useState(false);
+  const [todayProgress, setTodayProgress] = useState(null);
+
+  const fetchTodayProgress = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/noye-kimsungil/today/run-progress`, { headers: getAuthHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.ok) setTodayProgress(data);
+    } catch {
+      // 표시용 정보라 실패해도 작업 흐름에는 영향 없음
+    }
+  }, []);
+
+  // 4단계(load/reset/delivery/minus) 중 성공한 단계를 서버에 보고
+  const reportTodayStep = async (step) => {
+    try {
+      const res = await fetch(`${API}/noye-kimsungil/today/run-progress`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ step }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.ok) setTodayProgress(data);
+    } catch {
+      // 기록 실패가 실제 작업 결과를 막지 않도록 무시
+    }
+  };
+
+  useEffect(() => { fetchTodayProgress(); }, [fetchTodayProgress]);
   const [todayCheckLoading, setTodayCheckLoading] = useState(false);
   const [todayCheckOpen, setTodayCheckOpen] = useState(false);
   const [todayCheckResult, setTodayCheckResult] = useState(null);
@@ -886,6 +928,7 @@ export default function NoyeKimPage() {
       if (!res.ok || !data?.ok) throw new Error(data?.error || data?.detail || "EZAdmin 불러오기 실패");
       setTodayRows(data.rows ?? []);
       setMessage(`EZAdmin 로드 완료: ${data.count ?? 0}행`);
+      reportTodayStep("load");
     } catch (err) {
       setMessage(err.message || "EZAdmin 불러오기 실패");
     } finally { setTodayEzadminLoading(false); }
@@ -915,6 +958,7 @@ export default function NoyeKimPage() {
 
       setTodayRows(processed);
       setMessage(`가공 완료: ${processed.length}행 (빈 G열 제거됨)`);
+      reportTodayStep("load");
     } catch (err) {
       setMessage(err.message || "가공 실패");
     } finally {
@@ -964,6 +1008,7 @@ export default function NoyeKimPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "재고 초기화 실패");
       setMessage(data.message || "오늘출발 재고 초기화 완료");
+      reportTodayStep("reset");
     } catch (err) {
       setMessage(err.message || "재고 초기화 실패");
     } finally {
@@ -983,6 +1028,7 @@ export default function NoyeKimPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "실행 실패");
       setMessage(data.message || `완료: 오출 품목 ${data.sync_map_size ?? 0}종 / 재고 차감 ${data.matched ?? 0}건`);
+      reportTodayStep("minus");
     } catch (err) {
       setMessage(err.message || "실행 실패");
     } finally {
@@ -1031,6 +1077,7 @@ export default function NoyeKimPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "오출로 변경 실패");
       setMessage(data.message || "오출로 변경 완료");
+      reportTodayStep("delivery");
     } catch (err) {
       setMessage(err.message || "오출로 변경 실패");
     } finally {
@@ -2838,6 +2885,23 @@ export default function NoyeKimPage() {
                 <div className={`${styles.cardIcon} ${styles.cardIconGreen}`}><Zap size={15} /></div>
                 <h3 className={styles.cardTitle}>오늘출발</h3>
               </div>
+              {todayProgress && (
+                <div className={styles.todayRunStatus}>
+                  {todayProgress.completed_at && (
+                    <span className={styles.todayRunDone} title={todayProgress.completed_by ? `실행자: ${todayProgress.completed_by}` : undefined}>
+                      {formatTodayRunTime(todayProgress.completed_at)} 실행완료
+                    </span>
+                  )}
+                  {!todayProgress.cycle_complete && todayProgress.done_count > 0 && (
+                    <span className={styles.todayRunPending}>
+                      진행 중 {todayProgress.done_count}/4 ({TODAY_STEP_LABELS.filter(([k]) => todayProgress.steps?.[k]?.at).map(([, l]) => l).join("·")})
+                    </span>
+                  )}
+                  {!todayProgress.completed_at && todayProgress.done_count === 0 && (
+                    <span className={styles.todayRunPending}>실행 기록 없음</span>
+                  )}
+                </div>
+              )}
             </div>
             <div className={styles.uploadRow}>
               <label className={styles.fileInput}>

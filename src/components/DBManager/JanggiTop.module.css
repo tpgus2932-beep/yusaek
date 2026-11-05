@@ -316,3 +316,30 @@
   outline: 2px solid #f59e0b;
   outline-offset: -2px;
 }
+
+/* SO+ 대조 결과: 박스는 넓게, 안의 정보는 촘촘하게 */
+.soPanel {
+  width: 100%;
+  max-width: 1080px;
+  margin-bottom: 1rem;
+}
+
+.soTable {
+  table-layout: fixed;
+  font-size: 0.78rem;
+}
+
+.soTable th,
+.soTable td {
+  padding: 0.25rem 0.6rem;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.soTable th:nth-child(1) { width: 22%; }
+.soTable th:nth-child(2) { width: 17%; }
+.soTable th:nth-child(3) { width: 17%; }
+.soTable th:nth-child(4) { width: 14%; }
+.soTable th:nth-child(5) { width: 30%; }

@@ -54,7 +54,7 @@ def test_seller_fault_pending_returns_only_reason_code_2():
                     },
                     {
                         "exchange_sno": 11,
-                        "reason_code": 30,
+                        "reason_code": 1,
                         "exchange_items": [{"order_item_sno": 101, "sno": 2}],
                     },
                 ],

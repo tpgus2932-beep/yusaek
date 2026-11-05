@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime, timedelta, timezone
 import json
+import re
 import sqlite3
 from fastapi import APIRouter, Body, Depends, HTTPException
 
@@ -81,6 +82,10 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
     manual_invoices_cols = [r["name"] for r in conn.execute("PRAGMA table_info(return_automation_manual_invoices)").fetchall()]
     if "reason" not in manual_invoices_cols:
         conn.execute("ALTER TABLE return_automation_manual_invoices ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
+    # 주문매칭실패 건 수동 매칭(에이블리 송장 -> 이지어드민 관리번호/송장). 사람이 전화번호로 찾아 고른 결과를 저장해 조회·실행에서 쓴다.
+    conn.execute("""CREATE TABLE IF NOT EXISTS return_automation_manual_matches (
+        ably_invoice TEXT PRIMARY KEY, pack TEXT NOT NULL, ez_invoice TEXT NOT NULL DEFAULT '',
+        phone TEXT NOT NULL DEFAULT '', matched_by TEXT NOT NULL DEFAULT '', matched_at TEXT NOT NULL DEFAULT '')""")
     conn.commit(); conn.close()
 
     # 30일 자동스캔에 걸리지 않는 건(기간 초과, 에이블리 누락 등)을 사용자가
@@ -148,6 +153,140 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
             conn.close()
         return {"ok": True, "synced_count": len(notes)}
 
+    async def _has_ez_takeback(ez: EzAdminClient, seq) -> bool:
+        """이지어드민 반품택배 접수내역(EX00)에 이 관리번호로 등록된 반송장이 있는지. 회수 여부의 기준이다.
+        조회 실패는 '없음'으로 숨기지 않고 예외로 올려 보낸다(없는 줄 알고 수거를 이중 접수하는 것을 막기 위해)."""
+        return bool(await ez.takeback_invoices(seq))
+
+    # ---- 주문매칭실패 건 수동 매칭: 구매자 전화번호로 이지어드민 주문을 찾아 사람이 직접 고른다.
+    def _get_manual_match(inv: str):
+        try:
+            conn = get_shared_db()
+            try:
+                row = conn.execute(
+                    "SELECT pack, ez_invoice FROM return_automation_manual_matches WHERE ably_invoice=?", (str(inv).strip(),)
+                ).fetchone()
+            finally:
+                conn.close()
+        except Exception:
+            return None
+        return {"pack": str(row[0]), "ez_invoice": str(row[1] or "")} if row else None
+
+    @router.post("/match/search")
+    async def match_search(payload: dict = Body(...), user=Depends(get_current_user)):
+        """전화번호(또는 이름/주문번호 등 이지어드민 통합검색어)로 이지어드민 주문을 찾아 매칭 후보를 돌려준다.
+        후보는 주문(관리번호)별 상품 라인이며, 각 라인에 이지어드민 송장번호가 들어 있다(회수접수에 쓰인다)."""
+        keyword = str(payload.get("keyword") or "").strip()
+        digits = re.sub(r"\D", "", keyword)
+        if len(digits) >= 8:
+            keyword = digits  # 전화번호는 숫자만으로도 검색된다
+        if len(keyword) < 2:
+            raise HTTPException(status_code=400, detail="검색어(전화번호 등)를 입력하세요.")
+        now = datetime.now(KST)
+        start = (now - timedelta(days=365)).strftime("%Y-%m-%d"); end = now.strftime("%Y-%m-%d")
+        ez = EzAdminClient(get_setting)
+        try:
+            rows = await ez.query_orders(keyword, start_date=start, end_date=end, rows=30)
+            candidates = []
+            for row in rows[:15]:
+                cell = row.get("cell") if isinstance(row, dict) else row
+                pack = str(_first(cell, ("pack",)) or "").strip()
+                if not pack:
+                    continue
+                takebacks = await ez.takeback_invoices(pack)
+                for it in (await ez.packlist_items(pack)):
+                    candidates.append({
+                        "pack": pack,
+                        "ez_invoice": str(it.get("trans_no") or "").strip(),
+                        "product_name": str(it.get("product_name") or "").strip(),
+                        "options": str(it.get("options") or "").strip(),
+                        "qty": str(it.get("qty") or "").strip(),
+                        "order_date": str(it.get("order_date") or cell.get("collect_date") or "").strip(),
+                        "shop_name": str(cell.get("shop_name") or "").strip(),
+                        "recv_name": str(cell.get("recv_name") or "").strip(),
+                        "takeback_count": len(takebacks),
+                    })
+        except EzAdminSessionExpired as exc:
+            raise HTTPException(status_code=401, detail=f"EZAdmin 세션이 만료되었습니다: {exc}")
+        return {"ok": True, "candidates": candidates, "keyword": keyword}
+
+    @router.post("/match/apply")
+    async def match_apply(payload: dict = Body(...), user=Depends(get_current_user)):
+        """고른 후보를 에이블리 송장에 매칭해 저장하고, 그 건의 상태(회수 여부/CS 이력/경과)를 바로 다시 계산해 돌려준다."""
+        inv = str(payload.get("invoice_no") or "").strip()
+        pack = str(payload.get("pack") or "").strip()
+        ez_invoice = str(payload.get("ez_invoice") or "").strip()
+        item = dict(payload.get("item") or {})
+        if not inv or not pack:
+            raise HTTPException(status_code=400, detail="송장번호와 관리번호가 필요합니다.")
+        conn = get_shared_db()
+        try:
+            conn.execute(
+                "INSERT INTO return_automation_manual_matches (ably_invoice, pack, ez_invoice, phone, matched_by, matched_at) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(ably_invoice) DO UPDATE SET pack=excluded.pack, ez_invoice=excluded.ez_invoice, "
+                "phone=excluded.phone, matched_by=excluded.matched_by, matched_at=excluded.matched_at",
+                (inv, pack, ez_invoice, str(item.get("phone") or ""), user, datetime.now(KST).isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        ez = EzAdminClient(get_setting)
+        try:
+            takebacks = await ez.takeback_invoices(pack)
+            if takebacks:
+                return {"ok": True, "returned": True, "takebacks": [t["trans_no"] for t in takebacks]}
+            phone = str(item.get("phone") or "").strip()
+            cs_msgs = sorted((_message(x) for x in _messages(await ez.get_cs_history(pack))), key=lambda x: str(x.get("input_time") or ""))
+            sms_msgs = []
+            if phone:
+                try:
+                    sms = await ez.sms_chat_detail(phone, config.EZDESK_SMS_SENDER)
+                    sms_msgs = sorted((_message(x) for x in _messages(sms)), key=lambda x: str(x.get("input_time") or ""))
+                except Exception as sms_exc:
+                    item["sms_error"] = str(sms_exc)
+        except EzAdminSessionExpired as exc:
+            raise HTTPException(status_code=401, detail=f"EZAdmin 세션이 만료되었습니다: {exc}")
+        sent_msgs = [x for x in sms_msgs if x["direction"] == "sent"]
+        item.update(messages=sms_msgs, sms_sent_count=len(sent_msgs), sms_sent_history=sent_msgs,
+                    ez_invoice_no=ez_invoice, matched_manually=True, error=None, error_stage=None)
+        if cs_msgs:
+            cs_last = cs_msgs[-1]
+            sms_last = sms_msgs[-1] if sms_msgs else {}
+            item.update(input_time=cs_last["input_time"], last_direction=sms_last.get("direction", ""),
+                        received_content="\n".join(x["content"] for x in sms_msgs if x["direction"] == "received"),
+                        elapsed_status="PASS" if (business_days_since(cs_last["input_time"]) or 0) >= 2 else "WAIT")
+        else:
+            item["elapsed_status"] = "CS_EMPTY"
+        return_days = business_days_since(item.get("return_date"))
+        item["return_elapsed_days"] = return_days
+        if return_days is None or return_days < 2:
+            item["elapsed_status"] = "RETURN_WAIT"
+            item["eligible"] = False
+        else:
+            item["eligible"] = item.get("elapsed_status") == "PASS"
+        return {"ok": True, "returned": False, "item": item}
+
+    @router.delete("/match/{invoice_no}")
+    async def match_remove(invoice_no: str, user=Depends(get_current_user)):
+        conn = get_shared_db()
+        conn.execute("DELETE FROM return_automation_manual_matches WHERE ably_invoice=?", (invoice_no.strip(),))
+        conn.commit(); conn.close()
+        return {"ok": True}
+    # ---- 조회(preview) 진행상황: 30일치를 이지어드민으로 건건이 확인하느라 오래 걸려서 화면이 폴링한다.
+    preview_progress: dict[str, dict] = {}
+
+    def _progress(user, **kw):
+        p = preview_progress.setdefault(user, {})
+        for k, v in kw.items():
+            if k.endswith("_inc"):
+                p[k[:-4]] = p.get(k[:-4], 0) + v
+            else:
+                p[k] = v
+
+    @router.get("/preview/progress")
+    async def preview_progress_status(user=Depends(get_current_user)):
+        return preview_progress.get(user) or {"running": False, "phase": "", "total": 0, "done": 0, "returned": 0, "current": ""}
+
     # preview()의 자동스캔 결과와 개별추가 탭의 단독 상태조회가 모두 이 헬퍼를
     # 공유한다 - 자동스캔 items에 합칠 때와, 개별추가 탭에서 30일 스캔 없이
     # 상태만 확인할 때 둘 다 같은 판정 로직(LOGIS 반송장 유무 → EZAdmin CS 이력
@@ -173,6 +312,10 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
             seq = (found or {}).get("pack")
             item["phone"] = (found or {}).get("phone") or ""
             if seq:
+                stage = "EZADMIN_TAKEBACK"
+                # 롯데(LOGIS)에 반송장 연결이 없어도 이지어드민(관리번호 기준)에 이미 접수된 반송장이 있으면 처리 대상에서 뺀다.
+                if await _has_ez_takeback(ez, seq):
+                    return None
                 stage = "EZADMIN_CS_HISTORY"
                 history = await ez.get_cs_history(seq)
                 cs_msgs = sorted((_message(x) for x in _messages(history)), key=lambda x: str(x.get("input_time") or ""))
@@ -251,6 +394,7 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
     @router.post("/preview")
     async def preview(user=Depends(get_current_user)):
         now = datetime.now(KST); start = (now - timedelta(days=30)).strftime("%Y-%m-%d"); end = now.strftime("%Y-%m-%d")
+        preview_progress[user] = {"running": True, "phase": "에이블리 반품 목록 조회", "total": 0, "done": 0, "returned": 0, "current": "", "errors": 0}
         run_id = f"ra-{now.strftime('%Y%m%d%H%M%S%f')}"
         try:
             ably = AblyClient(); logis = LLogisClient(); ez = EzAdminClient(get_setting)
@@ -267,6 +411,19 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
                 max_page = int(data.get("max_page_number") or data.get("total_page") or 1)
                 if page >= max_page: break
                 page += 1
+            # 진행률 분모: 아래 본 루프와 같은 기준(송장 중복 제거, 반품 영업일 2일 미만 제외)으로 미리 센다.
+            _pre_seen = set(); _pre_total = 0
+            for _c in cancels:
+                for _r in _c.get("order_items", []):
+                    _i = str(_r.get("invoice") or "").strip()
+                    if not _i or _i in _pre_seen:
+                        continue
+                    _pre_seen.add(_i)
+                    _d = business_days_since(str(_c.get("cancel_received_at") or _r.get("cancel_received_at") or ""))
+                    if _d is not None and _d < 2:
+                        continue
+                    _pre_total += 1
+            _progress(user, phase="반품 건 이지어드민 회수 확인", total=_pre_total, done=0)
             items = []
             source_item_count = 0
             excluded_recent_count = 0
@@ -305,13 +462,12 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
                     # it failed instead of just that it failed.
                     stage = "LLOGIS_RETURN_STATUS"
                     try:
+                        _progress(user, current=inv)
                         logis_data = await logis.query_return_status(inv)
                         # The source of truth is the LOGIS response, not Ably's
                         # optional return-invoice field or a movement-status label.
                         return_invoice = str(logis_data.get("llogis_return_invoice_no") or "").strip()
                         has_return = bool(return_invoice)
-                        if has_return:
-                            continue
                         phone = str(cancel.get("buyer_tel") or cancel.get("receiver_tel") or raw.get("buyer_tel") or raw.get("receiver_tel") or "").strip()
                         # input_time defaults to None here because it is only ever
                         # populated below when CS history exists (cs_msgs truthy);
@@ -322,6 +478,15 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
                         item = {"order_no": str(cancel.get("order_id") or raw.get("order_id") or raw.get("sno") or ""), "cancel_sno": str(cancel.get("sno") or ""), "invoice_no": inv, "return_invoice_no": return_invoice, "return_date": return_date, "logis": logis_data, "logis_found": bool(logis_data.get("llogis_status") not in (None, "", "-")), "has_return_invoice": False, "elapsed_status": "NO_RETURN_INVOICE", "last_direction": "", "received_content": "", "messages": [], "input_time": None, "phone": phone, "sms_sent_count": 0, "sms_sent_history": []}
                         seq = (raw.get("seq") or raw.get("order_seq") or raw.get("pack") or raw.get("pack_seq")
                                or cancel.get("seq") or cancel.get("order_seq") or cancel.get("pack") or cancel.get("pack_seq"))
+                        # 수동 매칭(전화번호로 직접 고른 이지어드민 주문)이 있으면 그것을 우선한다. 회수접수 때는 그 주문의 이지어드민 송장을 쓴다.
+                        item["goods_name"] = str(raw.get("goods_name") or "").strip()
+                        item["option_info"] = str(raw.get("option_name") or raw.get("option_info") or raw.get("option") or "").strip()
+                        item["buyer_name"] = str(cancel.get("receiver_name") or cancel.get("buyer_name") or raw.get("receiver_name") or raw.get("buyer_name") or "").strip()
+                        _manual_match = _get_manual_match(inv)
+                        if _manual_match:
+                            seq = _manual_match["pack"]
+                            item["ez_invoice_no"] = _manual_match["ez_invoice"]
+                            item["matched_manually"] = True
                         # Ably return payloads often omit EZAdmin's transaction seq.
                         # Resolve it by searching EZAdmin with the original invoice.
                         if not seq:
@@ -335,6 +500,10 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
                                 if seq:
                                     break
                         if seq:
+                            stage = "EZADMIN_TAKEBACK"
+                            # 롯데(LOGIS)에 반송장 연결이 없어도 이지어드민(관리번호 기준)에 이미 접수된 반송장이 있으면 처리 대상에서 뺀다.
+                            if await _has_ez_takeback(ez, seq):
+                                _progress(user, returned_inc=1); continue
                             stage = "EZADMIN_CS_HISTORY"
                             history = await ez.get_cs_history(seq)
                             cs_msgs = sorted((_message(x) for x in _messages(history)), key=lambda x: str(x.get("input_time") or ""))
@@ -361,6 +530,9 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
                             else:
                                 item["elapsed_status"] = "CS_EMPTY"
                         else:
+                            # 이지어드민에서 관리번호를 못 찾았을 때만 롯데(LOGIS)의 반송장 연결로 대신 판정한다.
+                            if has_return:
+                                _progress(user, returned_inc=1); continue
                             item["elapsed_status"] = "CS_SEQ_MISSING"
                         return_days = business_days_since(item.get("return_date"))
                         item["return_elapsed_days"] = return_days
@@ -386,6 +558,8 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
                             "messages": [], "eligible": False, "input_time": None,
                             "error": str(item_exc), "error_stage": stage,
                         })
+                    finally:
+                        _progress(user, done_inc=1)
 
             # 교환반품(에이블리 교환수거중, status=3) 병합 - 반품과 완전히 동일한
             # 조건/실행으로 처리한다: llogis에 반품송장이 아직 없으면 회수신청+문자가
@@ -482,6 +656,10 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
                         if seq:
                             break
                     if seq:
+                        stage = "EZADMIN_TAKEBACK"
+                        # 롯데(LOGIS)에 반송장 연결이 없어도 이지어드민(관리번호 기준)에 이미 접수된 반송장이 있으면 처리 대상에서 뺀다.
+                        if await _has_ez_takeback(ez, seq):
+                            return None
                         stage = "EZADMIN_CS_HISTORY"
                         history = await ez.get_cs_history(seq)
                         cs_msgs = sorted((_message(x) for x in _messages(history)), key=lambda x: str(x.get("input_time") or ""))
@@ -532,8 +710,14 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
                     }
 
             if exchange_candidates:
+                _progress(user, phase="교환 건 이지어드민 회수 확인", total_inc=len(exchange_candidates))
+                async def _tracked_exchange(c):
+                    try:
+                        return await _process_exchange_candidate(c)
+                    finally:
+                        _progress(user, done_inc=1)
                 exchange_results = await asyncio.gather(
-                    *(_process_exchange_candidate(c) for c in exchange_candidates)
+                    *(_tracked_exchange(c) for c in exchange_candidates)
                 )
                 for result in exchange_results:
                     if result is not None:
@@ -550,8 +734,14 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
             manual_invoices = [str(r["invoice_no"]) for r in manual_rows]
 
             if manual_invoices:
+                _progress(user, phase="개별추가 건 이지어드민 회수 확인", total_inc=len(manual_invoices))
+                async def _tracked_manual(inv):
+                    try:
+                        return await _process_manual_invoice(inv, logis=logis, ez=ez, now=now, end=end)
+                    finally:
+                        _progress(user, done_inc=1)
                 manual_results = await asyncio.gather(
-                    *(_process_manual_invoice(inv, logis=logis, ez=ez, now=now, end=end) for inv in manual_invoices)
+                    *(_tracked_manual(inv) for inv in manual_invoices)
                 )
                 resolved_invoices = []
                 for row, result in zip(manual_rows, manual_results):
@@ -570,11 +760,14 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
                     )
                     resolved_conn.commit(); resolved_conn.close()
 
+            _progress(user, phase="저장 중", current="")
             conn = get_shared_db(); conn.execute("INSERT INTO return_automation_runs VALUES (?,?,?,?,?,?,?,?,?)", (run_id, now.isoformat(), user, start, end, len(items), sum(x["elapsed_status"] == "PASS" for x in items), 0, 0))
             for x in items: conn.execute("INSERT INTO return_automation_items (run_id,order_no,invoice_no,return_invoice_no,return_date,logis_json,input_time,elapsed_status,last_direction,received_content) VALUES (?,?,?,?,?,?,?,?,?,?)", (run_id,x.get("order_no"),x.get("invoice_no"),x.get("return_invoice_no"),x.get("return_date"),json.dumps(x.get("logis"),ensure_ascii=False),x.get("input_time"),x.get("elapsed_status"),x.get("last_direction"),x.get("received_content")))
             conn.commit(); conn.close(); return {"ok": True, "run_id": run_id, "start_date": start, "end_date": end, "source_cancel_count": len(cancels), "source_item_count": source_item_count, "excluded_recent_count": excluded_recent_count, "error_count": error_count, "items": items, "templates": get_sms_templates()}
         except EzAdminSessionExpired as exc: raise HTTPException(status_code=401, detail=f"EZAdmin 세션이 만료되었습니다: {exc}")
         except Exception as exc: raise HTTPException(status_code=502, detail=str(exc))
+        finally:
+            _progress(user, running=False, phase="완료", current="")
 
     @router.post("/check-cs")
     async def check_cs(payload: dict = Body(...), user=Depends(get_current_user)):
@@ -659,13 +852,24 @@ def build_return_automation_router(*, get_current_user, get_shared_db, get_setti
                 # 회수신청(register_return_pickup). invoice는 이미 원송장으로 채워져
                 # 있다(_process_exchange_candidate 참고). 에이블리 반품송장 등록은
                 # 이 대시보드가 하지 않고, 교환반품 테스트 탭이 별도로 처리한다.
+                # 목록을 만든 뒤에 (직접 또는 다른 사람이) 이미 수거를 접수했을 수 있어, 보내기 직전에 이지어드민에서 다시 확인한다.
+                _mm = _get_manual_match(invoice)  # 수동 매칭이 있으면 그 관리번호/송장으로 확인한다
+                ez_found = {"pack": _mm["pack"]} if _mm else await ez.find_order_by_invoice(invoice, start_date=(datetime.now(KST) - timedelta(days=365)).strftime("%Y-%m-%d"), end_date=datetime.now(KST).strftime("%Y-%m-%d"))
+                ez_takebacks = await ez.takeback_invoices(ez_found["pack"]) if ez_found and ez_found.get("pack") else []
+                if ez_takebacks:
+                    row_result["skipped"] = True
+                    row_result["already_picked_up"] = [t["trans_no"] for t in ez_takebacks]
+                    results.append(row_result)
+                    for sib in siblings:
+                        results.append({"invoice_no": str(sib.get("invoice_no") or ""), "skipped": True})
+                    continue
                 template = primary.get("template") or {}; msg = str(template.get("msg") or "")
                 receiver = str(primary.get("phone") or "").strip()
                 if msg and receiver:
                     row_result["sms"] = await ez.send_sms(receiver, config.EZDESK_SMS_SENDER, msg)
                 elif msg:
                     row_result["sms"] = {"error": "고객 전화번호를 찾을 수 없어 문자를 보내지 못했습니다"}
-                row_result["pickup"] = await ez.register_return_pickup(invoice)
+                row_result["pickup"] = await ez.register_return_pickup((_mm or {}).get("ez_invoice") or invoice)
                 if siblings:
                     row_result["grouped_invoices"] = [str(s.get("invoice_no") or "") for s in siblings]
             except EzDeskSessionExpired as exc:

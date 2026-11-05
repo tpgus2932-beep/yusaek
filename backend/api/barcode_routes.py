@@ -37,6 +37,8 @@ _SCHEDULE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 from services import defect_tab as defect_tab_service
 from services.defect_tab import bind_defect_tab
 from services.ezadmin_stock_log import fetch_ezadmin_stock_logs
+from services import normalization_log
+from sdk.ezadmin import EzAdminClient, EzAdminSessionExpired
 from api.wonbe_routes import WONBE_DB_PATH, _get_wonbe_db as _get_wonbe_db, record_defect_process_logs
 from barcode_core import normalize_to_s5
 
@@ -67,6 +69,7 @@ def build_barcode_router(
     get_db,
     get_all_tabs_defect_summon_counts=None,
     get_all_tabs_defect_counts=None,
+    get_normalization_db=None,
 ):
     router = APIRouter(dependencies=[Depends(bind_defect_tab)])
     _DEFECT_BASE_HEADERS = ["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]
@@ -1285,6 +1288,12 @@ def build_barcode_router(
     def _save_defect_tabs_config():
         set_setting(defect_tab_service.SETTING_KEY, defect_tab_service.dump_config())
 
+    # 케이디지(원가베이스유 거래처) 상품은 불량 불러오기 때 항상 이 이름의 탭으로 간다.
+    _KDG_TAB = "KDG"
+
+    def _is_kdg_vendor(vendor) -> bool:
+        return re.sub(r"\s+", "", str(vendor or "")) == "케이디지"
+
     @router.get("/barcode/defect-tabs")
     def get_defect_tabs(user: str = Depends(get_current_user)):
         return defect_tab_service.tabs_config()
@@ -1710,6 +1719,13 @@ def build_barcode_router(
                 except Exception as exc:
                     results.append({"product_id": product_id, "qty": qty, "ok": False, "error": str(exc)})
 
+        normalization_log.record(
+            get_normalization_db, user=user, source="invoice_delete", type_="out",
+            entries=[
+                {"code": r["product_id"], "qty": r["qty"], "ref": str(payload.get("invoice_no") or "")}
+                for r in results if r["ok"]
+            ],
+        )
         return {"ok": all(r["ok"] for r in results), "results": results}
 
     @router.post("/barcode/invoice/rollback")
@@ -2348,14 +2364,36 @@ def build_barcode_router(
         kimsungil_counts = dict(get_shared_kimsungil_counts())
         incoming_counts = get_shared_incoming_counts() or {}
 
-        moved_codes = [code for code in kimsungil_counts if int(incoming_counts.get(code, 0) or 0) > 0]
+        # 보통은 입고된(배지가 뜬) 상품만 옮기지만, KDG 탭은 입고 파일이 없어도 목록 전체를 옮긴다.
+        if defect_tab_service.current_tab() == _KDG_TAB:
+            moved_codes = list(kimsungil_counts)
+        else:
+            moved_codes = [code for code in kimsungil_counts if int(incoming_counts.get(code, 0) or 0) > 0]
         defect_counts = dict(get_shared_defect_counts())
         summon_counts = dict(get_shared_defect_summon_counts())
+        # 케이디지(KDG) 상품은 어느 탭에서 불러오든 KDG 탭의 불량 목록으로 보낸다.
+        base_lookup = _build_defect_base_lookup()
+        kdg_codes = {c for c in moved_codes if _is_kdg_vendor((base_lookup.get(c) or {}).get("c"))}
+        if defect_tab_service.current_tab() == _KDG_TAB:
+            kdg_codes = set(moved_codes)  # KDG 탭에서 불러오면 전부 그대로 KDG 탭에 남는다.
+        kdg_defect: dict[str, int] = {}
+        kdg_summon: dict[str, int] = {}
+        if kdg_codes and _KDG_TAB not in defect_tab_service.DEFECT_TABS:
+            defect_tab_service.add_tab(_KDG_TAB)
+            _save_defect_tabs_config()
+        if kdg_codes:
+            with defect_tab_service.use_tab(_KDG_TAB):
+                kdg_defect = dict(get_shared_defect_counts())
+                kdg_summon = dict(get_shared_defect_summon_counts())
         moved_total = 0
         for code in moved_codes:
             qty = kimsungil_counts.pop(code, 0)
-            defect_counts[code] = defect_counts.get(code, 0) + qty
-            summon_counts[code] = summon_counts.get(code, 0) + qty
+            if code in kdg_codes:
+                kdg_defect[code] = kdg_defect.get(code, 0) + qty
+                kdg_summon[code] = kdg_summon.get(code, 0) + qty
+            else:
+                defect_counts[code] = defect_counts.get(code, 0) + qty
+                summon_counts[code] = summon_counts.get(code, 0) + qty
             moved_total += qty
             _log_kimsungil_event(
                 code=code,
@@ -2369,12 +2407,18 @@ def build_barcode_router(
         set_shared_kimsungil_counts(kimsungil_counts)
         set_shared_defect_counts(defect_counts)
         set_shared_defect_summon_counts(summon_counts)
+        if kdg_codes:
+            with defect_tab_service.use_tab(_KDG_TAB):
+                set_shared_defect_counts(kdg_defect)
+                set_shared_defect_summon_counts(kdg_summon)
 
         return {
             "ok": True,
             "moved_codes": moved_codes,
             "moved_count": len(moved_codes),
             "moved_total": moved_total,
+            "kdg_moved_count": len(kdg_codes),
+            "tabs": defect_tab_service.tabs_config(),
             "defects": _get_defect_list(state),
             "kimsungil": _get_kimsungil_list(state),
         }
@@ -2606,6 +2650,7 @@ def build_barcode_router(
         f"{cat}{letter}" for cat, letters in _BAD_STOCK_CATEGORY_LETTERS.items() for letter in letters
     )
     _bad_stock_migrated = [False]
+    _BAD_STOCK_LAST_DEDUCT_KEY = "bad_stock_last_deduct"
 
     def _migrate_bad_stock_zones(conn):
         """기존 단일 문자 구역(A/B/C/D/E)을 상의/하의 구역으로 옮긴다. C는 하의C, 나머지는 상의로 보낸다.
@@ -2678,7 +2723,18 @@ def build_barcode_router(
             code = str(item.get("code") or "")
             item["base_cost"] = base_lookup.get(normalize_code(code) or code, {}).get("cost", 0)
             items.append(item)
-        return {"ok": True, "items": items, "custom_zones": [z["name"] for z in zones]}
+        return {
+            "ok": True, "items": items, "custom_zones": [z["name"] for z in zones],
+            "last_deduct": _load_last_deduct(),
+        }
+
+    def _load_last_deduct():
+        """'출고상품삭제'(deduct-shipped)를 마지막으로 실제 실행한 기록. 없으면 None."""
+        try:
+            data = json.loads(get_setting(_BAD_STOCK_LAST_DEDUCT_KEY) or "null")
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
 
     def _resolve_bad_stock_zone(conn, raw_zone) -> str:
         """기본 구역(상의A 등) 또는 직접 추가한 탭 이름이면 정규화한 구역명을, 아니면 400을 낸다."""
@@ -2929,6 +2985,37 @@ def build_barcode_router(
         category = zone[:-1]
         return (letter, _BAD_STOCK_CATEGORIES.index(category) if category in _BAD_STOCK_CATEGORIES else 9)
 
+    @router.post("/barcode/bad-stock/returns-stockin")
+    def bad_stock_returns_stockin(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """반품 입고처리된 상품코드 중 악성재고에 이미 있는 상품은 그 탭의 수량을 1 올리고, 라벨용 접두어(ZA 등)를 돌려준다.
+
+        같은 상품이 여러 탭에 있으면 구역 우선순위(_zone_rank)가 가장 앞선 탭에 더한다.
+        악성재고에 없는 코드는 결과에 넣지 않는다. 같은 코드가 여러 번 오면 번 수만큼 더한다."""
+        raw_codes = [str(c or "").strip() for c in (payload.get("codes") or []) if str(c or "").strip()]
+        result: dict[str, dict] = {}
+        if not raw_codes:
+            return {"ok": True, "items": result}
+        conn = _bad_stock_conn()
+        try:
+            for raw in raw_codes:
+                code = normalize_code(raw) or raw
+                rows = conn.execute("SELECT id, zone FROM barcode_bad_stock WHERE code = ?", (code,)).fetchall()
+                if not rows:
+                    continue
+                target = min(rows, key=lambda r: _zone_rank(r["zone"]))
+                conn.execute("UPDATE barcode_bad_stock SET qty = COALESCE(qty, 1) + 1 WHERE id = ?", (target["id"],))
+                letter = _zone_letter(target["zone"])
+                prev = result.get(raw)
+                result[raw] = {
+                    "zone": target["zone"],
+                    "prefix": f"Z{letter}" if letter else target["zone"],
+                    "added": (prev["added"] if prev else 0) + 1,
+                }
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "items": result}
+
     async def _restore_renamed_products(records: list, dry_run: bool) -> list:
         """악성재고에서 모두 빠진 상품의 이지어드민 상품명을 원래 이름으로 되돌린다. 성공하면 기록을 지운다."""
         results = []
@@ -3012,6 +3099,14 @@ def build_barcode_router(
         finally:
             conn.close()
         items = sorted(changes.values(), key=lambda c: c["code"])
+        if not dry_run:
+            # 같은 주문으로 또 누르면 이중 차감되므로, 실행했다는 기록을 남겨 화면에 보여준다.
+            set_setting(_BAD_STOCK_LAST_DEDUCT_KEY, json.dumps({
+                "at": datetime.now(_KST).isoformat(timespec="seconds"),
+                "user": user,
+                "kinds": len(items),
+                "total": sum(c["deducted"] for c in items),
+            }, ensure_ascii=False))
 
         # 차감 결과 악성재고에 하나도 안 남은 상품은 상품명을 원복한다(원복 실패가 차감을 막지는 않는다).
         to_restore = [
@@ -3032,11 +3127,14 @@ def build_barcode_router(
         """악성재고 상품의 이지어드민 상품명 앞에 구역 접두어를 붙인다. A구역(상의A/하의A)은 'ZA ', B구역은 'ZB '.
         같은 상품이 서로 다른 알파벳 구역에 걸쳐 있으면 건드리지 않고 충돌로 알린다.
         변경한 상품은 기록해 두었다가 다음 실행에서는 새로 추가된 상품만 이지어드민에서 확인/변경한다.
-        dry_run=true면 이지어드민에서 현재 상품명만 읽어 변경 예정 목록을 돌려준다(이미 변경된 상품은 기록만 보정)."""
+        dry_run=true면 이지어드민에서 현재 상품명만 읽어 변경 예정 목록을 돌려준다(이미 변경된 상품은 기록만 보정).
+        recheck_all=true(전체 재조회)면 기록을 믿지 않고 모든 상품의 현재 상품명을 이지어드민에서 다시 읽어 비교한다
+        (기록 이후 이름이 바뀐 상품도 잡아낸다. 시간이 더 걸린다)."""
         phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
         if not phpsessid:
             return {"ok": False, "need_session": True}
         dry_run = bool(payload.get("dry_run"))
+        recheck_all = bool(payload.get("recheck_all"))
 
         conn = _bad_stock_conn()
         try:
@@ -3077,7 +3175,7 @@ def build_barcode_router(
             rec_letters = set().union(*(
                 letters_by_code.get(c, set()) for c in filter(None, (rec["codes"] or "").split(","))
             )) if rec else set()
-            if rec and rec_letters and min(rec_letters) == rec["letter"] and _record_is_clean(rec):
+            if not recheck_all and rec and rec_letters and min(rec_letters) == rec["letter"] and _record_is_clean(rec):
                 if rec["product_id"] not in known_products:
                     known_products.add(rec["product_id"])
                     items.append({"code": rec["codes"], "product_id": rec["product_id"], "old_name": rec["original_name"],
@@ -3339,6 +3437,10 @@ def build_barcode_router(
                 except Exception as exc:
                     results.append({"code": t["code"], "qty": qty, "ok": False, "error": str(exc)})
 
+        normalization_log.record(
+            get_normalization_db, user=user, source="bad_stock", type_="in",
+            entries=[{"code": r["code"], "qty": r["qty"]} for r in results if r["ok"]],
+        )
         after = await _compare_bad_stock_with_ezadmin()
         return {
             "ok": all(r["ok"] for r in results),
@@ -3983,6 +4085,48 @@ def build_barcode_router(
         if logs is None:
             return {"ok": False, "need_session": True}
         return {"ok": True, "product_code": product_id, "start_date": start_date, "end_date": end_date, "count": len(logs), "logs": logs}
+
+    @router.post("/barcode/stock-adjust")
+    async def barcode_stock_adjust(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        """로그 확인 화면에서 상품 1건을 EZAdmin I200 일괄 입고/출고로 처리한다 (type: in/out)."""
+        product_id = str(payload.get("product_code") or "").strip()
+        type_ = str(payload.get("type") or "").strip()
+        if not product_id:
+            raise HTTPException(status_code=400, detail="상품코드를 입력하세요.")
+        if type_ not in ("in", "out"):
+            raise HTTPException(status_code=400, detail="type은 in(입고) 또는 out(출고)이어야 합니다.")
+        try:
+            qty = int(float(payload.get("qty") or 0))
+        except (TypeError, ValueError):
+            qty = 0
+        if qty < 1 or qty > 9999:
+            raise HTTPException(status_code=400, detail="수량은 1~9999 사이여야 합니다.")
+        if not (get_setting(_EZADMIN_SESSION_KEY) or "").strip():
+            return {"ok": False, "need_session": True}
+        # 원가베이스유에 없는 코드를 EZAdmin에 올리지 않도록 등록 여부를 먼저 확인하고, 등록된 원본 표기를 쓴다.
+        from api.wonbe_routes import load_wonbe_product_codes
+        registered = load_wonbe_product_codes().get(product_id.upper())
+        if not registered:
+            raise HTTPException(status_code=400, detail=f"상품코드({product_id})를 원가베이스유에서 찾을 수 없습니다.")
+        memo = (str(payload.get("memo") or "").strip() or f"로그확인 {'입고' if type_ == 'in' else '출고'}({user})")[:100]
+        ez = EzAdminClient(get_setting)
+        items = [{"product_id": registered, "qty": qty, "memo": memo}]
+        try:
+            res = await (ez.bulk_receive_stock(items) if type_ == "in" else ez.bulk_ship_stock(items))
+        except EzAdminSessionExpired:
+            return {"ok": False, "need_session": True}
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"EZAdmin 요청 실패: {exc}")
+        if str(res.get("error")) not in ("0", ""):
+            raise HTTPException(status_code=400, detail=res.get("msg") or "EZAdmin 처리 실패")
+        normalization_log.record(
+            get_normalization_db, user=user, source="log_check", type_=type_,
+            entries=[{"code": registered, "qty": qty}],
+        )
+        return {"ok": True, "product_code": registered, "type": type_, "qty": qty}
 
     @router.post("/barcode/incoming/upload-from-ezadmin")
     async def incoming_upload_from_ezadmin(

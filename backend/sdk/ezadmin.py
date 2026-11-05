@@ -248,6 +248,57 @@ class EzAdminClient:
             return {"pack": str(pack), "phone": str(phone) if phone else None, "order_id": str(order_id) if order_id else None}
         return None
 
+    async def takeback_invoices(self, seq: str | int, *, days: int = 365) -> list[dict]:
+        """관리번호(seq)로 이지어드민 반품택배 접수내역(EX00)을 조회해 등록된 반송장 목록을 돌려준다.
+
+        롯데(LOGIS)는 원송장 조회 시 연결된 반송장(rltnInvList)을 못 내려주는 경우가 있어,
+        송장번호 → 관리번호(find_order_by_invoice의 pack) → 이 함수 순서로 반송장 유무를 확인한다.
+        EX00 검색은 송장일(trans_date_pos)이 기간에 들어와야 잡히므로 넉넉히 days일을 조회한다.
+        삭제된 접수(is_delete)와 등록 실패 건은 제외한다. 읽기 전용 조회(readonly=T)다.
+        반환: [{"trans_no": 반송장, "org_trans_no": 원송장, "reg_date": 접수시각}]
+        """
+        from datetime import timedelta
+        from urllib.parse import urlencode
+
+        seq_text = str(seq).strip()
+        if not seq_text:
+            return []
+        today = datetime.now()
+        form = {
+            "pack": "", "takeback_status": "", "date_type": "trans_date_pos",
+            "start_date": (today - timedelta(days=days)).strftime("%Y-%m-%d"),
+            "end_date": today.strftime("%Y-%m-%d"),
+            "date_period_sel": "", "search_type": "", "keyword": "", "keyword1": "", "keyword2": "",
+            "keyword3": seq_text,
+        }
+        data = await self.post(
+            "EX00", "grid",
+            data={"readonly": "T", "_search": "false", "rows": "50", "page": "1", "sidx": "", "sord": "asc"},
+            par=urlencode(form),
+        )
+        found: list[dict] = []
+        for row in data.get("rows") or []:
+            cell = row.get("cell") or {}
+            if str(cell.get("seq") or "").strip() != seq_text:
+                continue
+            raw = cell.get("subgrid_data")
+            try:
+                subs = json.loads(raw) if isinstance(raw, str) and raw else (raw or [])
+            except (TypeError, ValueError):
+                subs = []
+            for sub in subs if isinstance(subs, list) else []:
+                trans_no = str(sub.get("trans_no") or "").strip()
+                if not trans_no or str(sub.get("is_delete") or "0").strip() not in ("0", ""):
+                    continue
+                if sub.get("reg_error") or sub.get("ret_sqlerror"):
+                    continue
+                found.append({
+                    "trans_no": trans_no,
+                    "org_trans_no": str(sub.get("org_trans_no") or "").strip(),
+                    "reg_date": str(sub.get("reg_date") or ""),
+                })
+        return found
+
     async def packlist(self, pack: str) -> dict:
         return await self.post("E900", "packlist_json", data={"_search": "false", "rows": "500", "page": "1", "sidx": "", "sord": "", "readonly": "T", "pack": pack, "stock": "0", "is_masking": "0"}, time_flag="epoch_ms")
 

@@ -86,6 +86,18 @@ def _remove_return_queue_ids(state, remove_ids: set) -> None:
         state.scanned_barcodes -= (removed_scans - remaining_scans)
 
 
+def _collect_queue_items(state, ids: set) -> list[dict]:
+    """삭제 전에 ids에 해당하는 항목을 (중복 없이) 모아 삭제 기록용으로 쓴다."""
+    seen, out = set(), []
+    for attr in ("queue_seller", "queue_customer", "queue_unmatched", "queue_exchange_seller",
+                 "queue_exchange_customer", "queue_exchange", "all_items"):
+        for it in getattr(state, attr):
+            if it.get("id") in ids and it.get("id") not in seen:
+                seen.add(it.get("id"))
+                out.append(it)
+    return out
+
+
 def _wonbe_product_info(codes: list[str]) -> dict[str, dict]:
     """상품코드 목록으로 원가베이스유(wonbe)에서 상품명/색상/사이즈를 한 번에 조회."""
     if not codes:
@@ -590,15 +602,24 @@ def build_returns_router(
     @router.get("/returns/saves")
     def returns_saves(tab_id: int = 0, user: str = Depends(get_current_user)):
         conn = get_db()
-        rows = conn.execute(
-            "SELECT id, username, name, updated_at FROM return_saved_snapshots WHERE tab_id = ? ORDER BY id DESC LIMIT 60",
-            (tab_id,),
-        ).fetchall()
+        try:
+            rows = conn.execute(
+                "SELECT id, username, name, updated_at, json_extract(payload, '$.real_ingo_done_at') AS real_ingo_done_at "
+                "FROM return_saved_snapshots WHERE tab_id = ? ORDER BY id DESC LIMIT 60",
+                (tab_id,),
+            ).fetchall()
+        except Exception:
+            rows = conn.execute(
+                "SELECT id, username, name, updated_at, '' AS real_ingo_done_at FROM return_saved_snapshots "
+                "WHERE tab_id = ? ORDER BY id DESC LIMIT 60",
+                (tab_id,),
+            ).fetchall()
         conn.close()
         return {
             "ok": True,
             "items": [
-                {"id": r["id"], "username": r["username"], "name": r["name"] or "", "updated_at": r["updated_at"]}
+                {"id": r["id"], "username": r["username"], "name": r["name"] or "", "updated_at": r["updated_at"],
+                 "real_ingo_done_at": r["real_ingo_done_at"] or ""}
                 for r in rows
             ],
         }
@@ -693,6 +714,7 @@ def build_returns_router(
         state = get_return_state(user)
         stored_payload = json.loads(row["payload"])
         load_return_state_from_payload(state, stored_payload)
+        state.loaded_snapshot_id = int(snapshot_id) if snapshot_id is not None else None
         return {
             "ok": True,
             "saved_at": row["updated_at"],
@@ -1739,8 +1761,50 @@ def build_returns_router(
         load_return_cost_base(state)
         return {"ok": True, "appended": len(new_rows)}
 
+    try:
+        from services import return_scan_stats as scan_stats
+    except ModuleNotFoundError:  # package import in unit tests
+        from backend.services import return_scan_stats as scan_stats
+
+    try:
+        scan_stats.init_tables(get_db)
+    except Exception as exc:  # 통계 테이블 문제로 반품 라우터가 죽지 않게 한다
+        print(f"[return_scan_stats] init failed: {exc}")
+
+    @router.post("/returns/stats/start")
+    def returns_stats_start(user: str = Depends(get_current_user)):
+        """'전체 API 불러오기'를 누르면 호출 — 스캔 세션 시작 시각을 기록한다."""
+        try:
+            scan_stats.record_start(get_db, user)
+        except Exception as exc:
+            print(f"[return_scan_stats] start failed: {exc}")
+        return {"ok": True}
+
+    @router.get("/returns/stats")
+    def returns_stats(days: int = 7, user: str = Depends(get_current_user)):
+        if user != "ksh2932":
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+        return scan_stats.get_stats(get_db, max(1, min(days, 90)))
+
+    def _log_deleted(user: str, source: str, items: list[dict]) -> None:
+        try:
+            scan_stats.record_deletes(get_db, user, source, items)
+        except Exception as exc:
+            print(f"[return_scan_stats] delete log failed: {exc}")
+
     @router.post("/returns/scan")
     def returns_scan(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        result = _returns_scan_impl(payload, user)
+        if isinstance(result, dict) and result.get("ok") and not result.get("duplicate"):
+            try:
+                scan_stats.record_scan(
+                    get_db, user, clean_invoice((payload.get("barcode") or "").strip()), result.get("last_type") or ""
+                )
+            except Exception as exc:
+                print(f"[return_scan_stats] scan log failed: {exc}")
+        return result
+
+    def _returns_scan_impl(payload: dict, user: str):
         barcode_raw = (payload.get("barcode") or "").strip()
         barcode = clean_invoice(barcode_raw)
         if not barcode:
@@ -2071,6 +2135,7 @@ def build_returns_router(
             raise HTTPException(status_code=400, detail="삭제할 최근 스캔 기록이 없습니다.")
 
         remove_ids = set(state.last_added_ids)
+        _log_deleted(user, "undo", _collect_queue_items(state, remove_ids))
         _remove_return_queue_ids(state, remove_ids)
         state.last_added_ids = []
         state.last_type = "-"
@@ -2089,6 +2154,8 @@ def build_returns_router(
         state.last_added_ids.clear()
         state.scanned_barcodes.clear()
         state.customer_export_df = pd.DataFrame()
+        state.real_ingo_done_at = ""
+        state.loaded_snapshot_id = None
         state.last_type = "-"
         return {"ok": True}
 
@@ -2097,6 +2164,7 @@ def build_returns_router(
         """원베양식(고객대기) 데이터만 초기화한다 - 판매자/고객/미매칭 대기 큐는 건드리지 않는다."""
         state = get_return_state(user)
         state.customer_export_df = pd.DataFrame()
+        state.real_ingo_done_at = ""
         return {"ok": True, "onebe": {"rows": return_rows(state.customer_export_df)}}
 
     @router.post("/returns/delete-items")
@@ -2106,6 +2174,7 @@ def build_returns_router(
         remove_ids = {int(i) for i in raw_ids}
         if not remove_ids:
             raise HTTPException(status_code=400, detail="삭제할 항목이 없습니다.")
+        _log_deleted(user, "delete", _collect_queue_items(state, remove_ids))
         _remove_return_queue_ids(state, remove_ids)
         return {"ok": True, "queues": return_queue_payload(state)}
 
@@ -2485,6 +2554,7 @@ def build_returns_router(
             )
 
         state.customer_export_df = pd.DataFrame(rows)
+        state.real_ingo_done_at = ""
         return {"ok": True, "onebe": {"rows": return_rows(state.customer_export_df)}}
 
     @router.post("/returns/onebe/consolidate")
@@ -2546,6 +2616,7 @@ def build_returns_router(
 
         new_df = pd.concat([agg, df_empty], ignore_index=True)
         state.customer_export_df = new_df
+        state.real_ingo_done_at = ""
         return {"ok": True, "onebe": {"rows": return_rows(state.customer_export_df)}}
 
     @router.post("/returns/onebe/edit")
@@ -2781,7 +2852,30 @@ def build_returns_router(
         if str(apply_data.get("error")) not in ("0", ""):
             return {"ok": False, "error": apply_data.get("msg") or "입고처리 실패", "apply_response": apply_data}
 
-        return {"ok": True, "count": len(items), "apply_response": apply_data}
+        done_at = datetime.now(timezone.utc).isoformat()
+        state.real_ingo_done_at = done_at
+        # 불러와서 작업한 저장본에도 실입고 완료를 표시한다 (목록에서 바로 보이도록).
+        if state.loaded_snapshot_id is not None:
+            try:
+                conn = get_db()
+                try:
+                    row = conn.execute(
+                        "SELECT payload FROM return_saved_snapshots WHERE id = ?", (state.loaded_snapshot_id,)
+                    ).fetchone()
+                    if row:
+                        stored = json.loads(row["payload"])
+                        stored["real_ingo_done_at"] = done_at
+                        conn.execute(
+                            "UPDATE return_saved_snapshots SET payload = ? WHERE id = ?",
+                            (json.dumps(stored, ensure_ascii=False), state.loaded_snapshot_id),
+                        )
+                        conn.commit()
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+
+        return {"ok": True, "count": len(items), "apply_response": apply_data, "real_ingo_done_at": done_at}
 
     @router.post("/returns/onebe/barcode-print")
     async def returns_onebe_barcode_print(payload: dict = Body(...), user=Depends(get_current_user)):
@@ -3138,6 +3232,27 @@ def build_returns_router(
         ok_count = sum(1 for r in results if r["ok"])
         return {"ok": True, "total": len(results), "success": ok_count, "results": results}
 
+    @router.post("/returns/ably-hold")
+    def returns_ably_hold(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        """선택한 판매자/고객 대기 건을 '대기상태'로 표시하거나 해제한다.
+        같은 주문의 나머지 상품이 올 때까지 환불 요청을 미뤄두기 위한 표시이며,
+        큐에서 항목을 옮기거나 지우지 않는다."""
+        ids = {i for i in (payload.get("ids") or []) if i is not None}
+        if not ids:
+            raise HTTPException(status_code=400, detail="선택된 항목이 없습니다.")
+        hold = bool(payload.get("hold", True))
+        state = get_return_state(user)
+        for it in list(state.queue_seller) + list(state.queue_customer):
+            if it.get("id") in ids:
+                if hold:
+                    it["ably_hold"] = True
+                else:
+                    it.pop("ably_hold", None)
+        return {"queues": return_queue_payload(state)}
+
     @router.post("/returns/ably-refund-submit")
     async def returns_ably_refund_submit(
         payload: dict = Body(...),
@@ -3199,6 +3314,7 @@ def build_returns_router(
                     if state_item is not None:
                         state_item["ably_refund_done"] = True
                         state_item.pop("ably_refund_error", None)
+                        state_item.pop("ably_hold", None)
                 except Exception as e:
                     result["error"] = str(e)
                     if state_item is not None:

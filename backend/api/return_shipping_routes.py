@@ -16,6 +16,7 @@ from openpyxl import load_workbook
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile
 
 from services.checklist_progress import clear_progress, set_progress
+from services.seller_return_store import is_seller_return_item, record_safely, return_row
 
 ABLY_BASE = "https://api.a-bly.com"
 LLOGIS_LOGIN_URL = "https://partner.alps.llogis.com/auth/login"
@@ -48,7 +49,7 @@ _CANCEL_REASON = {
 _SELLER_FAULT_CANCEL_REASONS = {32, 1}
 
 
-def build_return_shipping_router(*, get_current_user, get_db, get_setting, enqueue_sms=None, get_shared_db=None, set_setting=None):
+def build_return_shipping_router(*, get_current_user, get_db, get_setting, enqueue_sms=None, get_shared_db=None, set_setting=None, get_stats_db=None):
     router = APIRouter(prefix="/return-shipping")
 
     def _browser_time_flag(now: datetime) -> str:
@@ -850,6 +851,7 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                     break
                 for cancel in cancels:
                     for item in cancel.get("order_items", []):
+                        # 자동처리(new-return-pickup)에서 제외되는 기준과 동일해야 한다.
                         if item.get("cancel_reason") not in _SELLER_FAULT_CANCEL_REASONS:
                             continue
                         images = item.get("cancel_images") or cancel.get("cancel_images") or []
@@ -864,12 +866,15 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                         reason_code = item.get("cancel_reason")
                         items_out.append({
                             "invoice": str(item.get("invoice") or "").strip(),
+                            "order_sno": str(item.get("order_sno") or "").strip(),
                             "sno": item.get("sno"),
                             "goods_name": str(item.get("goods_name") or "").strip(),
                             "reason_code": reason_code,
-                            "reason": _CANCEL_REASON.get(reason_code, str(reason_code or "")),
+                            "reason": _CANCEL_REASON.get(reason_code, f"기타({reason_code})" if reason_code is not None else ""),
                             "user_comment": str(item.get("user_comment") or "").strip(),
                             "images": images,
+                            # 썸네일용 경량 webp (원본 jpg는 확대할 때만 로드)
+                            "images_webp": item.get("cancel_images_webp") or cancel.get("cancel_images_webp") or [],
                             "buyer_tel": "".join(ch for ch in str(tel_raw) if ch.isdigit()),
                             "buyer_name": str(name_raw).strip(),
                         })
@@ -1062,6 +1067,24 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
             if set_setting:
                 set_setting(running_key, None)
 
+    def _apply_manual_matches(inv_to_sno: dict[str, int]) -> dict[str, int]:
+        """반품 자동화 대시보드에서 사람이 수동 매칭해 둔 건은 에이블리 송장이 이지어드민에 없어서
+        회수접수(DS05 송장 업로드)가 매칭되지 않는다. 매칭해 둔 이지어드민 송장번호로 바꿔 올린다."""
+        if not get_stats_db:
+            return inv_to_sno
+        try:
+            conn = get_stats_db()
+            try:
+                rows = conn.execute("SELECT ably_invoice, ez_invoice FROM return_automation_manual_matches").fetchall()
+            finally:
+                conn.close()
+        except Exception:
+            return inv_to_sno
+        mapping = {str(r[0]): str(r[1]) for r in rows if r[1]}
+        if not mapping:
+            return inv_to_sno
+        return {mapping.get(inv, inv): sno for inv, sno in inv_to_sno.items()}
+
     async def _run_new_return_pickup(phpsessid: str):
         end_date = datetime.now(_KST).strftime("%Y-%m-%d")
         start_date = (datetime.now(_KST) - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -1076,6 +1099,7 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
         inv_to_sno: dict[str, int] = {}
         sms_recipients: list[dict] = []  # [{tel, name, goods_name}]
         seller_fault_count = 0
+        seller_rows: list[dict] = []
         page = 1
         async with httpx.AsyncClient(timeout=30.0) as client:
             while True:
@@ -1102,6 +1126,11 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                 set_progress(_NEW_RETURN_KEY, "에이블리 신규반품 조회 중", page, data.get("max_page_number", 1))
                 for cancel in cancels:
                     items = cancel.get("order_items", [])
+                    # 판매자 건 통계용 저장 (사이드메뉴 반품과 같은 판별: 반품 배송비가 음수가 아님)
+                    seller_rows.extend(
+                        return_row(it, cancel.get("sno"), "auto-return")
+                        for it in items if is_seller_return_item(it)
+                    )
                     # 판매자 사유(상품 하자/오배송, 셀러 변경) 건은 회수신청/문자 대상에서 제외
                     eligible_items = [
                         item for item in items
@@ -1134,10 +1163,14 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                     break
                 page += 1
 
+        # 처리할 송장이 없어 중간에 return 하더라도 조회된 판매자 건은 남긴다.
+        record_safely(get_stats_db or get_shared_db or get_db, seller_rows)
+
         if not inv_to_sno:
             note = " (전체가 판매자 부담 사유로 제외됨)" if seller_fault_count else ""
             return {"ok": False, "error": f"처리할 송장번호가 없습니다 (sub_status=41 건 없음){note}"}
 
+        inv_to_sno = _apply_manual_matches(inv_to_sno)
         set_progress(_NEW_RETURN_KEY, f"이지어드민 회수신청 등록 중 (송장 {len(inv_to_sno)}건)")
         result = await _register_return_invoices(phpsessid, inv_to_sno, ably_headers)
         if not result.get("ok"):

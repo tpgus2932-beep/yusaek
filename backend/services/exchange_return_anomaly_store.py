@@ -45,6 +45,12 @@ def init_exchange_return_anomaly_tables(get_db) -> None:
     # 각각 재배송시작일/재배송송장번호 의미로 재사용한다 (프론트에서 kind로 라벨 분기).
     _ensure_column(get_db, "exchange_return_anomalies", "kind",
                    "ALTER TABLE exchange_return_anomalies ADD COLUMN kind TEXT NOT NULL DEFAULT 'return'")
+    # 판매자 귀책(상품 하자/오배송) 건 표시용 - 다음 이상현상 점검 때 기존 행도 갱신된다.
+    _ensure_column(get_db, "exchange_return_anomalies", "is_seller",
+                   "ALTER TABLE exchange_return_anomalies ADD COLUMN is_seller INTEGER NOT NULL DEFAULT 0")
+    # 고객이 교환받길 원하는 옵션 - 다음 이상현상 점검 때 기존 행도 갱신된다.
+    _ensure_column(get_db, "exchange_return_anomalies", "exchange_option",
+                   "ALTER TABLE exchange_return_anomalies ADD COLUMN exchange_option TEXT NOT NULL DEFAULT ''")
 
 
 def sync_anomalies(conn, computed: dict[str, dict]) -> None:
@@ -61,6 +67,12 @@ def sync_anomalies(conn, computed: dict[str, dict]) -> None:
         anomaly_id = existing_by_sno[sno]
         conn.execute("DELETE FROM exchange_return_anomalies WHERE id = ?", (anomaly_id,))
 
+    for sno in set(computed) & set(existing_by_sno):
+        conn.execute(
+            "UPDATE exchange_return_anomalies SET is_seller = ?, exchange_option = ? WHERE id = ?",
+            (1 if computed[sno].get("is_seller") else 0, computed[sno].get("exchange_option", ""), existing_by_sno[sno]),
+        )
+
     new_snos = set(computed) - set(existing_by_sno)
     detected_at = datetime.now(_KST).isoformat()
     for sno in new_snos:
@@ -69,8 +81,8 @@ def sync_anomalies(conn, computed: dict[str, dict]) -> None:
             """
             INSERT INTO exchange_return_anomalies
                 (exchange_sno, order_no, product_name, option_info, phone,
-                 received_at, return_invoice_no, status, location, scan_date, reason, detected_at, kind)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 received_at, return_invoice_no, status, location, scan_date, reason, detected_at, kind, is_seller, exchange_option)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 sno,
@@ -86,6 +98,8 @@ def sync_anomalies(conn, computed: dict[str, dict]) -> None:
                 data.get("reason", ""),
                 detected_at,
                 data.get("kind", "return"),
+                1 if data.get("is_seller") else 0,
+                data.get("exchange_option", ""),
             ),
         )
 

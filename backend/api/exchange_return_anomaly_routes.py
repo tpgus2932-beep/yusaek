@@ -20,6 +20,7 @@ from services.delivery_anomaly_logic import (
 )
 from services.exchange_return_anomaly_store import sync_anomalies
 from services.ezadmin_stock_log import fetch_ezadmin_stock_logs
+from services.seller_return_store import is_seller_exchange
 
 try:
     from sdk.ably import AblyClient
@@ -58,6 +59,12 @@ def _invoice_in_reason(invoice: str, reason: str) -> bool:
     return len(digits) >= 8 and digits in re.sub(r"[\s-]", "", reason)
 
 
+def _exchange_option(exchange_item: dict) -> str:
+    """고객이 교환받길 원하는 옵션 (exchange_goods_option.option_values, 예: '진청 / M')."""
+    values = ((exchange_item or {}).get("exchange_goods_option") or {}).get("option_values") or []
+    return " / ".join(str(v) for v in values)
+
+
 def build_exchange_return_anomaly_router(*, get_current_user, get_db, get_setting, set_setting, run_ship_pending=None):
     router = APIRouter(prefix="/exchange-return-anomaly")
 
@@ -86,6 +93,8 @@ def build_exchange_return_anomaly_router(*, get_current_user, get_db, get_settin
                     "reason": r["reason"],
                     "detectedAt": r["detected_at"],
                     "kind": r["kind"],
+                    "isSeller": bool(r["is_seller"]),
+                    "exchangeOption": r["exchange_option"],
                 }
                 for r in rows
             ]
@@ -150,6 +159,8 @@ def build_exchange_return_anomaly_router(*, get_current_user, get_db, get_settin
                 "scan_date": scan_date,
                 "reason": reason,
                 "kind": "return",
+                "is_seller": is_seller_exchange(ex),
+                "exchange_option": _exchange_option(first),
             }
 
         # 재배송(출고완료, status=5) 건도 같은 검사에 합친다: 재배송 시작일(shipped_at)로부터
@@ -201,6 +212,8 @@ def build_exchange_return_anomaly_router(*, get_current_user, get_db, get_settin
                 "scan_date": scan_date,
                 "reason": reason,
                 "kind": "redelivery",
+                "is_seller": is_seller_exchange(ex),
+                "exchange_option": _exchange_option(first),
             }
 
         conn = get_db()

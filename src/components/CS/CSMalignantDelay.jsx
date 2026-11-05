@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import styles from './CSMalignantDelay.module.css';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
+import { saveMalignantSnapshot } from '../../lib/csFollow';
 
 const STOCK_CONCURRENCY = 3;
 
@@ -74,6 +75,7 @@ export default function CSMalignantDelay() {
             const data = await call('/malignant-delay/list');
             const list = data.items || [];
             setItems(list);
+            saveMalignantSnapshot(list, data.fetched_at || ''); // SO+ 가 같은 정보를 따라 읽는다
             setFetchedAt(data.fetched_at || '');
             loadImages([...new Set(list.map((i) => i.goods_sno))]);
         } catch (e) {

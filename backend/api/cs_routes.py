@@ -32,6 +32,8 @@ from services.ezadmin_waiting_orders import DEFAULT_SELLER, parse_waiting_orders
 ABLY_BASE = "https://api.a-bly.com"
 _TOKEN_TTL_SEC = 50 * 60
 _KST = timezone(timedelta(hours=9))
+_STATS_USER = "ksh2932"
+_CS_IDLE_SECONDS = 5 * 60  # 마지막 완료 후 이 시간 안에 다음 완료가 없으면 CS 중이 아닌 것으로 본다
 _INITIAL_SYNC_DAYS = 30
 _MAX_PAGES = 100
 _OPEN_ROOMS_LOOKBACK_DAYS = 365
@@ -225,6 +227,7 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
             ]
             fetched = 0
             last_sno = None
+            track_arrivals = bool(watermark)  # 최초 동기화(과거 문의 대량 유입)는 신규로 세지 않는다
             for _ in range(_MAX_PAGES):
                 params = list(params_base)
                 if last_sno:
@@ -232,6 +235,13 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
                 data = await _ably_get(http, "/seller/contact_rooms/", params)
                 rooms = data.get("contact_rooms") or []
                 for r in rooms:
+                    if track_arrivals and not conn.execute(
+                        "SELECT 1 FROM cs_rooms WHERE sno = ?", (r["sno"],)
+                    ).fetchone():
+                        conn.execute(
+                            "INSERT OR IGNORE INTO cs_room_arrivals (sno, arrived_at) VALUES (?, ?)",
+                            (r["sno"], now.isoformat()),
+                        )
                     _upsert_room(conn, r)
                 fetched += len(rooms)
                 last_sno = data.get("last_sno")
@@ -427,13 +437,289 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
         if not content:
             raise HTTPException(status_code=400, detail="답변 내용을 입력하세요.")
         await _ably_post(http, f"/seller/contact_rooms/{room_sno}/send/", files={"content": (None, content)})
+        _record_stat(room_sno, current_user, "send")
         return {"ok": True, "detail": await _refresh_room(room_sno)}
+
+    def _record_stat(room_sno: int, current_user, kind: str) -> None:
+        """통계 기록. kind='send'(보내기) 또는 'complete'(완료 처리)."""
+        conn = get_db()
+        try:
+            snap = {}
+            row = conn.execute("SELECT room_json FROM cs_rooms WHERE sno = ?", (room_sno,)).fetchone()
+            if row:
+                try:
+                    snap = json.loads(row["room_json"])
+                except ValueError:
+                    snap = {}
+            goods = snap.get("goods") or (snap.get("order_item") or {}).get("goods") or {}
+            conn.execute(
+                "INSERT INTO cs_completions (room_sno, completed_by, completed_at, goods_sno, goods_name, "
+                "member_name, category, last_message, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    room_sno,
+                    str(current_user or ""),
+                    datetime.now(_KST).isoformat(),
+                    int(goods.get("sno") or 0),
+                    str(goods.get("name") or ""),
+                    str((snap.get("member") or {}).get("name") or ""),
+                    str(snap.get("child_category_display") or ""),
+                    str((snap.get("latest_message") or {}).get("content") or "")[:200],
+                    kind,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     @router.post("/rooms/{room_sno}/complete")
     async def complete(room_sno: int, current_user=Depends(get_current_user)):
         """에이블리 문의를 답변 완료 처리한다."""
         await _ably_post(http, f"/seller/contact_rooms/{room_sno}/complete/")
+        _record_stat(room_sno, current_user, "complete")
         return {"ok": True, "detail": await _refresh_room(room_sno)}
+
+    @router.get("/stats")
+    def stats(days: int = 14, current_user=Depends(get_current_user)):
+        """완료 처리 개수 / 새로 들어온 문의 개수 (ksh2932 전용)."""
+        if current_user != _STATS_USER:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+        days = max(1, min(days, 365))
+        today = datetime.now(_KST).date()
+        first = today - timedelta(days=days - 1)
+        since = first.isoformat()
+        conn = get_db()
+        try:
+            done = {
+                r["d"]: r["c"]
+                for r in conn.execute(
+                    "SELECT substr(completed_at, 1, 10) AS d, COUNT(*) AS c FROM cs_completions "
+                    "WHERE completed_at >= ? AND kind = 'send' GROUP BY d",
+                    (since,),
+                ).fetchall()
+            }
+            completed = {
+                r["d"]: r["c"]
+                for r in conn.execute(
+                    "SELECT substr(completed_at, 1, 10) AS d, COUNT(*) AS c FROM cs_completions "
+                    "WHERE completed_at >= ? AND kind = 'complete' GROUP BY d",
+                    (since,),
+                ).fetchall()
+            }
+            completed_user = {
+                r["u"]: r["c"]
+                for r in conn.execute(
+                    "SELECT completed_by AS u, COUNT(*) AS c FROM cs_completions "
+                    "WHERE completed_at >= ? AND kind = 'complete' GROUP BY completed_by",
+                    (since,),
+                ).fetchall()
+            }
+            new = {
+                r["d"]: r["c"]
+                for r in conn.execute(
+                    "SELECT substr(arrived_at, 1, 10) AS d, COUNT(*) AS c FROM cs_room_arrivals "
+                    "WHERE arrived_at >= ? GROUP BY d",
+                    (since,),
+                ).fetchall()
+            }
+            by_user = [
+                {"user": r["u"], "count": r["c"]}
+                for r in conn.execute(
+                    "SELECT completed_by AS u, COUNT(*) AS c FROM cs_completions "
+                    "WHERE completed_at >= ? AND kind = 'send' GROUP BY completed_by ORDER BY c DESC",
+                    (since,),
+                ).fetchall()
+            ]
+            rows = conn.execute(
+                "SELECT completed_by AS u, completed_at AS t FROM cs_completions "
+                "WHERE completed_at >= ? AND kind = 'send' ORDER BY completed_by, completed_at",
+                (since,),
+            ).fetchall()
+        finally:
+            conn.close()
+        # CS 시간: 같은 사람의 연속 완료 간격이 5분 이하이면 CS 중으로 보고 더한다.
+        # 5분을 넘게 완료가 없으면 그 사이는 CS 중이 아닌 것으로 본다.
+        work_daily: dict = {}
+        work_user: dict = {}
+        prev_user, prev_dt = None, None
+        for r in rows:
+            try:
+                dt = datetime.fromisoformat(r["t"])
+            except ValueError:
+                continue
+            if r["u"] == prev_user and prev_dt is not None:
+                gap = (dt - prev_dt).total_seconds()
+                if 0 <= gap <= _CS_IDLE_SECONDS and dt.date() == prev_dt.date():
+                    key = dt.date().isoformat()
+                    work_daily[key] = work_daily.get(key, 0) + gap
+                    work_user[r["u"]] = work_user.get(r["u"], 0) + gap
+            prev_user, prev_dt = r["u"], dt
+        for u in by_user:
+            u["work_seconds"] = int(work_user.get(u["user"], 0))
+            u["done"] = completed_user.get(u["user"], 0)
+        daily = []
+        for i in range(days):
+            d = (first + timedelta(days=i)).isoformat()
+            daily.append({
+                "date": d,
+                "completed": done.get(d, 0),
+                "done": completed.get(d, 0),
+                "new": new.get(d, 0),
+                "work_seconds": int(work_daily.get(d, 0)),
+            })
+        return {
+            "daily": daily,
+            "today": {
+                "completed": done.get(today.isoformat(), 0),
+                "done": completed.get(today.isoformat(), 0),
+                "new": new.get(today.isoformat(), 0),
+                "work_seconds": int(work_daily.get(today.isoformat(), 0)),
+            },
+            "total": {
+                "completed": sum(done.values()),
+                "done": sum(completed.values()),
+                "new": sum(new.values()),
+                "work_seconds": int(sum(work_daily.values())),
+            },
+            "by_user": by_user,
+        }
+
+    @router.get("/stats/sessions")
+    def stats_sessions(days: int = 7, current_user=Depends(get_current_user)):
+        """CS 세션 목록. 완료 간격이 5분을 넘으면 세션이 끊기고, 끊기기 전 마지막 CS를 함께 돌려준다."""
+        if current_user != _STATS_USER:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+        days = max(1, min(days, 90))
+        since = (datetime.now(_KST).date() - timedelta(days=days - 1)).isoformat()
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT room_sno, completed_by, completed_at, goods_name, member_name, category, last_message "
+                "FROM cs_completions WHERE completed_at >= ? AND kind = 'send' ORDER BY completed_by, completed_at",
+                (since,),
+            ).fetchall()
+        finally:
+            conn.close()
+        sessions: list = []
+        cur = None
+        prev_dt = None
+        for r in rows:
+            try:
+                dt = datetime.fromisoformat(r["completed_at"])
+            except ValueError:
+                continue
+            item = {
+                "room_sno": r["room_sno"],
+                "goods_name": r["goods_name"],
+                "member_name": r["member_name"],
+                "category": r["category"],
+                "last_message": r["last_message"],
+                "completed_at": r["completed_at"],
+            }
+            new_session = (
+                cur is None
+                or cur["user"] != r["completed_by"]
+                or (dt - prev_dt).total_seconds() > _CS_IDLE_SECONDS
+                or dt.date() != prev_dt.date()
+            )
+            if new_session:
+                cur = {
+                    "user": r["completed_by"],
+                    "start": r["completed_at"],
+                    "end": r["completed_at"],
+                    "count": 0,
+                    "work_seconds": 0,
+                    "last": item,
+                }
+                sessions.append(cur)
+            else:
+                cur["work_seconds"] += int((dt - prev_dt).total_seconds())
+            cur["count"] += 1
+            cur["end"] = r["completed_at"]
+            cur["last"] = item
+            prev_dt = dt
+        sessions.sort(key=lambda s: s["end"], reverse=True)
+        return {"sessions": sessions, "idle_seconds": _CS_IDLE_SECONDS}
+
+    @router.get("/stats/search")
+    def stats_search(q: str = "", days: int = 90, current_user=Depends(get_current_user)):
+        """완료한 CS를 주문자명 / 수령인명 / 상품명 / 담당자로 검색한다 (공백으로 나눈 단어 모두 포함)."""
+        if current_user != _STATS_USER:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+        tokens = q.lower().split()
+        if not tokens:
+            return {"items": [], "total": 0}
+        days = max(1, min(days, 365))
+        since = (datetime.now(_KST).date() - timedelta(days=days - 1)).isoformat()
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT c.room_sno, c.completed_by, c.completed_at, c.goods_name, c.member_name, c.category, "
+                "c.last_message, r.room_json AS room_json FROM cs_completions c "
+                "LEFT JOIN cs_rooms r ON r.sno = c.room_sno WHERE c.completed_at >= ? AND c.kind = 'send' ORDER BY c.completed_at DESC",
+                (since,),
+            ).fetchall()
+        finally:
+            conn.close()
+        items = []
+        for r in rows:
+            receiver = ""
+            member = r["member_name"] or ""
+            if r["room_json"]:
+                try:
+                    snap = json.loads(r["room_json"])
+                    receiver = str(((snap.get("order_item") or {}).get("receiver_address") or {}).get("receiver_name") or "")
+                    member = member or str((snap.get("member") or {}).get("name") or "")
+                except ValueError:
+                    pass
+            hay = f"{member} {receiver} {r['goods_name'] or ''} {r['completed_by'] or ''}".lower()
+            if all(t in hay for t in tokens):
+                items.append({
+                    "room_sno": r["room_sno"], "completed_by": r["completed_by"], "completed_at": r["completed_at"],
+                    "goods_name": r["goods_name"], "member_name": member, "receiver_name": receiver,
+                    "category": r["category"], "last_message": r["last_message"],
+                })
+        return {"items": items[:300], "total": len(items)}
+
+    @router.get("/stats/completed")
+    def stats_completed(days: int = 7, user: Optional[str] = None, current_user=Depends(get_current_user)):
+        """완료한 CS를 상품별로 묶어서 돌려준다."""
+        if current_user != _STATS_USER:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+        days = max(1, min(days, 365))
+        since = (datetime.now(_KST).date() - timedelta(days=days - 1)).isoformat()
+        sql = (
+            "SELECT room_sno, completed_by, completed_at, goods_sno, goods_name, member_name, category, last_message "
+            "FROM cs_completions WHERE completed_at >= ? AND kind = 'send'"
+        )
+        args: list = [since]
+        if user:
+            sql += " AND completed_by = ?"
+            args.append(user)
+        sql += " ORDER BY completed_at DESC"
+        conn = get_db()
+        try:
+            rows = conn.execute(sql, args).fetchall()
+        finally:
+            conn.close()
+        groups: dict = {}
+        for r in rows:
+            key = r["goods_sno"] or 0
+            g = groups.setdefault(
+                key,
+                {"goods_sno": key, "goods_name": r["goods_name"] or "(상품 정보 없음)", "count": 0, "items": []},
+            )
+            g["count"] += 1
+            g["items"].append(
+                {
+                    "room_sno": r["room_sno"],
+                    "completed_by": r["completed_by"],
+                    "completed_at": r["completed_at"],
+                    "member_name": r["member_name"],
+                    "category": r["category"],
+                    "last_message": r["last_message"],
+                }
+            )
+        return {"products": sorted(groups.values(), key=lambda g: g["count"], reverse=True)}
 
     @router.get("/dashboard")
     def dashboard(
@@ -838,15 +1124,11 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
             raise HTTPException(status_code=502, detail=f"이지어드민 조회 실패: {e}")
         return {"ok": True, "pack": pack, "history": history}
 
-    @router.post("/return/search")
-    async def return_search(body: dict = Body(...), current_user=Depends(get_current_user)):
-        """주문번호로 에이블리 진행 중인 반품 요청(철회 가능한 건)을 찾는다."""
-        order_no = str(body.get("order_no") or "").strip()
-        if not re.fullmatch(r"[A-Za-z0-9\-]{6,40}", order_no):
-            raise HTTPException(status_code=400, detail="주문번호를 정확히 입력해 주세요. (영문·숫자 6자 이상)")
+    async def _find_cancels(order_no: str, cancel_type: str) -> list[dict]:
+        """주문번호로 에이블리 진행 중인 취소/반품 요청(cancel_type: cancel|return)을 찾는다."""
         today = datetime.now(_KST)
         params_base = {
-            "cancel_type": "return",
+            "cancel_type": cancel_type,
             "processing_sub_status[]": ["41", "42"],
             "delivery_type[]": ["standard", "today", "combine", "reserved"],
             "order": "cancel_received_at",
@@ -873,10 +1155,11 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
                         "cancel_sno": str(cancel.get("sno") or ""),
                         "received_at": str(cancel.get("cancel_received_at") or ""),
                         "status": str(cancel.get("processing_sub_status_display") or cancel.get("processing_sub_status") or ""),
+                        "item_snos": [it["sno"] for it in items if it.get("sno")],
                         "items": [
                             {
                                 "name": str((it.get("goods") or {}).get("name") or it.get("goods_name") or ""),
-                                "options": str(it.get("option") or it.get("option_name") or ""),
+                                "options": str(it.get("option") or it.get("option_name") or it.get("option_info") or ""),
                                 "qty": it.get("ea") or it.get("quantity") or 1,
                             }
                             for it in items
@@ -885,7 +1168,41 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
                 if page >= int(data.get("max_page_number") or 1):
                     break
                 page += 1
-        return {"ok": True, "order_no": order_no, "cancels": found}
+        return found
+
+    @router.post("/return/search")
+    async def return_search(body: dict = Body(...), current_user=Depends(get_current_user)):
+        """주문번호로 에이블리 진행 중인 반품 요청(철회 가능한 건)을 찾는다."""
+        order_no = str(body.get("order_no") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9\-]{6,40}", order_no):
+            raise HTTPException(status_code=400, detail="주문번호를 정확히 입력해 주세요. (영문·숫자 6자 이상)")
+        return {"ok": True, "order_no": order_no, "cancels": await _find_cancels(order_no, "return")}
+
+    @router.post("/cancel/search")
+    async def cancel_search(body: dict = Body(...), current_user=Depends(get_current_user)):
+        """주문번호로 에이블리 진행 중인 구매자 취소요청(승인 가능한 건)을 찾는다."""
+        order_no = str(body.get("order_no") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9\-]{6,40}", order_no):
+            raise HTTPException(status_code=400, detail="주문번호를 정확히 입력해 주세요. (영문·숫자 6자 이상)")
+        return {"ok": True, "order_no": order_no, "cancels": await _find_cancels(order_no, "cancel")}
+
+    @router.post("/cancel/approve")
+    async def cancel_approve(body: dict = Body(...), current_user=Depends(get_current_user)):
+        """에이블리 구매자 취소요청을 승인(확정)한다. 한 번 처리하면 되돌릴 수 없다."""
+        snos = body.get("item_snos")
+        if not isinstance(snos, list) or not snos or not all(isinstance(v, int) and v > 0 for v in snos):
+            raise HTTPException(status_code=400, detail="승인할 주문상품 정보가 올바르지 않아요.")
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            token = await _get_token(http)
+            headers = {**_headers(token), "Content-Type": "application/json", "Origin": "https://my.a-bly.com", "Referer": "https://my.a-bly.com/"}
+            url = f"{ABLY_BASE}/seller/order_items/request_confirm/"
+            res = await http.put(url, headers=headers, json={"sno_list": snos})
+            if res.status_code in (401, 403):
+                headers["Authorization"] = f"JWT {await _get_token(http, force=True)}"
+                res = await http.put(url, headers=headers, json={"sno_list": snos})
+        if res.status_code not in (200, 201, 204):
+            raise HTTPException(status_code=502, detail=f"취소 승인 실패({res.status_code}): {res.text[:200]}")
+        return {"ok": True, "item_snos": snos}
 
     @router.post("/return/withdraw")
     async def return_withdraw(body: dict = Body(...), current_user=Depends(get_current_user)):

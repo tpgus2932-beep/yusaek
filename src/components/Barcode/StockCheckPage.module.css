@@ -1,0 +1,114 @@
+/* 재고체크 탭 전용 스타일. 공통 카드/버튼은 BarcodePage.module.css를 그대로 쓴다. */
+
+.checkLabel {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.table th,
+.table td {
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.row_more { background-color: rgba(59, 130, 246, 0.1); }
+.row_less { background-color: rgba(245, 158, 11, 0.12); }
+.row_none { background-color: rgba(239, 68, 68, 0.12); }
+.row_bad { background-color: rgba(107, 114, 128, 0.18); }
+
+.badTag {
+  margin-left: 0.5rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background-color: #dc2626;
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.lastScan {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-md);
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+}
+
+.lastZone { font-size: 1.25rem; font-weight: 800; }
+.lastName { font-size: 1.1rem; font-weight: 700; }
+.lastOption { font-size: 1rem; color: var(--text-secondary); }
+.lastQty { margin-left: auto; font-size: 1.5rem; font-weight: 800; }
+
+.linkBtn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.linkBtn + .linkBtn {
+  margin-left: 0.6rem;
+}
+
+/* 표가 화면보다 넓을 때 카드 밖으로 밀려나지 않고 가로 스크롤 */
+.tableScroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 640px) {
+  .table {
+    font-size: 0.78rem;
+  }
+
+  .table th,
+  .table td {
+    padding: 0.35rem 0.4rem;
+    white-space: nowrap;
+  }
+
+  /* 상품명·옵션은 길어서 줄바꿈 허용 */
+  .table td:nth-child(3),
+  .table td:nth-child(4) {
+    white-space: normal;
+    min-width: 6rem;
+  }
+
+  .table input[type="checkbox"] {
+    width: 1.15rem;
+    height: 1.15rem;
+  }
+
+  .linkBtn {
+    padding: 0.4rem 0.3rem;
+    font-size: 0.78rem;
+  }
+
+  .lastScan {
+    gap: 0.4rem 0.75rem;
+    padding: 0.6rem 0.75rem;
+  }
+
+  .lastZone { font-size: 1.05rem; }
+  .lastName { font-size: 0.95rem; width: 100%; order: 3; }
+  .lastOption { font-size: 0.85rem; }
+  .lastQty { font-size: 1.25rem; }
+}

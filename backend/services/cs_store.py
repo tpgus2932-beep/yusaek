@@ -101,6 +101,43 @@ def init_cs_tables(get_db) -> None:
         )
         """
     )
+    # 완료 버튼을 누를 때마다 쌓는 기록 (통계용)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cs_completions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_sno INTEGER NOT NULL,
+            completed_by TEXT NOT NULL DEFAULT '',
+            completed_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cs_completions_at ON cs_completions(completed_at)")
+    # 완료 시점의 문의 정보 스냅샷 (상품별 묶음 / 마지막 CS 확인용)
+    for col, ddl in (
+        ("goods_sno", "INTEGER NOT NULL DEFAULT 0"),
+        ("goods_name", "TEXT NOT NULL DEFAULT ''"),
+        ("member_name", "TEXT NOT NULL DEFAULT ''"),
+        ("category", "TEXT NOT NULL DEFAULT ''"),
+        ("last_message", "TEXT NOT NULL DEFAULT ''"),
+        # 'send' = 보내기(답변 전송), 'complete' = 완료 처리. 기존 기록은 완료 처리였으므로 기본값은 'complete'.
+        ("kind", "TEXT NOT NULL DEFAULT 'complete'"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE cs_completions ADD COLUMN {col} {ddl}")
+        except Exception:
+            pass  # 이미 있는 열
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cs_completions_goods ON cs_completions(goods_sno)")
+    # 새로 들어온 문의 기록 (처음 저장된 시각)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cs_room_arrivals (
+            sno INTEGER PRIMARY KEY,
+            arrived_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cs_room_arrivals_at ON cs_room_arrivals(arrived_at)")
     conn.commit()
     conn.close()
 

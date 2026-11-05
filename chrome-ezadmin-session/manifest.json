@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "YUSAEK EZAdmin 세션 연동",
+  "version": "1.0.0",
+  "description": "YUSAEK 사내 페이지에서 'EZAdmin 설정' 버튼을 눌렀을 때만, 로그인된 이지어드민(ga80)의 PHPSESSID 값을 읽어 전달합니다.",
+  "permissions": ["cookies"],
+  "host_permissions": ["https://ga80.ezadmin.co.kr/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://localhost:5173/*",
+        "http://127.0.0.1:5173/*",
+        "http://192.168.219.46:5173/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

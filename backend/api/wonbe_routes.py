@@ -160,8 +160,6 @@ def _qcol(col: str) -> str:
 def _qcols(cols: list[str]) -> str:
     return ", ".join(_qcol(c) for c in cols)
 
-# username → {"running": bool, "total": int, "done": int, "matched": int} — 제조국 채우기 진행상황 폴링용
-_country_sync_progress: dict[str, dict] = {}
 EDITABLE = {"상품명합", "거래처합", "거래처", "거래처상품명", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"}
 
 INGODAEGI_COLUMNS = ["상품코드", "입고수량"]
@@ -2885,6 +2883,132 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 conn.close()
         return {"ok": err_cnt == 0, "uploaded": len(items), "err_cnt": err_cnt, "conflicts": len(plan["conflicts"])}
 
+    # ---- 상품명 일괄변경 전체 재조회 --------------------------------------------------------------
+    # 일괄변경은 "한번 올린 상품"을 기록(wonbe_name_rename_applied)으로만 기억해서, 그 뒤에 이지어드민에서 이름이
+    # 바뀐 상품(악성재고 원복·직접 수정 등)은 다시 보지 않는다. 재조회는 이지어드민의 현재 상품명을 전부 읽어
+    # 계획과 비교하고, 같으면 "반영됨"으로, 다르면 기록을 지워 다음 변경 대상에 다시 올라오게 한다.
+    rename_check_job: dict = {"running": False}
+
+    @router.get("/name-rename/recheck/status")
+    def wonbe_name_rename_recheck_status(user: str = Depends(get_current_user)):
+        return dict(rename_check_job)
+
+    async def _run_rename_check(cats, phpsessid: str):
+        job = rename_check_job
+        try:
+            conn = _get_wonbe_db()
+            try:
+                plan = _build_rename_plan(conn, cats, force=True)
+                options_by_rep: dict[str, list[str]] = {}
+                for r in conn.execute(
+                    "SELECT 대표상품코드, 상품코드 FROM wonbe WHERE TRIM(COALESCE(대표상품코드, '')) != '' AND TRIM(COALESCE(상품코드, '')) != ''"
+                ).fetchall():
+                    options_by_rep.setdefault(str(r[0]).strip(), []).append(str(r[1]).strip().upper())
+            finally:
+                conn.close()
+
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            par = (
+                "auto_search=&search_all_product=&multi_supply_group=&multi_supply=&str_supply_code=0"
+                "&tags_string=&product_tag_include_type=1&query_type=name&query_str="
+                "&stock_type=0&stock_start=&stock_end=&notrans_day=&notrans_cnt=&notrans_status=0&stock_status=0"
+                f"&start_date={today_str}&start_hour=00%3A00%3A00&end_date={today_str}&end_hour=23%3A59%3A59"
+                "&date_period_sel=0&work_type=stockin&work_start=&work_end=&inout_type=0&product_date=reg_date"
+                f"&start_date2={today_str}&end_date2={today_str}&date_period_sel2=0"
+                "&products_sort=1&category=0&except_soldout=0&temp_soldout=0&location=0"
+            )
+            current_names: dict[str, str] = {}
+            async with httpx.AsyncClient(
+                timeout=600.0, verify=False, follow_redirects=True, cookies={"PHPSESSID": phpsessid},
+                headers={
+                    "User-Agent": "Mozilla/5.0", "X-Requested-With": "XMLHttpRequest",
+                    "Referer": f"{_EZADMIN_BASE}/template35.htm?template=I100",
+                },
+            ) as client:
+                page, pages = 1, 1
+                while page <= pages:
+                    r = await client.post(
+                        f"{_EZADMIN_BASE}/function.htm",
+                        data={
+                            "_search": "false", "nd": str(int(datetime.now().timestamp() * 1000)),
+                            "rows": "5000", "page": str(page), "sidx": "", "sord": "asc",
+                            "template": "I100", "action": "search", "page_code": "I100", "par": par,
+                        },
+                    )
+                    try:
+                        obj = r.json()
+                    except ValueError:
+                        job["session_expired"] = True
+                        return
+                    if not isinstance(obj, dict) or "rows" not in obj:
+                        job["error"] = "이지어드민 응답에 상품 목록(rows)이 없습니다."
+                        return
+                    for row in obj["rows"]:
+                        cell = row.get("cell") or {}
+                        code = str(cell.get("key") or "").strip().upper()
+                        if code:
+                            current_names[code] = re.sub(r"<[^>]+>", "", str(cell.get("product_name") or "")).strip()
+                    try:
+                        pages = int(obj.get("total") or 1)
+                    except (TypeError, ValueError):
+                        pages = 1
+                    job["page"], job["pages"] = page, pages
+                    page += 1
+
+            def norm(s: str) -> str:
+                return " ".join(str(s or "").split())
+
+            same, diff, unknown = [], [], 0
+            for it in plan["items"]:
+                actual = next((current_names[c] for c in options_by_rep.get(str(it["code"]), []) if c in current_names), None)
+                if actual is None:
+                    unknown += 1  # 이지어드민 목록에서 못 찾은 상품은 판단하지 않고 기록도 건드리지 않는다.
+                elif norm(actual) == norm(it["new"]):
+                    same.append(it)
+                else:
+                    diff.append({**it, "actual": actual})
+
+            conn = _get_wonbe_db()
+            try:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS wonbe_name_rename_applied (code TEXT PRIMARY KEY, new_name TEXT, applied_at TEXT)"
+                )
+                conn.executemany(
+                    "INSERT OR REPLACE INTO wonbe_name_rename_applied (code, new_name, applied_at) VALUES (?, ?, ?)",
+                    [(it["code"], it["new"], now) for it in same],
+                )
+                conn.executemany(
+                    "DELETE FROM wonbe_name_rename_applied WHERE code = ?", [(it["code"],) for it in diff]
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            job.update(
+                checked=len(plan["items"]), same=len(same), diff=len(diff), unknown=unknown,
+                diff_items=diff[:50], ezadmin_products=len(current_names),
+            )
+        except Exception as exc:
+            job["error"] = str(exc)
+        finally:
+            job["running"] = False
+
+    @router.post("/name-rename/recheck")
+    async def wonbe_name_rename_recheck(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        """이지어드민 상품명을 전부 읽어 일괄변경 계획과 비교한다. 백그라운드로 돌리고 진행은 GET /name-rename/recheck/status."""
+        if not get_setting:
+            raise HTTPException(status_code=500, detail="get_setting 미설정")
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+        if rename_check_job.get("running"):
+            return {"ok": True, "already_running": True, **rename_check_job}
+        rename_check_job.clear()
+        rename_check_job.update(running=True, page=0, pages=0, session_expired=False, error="")
+        cats = [c for c in (payload.get("categories") or []) if c in CATEGORY_CHOICES] or None
+        asyncio.create_task(_run_rename_check(cats, phpsessid))
+        return {"ok": True, **rename_check_job}
+
     rep_job: dict = {"running": False}
 
     @router.get("/fill-rep-code/status")
@@ -3138,15 +3262,194 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 (str(len(data_rows)),),
             )
             conn.commit()
+            # 상품명(원래 이름) 기준 unique 그룹 - 프론트에서 대형태그/번호 지정용 리스트로 사용
+            groups_map: dict = {}
+            for code, pname, *_rest in data_rows:
+                g = groups_map.setdefault(pname, {"codes": [], "ids": []})
+                if code not in g["codes"]:
+                    g["codes"].append(code)
+                eid = _rest[-1]
+                if eid and eid not in g["ids"]:
+                    g["ids"].append(eid)
+            groups = [{"name": n, "codes": g["codes"], "ids": g["ids"], "count": len(g["codes"])} for n, g in groups_map.items()]
             return {
                 "ok": True,
                 "fetched": len(data_rows),
                 "inserted": inserted,
                 "backfilled": backfilled,
                 "synced_at": synced_at,
+                "groups": groups,
             }
         finally:
             conn.close()
+
+    def _numbered_name(number, name: str) -> str:
+        """'{번호} {상품명}' - 이미 숫자 접두가 있으면 교체한다."""
+        base = re.sub(r"^\d+\s+", "", str(name or "").strip())
+        return f"{int(number)} {base}"
+
+    async def _ezadmin_set_big_tag(product_ids: list, phpsessid: str) -> dict:
+        """대형태그('대형')를 이지어드민 상품 아이디별로 지정 (이지어드민에만 적용)."""
+        ok_ids, failed = [], []
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": f"{_EZADMIN_BASE}/popup35.htm?template=C208",
+        }
+        async with httpx.AsyncClient(timeout=60.0, verify=False, follow_redirects=True, cookies={"PHPSESSID": phpsessid}) as client:
+            for pid in product_ids:
+                try:
+                    r = await client.post(
+                        f"{_EZADMIN_BASE}/function.htm",
+                        data={"template": "tags", "action": "add_tag_by_product_id", "tags[]": "대형", "org_id": pid},
+                        headers=headers,
+                    )
+                    if int(r.json().get("error", 1)) == 0:
+                        ok_ids.append(pid)
+                    else:
+                        failed.append(pid)
+                except Exception:
+                    failed.append(pid)
+        return {"implemented": True, "ok": ok_ids, "failed": failed}
+
+    async def _resolve_product_ids(codes: list, phpsessid: str) -> dict:
+        """옵션 상품코드 -> 이지어드민 상품 아이디(대표상품코드). wonbe에 있으면 그 값, 없으면 C200 검색. wonbe는 읽기만 한다."""
+        result: dict = {}
+        conn = _get_wonbe_db()
+        try:
+            for i in range(0, len(codes), 500):
+                chunk = codes[i:i + 500]
+                ph = ",".join(["?"] * len(chunk))
+                for row in conn.execute(
+                    f"SELECT 상품코드, 대표상품코드, 아이디 FROM wonbe WHERE 상품코드 IN ({ph})", chunk
+                ).fetchall():
+                    for v in (row["대표상품코드"], row["아이디"]):
+                        v = str(v or "").strip()
+                        if v.isdigit():
+                            result[str(row["상품코드"])] = v
+                            break
+        finally:
+            conn.close()
+        missing = [c for c in codes if c not in result]
+        if not missing:
+            return result
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        sem = asyncio.Semaphore(6)
+
+        async def lookup(client, code):
+            par = (
+                f"page=1&str_category=&template=C200&id=&action=&china_db=&s_group_id="
+                f"&multi_supply_group=&multi_supply=&str_supply_code=0&string_type=id"
+                f"&string={urllib.parse.quote(code, safe='')}&date_type=&start_date={today_str}&end_date={today_str}"
+                f"&date_period_sel=0&stock_manage=-1&e_stock=-1&e_sale=0&temp_soldout=0&tags_string="
+                f"&product_tag_include_type=1&location=-1&sync=0&pack_disable=&sel_sort=0&category=0"
+            )
+            data = {
+                "_search": "false", "nd": str(int(datetime.now().timestamp() * 1000)),
+                "rows": "100", "page": "1", "sidx": "", "sord": "asc", "readonly": "T",
+                "template": "C200", "action": "search", "par": par, "page_code": "C200",
+            }
+            try:
+                async with sem:
+                    r = await client.post(f"{_EZADMIN_BASE}/function.htm", data=data)
+                obj = r.json()
+            except Exception:
+                return
+            pids = []
+            for row in (obj.get("rows") or []) if isinstance(obj, dict) else []:
+                pid = str((row.get("cell") or {}).get("product_id") or "").strip()
+                if pid.isdigit() and pid not in pids:
+                    pids.append(pid)
+            if len(pids) == 1:
+                result[code] = pids[0]
+
+        async with httpx.AsyncClient(
+            timeout=60.0, verify=False, follow_redirects=True, cookies={"PHPSESSID": phpsessid},
+            headers={"User-Agent": "Mozilla/5.0", "X-Requested-With": "XMLHttpRequest",
+                     "Referer": f"{_EZADMIN_BASE}/template40.htm?template=C200"},
+        ) as client:
+            await asyncio.gather(*(lookup(client, c) for c in missing))
+        return result
+
+    @router.post("/ezadmin-apply")
+    async def wonbe_ezadmin_apply(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        """동기화 리스트에서 선택한 상품(그룹)의 모든 상품에 번호 상품명 + 대형태그를 이지어드민에만 적용.
+        wonbe 테이블은 수정하지 않는다. body: {items: [{name, codes, number}]}
+        C620 A열과 태그는 상품 아이디(대표상품코드) 기준이라 옵션 코드를 아이디로 바꿔서 쓴다."""
+        if not get_setting:
+            raise HTTPException(status_code=500, detail="get_setting 미설정")
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+        item_list = payload.get("items") or []
+        all_codes = []
+        for it in item_list:
+            number = it.get("number")
+            if not str(number).isdigit() or not (1 <= int(number) <= 5):
+                raise HTTPException(status_code=400, detail="번호는 1~5만 가능합니다.")
+            all_codes.extend(str(c) for c in (it.get("codes") or []))
+        if not all_codes:
+            raise HTTPException(status_code=400, detail="적용할 상품이 없습니다.")
+
+        code_to_pid = await _resolve_product_ids(list(dict.fromkeys(all_codes)), phpsessid)
+        pid_to_name: dict = {}
+        unresolved = 0
+        for it in item_list:
+            new_name = _numbered_name(it.get("number"), it.get("name"))
+            for c in it.get("codes") or []:
+                pid = code_to_pid.get(str(c))
+                if pid:
+                    pid_to_name[pid] = new_name
+                else:
+                    unresolved += 1
+        if not pid_to_name:
+            return {"ok": False, "uploaded": 0, "unresolved": unresolved, "detail": "상품 아이디를 찾지 못했습니다."}
+
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("Sheet1")
+        sheet.write(0, 0, "상품코드")
+        sheet.write(0, 1, "상품명")
+        for ri, (pid, nm) in enumerate(pid_to_name.items(), start=1):
+            sheet.write(ri, 0, pid)
+            sheet.write(ri, 1, nm)
+        buf = io.BytesIO()
+        book.save(buf)
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Origin": _EZADMIN_BASE,
+            "Referer": f"{_EZADMIN_BASE}/template40.htm?template=C620",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=300.0, verify=False, follow_redirects=True, cookies={"PHPSESSID": phpsessid}) as client:
+                await client.get(f"{_EZADMIN_BASE}/template40.htm", params={"template": "C620"}, headers=headers)
+                r = await client.post(
+                    f"{_EZADMIN_BASE}/template40.htm?template=C620",
+                    data={"page": "1", "action": "update2", "template": "C620", "total": "0", "status": "6"},
+                    files={"_file": ("name_rename.xls", buf.getvalue(), "application/vnd.ms-excel")},
+                    headers=headers,
+                )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"EZAdmin 업로드 실패: {exc}")
+        body_text = r.content.decode("euc-kr", errors="replace")
+        m = re.search(r"err_cnt=(\d+)", body_text)
+        if not m:
+            return {"ok": False, "need_session": True}
+        err_cnt = int(m.group(1))
+        err_preview = ""
+        if err_cnt:
+            # 오류 원인 확인용: 태그 제거 후 err_cnt 주변 본문
+            plain = re.sub(r"<[^>]+>", " ", body_text)
+            plain = re.sub(r"\s+", " ", plain)
+            k = plain.find("err_cnt")
+            err_preview = plain[max(0, k - 300): k + 700] if k >= 0 else plain[:1000]
+            print("[ezadmin-apply] C620 err_cnt=", err_cnt, "sent=", list(pid_to_name.items())[:5], "resp=", err_preview)
+        tag = await _ezadmin_set_big_tag(list(pid_to_name.keys()), phpsessid)
+        return {
+            "ok": err_cnt == 0 and not tag["failed"] and not unresolved,
+            "uploaded": len(pid_to_name), "err_cnt": err_cnt, "unresolved": unresolved, "err_preview": err_preview,
+            "sent_sample": [[k, v] for k, v in list(pid_to_name.items())[:3]],
+            "tag_applied": len(tag["ok"]), "tag_failed": len(tag["failed"]),
+        }
 
     @router.post("/lookup-prices")
     def wonbe_lookup_prices(
@@ -3470,76 +3773,6 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             "unmatched": unmatched,
         }
 
-    @router.post("/sync-zigzag-id")
-    async def wonbe_sync_zigzag_id(
-        payload: dict = Body(default={}),
-        user: str = Depends(get_current_user),
-    ):
-        force = bool(payload.get("force"))
-        codes_filter = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
-
-        zigzag = ZigzagClient()
-        try:
-            products = await zigzag.get_all_products()
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"지그재그 상품목록 조회 실패: {exc}")
-        finally:
-            await zigzag.close()
-
-        # 지그재그 상품명(대괄호 태그 제거) → 상품id 매핑. 지그재그 상품명은 등록 시
-        # 에이블리 원본 상품명을 그대로 복사해서 만들어지므로(zigzag_upload_routes.py의
-        # create_catalog_product 참고), sync-ably-sno와 동일한 방식으로 매칭한다.
-        name_to_id: dict[str, str] = {}
-        for p in products:
-            raw_name = str(p.get("name") or "")
-            stripped = _strip_marketplace_name_tags(raw_name)
-            key = _normalize_cost_base_key(stripped)
-            if key and p.get("id"):
-                name_to_id[key] = str(p["id"])
-
-        conn = _get_wonbe_db()
-        try:
-            _init_wonbe_table(conn)
-            if codes_filter:
-                placeholders = ", ".join("?" for _ in codes_filter)
-                rows = conn.execute(
-                    f"SELECT 상품코드, 상품명 FROM wonbe WHERE 상품코드 IN ({placeholders})",
-                    codes_filter,
-                ).fetchall()
-            elif force:
-                rows = conn.execute("SELECT 상품코드, 상품명 FROM wonbe").fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT 상품코드, 상품명 FROM wonbe WHERE 지그재그상품번호 IS NULL OR 지그재그상품번호 = ''"
-                ).fetchall()
-
-            updates = []
-            unmatched = 0
-            for r in rows:
-                key = _normalize_cost_base_key(_strip_marketplace_name_tags(r["상품명"]))
-                zid = name_to_id.get(key)
-                if zid:
-                    updates.append((zid, r["상품코드"]))
-                else:
-                    unmatched += 1
-
-            if updates:
-                conn.executemany(
-                    "UPDATE wonbe SET 지그재그상품번호 = ? WHERE 상품코드 = ?",
-                    updates,
-                )
-                conn.commit()
-        finally:
-            conn.close()
-
-        return {
-            "ok": True,
-            "fetched_products": len(products),
-            "considered": len(rows),
-            "matched": len(updates),
-            "unmatched": unmatched,
-        }
-
     @router.post("/sync-registration-date")
     async def wonbe_sync_registration_date(
         payload: dict = Body(default={}),
@@ -3645,101 +3878,6 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             "ok": True,
             "fetched_goods": fetched_goods,
             "considered": len(rows),
-            "matched": len(updates),
-            "unmatched": unmatched,
-        }
-
-    @router.get("/sync-country/progress")
-    def wonbe_sync_country_progress(user: str = Depends(get_current_user)):
-        return _country_sync_progress.get(user) or {
-            "running": False, "total": 0, "done": 0, "matched": 0,
-        }
-
-    @router.post("/sync-country")
-    async def wonbe_sync_country(
-        payload: dict = Body(default={}),
-        user: str = Depends(get_current_user),
-    ):
-        codes_filter = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
-        conn = _get_wonbe_db()
-        try:
-            _init_wonbe_table(conn)
-            if codes_filter:
-                placeholders = ", ".join("?" for _ in codes_filter)
-                rows = conn.execute(
-                    f"""SELECT 상품코드, 에이블리상품번호 FROM wonbe
-                       WHERE 에이블리상품번호 IS NOT NULL AND 에이블리상품번호 != ''
-                       AND 상품코드 IN ({placeholders})""",
-                    codes_filter,
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT 상품코드, 에이블리상품번호 FROM wonbe WHERE 에이블리상품번호 IS NOT NULL AND 에이블리상품번호 != ''"
-                ).fetchall()
-        finally:
-            conn.close()
-
-        if not rows:
-            return {"ok": True, "considered": 0, "matched": 0, "unmatched": 0}
-
-        ably_client = AblyClient()
-        try:
-            await ably_client.login()
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {exc}")
-
-        # 색상/사이즈별로 상품코드는 다르지만 에이블리상품번호(sno)는 같은 경우가 많음 → sno 기준으로 중복 제거 후 1회씩만 조회
-        unique_snos = sorted({str(r["에이블리상품번호"]) for r in rows})
-
-        progress = {"running": True, "total": len(unique_snos), "done": 0, "matched": 0}
-        _country_sync_progress[user] = progress
-        progress_lock = asyncio.Lock()
-
-        # 상품 상세는 상품별 개별 조회라서 동시 요청 수를 제한한다
-        semaphore = asyncio.Semaphore(8)
-
-        async def _fetch(sno: str):
-            async with semaphore:
-                try:
-                    detail = await ably_client.get_goods_detail(sno)
-                    c = str(detail.get("country") or "").strip()
-                except Exception:
-                    c = ""
-            async with progress_lock:
-                progress["done"] += 1
-                if c:
-                    progress["matched"] += 1
-            return sno, c
-
-        try:
-            results = await asyncio.gather(*[_fetch(sno) for sno in unique_snos])
-        finally:
-            progress["running"] = False
-
-        sno_to_country = {sno: c for sno, c in results if c}
-
-        updates = []
-        unmatched = 0
-        for r in rows:
-            c = sno_to_country.get(str(r["에이블리상품번호"]))
-            if c:
-                updates.append((c, r["상품코드"]))
-            else:
-                unmatched += 1
-
-        conn = _get_wonbe_db()
-        try:
-            _init_wonbe_table(conn)
-            if updates:
-                conn.executemany("UPDATE wonbe SET 제조국 = ? WHERE 상품코드 = ?", updates)
-                conn.commit()
-        finally:
-            conn.close()
-
-        return {
-            "ok": True,
-            "considered": len(rows),
-            "unique_snos": len(unique_snos),
             "matched": len(updates),
             "unmatched": unmatched,
         }
@@ -4033,27 +4171,41 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             conn.close()
 
     @router.get("/janggi/recent-summary")
-    def janggi_recent_summary(user: str = Depends(get_current_user)):
+    def janggi_recent_summary(date: str = "", user: str = Depends(get_current_user)):
+        """date를 주면 그 날짜, 비우면 DB의 가장 최근 날짜 기준으로 거래처별 합산을 돌려준다."""
         conn = _get_janggi_db()
         try:
             _init_janggi_table(conn)
-            latest = conn.execute(
+            date = date.strip()
+            if date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+                raise HTTPException(status_code=400, detail="날짜 형식이 올바르지 않습니다.")
+            latest = date or conn.execute(
                 "SELECT MAX(날짜) AS d FROM 날짜별장끼정리"
             ).fetchone()["d"]
             if not latest:
                 return {"ok": True, "date": None, "rows": []}
             raw_rows = conn.execute(
-                """SELECT 거래처, 가격
+                """SELECT 거래처, 가격, 일괄이체
                    FROM 날짜별장끼정리
-                   WHERE 날짜 = ? AND 거래처 != ''""",
+                   WHERE 날짜 = ?""",
                 (latest,),
             ).fetchall()
-            totals: dict[str, float] = {}
+            totals: dict[str, dict] = {}
             for r in raw_rows:
-                supplier = r["거래처"]
-                totals[supplier] = totals.get(supplier, 0.0) + _parse_amount_janggi(r["가격"])
+                supplier = str(r["거래처"] or "").strip()
+                if not supplier:
+                    continue
+                t = totals.setdefault(supplier, {"합산": 0.0, "건수": 0, "일괄이체": 0.0, "파싱불가": 0})
+                amt = _parse_amount_janggi(r["가격"])
+                raw = str(r["가격"] or "").strip()
+                t["합산"] += amt
+                t["건수"] += 1
+                if str(r["일괄이체"] or "") == "Y":
+                    t["일괄이체"] += amt
+                if raw and not re.fullmatch(r"[+-]?[\d,]+(?:\.\d+)?\s*원?", raw):
+                    t["파싱불가"] += 1
             rows = sorted(
-                ({"거래처": k, "합산": v} for k, v in totals.items()),
+                ({"거래처": k, **v} for k, v in totals.items()),
                 key=lambda x: x["거래처"],
                 reverse=True,
             )
@@ -4066,10 +4218,14 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             conn.close()
 
     @router.get("/janggi/top-shops")
-    async def janggi_top_shops(user: str = Depends(get_current_user)):
+    async def janggi_top_shops(date: str = "", user: str = Depends(get_current_user)):
+        """date를 주면 그 날짜의 TOP90 완료 매장, 비우면 오늘."""
         if not _BS4_OK:
             raise HTTPException(status_code=500, detail="beautifulsoup4가 설치되지 않았습니다.")
-        today = datetime.now().strftime("%Y-%m-%d")
+        date = date.strip()
+        if date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            raise HTTPException(status_code=400, detail="날짜 형식이 올바르지 않습니다.")
+        today = date or datetime.now().strftime("%Y-%m-%d")
         try:
             async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
                 await client.get(f"{_TOP90_BASE}/login",
@@ -4333,6 +4489,41 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         finally:
             conn.close()
 
+    @router.get("/ichae/vendor-history")
+    def ichae_vendor_history(
+        start: str = "",
+        end: str = "",
+        vendor: str = "",
+        user: str = Depends(get_current_user),
+    ):
+        """날짜 범위 내에서 거래처명(부분일치)으로 일자별 이체금액을 조회한다."""
+        start, end, vendor = start.strip(), end.strip(), vendor.strip()
+        date_re = r"\d{4}-\d{2}-\d{2}"
+        if not vendor:
+            raise HTTPException(status_code=400, detail="거래처명을 입력하세요.")
+        if (start and not re.fullmatch(date_re, start)) or (end and not re.fullmatch(date_re, end)):
+            raise HTTPException(status_code=400, detail="날짜는 YYYY-MM-DD 형식이어야 합니다.")
+        conn = _get_janggi_db()
+        try:
+            _init_ichae_table(conn)
+            where = ["D LIKE ?"]
+            params = [f"%{vendor}%"]
+            if start:
+                where.append("날짜 >= ?")
+                params.append(start)
+            if end:
+                where.append("날짜 <= ?")
+                params.append(end)
+            rows = conn.execute(
+                f"""SELECT 날짜, D AS 거래처명, SUM(C) AS 금액, COUNT(*) AS 건수
+                    FROM 이체파일 WHERE {' AND '.join(where)}
+                    GROUP BY 날짜, D ORDER BY 날짜 ASC, D ASC LIMIT 2000""",
+                params,
+            ).fetchall()
+            return {"ok": True, "rows": [dict(r) for r in rows]}
+        finally:
+            conn.close()
+
     @router.patch("/ichae/row")
     def ichae_update_row(payload: dict = Body(...), user: str = Depends(get_current_user)):
         row_id = payload.get("id")
@@ -4560,6 +4751,52 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 raise HTTPException(status_code=404, detail="해당 id 없음")
             row = conn.execute("SELECT * FROM 계산서관리 WHERE id = ?", (row_id,)).fetchone()
             return {"ok": True, "row": dict(row)}
+        finally:
+            conn.close()
+
+    @router.post("/invoice-manage/bulk-flag")
+    def invoice_manage_bulk_flag(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """id 목록의 체크 컬럼(입금완료 등)을 한 번에 설정한다."""
+        col = str(payload.get("col") or "").strip()
+        raw_ids = payload.get("ids")
+        if col not in INVOICE_MANAGE_FLAG_COLS or not isinstance(raw_ids, list) or not raw_ids:
+            raise HTTPException(status_code=400, detail="체크 컬럼과 id 목록이 필요합니다.")
+        try:
+            ids = [int(i) for i in raw_ids]
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="잘못된 id 값입니다.")
+        value = 1 if payload.get("value") else 0
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn = _get_janggi_db()
+        try:
+            _init_invoice_manage_table(conn)
+            placeholders = ",".join("?" for _ in ids)
+            cur = conn.execute(
+                f"UPDATE 계산서관리 SET {col} = ?, 수정일시 = ? WHERE id IN ({placeholders}) AND {col} != ?",
+                [value, now_str, *ids, value],
+            )
+            conn.commit()
+            return {"ok": True, "updated": cur.rowcount}
+        finally:
+            conn.close()
+
+    @router.post("/invoice-manage/delete")
+    def invoice_manage_delete_rows(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """선택한 id 목록의 계산서관리 행을 삭제한다."""
+        raw_ids = payload.get("ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise HTTPException(status_code=400, detail="삭제할 id 목록이 필요합니다.")
+        try:
+            ids = [int(i) for i in raw_ids]
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="잘못된 id 값입니다.")
+        conn = _get_janggi_db()
+        try:
+            _init_invoice_manage_table(conn)
+            placeholders = ",".join("?" for _ in ids)
+            cur = conn.execute(f"DELETE FROM 계산서관리 WHERE id IN ({placeholders})", ids)
+            conn.commit()
+            return {"ok": True, "deleted": cur.rowcount}
         finally:
             conn.close()
 

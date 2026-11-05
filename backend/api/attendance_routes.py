@@ -1892,6 +1892,7 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
         name: str = "",
         date_from: str = "",
         date_to: str = "",
+        exclude_daily: bool = False,
     ):
         _check_pin(pin)
         conn = get_db()
@@ -1900,6 +1901,13 @@ def build_attendance_router(*, get_db, get_setting, set_setting, hash_pin, verif
             "FROM attendance_records WHERE 1=1"
         )
         params: list = []
+        if exclude_daily:
+            # 일일알바 등록 때 같이 만들어진 출퇴근 기록은 일일알바로 따로 지급하므로
+            # 같은 이름의 정규 직원 급여 계산에서는 뺀다.
+            query += (
+                " AND id NOT IN (SELECT check_in_record_id FROM attendance_daily_workers WHERE check_in_record_id IS NOT NULL)"
+                " AND id NOT IN (SELECT check_out_record_id FROM attendance_daily_workers WHERE check_out_record_id IS NOT NULL)"
+            )
         if date:
             query += " AND date = ?"
             params.append(date)

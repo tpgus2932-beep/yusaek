@@ -306,6 +306,9 @@ export default function DailyChecklistCard() {
         daily_check_exchange_pickup: {
             pendingUrl: `${API}/exchange-return/seller-fault-pending`,
             singleUrl: `${API}/exchange-return/process-exchange-pickup-single`,
+            // 대기상태(같은 주문의 나머지 상품이 올 때까지 보류) + 같은 주문 묶음 실행
+            holdUrl: `${API}/exchange-return/seller-fault-hold`,
+            groupUrl: `${API}/exchange-return/process-exchange-pickup-group`,
             itemKey: (item) => `${item.exchange_sno}`,
             buildPayload: (item) => ({
                 invoice: item.invoice,
@@ -374,6 +377,66 @@ export default function DailyChecklistCard() {
             setSellerFaultProcessing((prev) => {
                 const next = new Set(prev);
                 next.delete(processingKey);
+                return next;
+            });
+        }
+    };
+
+    const toggleSellerFaultHold = async (configKey, item) => {
+        const config = SELLER_FAULT_CONFIGS[configKey];
+        const nextHold = !item.hold;
+        try {
+            const res = await fetch(config.holdUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ exchange_snos: [item.exchange_sno], hold: nextHold }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data?.ok) {
+                alert(data?.detail || '대기상태 변경 실패');
+                return;
+            }
+            setSellerFaultItems((prev) => ({
+                ...prev,
+                [configKey]: (prev[configKey] || []).map((i) => (config.itemKey(i) === config.itemKey(item) ? { ...i, hold: nextHold } : i)),
+            }));
+        } catch (err) {
+            alert(err.message || '대기상태 변경 실패');
+        }
+    };
+
+    // 같은 주문번호의 건들을 EZAdmin 등록·에이블리 승인·문자 1회로 한 번에 처리한다.
+    const processSellerFaultGroup = async (configKey, groupItems) => {
+        const config = SELLER_FAULT_CONFIGS[configKey];
+        const keys = groupItems.map((i) => `${configKey}:${config.itemKey(i)}`);
+        if (!window.confirm(`주문 ${groupItems[0].order_sno}의 ${groupItems.length}건을 함께 회수접수 처리할까요?`)) return;
+        setSellerFaultProcessing((prev) => new Set([...prev, ...keys]));
+        try {
+            const res = await fetch(config.groupUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ items: groupItems.map((i) => config.buildPayload(i)) }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data?.need_session) {
+                openEzadminModal(() => processSellerFaultGroup(configKey, groupItems));
+                return;
+            }
+            if (!res.ok || !data?.ok) {
+                alert(data?.error || data?.detail || '처리 실패');
+                return;
+            }
+            const done = new Set(groupItems.map((i) => config.itemKey(i)));
+            setSellerFaultItems((prev) => ({
+                ...prev,
+                [configKey]: (prev[configKey] || []).filter((i) => !done.has(config.itemKey(i))),
+            }));
+        } catch (err) {
+            alert(err.message || '처리 실패');
+        } finally {
+            setSellerFaultProcessing((prev) => {
+                const next = new Set(prev);
+                keys.forEach((k) => next.delete(k));
                 return next;
             });
         }
@@ -490,15 +553,52 @@ export default function DailyChecklistCard() {
                                                                 />
                                                             ))}
                                                             <div style={{ flex: 1, fontSize: '0.85rem' }}>
-                                                                <div style={{ fontWeight: 600 }}>{sf.goods_name}</div>
-                                                                <div>송장 {sf.invoice} · 사유: {sf.reason}</div>
+                                                                <div style={{ fontWeight: 600 }}>
+                                                                    {sf.hold && (
+                                                                        <span style={{ display: 'inline-block', marginRight: 6, padding: '0 6px', borderRadius: 999, background: '#6366f1', color: '#fff', fontSize: '0.7rem', fontWeight: 700 }}>
+                                                                            대기
+                                                                        </span>
+                                                                    )}
+                                                                    {sf.goods_name}
+                                                                </div>
+                                                                <div>
+                                                                    {config.groupUrl && sf.order_sno ? `주문 ${sf.order_sno} · ` : ''}송장 {sf.invoice} · 사유: {sf.reason}
+                                                                </div>
                                                                 {memo && <div>고객메모: {memo}</div>}
+                                                                {(() => {
+                                                                    if (!config.groupUrl || !sf.order_sno) return null;
+                                                                    const group = (faultItems || []).filter((i) => i.order_sno === sf.order_sno);
+                                                                    // 같은 주문이 2건 이상일 때, 그 주문의 첫 행에만 묶음 실행 버튼을 보여준다.
+                                                                    if (group.length < 2 || group[0] !== sf) return null;
+                                                                    return (
+                                                                        <button
+                                                                            type="button"
+                                                                            className={styles.primaryBtn}
+                                                                            style={{ marginTop: 4 }}
+                                                                            onClick={() => processSellerFaultGroup(item.key, group)}
+                                                                            disabled={group.some((g) => sellerFaultProcessing.has(`${item.key}:${config.itemKey(g)}`))}
+                                                                        >
+                                                                            같은 주문 {group.length}건 함께 실행
+                                                                        </button>
+                                                                    );
+                                                                })()}
                                                             </div>
+                                                            {config.holdUrl && (
+                                                                <button
+                                                                    type="button"
+                                                                    className={styles.filterBtn}
+                                                                    onClick={() => toggleSellerFaultHold(item.key, sf)}
+                                                                    disabled={isProcessing}
+                                                                >
+                                                                    {sf.hold ? '대기 해제' : '대기상태'}
+                                                                </button>
+                                                            )}
                                                             <button
                                                                 type="button"
                                                                 className={styles.primaryBtn}
                                                                 onClick={() => processSellerFaultItem(item.key, sf)}
-                                                                disabled={isProcessing}
+                                                                disabled={isProcessing || !!sf.hold}
+                                                                title={sf.hold ? '대기상태입니다. 같은 주문 건과 함께 실행하거나 대기를 해제하세요.' : undefined}
                                                             >
                                                                 {isProcessing ? '처리 중...' : '실행'}
                                                             </button>

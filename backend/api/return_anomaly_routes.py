@@ -9,6 +9,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 from services.delivery_anomaly_logic import evaluate_return_scan_delay, is_invoice_missing, latest_movement, parse_llogis_scan_date
 from services.return_anomaly_store import sync_anomalies
+from services.seller_return_store import is_seller_return_item
 
 try:
     from sdk.ably import AblyClient
@@ -56,6 +57,7 @@ def build_return_anomaly_router(*, get_current_user, get_db, get_setting, set_se
                     "scanDate": r["scan_date"],
                     "reason": r["reason"],
                     "detectedAt": r["detected_at"],
+                    "isSeller": bool(r["is_seller"]),
                 }
                 for r in rows
             ]
@@ -128,6 +130,7 @@ def build_return_anomaly_router(*, get_current_user, get_db, get_setting, set_se
                         "location": latest.get("scanBrshNm") or "-",
                         "scan_date": latest.get("rgstYmd") or "-",
                         "reason": reason,
+                        "is_seller": is_seller_return_item(raw),
                     }
 
         conn = get_db()

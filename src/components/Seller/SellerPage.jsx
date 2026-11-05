@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import styles from './SellerPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders } from '../../lib/api';
+import SellerStatsDashboard from './SellerStatsDashboard';
 
 const TYPE_FILTERS = [
     { key: 'all', label: '전체' },
@@ -19,8 +20,11 @@ const SellerPage = () => {
     const [search, setSearch] = useState('');
     const [collapsed, setCollapsed] = useState(new Set());
     const [zoomImage, setZoomImage] = useState(null);
+    const [view, setView] = useState('list');
+    const [loaded, setLoaded] = useState(false); // 새로고침 버튼을 눌러 한 번이라도 불러왔는지
 
     const fetchAll = async () => {
+        setLoaded(true);
         setLoading(true);
         setError('');
         try {
@@ -45,8 +49,6 @@ const SellerPage = () => {
         }
     };
 
-    useEffect(() => { fetchAll(); }, []);
-
     const rows = useMemo(() => {
         const all = [
             ...returns.map((r) => ({
@@ -56,9 +58,11 @@ const SellerPage = () => {
                 reason: r.reason,
                 comment: r.user_comment,
                 invoice: r.invoice,
+                order_sno: r.order_sno,
                 buyer_name: r.buyer_name,
                 buyer_tel: r.buyer_tel,
                 images: r.images || [],
+                thumbs: r.images_webp || [],
             })),
             ...exchanges.map((e) => ({
                 type: 'exchange',
@@ -67,6 +71,7 @@ const SellerPage = () => {
                 reason: e.reason,
                 comment: e.detail_reason,
                 invoice: e.invoice,
+                order_sno: e.order_sno,
                 buyer_name: e.buyer_name,
                 buyer_tel: e.buyer_tel,
                 images: e.images || [],
@@ -107,8 +112,10 @@ const SellerPage = () => {
                 {r.images.slice(0, 3).map((src, i) => (
                     <img
                         key={i}
-                        src={src}
+                        src={r.thumbs?.[i] || src}
                         alt="사진"
+                        loading="lazy"
+                        decoding="async"
                         className={styles.thumb}
                         onClick={() => setZoomImage(src)}
                     />
@@ -124,7 +131,7 @@ const SellerPage = () => {
                 </div>
                 {r.comment && <div className={styles.comment}>고객메모: {r.comment}</div>}
                 <div className={styles.meta}>
-                    송장 {r.invoice || '-'} · {r.buyer_name || '-'} · {r.buyer_tel || '-'}
+                    주문번호 {r.order_sno || '-'} · 송장 {r.invoice || '-'} · {r.buyer_name || '-'} · {r.buyer_tel || '-'}
                 </div>
             </div>
         </div>
@@ -139,12 +146,31 @@ const SellerPage = () => {
                         반품·교환 중 판매자 사유(상품 하자/오배송, 셀러 변경)로 접수된 미처리 건 · 최근 30일
                     </p>
                 </div>
-                <button type="button" className={styles.btn} onClick={fetchAll} disabled={loading}>
-                    <RefreshCw size={13} className={loading ? styles.spinning : undefined} />
-                    새로고침
-                </button>
+                <div className={styles.segment}>
+                    <button
+                        type="button"
+                        className={`${styles.segBtn} ${view === 'list' ? styles.segBtnActive : ''}`}
+                        onClick={() => setView('list')}
+                    >
+                        목록
+                    </button>
+                    <button
+                        type="button"
+                        className={`${styles.segBtn} ${view === 'stats' ? styles.segBtnActive : ''}`}
+                        onClick={() => setView('stats')}
+                    >
+                        통계
+                    </button>
+                </div>
+                {view === 'list' && (
+                    <button type="button" className={styles.btn} onClick={fetchAll} disabled={loading}>
+                        <RefreshCw size={13} className={loading ? styles.spinning : undefined} />
+                        새로고침
+                    </button>
+                )}
             </div>
 
+            {view === 'stats' ? <SellerStatsDashboard /> : (<>
             <div className={styles.toolbar}>
                 <div className={styles.segment}>
                     {TYPE_FILTERS.map((f) => (
@@ -180,7 +206,10 @@ const SellerPage = () => {
 
             {error && <div className={styles.error}>{error}</div>}
             {loading && <div className={styles.empty}>불러오는 중...</div>}
-            {!loading && rows.length === 0 && !error && (
+            {!loaded && !loading && (
+                <div className={styles.empty}>새로고침 버튼을 누르면 판매자 사유 건을 불러옵니다.</div>
+            )}
+            {loaded && !loading && rows.length === 0 && !error && (
                 <div className={styles.empty}>판매자 사유 건이 없습니다.</div>
             )}
 
@@ -205,6 +234,7 @@ const SellerPage = () => {
             {!loading && !groupByProduct && rows.length > 0 && (
                 <div className={styles.groupBody}>{rows.map(renderRow)}</div>
             )}
+            </>)}
 
             {zoomImage && (
                 <div className={styles.zoomOverlay} onClick={() => setZoomImage(null)}>

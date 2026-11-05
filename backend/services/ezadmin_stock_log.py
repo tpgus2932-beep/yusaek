@@ -41,6 +41,9 @@ async def fetch_ezadmin_stock_logs(
             except Exception:
                 return None
             if "rows" not in obj:
+                # 기간 내 기록이 없으면 {"page":"1","total":0,"records":0}처럼 rows 없이 온다 - 세션 만료가 아니라 빈 결과다.
+                if isinstance(obj, dict) and "records" in obj:
+                    break
                 return None
             for row in obj.get("rows", []):
                 c = row.get("cell") or {}

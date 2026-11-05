@@ -49,6 +49,7 @@ from api.collab_routes import build_collab_router
 from api.barcode_routes import build_barcode_router
 from services import defect_tab
 from api.inventory_dashboard_routes import build_inventory_dashboard_router, init_inventory_dashboard_tables
+from api.stock_check_routes import build_stock_check_router
 from api.luna_order_routes import build_luna_order_router
 from api.order_recommendation_routes import build_order_recommendation_router
 from services.order_recommendation_store import init_order_recommendation_tables
@@ -61,7 +62,6 @@ from api.returns_routes import build_returns_router
 from api.order_routes import build_order_router
 from api.order_receiving_compare_routes import build_order_receiving_compare_router
 from api.noye_kimsungil_routes import build_noye_kimsungil_router
-from api.zigzag_upload_routes import build_zigzag_upload_router
 from api.misong_routes import build_misong_router
 from api.receipt_routes import build_receipt_router
 from api.wonbe_routes import _get_wonbe_db as _receipt_get_wonbe_db
@@ -69,6 +69,7 @@ from api.wonbe_routes import _get_janggi_db as _receipt_get_janggi_db
 from api.sms_routes import build_sms_router
 from api.return_shipping_routes import build_return_shipping_router
 from api.return_automation_routes import build_return_automation_router
+from api.seller_stats_routes import build_seller_stats_router
 from api.exchange_return_routes import build_exchange_return_router
 from api.pastelco_routes import build_pastelco_router
 from api.ably_minus_routes import build_ably_minus_router
@@ -1739,6 +1740,7 @@ app.include_router(
         get_user_display=_get_user_display,
         get_shared_db=_get_shared_db,
         get_db=_get_db,
+        get_normalization_db=_get_automation_db,
     )
 )
 app.include_router(
@@ -1748,6 +1750,15 @@ app.include_router(
         normalize_code=normalize_code,
         get_db=_get_shared_db,
         allow_refresh=not _IS_RENDER,
+    )
+)
+app.include_router(
+    build_stock_check_router(
+        get_current_user=_get_current_user,
+        get_setting=_get_setting,
+        normalize_code=normalize_code,
+        get_shared_db=_get_shared_db,
+        get_local_db=_get_automation_db,
     )
 )
 app.include_router(
@@ -1792,6 +1803,7 @@ app.include_router(
         enqueue_sms=_enqueue_sms_fn,
         get_shared_db=_get_shared_db,
         set_setting=_set_setting,
+        get_stats_db=_get_automation_db,
     )
 )
 
@@ -1801,8 +1813,16 @@ _exchange_return_router = build_exchange_return_router(
     get_db=_get_shared_db,
     enqueue_sms=_enqueue_sms_fn,
     set_setting=_set_setting,
+    get_stats_db=_get_automation_db,
 )
 app.include_router(_exchange_return_router)
+
+app.include_router(
+    build_seller_stats_router(
+        get_current_user=_get_current_user,
+        get_db=_get_automation_db,  # 판매자 통계는 Turso 설정과 무관하게 항상 로컬 SQLite
+    )
+)
 
 app.include_router(
     build_pastelco_router(
@@ -1911,6 +1931,9 @@ _ensure_post_shipment_cancel_stock_review_column(
 )
 _ensure_post_shipment_cancel_stock_review_column(
     "item_snos", "ALTER TABLE post_shipment_cancel_stock_review ADD COLUMN item_snos TEXT NOT NULL DEFAULT '[]'"
+)
+_ensure_post_shipment_cancel_stock_review_column(
+    "stock_items", "ALTER TABLE post_shipment_cancel_stock_review ADD COLUMN stock_items TEXT NOT NULL DEFAULT '[]'"
 )
 
 app.include_router(
@@ -2073,11 +2096,6 @@ app.include_router(
         get_setting=_get_setting,
         set_setting=_set_setting,
         get_db=_get_db,
-    )
-)
-app.include_router(
-    build_zigzag_upload_router(
-        get_current_user=_get_current_user,
         get_shared_db=_get_shared_db,
     )
 )

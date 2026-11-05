@@ -171,6 +171,23 @@ const ReturnInspectionTab = () => {
         }
     };
 
+    const handleReset = async () => {
+        if (!window.confirm('이 임시저장본의 검수 진행(스캔 수량·오류 기록)을 모두 초기화할까요? 상품 리스트는 그대로 유지됩니다.')) {
+            focusScan();
+            return;
+        }
+        try {
+            const json = await request('/reset', { snapshot_ids: activeIds });
+            setData(json);
+            setFlash(null);
+            setError('');
+        } catch (err) {
+            setError(err.message || '초기화 실패');
+        } finally {
+            focusScan();
+        }
+    };
+
     const handleClearErrors = async () => {
         try {
             setData(await request('/clear-errors', { snapshot_ids: activeIds }));
@@ -270,6 +287,15 @@ const ReturnInspectionTab = () => {
                 >
                     마지막 스캔 취소
                 </button>
+                <button
+                    type="button"
+                    className={pageStyles.secondaryBtn}
+                    disabled={!activeIds.length || loading}
+                    onClick={handleReset}
+                    title="조회 중인 임시저장본의 검수 진행을 모두 0으로 되돌립니다"
+                >
+                    초기화
+                </button>
             </div>
 
             <div className={styles.scanBox}>
@@ -299,7 +325,12 @@ const ReturnInspectionTab = () => {
 
             {flashInfo && (
                 <div className={`${styles.flash} ${flashInfo[1]}`}>
-                    <strong>{flashInfo[0]}</strong>
+                    <strong>
+                        {flashInfo[0]}
+                        {flash.result === 'next' && itemByCode[flash.code]
+                            ? ` · 남은 ${Math.max(itemByCode[flash.code].total - itemByCode[flash.code].scanned, 0)}개`
+                            : ''}
+                    </strong>
                     <span>{flash.code}{itemByCode[flash.code] ? ` · ${itemByCode[flash.code].name}` : ''}</span>
                 </div>
             )}

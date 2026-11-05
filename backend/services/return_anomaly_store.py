@@ -26,6 +26,10 @@ def init_return_anomaly_tables(get_db) -> None:
         )
         """
     )
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(return_anomalies)").fetchall()]
+    if "is_seller" not in cols:
+        # 판매자 귀책 건 표시용 - 다음 이상현상 점검 때 기존 행도 갱신된다.
+        conn.execute("ALTER TABLE return_anomalies ADD COLUMN is_seller INTEGER NOT NULL DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -44,6 +48,12 @@ def sync_anomalies(conn, computed: dict[str, dict]) -> None:
         anomaly_id = existing_by_invoice[inv]
         conn.execute("DELETE FROM return_anomalies WHERE id = ?", (anomaly_id,))
 
+    for inv in set(computed) & set(existing_by_invoice):
+        conn.execute(
+            "UPDATE return_anomalies SET is_seller = ? WHERE id = ?",
+            (1 if computed[inv].get("is_seller") else 0, existing_by_invoice[inv]),
+        )
+
     new_invoices = set(computed) - set(existing_by_invoice)
     detected_at = datetime.now(_KST).isoformat()
     for inv in new_invoices:
@@ -52,8 +62,8 @@ def sync_anomalies(conn, computed: dict[str, dict]) -> None:
             """
             INSERT INTO return_anomalies
                 (return_invoice_no, origin_invoice_no, order_no, product_name, option_info,
-                 phone, requested_at, status, location, scan_date, reason, detected_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 phone, requested_at, status, location, scan_date, reason, detected_at, is_seller)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 inv,
@@ -68,6 +78,7 @@ def sync_anomalies(conn, computed: dict[str, dict]) -> None:
                 data.get("scan_date", ""),
                 data.get("reason", ""),
                 detected_at,
+                1 if data.get("is_seller") else 0,
             ),
         )
 

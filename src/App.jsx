@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { EzadminSessionProvider } from './lib/EzadminSessionContext';
-import { ZigzagBulkUploadProvider } from './lib/ZigzagBulkUploadContext';
 import Sidebar from './components/Layout/Sidebar';
 import Header from './components/Layout/Header';
 import Overview from './components/Dashboard/Overview';
@@ -18,19 +17,20 @@ import ClientPage from './components/ClientSchedule/ClientPage';
 import SMSPage from './components/SMS/SMSPage';
 import CollaborationMenuPage from './components/CollabTools/CollaborationMenuPage';
 import MobileRequestKimsungilPage from './components/Mobile/MobileRequestKimsungilPage';
+import MobileLogPage from './components/Mobile/MobileLogPage';
 import CollabPortalPage from './components/Collab/CollabPortalPage';
 import AttendancePage from './components/Attendance/AttendancePage';
 import AttendanceAdminPage from './components/Attendance/AttendanceAdminPage';
 import TestTabs from './components/Test/TestTabs';
 import GuidebookPage from './components/Guidebook/GuidebookPage';
 import CSPage from './components/CS/CSPage';
+import CSStatsPage from './components/CS/CSStatsPage';
 import AmoodSettlement from './components/AmoodSettlement/AmoodSettlement';
 import DBManagerLayout from './components/DBManager/DBManagerLayout';
 import InventoryDashboardPage from './components/InventoryDashboard/InventoryDashboardPage';
-import ZigzagUploadPage from './components/Zigzag/ZigzagUploadPage';import OrderRecommendationDashboardPage from './components/OrderRecommendation/OrderRecommendationDashboardPage';
+import OrderRecommendationDashboardPage from './components/OrderRecommendation/OrderRecommendationDashboardPage';
 import TimeboxPage from './components/Timebox/TimeboxPage';
 import WorklogPage from './components/Worklog/WorklogPage';
-import SellerPage from './components/Seller/SellerPage';
 import OrderReceivingComparePage from './components/OrderReceivingCompare/OrderReceivingComparePage';
 import AIChatPage from './components/AI/AIChatPage';
 import { COLLAB_API_BASE } from './lib/api';
@@ -39,16 +39,17 @@ import { COLLAB_API_BASE } from './lib/api';
 const KNOWN_TABS = [
   'dashboard', 'barcode', 'returns', 'barcode-product-upload',
   'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'hapbae-management',
-  'zigzag-upload', 'test', 'order', 'admin', 'settings', 'margin-calc', 'ai',
+  'test', 'order', 'admin', 'settings', 'margin-calc', 'ai', 'cs-stats',
 ];
 
 // 상단 메뉴 모드. 새로고침해도 보던 메뉴가 유지되도록 localStorage에 저장한다.
-const TOP_MODES = ['home', 'db-manager', 'inventory-dashboard', 'order-dashboard', 'timebox', 'worklog', 'seller', 'order-receiving', 'cs'];
+const TOP_MODES = ['home', 'db-manager', 'inventory-dashboard', 'order-dashboard', 'timebox', 'worklog', 'order-receiving', 'cs'];
 
 const App = () => {
   const pathname = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
   const isMobileKimsungilRequestRoute = pathname === '/request-kimsungil';
   const isCollabPortalRoute = pathname === '/collab';
+  const isMobileLogRoute = ['/bacode', '/barcode'].includes(pathname.toLowerCase()); // 모바일 전용 로그 확인
   const isAttendanceRoute = pathname === '/attendance';
   const isAttendanceAdminRoute = pathname === '/attendance-admin';
   const isPaymentRequestRoute = pathname === '/payment-request';
@@ -79,6 +80,7 @@ const App = () => {
     if (!KNOWN_TABS.includes(tab)) return false;
     if (userRole === 'viewer') return tab === 'dashboard';
     if (tab === 'settings') return true;
+    if (tab === 'cs-stats') return username === 'ksh2932';
     if (tab === 'order' || tab === 'admin') {
       return adminFlag && !hidden.includes(tab);
     }
@@ -217,7 +219,7 @@ const App = () => {
 
   // viewer 역할이면 hiddenTabs 무시하고 대시보드만 허용
   const effectiveHiddenTabs = role === 'viewer'
-    ? ['barcode', 'returns', 'barcode-product-upload', 'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'order', 'admin', 'settings', 'hapbae-management', 'zigzag-upload', 'test', 'margin-calc', 'ai']
+    ? ['barcode', 'returns', 'barcode-product-upload', 'noye-kimsungil', 'client-schedule', 'sms', 'collaboration-menu', 'order', 'admin', 'settings', 'hapbae-management', 'test', 'margin-calc', 'ai']
     : hiddenTabs;
 
   const handleLogout = () => {
@@ -275,6 +277,14 @@ const App = () => {
     return <AuthPage onAuth={handleAuthWithUser} />;
   }
 
+  if (isMobileLogRoute) {
+    return (
+      <EzadminSessionProvider>
+        <MobileLogPage />
+      </EzadminSessionProvider>
+    );
+  }
+
   if (isCollabPortalRoute) {
     return (
       <CollabPortalPage
@@ -287,7 +297,6 @@ const App = () => {
 
   return (
     <EzadminSessionProvider>
-    <ZigzagBulkUploadProvider>
     <div className={styles.appContainer}>
       {topMode === 'home' && (
         <Sidebar
@@ -296,6 +305,7 @@ const App = () => {
           isDarkMode={isDarkMode}
           toggleTheme={toggleTheme}
           isAdmin={isAdmin}
+          showCsStats={username === 'ksh2932'}
           hiddenTabs={effectiveHiddenTabs}
           menuLabels={menuLabels}
           onLogout={handleLogout}
@@ -320,7 +330,6 @@ const App = () => {
         {topMode === 'order-dashboard' && <OrderRecommendationDashboardPage />}
         {topMode === 'timebox' && <TimeboxPage currentUser={username} />}
         {topMode === 'worklog' && <WorklogPage currentUser={username} />}
-        {topMode === 'seller' && <SellerPage />}
         {topMode === 'order-receiving' && <OrderReceivingComparePage />}
         {topMode === 'cs' && <CSPage />}
 
@@ -342,8 +351,8 @@ const App = () => {
             {visibleActiveTab === 'hapbae-management' && !effectiveHiddenTabs.includes('hapbae-management') && (
               <HapbaeManagementTabs transferredAmoodFile={amoodHapbaeTransfer} />
             )}
-            {visibleActiveTab === 'zigzag-upload' && !effectiveHiddenTabs.includes('zigzag-upload') && <ZigzagUploadPage />}
             {visibleActiveTab === 'test' && !effectiveHiddenTabs.includes('test') && <TestTabs />}
+            {visibleActiveTab === 'cs-stats' && username === 'ksh2932' && <CSStatsPage />}
             {visibleActiveTab === 'ai' && !effectiveHiddenTabs.includes('ai') && <AIChatPage />}
             {visibleActiveTab === 'order' && isAdmin && !effectiveHiddenTabs.includes('order') && <OrderPage />}
             {visibleActiveTab === 'admin' && isAdmin && !effectiveHiddenTabs.includes('admin') && <AdminUsers currentUser={username} />}
@@ -369,7 +378,6 @@ const App = () => {
 
       </main>
     </div>
-    </ZigzagBulkUploadProvider>
     </EzadminSessionProvider>
   );
 };

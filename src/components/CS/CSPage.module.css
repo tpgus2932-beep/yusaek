@@ -1096,3 +1096,53 @@
     font-weight: 400;
     box-sizing: border-box;
 }
+
+/* 작업 탭: 버튼 그룹 묶기 */
+.actionToolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.actionGroup {
+    margin-bottom: 8px;
+    padding: 6px;
+    border-radius: 14px;
+    background: var(--cs-accent-soft);
+}
+
+.actionGroupHead {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.actionGroupToggle {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 6px;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: 0.84rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.actionPick {
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+}
+
+.actionPickBody {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}

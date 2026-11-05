@@ -5,6 +5,7 @@ ContextVar로 읽어 탭별 저장소를 고른다 (엔드포인트 코드는 �
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from contextvars import ContextVar
 from urllib.parse import unquote
 
@@ -90,6 +91,16 @@ def set_tab_red(name: str | None, red: bool) -> str:
     else:
         RED_TABS.discard(tab)
     return tab
+
+
+@contextmanager
+def use_tab(name: str):
+    """블록 안에서만 현재 탭을 name으로 바꾼다(탭별 저장소를 다른 탭 기준으로 읽고 쓸 때)."""
+    token = _current_tab.set(normalize_tab(name))
+    try:
+        yield
+    finally:
+        _current_tab.reset(token)
 
 
 def current_tab() -> str:

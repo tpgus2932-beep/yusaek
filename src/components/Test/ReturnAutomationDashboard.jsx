@@ -87,8 +87,43 @@ const STATUS_META = {
 const STAGE_LABELS = {
   LLOGIS_RETURN_STATUS: "LLogis 반송장조회",
   EZADMIN_ORDER_SEARCH: "EZAdmin 주문번호검색",
+  EZADMIN_TAKEBACK: "EZAdmin 회수여부조회",
   EZADMIN_CS_HISTORY: "EZAdmin CS이력조회",
 };
+
+// 조회(30일치)는 건마다 이지어드민에서 회수 여부를 확인하느라 오래 걸려서, 서버가 알려주는 진행상황을 폴링해 보여준다.
+function PreviewProgress({ active }) {
+  const [p, setP] = useState(null);
+  useEffect(() => {
+    if (!active) return undefined;
+    let stop = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(`${API}/return-automation/preview/progress`, { headers: getAuthHeaders() });
+        const data = await res.json().catch(() => null);
+        if (!stop && data) setP(data);
+      } catch { /* 일시적인 실패는 다음 폴링에서 다시 */ }
+    };
+    tick();
+    const id = setInterval(tick, 700);
+    return () => { stop = true; clearInterval(id); };
+  }, [active]);
+  if (!active || !p || !p.running) return null;
+  const pct = p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : 0;
+  return (
+    <div style={{ margin: "0.5rem 0" }}>
+      <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", fontSize: "0.82rem" }}>
+        <strong>{p.phase || "조회 중"}</strong>
+        <span>{p.done}/{p.total || "?"} ({pct}%)</span>
+        {p.returned > 0 && <span>· 이미 회수 접수 {p.returned}건 제외</span>}
+        {p.current && <span style={{ opacity: 0.6 }}>· 현재 {p.current}</span>}
+      </div>
+      <div style={{ height: 6, background: "#e5e7eb", borderRadius: 999, overflow: "hidden", marginTop: 4 }}>
+        <div style={{ width: `${pct}%`, height: "100%", background: "#7c3aed", transition: "width 0.3s ease" }} />
+      </div>
+    </div>
+  );
+}
 
 function StatusBadge({ status, stage }) {
   const meta = STATUS_META[status] || { label: status || "-", className: styles.badgeNeutral };
@@ -126,6 +161,26 @@ function limitLineBreaks(text) {
 }
 
 
+const SORT_GETTERS = {
+  order: (x) => x.cancel_sno || x.order_no || "",
+  phone: (x) => x.phone || "",
+  returnDate: (x) => x.return_date || "",
+  returnInvoice: (x) => x.return_invoice_no || "",
+  logis: (x) => x.logis?.llogis_status || "",
+  inputTime: (x) => x.input_time || "",
+  status: (x) => x.elapsed_status || "",
+  result: (x) =>
+    x.rejectError ? "거부실패"
+    : x.rejected ? "반품거부됨"
+    : x.executeError ? "실행오류"
+    : x.groupedWith ? "묶음처리"
+    : x.skipped ? "이미처리됨"
+    : x.executed ? "처리완료"
+    : "",
+  lastDirection: (x) => directionLabel(x.last_direction) || "",
+  content: (x) => x.error || x.received_content || "",
+};
+
 export default function ReturnAutomationDashboard() {
   const [run, setRun] = useState(() => loadStored(RUN_STORAGE_KEY, null));
   const [selected, setSelected] = useState(() => loadStored(SELECTED_STORAGE_KEY, {}));
@@ -160,6 +215,8 @@ export default function ReturnAutomationDashboard() {
   const [replySending, setReplySending] = useState({});
   const [csChecking, setCsChecking] = useState(false);
   const [csDetail, setCsDetail] = useState(null);
+  // 주문매칭실패 건 수동 매칭: { item, keyword, loading, candidates, error, applying }
+  const [matchModal, setMatchModal] = useState(null);
   const [rejecting, setRejecting] = useState(false);
   const [subTab, setSubTab] = useState("scan"); // "scan" | "manual"
   const [manualInvoices, setManualInvoices] = useState([]);
@@ -171,6 +228,7 @@ export default function ReturnAutomationDashboard() {
   const [manualStatusMessage, setManualStatusMessage] = useState("");
   const [manualStatusMessageIsError, setManualStatusMessageIsError] = useState(false);
   const [specialNoteSyncing, setSpecialNoteSyncing] = useState(false);
+  const [sortConfig, setSortConfig] = useState({ key: null, dir: "asc" });
   const ezdeskRetryRef = useRef(null);
   const { openModal: openEzadminModal } = useEzadminSession();
 
@@ -443,7 +501,7 @@ export default function ReturnAutomationDashboard() {
     const job = activePreviewJob;
     setBusy(true);
     setMessageIsError(false);
-    setMessage("최근 30일 반품 조회 → LOGIS 조회 → CS 조회 중... (다른 메뉴에 다녀와도 계속 진행됩니다)");
+    setMessage("최근 30일 반품 조회 → 이지어드민 회수 확인 → CS 조회 중... (다른 메뉴에 다녀와도 계속 진행됩니다)");
     job.listeners.add(applyPreviewResult);
     return () => job.listeners.delete(applyPreviewResult);
   }, [applyPreviewResult]);
@@ -455,7 +513,34 @@ export default function ReturnAutomationDashboard() {
   // 실행가능(eligible) 행만 표시한다. 다만 "상태별 선택"에서 대기중/오류 등 다른
   // 상태 칩을 체크하면 그 상태의 항목들이 selected에 추가되므로, 그것도 함께
   // 표에 노출해 사용자가 체크한 대상을 눈으로 확인할 수 있게 한다.
-  const visibleItems = run ? run.items.filter((x) => x.eligible || selected[x.invoice_no]) : [];
+  const filteredItems = run ? run.items.filter((x) => x.eligible || selected[x.invoice_no]) : [];
+  const visibleItems = (() => {
+    if (!sortConfig.key) return filteredItems;
+    const getter = SORT_GETTERS[sortConfig.key];
+    const dir = sortConfig.dir === "asc" ? 1 : -1;
+    return filteredItems
+      .map((item, idx) => ({ item, idx, v: getter(item) }))
+      .sort((a, b) => {
+        const aEmpty = a.v === "" || a.v == null;
+        const bEmpty = b.v === "" || b.v == null;
+        if (aEmpty !== bEmpty) return aEmpty ? 1 : -1; // 빈 값은 항상 뒤로
+        const c = typeof a.v === "number" && typeof b.v === "number"
+          ? a.v - b.v
+          : String(a.v).localeCompare(String(b.v), "ko", { numeric: true });
+        return c * dir || a.idx - b.idx;
+      })
+      .map((x) => x.item);
+  })();
+  const toggleSort = (key) =>
+    setSortConfig((prev) =>
+      prev.key !== key ? { key, dir: "asc" } : prev.dir === "asc" ? { key, dir: "desc" } : { key: null, dir: "asc" }
+    );
+  const sortableTh = (key, label) => (
+    <th onClick={() => toggleSort(key)} style={{ cursor: "pointer", userSelect: "none" }} title="클릭: 오름차순 → 내림차순 → 해제">
+      {label}
+      {sortConfig.key === key ? (sortConfig.dir === "asc" ? " ▲" : " ▼") : <span style={{ opacity: 0.3 }}> ↕</span>}
+    </th>
+  );
 
   // Groups invoice numbers by status so the status-filter chips can show a
   // count and know which rows to toggle without re-scanning run.items.
@@ -567,7 +652,7 @@ export default function ReturnAutomationDashboard() {
     if (activePreviewJob) return; // already running - the mount effect above is already subscribed
     setBusy(true);
     setMessageIsError(false);
-    setMessage("최근 30일 반품 조회 → LOGIS 조회 → CS 조회 중... (다른 메뉴에 다녀와도 계속 진행됩니다)");
+    setMessage("최근 30일 반품 조회 → 이지어드민 회수 확인 → CS 조회 중... (다른 메뉴에 다녀와도 계속 진행됩니다)");
     const job = startPreviewJob();
     job.listeners.add(applyPreviewResult);
   };
@@ -658,10 +743,11 @@ export default function ReturnAutomationDashboard() {
   };
 
   const checkCs = async () => {
-    const targets = (run.items || []).filter((x) => (x.sms_sent_count || 0) >= 2 && x.phone);
+    // 조회 대상 전체(전화번호가 있는 건)를 확인한다. 문자 발송 횟수와 무관.
+    const targets = (run.items || []).filter((x) => x.phone);
     if (!targets.length) {
       setMessageIsError(true);
-      setMessage("문자 2회 이상 발송된 건이 없습니다.");
+      setMessage("전화번호가 확인된 건이 없어 CS를 조회할 수 없습니다.");
       return;
     }
     setCsChecking(true);
@@ -691,6 +777,82 @@ export default function ReturnAutomationDashboard() {
       setMessage(err.message);
     } finally {
       setCsChecking(false);
+    }
+  };
+
+  // ---- 주문매칭실패 건 수동 매칭 ----
+  const openMatch = (item) => {
+    setMatchModal({ item, keyword: String(item.phone || "").replace(/\D/g, ""), loading: false, candidates: null, error: "", applying: false });
+  };
+
+  const searchMatch = async () => {
+    if (!matchModal) return;
+    const keyword = matchModal.keyword.trim();
+    if (!keyword) return;
+    setMatchModal((m) => ({ ...m, loading: true, error: "", candidates: null }));
+    try {
+      const res = await fetch(`${API}/return-automation/match/search`, {
+        method: "POST",
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ keyword }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "검색 실패");
+      setMatchModal((m) => (m ? { ...m, loading: false, candidates: data.candidates || [] } : m));
+    } catch (err) {
+      setMatchModal((m) => (m ? { ...m, loading: false, error: err.message || "검색 실패" } : m));
+    }
+  };
+
+  const applyMatch = async (cand) => {
+    if (!matchModal) return;
+    const { item } = matchModal;
+    setMatchModal((m) => ({ ...m, applying: true, error: "" }));
+    try {
+      const res = await fetch(`${API}/return-automation/match/apply`, {
+        method: "POST",
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ invoice_no: item.invoice_no, pack: cand.pack, ez_invoice: cand.ez_invoice, item }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "매칭 실패");
+      setRun((prev) => {
+        if (!prev) return prev;
+        if (data.returned) return { ...prev, items: prev.items.filter((x) => x.invoice_no !== item.invoice_no) };
+        return { ...prev, items: prev.items.map((x) => (x.invoice_no === item.invoice_no ? data.item : x)) };
+      });
+      setMessageIsError(false);
+      setMessage(
+        data.returned
+          ? `송장 ${item.invoice_no}: 이지어드민에 이미 회수(반송장 ${(data.takebacks || []).join(", ")})가 접수돼 있어 목록에서 뺐습니다.`
+          : `송장 ${item.invoice_no}: 이지어드민 주문(관리번호 ${cand.pack})과 매칭했습니다.`
+      );
+      setMatchModal(null);
+    } catch (err) {
+      setMatchModal((m) => (m ? { ...m, applying: false, error: err.message || "매칭 실패" } : m));
+    }
+  };
+
+  const removeMatch = async (item) => {
+    if (!window.confirm(`송장 ${item.invoice_no}의 수동 매칭을 해제할까요? 다음 조회부터 다시 주문매칭실패로 표시됩니다.`)) return;
+    try {
+      const res = await fetch(`${API}/return-automation/match/${encodeURIComponent(item.invoice_no)}`, {
+        method: "DELETE",
+        headers: getAuthHeaders(),
+      });
+      if (handleUnauthorized(res)) return;
+      if (!res.ok) throw new Error("해제 실패");
+      setRun((prev) => (prev ? {
+        ...prev,
+        items: prev.items.map((x) => (x.invoice_no === item.invoice_no
+          ? { ...x, matched_manually: false, ez_invoice_no: "", elapsed_status: "CS_SEQ_MISSING", eligible: false }
+          : x)),
+      } : prev));
+    } catch (err) {
+      setMessageIsError(true);
+      setMessage(err.message || "해제 실패");
     }
   };
 
@@ -886,6 +1048,7 @@ export default function ReturnAutomationDashboard() {
         </div>
       )}
 
+      <PreviewProgress active={busy} />
       {message && (
         <p className={`${styles.message} ${messageIsError ? styles.messageError : ""}`}>{message}</p>
       )}
@@ -934,16 +1097,16 @@ export default function ReturnAutomationDashboard() {
                     </label>
                   </th>
                   <th style={{ width: "28px" }}></th>
-                  <th>주문/송장</th>
-                  <th>전화번호</th>
-                  <th>반품신청일</th>
-                  <th>반송장</th>
-                  <th>원송장 LOGIS</th>
-                  <th>CS 등록일시</th>
-                  <th>상태</th>
-                  <th>실행결과</th>
-                  <th>마지막 문자</th>
-                  <th>수신 내용 / 오류</th>
+                  {sortableTh("order", "주문/송장")}
+                  {sortableTh("phone", "전화번호")}
+                  {sortableTh("returnDate", "반품신청일")}
+                  {sortableTh("returnInvoice", "반송장")}
+                  {sortableTh("logis", "원송장 LOGIS")}
+                  {sortableTh("inputTime", "CS 등록일시")}
+                  {sortableTh("status", "상태")}
+                  {sortableTh("result", "실행결과")}
+                  {sortableTh("lastDirection", "마지막 문자")}
+                  {sortableTh("content", "수신 내용 / 오류")}
                   <th>문자 발송</th>
                 </tr>
               </thead>
@@ -1014,7 +1177,20 @@ export default function ReturnAutomationDashboard() {
                         {item.logis?.llogis_status || "-"}
                       </td>
                       <td>{item.input_time || "-"}</td>
-                      <td><StatusBadge status={item.elapsed_status} stage={item.error_stage} /></td>
+                      <td>
+                        <StatusBadge status={item.elapsed_status} stage={item.error_stage} />
+                        {item.matched_manually && (
+                          <span className={`${styles.badge} ${styles.badgeNeutral}`} style={{ marginLeft: "0.3rem" }} title={`이지어드민 송장 ${item.ez_invoice_no || "-"}로 수동 매칭됨`}>수동매칭</span>
+                        )}
+                        {item.elapsed_status === "CS_SEQ_MISSING" && (
+                          <button type="button" className={styles.smsIndexBtn} style={{ marginLeft: "0.4rem" }} onClick={() => openMatch(item)} title="구매자 전화번호로 이지어드민 주문을 찾아 직접 매칭합니다">
+                            수동 매칭
+                          </button>
+                        )}
+                        {item.matched_manually && (
+                          <button type="button" className={styles.smsIndexBtn} style={{ marginLeft: "0.3rem" }} onClick={() => removeMatch(item)}>해제</button>
+                        )}
+                      </td>
                       <td>
                         {item.rejectError ? (
                           <span className={`${styles.badge} ${styles.badgeError}`} title={item.rejectError}>거부실패</span>
@@ -1319,6 +1495,65 @@ export default function ReturnAutomationDashboard() {
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {matchModal && (
+        <div className={styles.modalOverlay} onClick={() => setMatchModal(null)}>
+          <div className={styles.modalBox} style={{ width: "min(860px, 94vw)" }} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <span>주문 수동 매칭 · 에이블리 송장 {matchModal.item.invoice_no}</span>
+              <button type="button" className={styles.modalCloseBtn} onClick={() => setMatchModal(null)}>닫기</button>
+            </div>
+            <p className={styles.modalHint}>
+              {[matchModal.item.goods_name, matchModal.item.option_info, matchModal.item.buyer_name].filter(Boolean).join(" · ") || "반품 상품 정보 없음"}
+              {" — 구매자 전화번호로 이지어드민 주문을 검색해, 같은 건을 골라 주세요."}
+            </p>
+            <div style={{ display: "flex", gap: "0.5rem", margin: "0.5rem 0" }}>
+              <input
+                className={styles.modalInput}
+                value={matchModal.keyword}
+                placeholder="전화번호 (이름·주문번호도 가능)"
+                onChange={(e) => setMatchModal((m) => ({ ...m, keyword: e.target.value }))}
+                onKeyDown={(e) => e.key === "Enter" && searchMatch()}
+              />
+              <button type="button" className={styles.btn} onClick={searchMatch} disabled={matchModal.loading}>
+                {matchModal.loading ? "검색 중…" : "검색"}
+              </button>
+            </div>
+            {matchModal.error && <p className={styles.modalSmsContent} style={{ color: "#dc2626" }}>{matchModal.error}</p>}
+            {matchModal.candidates && matchModal.candidates.length === 0 && (
+              <p className={styles.modalSmsContent}>이지어드민에서 찾은 주문이 없습니다. 다른 번호나 이름으로 검색해 보세요.</p>
+            )}
+            {matchModal.candidates && matchModal.candidates.length > 0 && (
+              <div style={{ maxHeight: "50vh", overflow: "auto" }}>
+                <table className={styles.manualTable || undefined} style={{ width: "100%", fontSize: "0.8rem" }}>
+                  <thead>
+                    <tr><th>주문일</th><th>판매처</th><th>상품명</th><th>옵션</th><th>수량</th><th>수령자</th><th>이지어드민 송장</th><th>기존 회수</th><th></th></tr>
+                  </thead>
+                  <tbody>
+                    {matchModal.candidates.map((c, i) => (
+                      <tr key={`${c.pack}-${c.ez_invoice}-${i}`}>
+                        <td>{c.order_date}</td>
+                        <td>{c.shop_name}</td>
+                        <td>{c.product_name}</td>
+                        <td>{c.options}</td>
+                        <td>{c.qty}</td>
+                        <td>{c.recv_name}</td>
+                        <td>{c.ez_invoice || "-"}</td>
+                        <td>{c.takeback_count > 0 ? `${c.takeback_count}건 접수됨` : "없음"}</td>
+                        <td>
+                          <button type="button" className={styles.smsIndexBtn} disabled={matchModal.applying} onClick={() => applyMatch(c)}>
+                            이 주문으로 매칭
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       )}

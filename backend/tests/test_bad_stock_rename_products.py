@@ -143,6 +143,33 @@ def test_recorded_name_with_leftover_prefix_is_fixed_not_skipped(monkeypatch):
     assert item["new_name"] == "ZD 하트 워크 팬츠"
 
 
+def test_recheck_all_rereads_ezadmin_even_when_record_looks_clean(monkeypatch):
+    # 기록은 "ZB 런던 체크 스커트"로 깨끗하지만, 그 뒤 이지어드민에서 이름이 원래대로 돌아간 상품.
+    client, db = _make_client(monkeypatch, {"S00007": "런던 체크 스커트"})
+    _add_stock(db, "상의B", "S00007")
+    _add_record(db, "S00007", "런던 체크 스커트", "ZB 런던 체크 스커트", "B")
+
+    normal = client.post("/barcode/bad-stock/rename-products", json={"dry_run": True}).json()
+    assert normal["items"][0]["status"] == "skip"  # 기록만 믿고 다시 안 본다
+
+    recheck = client.post("/barcode/bad-stock/rename-products", json={"dry_run": True, "recheck_all": True}).json()
+    item = _by_code(recheck["items"])["S00007"]
+    assert item["status"] == "rename"
+    assert item["new_name"] == "ZB 런던 체크 스커트"
+
+
+def test_recheck_all_keeps_correct_names_as_already_changed(monkeypatch):
+    client, db = _make_client(monkeypatch, {"S00008": "ZB 런던 체크 스커트"})
+    _add_stock(db, "상의B", "S00008")
+    _add_record(db, "S00008", "런던 체크 스커트", "ZB 런던 체크 스커트", "B")
+
+    data = client.post("/barcode/bad-stock/rename-products", json={"dry_run": True, "recheck_all": True}).json()
+
+    item = _by_code(data["items"])["S00008"]
+    assert item["status"] == "skip"
+    assert item["message"] == "이미 변경됨"
+
+
 def test_clean_recorded_name_is_still_skipped(monkeypatch):
     client, db = _make_client(monkeypatch, {})
     _add_stock(db, "상의B", "S00005")

@@ -4,11 +4,13 @@ import CSStock from './CSStock';
 import CSAddressModal from './CSAddressModal';
 import CSPurchaseReturnModal from './CSPurchaseReturnModal';
 import CSReturnWithdrawModal from './CSReturnWithdrawModal';
+import CSCancelApproveModal from './CSCancelApproveModal';
 import CSDeliveryModal from './CSDeliveryModal';
 import CSExchangeModal from './CSExchangeModal';
 import CSHoldModal from './CSHoldModal';
 import CSLogModal from './CSLogModal';
 import CSRecallModal from './CSRecallModal';
+import CSActionPanel from './CSActionPanel';
 
 const fmtTime = (iso) => {
     if (!iso) return '';
@@ -91,6 +93,7 @@ const optionText = (o) => (o.options || []).join(' / ') || [o.option1, o.option2
 // extraTabs: 오른쪽 패널 끝에 덧붙일 탭 [{key, label, content}] (문의함의 답변 템플릿 등).
 const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', setDraft, acting = false, onReply, onComplete, splitInfo = false, keywordHits = [], extraTabs = [] }) => {
     const [returnOrder, setReturnOrder] = useState(''); // 구매확정 반품 모달에 띄울 주문번호
+    const [cancelOrder, setCancelOrder] = useState(''); // 취소 승인 모달에 띄울 주문번호
     const [withdrawOrder, setWithdrawOrder] = useState(''); // 반품 철회 모달에 띄울 주문번호
     const [addressOrder, setAddressOrder] = useState(''); // 주소 변경 모달에 띄울 주문번호
     const [deliveryOpen, setDeliveryOpen] = useState(false); // 배송 확인(전화번호 → 송장번호) 모달
@@ -114,6 +117,21 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
         if (keepFocus.current && !acting && !detailLoading && replyRef.current) replyRef.current.focus();
     }, [acting, detailLoading, selected, hasReplyBox]);
     const orderItems = detail?.order_items || [];
+    // 작업 탭 버튼 목록. 주문이 연결된 문의에서만 주문 작업이 포함된다.
+    const orderNoStr = product?.orderNo ? String(product.orderNo) : '';
+    const actionItems = [
+        ...(orderNoStr ? [
+            { id: 'address', title: '주소 변경', desc: `주문 ${orderNoStr}의 배송지를 이지어드민에서 변경`, onClick: () => setAddressOrder(orderNoStr) },
+            { id: 'purchaseReturn', title: '구매확정 반품', desc: '회수접수 + 회수 문자 + 반품 특이사항 등록', onClick: () => setReturnOrder(orderNoStr) },
+            { id: 'cancelApprove', title: '취소 승인', desc: `주문 ${orderNoStr}의 에이블리 구매자 취소요청을 승인`, onClick: () => setCancelOrder(orderNoStr) },
+            { id: 'returnWithdraw', title: '반품 철회', desc: `주문 ${orderNoStr}의 진행 중인 에이블리 반품 요청을 철회`, onClick: () => setWithdrawOrder(orderNoStr) },
+        ] : []),
+        { id: 'delivery', title: '배송 확인', desc: '고객 전화번호로 주문을 검색해 송장번호 확인', onClick: () => setDeliveryOpen(true) },
+        { id: 'csLog', title: 'CS 로그 확인', desc: '전화번호로 주문을 검색해 이지어드민 C/S 이력 확인', onClick: () => setLogOpen(true) },
+        { id: 'recall', title: '회수신청', desc: '전화번호로 주문을 검색해 선택하고, CS 로그를 보며 이지어드민에 회수접수', onClick: () => setRecallOpen(true) },
+        { id: 'hold', title: '보류 해제 · 정상 복귀', desc: '전화번호로 주문을 검색해 보류 해제 및 취소·CS 상태를 정상으로 복귀', onClick: () => setHoldOpen(true) },
+        { id: 'exchange', title: '상품 교환', desc: '전화번호로 주문을 검색해 주문 상품의 옵션을 이지어드민에서 교환', onClick: () => setExchangeOpen(true) },
+    ];
     const targetItems = product?.orderNo ? orderItems.filter((o) => String(o.order_sno) === String(product.orderNo)) : [];
 
     // section: 'all'(기존 한 덩어리) | 'rank'(주문 대기 순번만) | 'stock'(옵션별 재고만)
@@ -230,6 +248,7 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                     onClose={() => setReturnOrder('')}
                 />
             )}
+            {cancelOrder && <CSCancelApproveModal orderNo={cancelOrder} onClose={() => setCancelOrder('')} />}
             {withdrawOrder && <CSReturnWithdrawModal orderNo={withdrawOrder} onClose={() => setWithdrawOrder('')} />}
             {addressOrder && <CSAddressModal orderNo={addressOrder} onClose={() => setAddressOrder('')} />}
             {logOpen && (
@@ -349,46 +368,8 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                             <div hidden={sideTab !== 'action'}>
                                 <section className={styles.sideSec}>
                                     <h4>주문 작업</h4>
-                                    {product?.orderNo ? (
-                                        <div className={styles.actionList}>
-                                            <button type="button" className={styles.actionBtn} onClick={() => setAddressOrder(String(product.orderNo))}>
-                                                <strong>주소 변경</strong>
-                                                <span>주문 {product.orderNo}의 배송지를 이지어드민에서 변경</span>
-                                            </button>
-                                            <button type="button" className={styles.actionBtn} onClick={() => setReturnOrder(String(product.orderNo))}>
-                                                <strong>구매확정 반품</strong>
-                                                <span>회수접수 + 회수 문자 + 반품 특이사항 등록</span>
-                                            </button>
-                                            <button type="button" className={styles.actionBtn} onClick={() => setWithdrawOrder(String(product.orderNo))}>
-                                                <strong>반품 철회</strong>
-                                                <span>주문 {product.orderNo}의 진행 중인 에이블리 반품 요청을 철회</span>
-                                            </button>
-                                        </div>
-                                    ) : (
-                                        <div className={styles.sideMuted}>이 문의에 연결된 주문이 없어 작업할 수 없어요.</div>
-                                    )}
-                                    <div className={styles.actionList} style={{ marginTop: 8 }}>
-                                        <button type="button" className={styles.actionBtn} onClick={() => setDeliveryOpen(true)}>
-                                            <strong>배송 확인</strong>
-                                            <span>고객 전화번호로 주문을 검색해 송장번호 확인</span>
-                                        </button>
-                                        <button type="button" className={styles.actionBtn} onClick={() => setLogOpen(true)}>
-                                            <strong>CS 로그 확인</strong>
-                                            <span>전화번호로 주문을 검색해 이지어드민 C/S 이력 확인</span>
-                                        </button>
-                                        <button type="button" className={styles.actionBtn} onClick={() => setRecallOpen(true)}>
-                                            <strong>회수신청</strong>
-                                            <span>전화번호로 주문을 검색해 선택하고, CS 로그를 보며 이지어드민에 회수접수</span>
-                                        </button>
-                                        <button type="button" className={styles.actionBtn} onClick={() => setHoldOpen(true)}>
-                                            <strong>보류 해제 · 정상 복귀</strong>
-                                            <span>전화번호로 주문을 검색해 보류 해제 및 취소·CS 상태를 정상으로 복귀</span>
-                                        </button>
-                                        <button type="button" className={styles.actionBtn} onClick={() => setExchangeOpen(true)}>
-                                            <strong>상품 교환</strong>
-                                            <span>전화번호로 주문을 검색해 주문 상품의 옵션을 이지어드민에서 교환</span>
-                                        </button>
-                                    </div>
+                                    {!product?.orderNo && <div className={styles.sideMuted}>이 문의에 연결된 주문이 없어 주문 작업(주소 변경 등)은 할 수 없어요.</div>}
+                                    <CSActionPanel actions={actionItems} />
                                 </section>
                             </div>
                             {extraTabs.map((t) => (

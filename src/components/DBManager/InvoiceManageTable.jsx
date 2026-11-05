@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Copy, Download, FileText, Filter, Link2, RefreshCw, Search, Unlink } from "lucide-react";
+import { Copy, Download, FileText, Filter, Link2, RefreshCw, Search, Trash2, Unlink } from "lucide-react";
 import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
@@ -20,6 +20,25 @@ const FILTERABLE_COLS = [
   })),
 ];
 
+// http://IP 접속처럼 보안 컨텍스트가 아니면 navigator.clipboard가 막히므로 textarea + execCommand로 대체한다.
+async function copyText(text) {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch { /* 아래 대체 방식 시도 */ }
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  const ok = document.execCommand("copy");
+  ta.remove();
+  if (!ok) throw new Error("copy failed");
+}
+
 function currentMonth() {
   return new Date().toISOString().slice(0, 7);
 }
@@ -38,8 +57,9 @@ function loadGroups(m) {
 
 // 헤더 클릭 시 뜨는 엑셀 스타일 체크리스트 필터. 여러 컬럼에 동시에 걸어도(이중필터)
 // AND 조건으로 결합되도록, 옵션 목록은 "다른 컬럼에 이미 걸린 필터"를 통과한 행 기준으로 계산한다.
-function ColumnFilterHeader({ col, center, filters, rowsForOptions, onApply, onClear }) {
+function ColumnFilterHeader({ col, center, filters, rowsForOptions, onApply, onClear, bulk }) {
   const [open, setOpen] = useState(false);
+  const [pendingBulk, setPendingBulk] = useState(null); // true=일괄 체크, false=일괄 해제 (확인 대기)
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState(null);
@@ -66,6 +86,7 @@ function ColumnFilterHeader({ col, center, filters, rowsForOptions, onApply, onC
     setPos({ top: rect.bottom + 4, left: Math.min(rect.left, window.innerWidth - 246) });
     setDraft(new Set(filters[col.key] ? [...filters[col.key]] : options.map((o) => o.value)));
     setSearch("");
+    setPendingBulk(null);
     setOpen(true);
   };
 
@@ -136,6 +157,51 @@ function ColumnFilterHeader({ col, center, filters, rowsForOptions, onApply, onC
                 <div className={styles.filterEmpty}>일치하는 값이 없습니다.</div>
               )}
             </div>
+            {bulk && (
+              <div style={{ borderTop: "1px solid var(--border, #e5e7eb)", padding: "0.5rem 0.25rem 0.25rem", fontSize: "0.78rem" }}>
+                <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>
+                  조회된 {bulk.total}건 일괄 처리
+                </div>
+                {pendingBulk === null ? (
+                  <div style={{ display: "flex", gap: "0.35rem" }}>
+                    <button
+                      type="button"
+                      className={`${styles.btn} ${styles.btnSecondary}`}
+                      disabled={!bulk.unchecked}
+                      onClick={() => setPendingBulk(true)}
+                    >
+                      전체 체크 ({bulk.unchecked})
+                    </button>
+                    <button
+                      type="button"
+                      className={`${styles.btn} ${styles.btnSecondary}`}
+                      disabled={!bulk.checked}
+                      onClick={() => setPendingBulk(false)}
+                    >
+                      전체 해제 ({bulk.checked})
+                    </button>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ marginBottom: "0.35rem" }}>
+                      {col.label} <b>{pendingBulk ? bulk.unchecked : bulk.checked}건</b>을 {pendingBulk ? "체크" : "해제"}합니다.
+                    </div>
+                    <div style={{ display: "flex", gap: "0.35rem" }}>
+                      <button
+                        type="button"
+                        className={`${styles.btn} ${styles.btnPrimary}`}
+                        onClick={() => { const v = pendingBulk; setPendingBulk(null); setOpen(false); bulk.onRun(v); }}
+                      >
+                        실행
+                      </button>
+                      <button type="button" className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setPendingBulk(null)}>
+                        취소
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             <div className={styles.filterActions}>
               <button type="button" onClick={close}>취소</button>
               <button type="button" className={styles.filterActionPrimary} onClick={apply}>확인</button>
@@ -163,6 +229,9 @@ export default function InvoiceManageTable() {
   const [loadDiff, setLoadDiff] = useState(null); // { new: Set<거래처명>, updated: Set<거래처명> }
   const [accountMap, setAccountMap] = useState({}); // { 거래처명: { B: 은행코드, C: 계좌번호 } }
   const [groups, setGroups] = useState([]); // [[대표 거래처명, ...묶인 거래처명]] — 월별로 localStorage에 저장
+  const [carryRows, setCarryRows] = useState([]); // 전월 이월발행 체크된 행
+  const [historySortByAmount, setHistorySortByAmount] = useState(false); // true면 금액 내림차순
+  const [history, setHistory] = useState(null); // { title, loading, error, rows: [{날짜, 거래처명, 금액, 건수}] }
   const [binding, setBinding] = useState(false);
   const [bindSearch, setBindSearch] = useState("");
   const [bindPicked, setBindPicked] = useState([]); // 먼저 추가한 거래처가 대표(계좌정보 기준)
@@ -218,6 +287,80 @@ export default function InvoiceManageTable() {
     fetchMonths();
     fetchAccountMap();
   }, [fetchMonths, fetchAccountMap]);
+
+  // 전월에 이월발행 체크된 거래처를 불러와 현재 월 표 아래 카드로 보여준다.
+  const prevMonth = useMemo(() => {
+    const [y, m] = String(month || "").split("-").map(Number);
+    if (!y || !m) return "";
+    const d = new Date(y, m - 2, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  }, [month]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCarryRows([]);
+    if (!prevMonth) return undefined;
+    (async () => {
+      try {
+        const res = await fetch(`${API}/wonbe/invoice-manage/rows?month=${encodeURIComponent(prevMonth)}`, {
+          headers: getAuthHeaders(),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled && res.ok && data.ok) {
+          setCarryRows((data.rows || []).filter((r) => Number(r.이월발행) === 1));
+        }
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, [prevMonth]);
+
+  // 이월발행 거래처명 집합 - 현재 월 표에서 배지로 표시
+  const carryNames = useMemo(() => {
+    const m = new Map();
+    for (const r of carryRows) {
+      const k = String(r.거래처명 || "").trim();
+      m.set(k, (m.get(k) || 0) + (Number(r.입금액) || 0));
+    }
+    return m;
+  }, [carryRows]);
+
+  // 이월발행 카드는 표 위/아래 두 곳에 같이 보여준다.
+  const renderCarryCard = (position) => carryRows.length > 0 && (
+    <div
+      style={{
+        [position === "top" ? "marginBottom" : "marginTop"]: "1rem",
+        border: "1px solid #fcd34d",
+        background: "#fffbeb",
+        borderRadius: "10px",
+        padding: "0.8rem 1rem",
+      }}
+    >
+      <div style={{ fontWeight: 700, fontSize: "0.9rem", marginBottom: "0.5rem", color: "#92400e" }}>
+        이월발행 ({prevMonth} → {month}) · {carryRows.length}개 거래처 ·{" "}
+        {carryRows.reduce((s, r) => s + (Number(r.입금액) || 0), 0).toLocaleString()}원
+      </div>
+      <table className={styles.table}>
+        <thead>
+          <tr>
+            <th>거래처명</th>
+            <th>입금액</th>
+            <th>예금주</th>
+            <th>메모</th>
+          </tr>
+        </thead>
+        <tbody>
+          {carryRows.map((r) => (
+            <tr key={r.id}>
+              <td>{r.거래처명}</td>
+              <td>{(Number(r.입금액) || 0).toLocaleString()}원</td>
+              <td>{accountMap[String(r.거래처명 || "").trim()]?.E || "-"}</td>
+              <td>{r.메모 || ""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 
   useEffect(() => {
     setFilters({});
@@ -285,6 +428,32 @@ export default function InvoiceManageTable() {
 
   const handleMonthChange = (e) => setMonth(e.target.value);
 
+  // 거래처의 해당 월 이체파일 일자별 내역을 모달로 조회한다 (묶음이면 묶인 거래처 전체).
+  const openHistory = async (row) => {
+    const names = (row._all || [row]).map((t) => vendorName(t));
+    const title = `${names.join(", ")} · ${month} 이체내역`;
+    setHistorySortByAmount(false);
+    setHistory({ title, loading: true, error: "", rows: [] });
+    try {
+      const results = await Promise.all(
+        names.map(async (name) => {
+          const params = new URLSearchParams({ vendor: name, start: `${month}-01`, end: `${month}-31` });
+          const res = await fetch(`${API}/wonbe/ichae/vendor-history?${params}`, { headers: getAuthHeaders() });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) throw new Error(data?.detail || "조회 실패");
+          // 부분일치로 딸려온 다른 거래처는 제외하고 정확히 같은 이름만 남긴다.
+          return (data.rows || []).filter((r) => String(r.거래처명 || "").trim() === name);
+        })
+      );
+      const merged = results.flat().sort((a, b) =>
+        String(a.날짜).localeCompare(String(b.날짜)) || String(a.거래처명).localeCompare(String(b.거래처명), "ko")
+      );
+      setHistory({ title, loading: false, error: "", rows: merged });
+    } catch (err) {
+      setHistory({ title, loading: false, error: err.message, rows: [] });
+    }
+  };
+
   const handleLoadInvoice = async () => {
     if (!month) return;
     setLoading(true);
@@ -308,6 +477,78 @@ export default function InvoiceManageTable() {
       fetchMonths();
     } catch (err) {
       setMessage(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 선택한 행 하나를 삭제한다 (묶음 대표 행이면 묶인 거래처도 함께 삭제).
+  const handleDeleteRow = async (row) => {
+    const targets = row._all || [row];
+    const ids = targets.map((t) => t.id);
+    const names = targets.map((t) => t.거래처명).join(", ");
+    if (!window.confirm(`'${names}' ${ids.length}건을 삭제합니다.\n삭제 후에는 복구할 수 없습니다. 계속할까요?`)) return;
+    setLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/invoice-manage/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ ids }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "삭제 실패");
+      setSelectedRowId(null);
+      setLoadDiff(null);
+      await fetchRows(month);
+      fetchMonths();
+      setMessage(`${data.deleted}건을 삭제했습니다.`);
+    } catch (err) {
+      setMessage(err.message);
+      window.alert(`삭제에 실패했습니다: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 체크 컬럼 헤더 필터 팝오버의 "조회목록 일괄 체크/해제"용 정보.
+  // 현재 조회(필터 적용)된 목록 기준이며, 묶음 행은 묶인 거래처 전체가 대상이다.
+  const bulkFor = (colKey) => {
+    const checked = filteredRows.filter((r) => Number(r[colKey]) === 1).length;
+    return {
+      total: filteredRows.length,
+      unchecked: filteredRows.length - checked,
+      checked,
+      onRun: (value) => runBulkFlag(colKey, value),
+    };
+  };
+
+  const runBulkFlag = async (colKey, value) => {
+    const label = FLAG_COLS.find((f) => f.key === colKey)?.label || colKey;
+    const targets = filteredRows.filter((r) => (Number(r[colKey]) === 1) !== value);
+    if (!targets.length) {
+      setMessage(`조회된 목록이 모두 이미 ${label} ${value ? "체크" : "해제"} 상태입니다.`);
+      return;
+    }
+    const ids = targets.flatMap((r) => (r._all || [r]).map((t) => t.id));
+    const total = filteredRows.length;
+    setLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/wonbe/invoice-manage/bulk-flag`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ ids, col: colKey, value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "일괄 처리 실패");
+      await fetchRows(month);
+      setMessage(
+        `${label} ${targets.length}건을 일괄 ${value ? "체크" : "해제"}했습니다. `
+        + `(조회 ${total}건 중, 이미 ${value ? "체크된" : "해제된"} ${total - targets.length}건 제외)`
+      );
+    } catch (err) {
+      setMessage(`일괄 처리 실패: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -460,7 +701,7 @@ export default function InvoiceManageTable() {
       return [acc?.B || "", acc?.C || "", vatAmount, vendor, monthLabel].join("\t");
     });
     try {
-      await navigator.clipboard.writeText(lines.join("\n"));
+      await copyText(lines.join("\n"));
       setMessage(
         unmatched
           ? `${filteredRows.length}건 일괄복사 완료 (계좌 정보 없는 거래처 ${unmatched}건 포함)`
@@ -532,7 +773,7 @@ export default function InvoiceManageTable() {
       const monthLabel = Number.isFinite(monthNum) ? `${monthNum}월` : month;
       const amount = (Number(row.입금액) || 0).toLocaleString();
       const text = `안녕하세요 사장님! 부가세 보내드리려 하는데\n${monthLabel} 입금액 ${amount}원 맞을까요?`;
-      navigator.clipboard?.writeText(text).catch(() => {});
+      copyText(text).catch(() => {});
     };
     window.addEventListener("keydown", handleCopy);
     return () => window.removeEventListener("keydown", handleCopy);
@@ -804,11 +1045,14 @@ export default function InvoiceManageTable() {
                     rowsForOptions={rowsForColumn(f.key)}
                     onApply={applyFilter}
                     onClear={clearFilter}
+                    bulk={bulkFor(f.key)}
                   />
                 </th>
               ))}
+              <th style={{ textAlign: "center" }}>이체내역</th>
               <th>메모</th>
               <th>수정일시</th>
+              <th style={{ textAlign: "center" }}>삭제</th>
             </tr>
           </thead>
           <tbody>
@@ -843,6 +1087,15 @@ export default function InvoiceManageTable() {
                       </button>
                     </>
                   )}
+                  {carryNames.has(String(row.거래처명 || "").trim()) && (
+                    <span
+                      className={styles.badge}
+                      style={{ marginLeft: "0.4rem", background: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d" }}
+                      title={`${prevMonth}에서 이월발행으로 넘어온 거래처`}
+                    >
+                      이월 {carryNames.get(String(row.거래처명 || "").trim()).toLocaleString()}원
+                    </span>
+                  )}
                   {loadDiff?.new.has(row.거래처명) && (
                     <span className={`${styles.badge} ${styles.badgeNew}`} style={{ marginLeft: "0.4rem" }}>신규</span>
                   )}
@@ -868,6 +1121,16 @@ export default function InvoiceManageTable() {
                     />
                   </td>
                 ))}
+                <td style={{ textAlign: "center" }}>
+                  <button
+                    type="button"
+                    className={`${styles.btn} ${styles.btnSecondary}`}
+                    onClick={(e) => { e.stopPropagation(); openHistory(row); }}
+                    title={`${month} 이체파일 일자별 조회`}
+                  >
+                    이체내역 조회
+                  </button>
+                </td>
                 {editingMemo?.id === row.id ? (
                   <td onClick={(e) => e.stopPropagation()}>
                     <input
@@ -889,6 +1152,17 @@ export default function InvoiceManageTable() {
                   </td>
                 )}
                 <td style={{ color: "var(--text-muted)", fontSize: "0.76rem" }}>{row.수정일시 || ""}</td>
+                <td style={{ textAlign: "center" }}>
+                  <button
+                    type="button"
+                    title="이 거래처 삭제"
+                    disabled={loading}
+                    onClick={(e) => { e.stopPropagation(); handleDeleteRow(row); }}
+                    style={{ border: "none", background: "none", cursor: "pointer", color: "#b91c1c" }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -901,6 +1175,60 @@ export default function InvoiceManageTable() {
           </div>
         )}
       </div>
+
+      {history && (
+        <div className={styles.catOverlay} onClick={() => setHistory(null)}>
+          <div className={styles.catModal} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.catHeader}>
+              <strong>{history.title}</strong>
+              {!history.loading && !history.error && (
+                <span>
+                  {history.rows.length}건
+                </span>
+              )}
+              {!history.loading && !history.error && history.rows.length > 1 && (
+                <span>
+                  <button
+                    type="button"
+                    className={`${styles.btn} ${historySortByAmount ? styles.btnPrimary : styles.btnSecondary}`}
+                    onClick={() => setHistorySortByAmount((v) => !v)}
+                    title="금액이 큰 순서 / 날짜순 전환"
+                  >
+                    {historySortByAmount ? "금액 내림차순 (클릭: 날짜순)" : "금액 내림차순으로 보기"}
+                  </button>
+                </span>
+              )}
+            </div>
+            <div className={styles.catList}>
+              {history.loading && <div className={styles.catEmpty}>조회 중...</div>}
+              {history.error && <div className={styles.catEmpty}>{history.error}</div>}
+              {!history.loading && !history.error && history.rows.length === 0 && (
+                <div className={styles.catEmpty}>해당 월 이체 내역이 없습니다.</div>
+              )}
+              {(historySortByAmount
+                ? [...history.rows].sort((a, b) => (Number(b.금액) || 0) - (Number(a.금액) || 0))
+                : history.rows
+              ).map((r) => (
+                <div key={`${r.날짜}-${r.거래처명}`} className={styles.catRow}>
+                  <span style={{ width: "6.5rem" }}>{r.날짜}</span>
+                  <span className={styles.catName}>{r.거래처명}</span>
+                  <span style={{ textAlign: "right" }}>{(Number(r.금액) || 0).toLocaleString()}원</span>
+                </div>
+              ))}
+            </div>
+            <div className={styles.catFooter}>
+              {!history.loading && !history.error && (
+                <strong style={{ marginRight: "auto" }}>
+                  합계 {history.rows.reduce((s, r) => s + (Number(r.금액) || 0), 0).toLocaleString()}원
+                </strong>
+              )}
+              <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setHistory(null)}>닫기</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {renderCarryCard("bottom")}
     </>
   );
 }

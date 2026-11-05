@@ -137,7 +137,7 @@ def render_label(title: str, option: str, code: str, client_line: str = "") -> I
     inner_w = PAGE_W_PT - 2 * PAD_PT
 
     f_title = _font(700, TITLE_PT * s)
-    f_opt = _font(400, OPTION_PT * s)
+    f_opt = _font(700, OPTION_PT * s)  # 반품 라벨은 옵션/거래처상품명도 전체 볼드
     title_lines = _wrap(d, title or "", f_title, inner_w * s)
 
     widths = _code128_widths(code)
@@ -175,6 +175,25 @@ def render_label(title: str, option: str, code: str, client_line: str = "") -> I
     return img
 
 
+BOX_PT = 30.0  # "C박스" 라벨 글자 크기(pt). 라벨 폭을 넘으면 맞을 때까지 줄인다.
+
+
+def render_box_label(text: str) -> Image.Image:
+    """바코드 없이 글자만 크게 가운데 찍는 구분 라벨(예: "C박스")."""
+    s = RENDER_DPI / 72
+    w, h = round(PAGE_W_PT * s), round(PAGE_H_PT * s)
+    img = Image.new("L", (w, h), 255)
+    d = ImageDraw.Draw(img)
+    max_w = (PAGE_W_PT - 2 * PAD_PT) * s
+    size = BOX_PT
+    font = _font(700, size * s)
+    while size > 6 and d.textlength(text, font=font) > max_w:
+        size -= 1
+        font = _font(700, size * s)
+    d.text((w / 2, h / 2), text, font=font, fill=0, anchor="mm")
+    return img
+
+
 def list_printers() -> dict:
     """이 서버 PC에 설치/연결된 프린터 이름 목록과 기본 프린터."""
     import win32print
@@ -189,13 +208,13 @@ def list_printers() -> dict:
 
 
 def print_labels(labels: list[dict], printer: str = "") -> int:
-    """labels: [{title, option, code}]. 라벨 1장 = 1페이지로 출력하고 출력한 장수를 돌려준다."""
+    """labels: [{title, option, code}] 또는 글자만 찍는 [{box: "C박스"}]. 라벨 1장 = 1페이지로 출력하고 출력한 장수를 돌려준다."""
     import win32con
     import win32print
     import win32ui
     from PIL import ImageWin
 
-    valid = [l for l in labels if l.get("code")]
+    valid = [l for l in labels if l.get("code") or l.get("box")]
     if not valid:
         return 0
     printer = (printer or "").strip() or os.getenv("LABEL_PRINTER_NAME") or win32print.GetDefaultPrinter()
@@ -206,7 +225,10 @@ def print_labels(labels: list[dict], printer: str = "") -> int:
         ph = dc.GetDeviceCaps(win32con.VERTRES)
         dc.StartDoc("상품 바코드 라벨")
         for l in valid:
-            img = render_label(str(l.get("title") or ""), str(l.get("option") or ""), str(l["code"]), str(l.get("clientLine") or ""))
+            if l.get("box"):
+                img = render_box_label(str(l["box"]))
+            else:
+                img = render_label(str(l.get("title") or ""), str(l.get("option") or ""), str(l["code"]), str(l.get("clientLine") or ""))
             img = img.resize((pw, ph), Image.LANCZOS).convert("RGB")
             dc.StartPage()
             ImageWin.Dib(img).draw(dc.GetHandleOutput(), (0, 0, pw, ph))

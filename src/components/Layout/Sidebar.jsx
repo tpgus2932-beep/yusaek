@@ -18,15 +18,15 @@ import {
     Handshake,
     FlaskConical,
     TrendingUp,
-    Zap,
     Bot,
+    BarChart3,
 } from 'lucide-react';
 import styles from './Sidebar.module.css';
 import ServerStatsModal from '../Admin/ServerStatsModal';
 
 
 
-const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hiddenTabs = [], menuLabels = {}, onLogout }) => {
+const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, showCsStats = false, hiddenTabs = [], menuLabels = {}, onLogout }) => {
     const isHidden = (tab) => hiddenTabs.includes(tab);
     const label = (tab, fallback) => menuLabels[tab] || fallback;
     const [showStats, setShowStats] = useState(false);
@@ -120,15 +120,6 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     {label('hapbae-management', '합배송관리')}
                 </div>
                 )}
-                {!isHidden('zigzag-upload') && (
-                <div
-                    className={`${styles.navItem} ${activeTab === 'zigzag-upload' ? styles.active : ''}`}
-                    onClick={() => setActiveTab('zigzag-upload')}
-                >
-                    <Zap size={20} />
-                    {label('zigzag-upload', '지그재그 업로드')}
-                </div>
-                )}
 {!isHidden('test') && (
                 <div
                     className={`${styles.navItem} ${activeTab === 'test' ? styles.active : ''}`}
@@ -156,6 +147,16 @@ const Sidebar = ({ activeTab, setActiveTab, isDarkMode, toggleTheme, isAdmin, hi
                     <Bot size={20} />
                     {label('ai', '사내 AI')}
                 </div>
+                )}
+
+                {showCsStats && (
+                    <div
+                        className={`${styles.navItem} ${activeTab === 'cs-stats' ? styles.active : ''}`}
+                        onClick={() => setActiveTab('cs-stats')}
+                    >
+                        <BarChart3 size={20} />
+                        통계
+                    </div>
                 )}
 
                 {isAdmin && !isHidden('order') && (

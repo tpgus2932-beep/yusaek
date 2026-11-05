@@ -408,4 +408,23 @@ def build_return_inspection_router(
         finally:
             conn.close()
 
+    @router.post("/reset")
+    def inspection_reset(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """선택한 임시저장본의 검수 진행(스캔 수량·스캔 기록·오류)을 모두 0으로 되돌린다. 상품 리스트(총 수량)는 유지."""
+        ids = _snapshot_ids(payload)
+        conn = get_shared_db()
+        try:
+            conn.execute(
+                f"UPDATE return_inspection_snap_items SET scanned_qty = 0 WHERE snapshot_id IN ({_marks(ids)})",
+                tuple(ids),
+            )
+            conn.execute(
+                f"UPDATE return_inspection_log SET undone = 1 WHERE snapshot_id IN ({_marks(ids)}) AND undone = 0",
+                tuple(ids),
+            )
+            conn.commit()
+            return _state(conn, ids)
+        finally:
+            conn.close()
+
     return router

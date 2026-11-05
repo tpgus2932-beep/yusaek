@@ -1,0 +1,26 @@
+.page { min-height: 100dvh; background: #f4f5f7; color: #1c1e21; font-size: 15px; }
+.header { position: sticky; top: 0; z-index: 50; padding: 4px 12px 0; background: #fff; border-bottom: 1px solid #e3e5e8; }
+.header h1 { margin: 0 0 10px; font-size: 1.1rem; }
+.tabs { display: flex; gap: 4px; }
+.tab { flex: 1; padding: 10px 4px; border: none; border-bottom: 3px solid transparent; background: none; font: inherit; font-weight: 600; color: #6b7280; }
+.tabOn { color: #2563eb; border-bottom-color: #2563eb; }
+.main { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.form { display: flex; flex-direction: column; gap: 8px; }
+.row { display: flex; align-items: center; gap: 6px; }
+.input, .select { flex: 1; min-width: 0; box-sizing: border-box; width: 100%; padding: 12px; border: 1px solid #d1d5db; border-radius: 10px; background: #fff; font: inherit; font-size: 16px; }
+.select { flex: none; width: auto; padding: 6px 8px; font-size: 14px; }
+.primary { padding: 13px; border: none; border-radius: 10px; background: #2563eb; color: #fff; font: inherit; font-weight: 700; }
+.primary:disabled { opacity: 0.6; }
+.error { padding: 10px 12px; border-radius: 10px; background: #fdecec; color: #b42318; }
+.summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.card { display: block; width: 100%; box-sizing: border-box; padding: 12px; border: 1px solid #e3e5e8; border-radius: 12px; background: #fff; font: inherit; color: inherit; text-align: left; }
+.cardOn { border-color: #2563eb; background: #eff5ff; }
+.cardTop { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.tag { padding: 2px 8px; border-radius: 999px; background: #e8eefc; color: #1d4ed8; font-size: 0.8rem; font-weight: 700; }
+.muted { color: #6b7280; font-size: 0.85rem; line-height: 1.4; }
+.text { margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
+.reply { margin-top: 6px; padding: 8px; border-radius: 8px; background: #f3f4f6; white-space: pre-wrap; word-break: break-word; font-size: 0.9rem; }
+.check { display: flex; align-items: center; gap: 6px; }
+.danger { background: #dc2626; }
+.cardLine { margin-top: 8px; padding-top: 8px; border-top: 1px solid #eef0f2; }
+.errText { color: #b42318; font-size: 0.85rem; }

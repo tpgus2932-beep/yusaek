@@ -46,10 +46,14 @@ def test_seller_fault_pending_returns_only_seller_fault_items():
                                 "sno": 1,
                                 "goods_name": "상품A",
                                 "cancel_reason": 32,
+                                "return_delivery_fee": 0,
                                 "cancel_images": ["http://img/1.jpg"],
                                 "user_comment": "박음질이 뜯어져 있어요",
                             },
-                            {"invoice": "222", "sno": 2, "goods_name": "상품B", "cancel_reason": 30},
+                            {
+                                "invoice": "222", "sno": 2, "goods_name": "상품B",
+                                "cancel_reason": 30, "return_delivery_fee": -3000,
+                            },
                         ],
                     }
                 ],
