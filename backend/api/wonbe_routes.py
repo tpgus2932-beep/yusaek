@@ -287,6 +287,13 @@ def _init_wonbe_table(conn: sqlite3.Connection):
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_wonbe_group_members_code ON wonbe_group_members(상품코드)")
+    # 이지어드민 동기화 목록에서 대형태그/번호 처리가 끝난 상품코드 (다음 동기화부터 목록에서 제외)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS wonbe_tag_done (
+            상품코드 TEXT PRIMARY KEY,
+            done_at  TEXT
+        )
+    """)
     conn.commit()
 
 
@@ -3263,8 +3270,11 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             )
             conn.commit()
             # 상품명(원래 이름) 기준 unique 그룹 - 프론트에서 대형태그/번호 지정용 리스트로 사용
+            done_codes = {r[0] for r in conn.execute("SELECT 상품코드 FROM wonbe_tag_done").fetchall()}
             groups_map: dict = {}
             for code, pname, *_rest in data_rows:
+                if code in done_codes:
+                    continue  # 이미 처리 완료된 상품은 목록에서 제외
                 g = groups_map.setdefault(pname, {"codes": [], "ids": []})
                 if code not in g["codes"]:
                     g["codes"].append(code)
@@ -3371,6 +3381,29 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             await asyncio.gather(*(lookup(client, c) for c in missing))
         return result
 
+    def _mark_tag_done(codes: list) -> int:
+        codes = list(dict.fromkeys(str(c).strip() for c in codes if str(c).strip()))
+        if not codes:
+            return 0
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            conn.executemany(
+                "INSERT OR REPLACE INTO wonbe_tag_done (상품코드, done_at) VALUES (?, ?)",
+                [(c, now) for c in codes],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return len(codes)
+
+    @router.post("/tag-done")
+    def wonbe_tag_done(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        """동기화 목록의 [완료] - 넘겨준 상품코드들을 처리 완료로 기록해 다음 동기화부터 제외한다."""
+        n = _mark_tag_done(payload.get("codes") or [])
+        return {"ok": True, "marked": n}
+
     @router.post("/ezadmin-apply")
     async def wonbe_ezadmin_apply(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
         """동기화 리스트에서 선택한 상품(그룹)의 모든 상품에 번호 상품명 + 대형태그를 이지어드민에만 적용.
@@ -3444,6 +3477,10 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             err_preview = plain[max(0, k - 300): k + 700] if k >= 0 else plain[:1000]
             print("[ezadmin-apply] C620 err_cnt=", err_cnt, "sent=", list(pid_to_name.items())[:5], "resp=", err_preview)
         tag = await _ezadmin_set_big_tag(list(pid_to_name.keys()), phpsessid)
+        if err_cnt == 0 and not tag["failed"]:
+            # 정상 반영된 상품은 다음 동기화부터 목록에 뜨지 않도록 완료 처리
+            pid_set = set(pid_to_name.keys())
+            _mark_tag_done([str(c) for c in all_codes if code_to_pid.get(str(c)) in pid_set])
         return {
             "ok": err_cnt == 0 and not tag["failed"] and not unresolved,
             "uploaded": len(pid_to_name), "err_cnt": err_cnt, "unresolved": unresolved, "err_preview": err_preview,

@@ -845,6 +845,28 @@ export default function WonbeTable() {
     }
   };
 
+  // 목록에 남은 상품을 전부 처리 완료로 기록 → 다음 동기화부터 목록에 뜨지 않음
+  const handleCompleteTagGroups = async () => {
+    const codes = (tagGroups || []).flatMap((g) => g.codes || []);
+    if (!codes.length) { setTagGroups(null); return; }
+    setTagApplying(true);
+    try {
+      const res = await fetch(`${API}/wonbe/tag-done`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ codes }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "완료 처리 실패");
+      setMessage(`완료 처리: ${data.marked}개 상품코드 — 다음 동기화부터 목록에 나타나지 않습니다.`);
+      setTagGroups(null);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setTagApplying(false);
+    }
+  };
+
   const handleDeleteByRegisteredDate = async (days) => {
     setSyncMenu(null);
     const range = syncRange(days);
@@ -1617,6 +1639,7 @@ export default function WonbeTable() {
             <strong>이지어드민 대형태그 / 상품명 번호 ({tagGroups.length}개 상품)</strong>
             <span>
               <button onClick={handleApplyTagGroups} disabled={tagApplying}>{tagApplying ? "적용 중..." : "선택 적용"}</button>{" "}
+              <button onClick={handleCompleteTagGroups} disabled={tagApplying} title="남은 목록을 모두 처리 완료로 기록 — 다음 동기화부터 안 뜸">완료</button>{" "}
               <button onClick={() => setTagGroups(null)} disabled={tagApplying}>닫기</button>
             </span>
           </div>
