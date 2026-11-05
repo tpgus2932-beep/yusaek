@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import BarcodePage from "../Barcode/BarcodePage";
@@ -11,6 +11,7 @@ const TABS = [
   { key: "log", label: "로그 확인" },
   { key: "stock-check", label: "재고체크" },
   { key: "invoice-delete", label: "송장삭제" },
+  { key: "receipt", label: "입고확인" },
 ];
 
 const request = async (path, body) => {
@@ -129,6 +130,82 @@ function StockLog() {
   );
 }
 
+// 오늘 입고요청 전표를 불러와 거래처/상품명으로 검색하며 입고 수량을 확인한다.
+function ReceiptCheck() {
+  const { openModal } = useEzadminSession();
+  const [data, setData] = useState(null);
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = async (refresh = false) => {
+    setBusy(true);
+    setError("");
+    try {
+      const { res, data: d } = await request(`/order-receiving/today-receipts?refresh=${refresh}`);
+      if (d?.need_session) { openModal(() => load(refresh)); return; }
+      if (!res.ok || d.ok === false) throw new Error(d?.detail || "입고전표 불러오기 실패");
+      setData(d);
+    } catch (e) {
+      setError(e.message || "입고전표 불러오기 실패");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const items = useMemo(() => {
+    if (!data) return [];
+    return data.items.filter((it) => {
+      const hay = `${it.name} ${it.option} ${it.code}`.toLowerCase();
+      return words.every((w) => hay.includes(w));
+    });
+  }, [data, q]); // eslint-disable-line react-hooks/exhaustive-deps
+  const sum = (k) => items.reduce((s, it) => s + it[k], 0);
+
+  return (
+    <>
+      <div className={styles.form}>
+        <button type="button" className={styles.primary} disabled={busy} onClick={() => load(!!data)}>
+          {busy ? "불러오는 중... (최대 1분)" : data ? "다시 불러오기" : "오늘 입고전표 불러오기"}
+        </button>
+        {data && (
+          <input
+            className={styles.input}
+            value={q}
+            placeholder="거래처 / 상품명 / 옵션 / 상품코드 검색"
+            onChange={(e) => setQ(e.target.value)}
+          />
+        )}
+      </div>
+      {error && <div className={styles.error}>{error}</div>}
+      {data && (
+        <>
+          <div className={styles.summary}>
+            <span>{data.date} · 전표 {data.voucher_count}장</span>
+            <span><strong>입고 {sum("normal")}</strong>{sum("misong") > 0 && ` · 미송 ${sum("misong")}`}{sum("pickup") > 0 && ` · 픽업 ${sum("pickup")}`}</span>
+          </div>
+          {items.length === 0 && <div className={styles.muted}>{data.items.length ? "검색 결과가 없습니다." : "오늘 입고된 내역이 없습니다."}</div>}
+          {items.slice(0, 300).map((it, i) => (
+            <div key={i} className={styles.card}>
+              <div className={styles.cardTop}>
+                <strong>{it.name}</strong>
+                <span className={styles.tag}>입고 {it.normal}</span>
+              </div>
+              <div className={styles.muted}>
+                {[it.option, it.code].filter(Boolean).join(" · ")}
+                {it.misong > 0 && ` · 미송 ${it.misong}`}
+                {it.pickup > 0 && ` · 미송픽업 ${it.pickup}`}
+              </div>
+            </div>
+          ))}
+          {items.length > 300 && <div className={styles.muted}>검색어를 더 입력하세요 (상위 300건만 표시)</div>}
+        </>
+      )}
+    </>
+  );
+}
+
 // 모바일 전용 페이지 (/bacode): 바코드 / 로그 확인 / 재고체크 / 송장삭제.
 // 바코드·재고체크는 PC 화면과 같은 컴포넌트를 그대로 쓰고, 로그 확인은 조회 전용 모바일 화면이다.
 export default function MobileLogPage() {
@@ -148,6 +225,7 @@ export default function MobileLogPage() {
       {tab === "log" && <main className={styles.main}><StockLog /></main>}
       {tab === "stock-check" && <StockCheckPage />}
       {tab === "invoice-delete" && <main className={styles.main}><MobileInvoiceDelete /></main>}
+      {tab === "receipt" && <main className={styles.main}><ReceiptCheck /></main>}
     </div>
   );
 }

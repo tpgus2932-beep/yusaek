@@ -116,8 +116,9 @@ def receive_date_of(vouchers, order_dates) -> str:
     return str(order_dates[0]) if order_dates else ""
 
 
-def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, get_wonbe_db, get_janggi_db=None):
+def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, get_wonbe_db, get_janggi_db=None, get_current_user=None):
     router = APIRouter(prefix="/order-receiving")
+    _any_user = get_current_user or require_admin
 
     def _init_records(conn) -> None:
         conn.execute("""
@@ -510,6 +511,35 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
         rows = await fetch_im00_detail_rows(get_setting, sheets=sorted(sheets), date=date)
         _detail_cache[key] = (time.time(), rows)
         return rows
+
+    @router.get("/today-receipts")
+    async def today_receipts(date: str = "", refresh: bool = False, user: str = Depends(_any_user)):
+        """모바일(/bacode) 입고 확인용: 해당 일자(기본 오늘)의 입고요청 전표 전체를 불러와
+        상품(거래처+상품명/옵션/코드)별로 일반입고·미송·미송픽업 수량을 합산해 돌려준다."""
+        date = _check_date(date) if date else datetime.now(_KST).strftime("%Y-%m-%d")
+        try:
+            vs = await fetch_im00_vouchers(get_setting, date=date)
+            sheets = [v["sheet"] for v in vs]
+            rows = await _load_details(date, sheets, refresh) if sheets else []
+        except EzAdminSessionExpired:
+            return {"ok": False, "need_session": True}
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+        agg: dict[tuple, dict] = {}
+        for row in rows:
+            code = to_s_code(row["code"])
+            key = (row["name"], row["option"], code)
+            p = agg.setdefault(key, {"name": row["name"], "option": row["option"], "code": code,
+                                     "normal": 0, "misong": 0, "pickup": 0})
+            for kind, qty in classify_voucher_row(row):
+                if kind == KIND_NORMAL:
+                    p["normal"] += qty
+                elif kind == KIND_MISONG:
+                    p["misong"] += qty
+                elif kind == KIND_PICKUP:
+                    p["pickup"] += qty
+        items = [p for p in agg.values() if p["normal"] or p["misong"] or p["pickup"]]
+        return {"ok": True, "date": date, "voucher_count": len(sheets), "items": items}
 
     async def _run_compare(order_dates: list[str], voucher_sel: list[dict], refresh: bool) -> dict:
         order_dates = sorted({_check_date(d) for d in order_dates})

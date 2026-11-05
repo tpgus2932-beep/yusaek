@@ -2088,6 +2088,7 @@ app.include_router(
         get_setting=_get_setting,
         get_wonbe_db=_receipt_get_wonbe_db,
         get_janggi_db=_receipt_get_janggi_db,
+        get_current_user=_get_current_user,
     )
 )
 app.include_router(
