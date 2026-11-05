@@ -46,12 +46,39 @@ function StockLog() {
   const [error, setError] = useState("");
   const [candidates, setCandidates] = useState([]);
   const [result, setResult] = useState(null);
+  const [qty, setQty] = useState("1");
+  const [adjusting, setAdjusting] = useState("");
+  const [notice, setNotice] = useState("");
+
+  // 조회한 상품을 바로 입고/출고 처리 (이지어드민 재고조정). 처리 후 로그를 다시 조회한다.
+  const adjust = async (type) => {
+    const n = parseInt(qty, 10);
+    if (!result?.product_code) return;
+    if (!(n >= 1 && n <= 9999)) { setError("수량은 1~9999 사이로 입력하세요."); return; }
+    const label = type === "in" ? "입고" : "출고";
+    if (!window.confirm(`${result.product_code} ${n}개를 ${label} 처리할까요?`)) return;
+    setAdjusting(type);
+    setError("");
+    setNotice("");
+    try {
+      const { res, data } = await request("/barcode/stock-adjust", { product_code: result.product_code, type, qty: n });
+      if (data?.need_session) { openModal(() => adjust(type)); return; }
+      if (!res.ok || data.ok === false) throw new Error(data?.detail || `${label} 처리 실패`);
+      setNotice(`${data.product_code} ${n}개 ${label} 처리 완료`);
+      await search(result.product_code);
+    } catch (e) {
+      setError(e.message || "처리 실패");
+    } finally {
+      setAdjusting("");
+    }
+  };
 
   const search = async (override) => {
     const q = (typeof override === "string" ? override : code).trim();
     if (!q) { setError("상품코드 또는 상품명을 입력하세요."); return; }
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       if (!/^[A-Za-z]?\d+$/.test(q)) {
         const { res, data } = await request(`/wonbe/search?${new URLSearchParams({ q, limit: "50" })}`);
@@ -95,6 +122,7 @@ function StockLog() {
         <button type="button" className={styles.primary} disabled={busy} onClick={() => search()}>{busy ? "조회 중..." : "조회"}</button>
       </div>
       {error && <div className={styles.error}>{error}</div>}
+      {notice && <div className={styles.notice}>{notice}</div>}
       {candidates.map((c) => (
         <button type="button" key={c["상품코드"]} className={styles.card} onClick={() => { setCode(c["상품코드"]); setCandidates([]); search(c["상품코드"]); }}>
           <strong>{c["상품코드"]}</strong> {c["상품명"]}
@@ -111,6 +139,11 @@ function StockLog() {
                 {types.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             )}
+          </div>
+          <div className={styles.row}>
+            <input type="number" inputMode="numeric" min="1" max="9999" className={styles.input} value={qty} onChange={(e) => setQty(e.target.value)} />
+            <button type="button" className={styles.primary} disabled={!!adjusting || busy} onClick={() => adjust("in")}>{adjusting === "in" ? "처리 중..." : "입고"}</button>
+            <button type="button" className={`${styles.primary} ${styles.danger}`} disabled={!!adjusting || busy} onClick={() => adjust("out")}>{adjusting === "out" ? "처리 중..." : "출고"}</button>
           </div>
           {logs.length === 0 && <div className={styles.muted}>조회된 로그가 없습니다.</div>}
           {logs.map((l, i) => (
