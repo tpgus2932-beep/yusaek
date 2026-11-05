@@ -130,11 +130,16 @@ function StockLog() {
   );
 }
 
+const RECEIPT_KEY = "bacode-receipt-check";
+
 // 오늘 입고요청 전표를 불러와 거래처/상품명으로 검색하며 입고 수량을 확인한다.
 function ReceiptCheck() {
   const { openModal } = useEzadminSession();
-  const [data, setData] = useState(null);
-  const [q, setQ] = useState("");
+  // 페이지를 껐다 켜도 불러온 입고전표가 남도록 localStorage에 보관
+  const [data, setData] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(RECEIPT_KEY) || "null"); } catch { return null; }
+  });
+  const [q, setQ] = useState(() => localStorage.getItem(`${RECEIPT_KEY}:q`) || "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -146,6 +151,7 @@ function ReceiptCheck() {
       if (d?.need_session) { openModal(() => load(refresh)); return; }
       if (!res.ok || d.ok === false) throw new Error(d?.detail || "입고전표 불러오기 실패");
       setData(d);
+      try { localStorage.setItem(RECEIPT_KEY, JSON.stringify({ ...d, loaded_at: new Date().toLocaleString("sv-SE") })); } catch { /* 용량 초과 등은 무시 */ }
     } catch (e) {
       setError(e.message || "입고전표 불러오기 실패");
     } finally {
@@ -174,7 +180,7 @@ function ReceiptCheck() {
             className={styles.input}
             value={q}
             placeholder="거래처 / 상품명 / 옵션 / 상품코드 검색"
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(e) => { setQ(e.target.value); localStorage.setItem(`${RECEIPT_KEY}:q`, e.target.value); }}
           />
         )}
       </div>
@@ -182,7 +188,7 @@ function ReceiptCheck() {
       {data && (
         <>
           <div className={styles.summary}>
-            <span>{data.date} · 전표 {data.voucher_count}장</span>
+            <span>{data.date} · 전표 {data.voucher_count}장{data.loaded_at && <div className={styles.muted}>불러온 시각 {data.loaded_at.slice(5, 16)}</div>}</span>
             <span><strong>입고 {sum("normal")}</strong>{sum("misong") > 0 && ` · 미송 ${sum("misong")}`}{sum("pickup") > 0 && ` · 픽업 ${sum("pickup")}`}</span>
           </div>
           {items.length === 0 && <div className={styles.muted}>{data.items.length ? "검색 결과가 없습니다." : "오늘 입고된 내역이 없습니다."}</div>}
