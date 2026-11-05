@@ -59,11 +59,13 @@ from api.order_non_ably_backorder_routes import build_non_ably_order_router
 from api.amood_routes import build_amood_router
 from api.returns_routes import build_returns_router
 from api.order_routes import build_order_router
+from api.order_receiving_compare_routes import build_order_receiving_compare_router
 from api.noye_kimsungil_routes import build_noye_kimsungil_router
 from api.zigzag_upload_routes import build_zigzag_upload_router
 from api.misong_routes import build_misong_router
 from api.receipt_routes import build_receipt_router
 from api.wonbe_routes import _get_wonbe_db as _receipt_get_wonbe_db
+from api.wonbe_routes import _get_janggi_db as _receipt_get_janggi_db
 from api.sms_routes import build_sms_router
 from api.return_shipping_routes import build_return_shipping_router
 from api.return_automation_routes import build_return_automation_router
@@ -2054,6 +2056,15 @@ app.include_router(
         get_user_display=_get_user_display,
         is_render=_IS_RENDER,
         get_current_user=_get_current_user,
+    )
+)
+app.include_router(
+    build_order_receiving_compare_router(
+        require_admin=_require_admin,
+        get_db=_get_db,
+        get_setting=_get_setting,
+        get_wonbe_db=_receipt_get_wonbe_db,
+        get_janggi_db=_receipt_get_janggi_db,
     )
 )
 app.include_router(

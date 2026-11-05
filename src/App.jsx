@@ -31,6 +31,7 @@ import ZigzagUploadPage from './components/Zigzag/ZigzagUploadPage';import Order
 import TimeboxPage from './components/Timebox/TimeboxPage';
 import WorklogPage from './components/Worklog/WorklogPage';
 import SellerPage from './components/Seller/SellerPage';
+import OrderReceivingComparePage from './components/OrderReceivingCompare/OrderReceivingComparePage';
 import AIChatPage from './components/AI/AIChatPage';
 import { COLLAB_API_BASE } from './lib/api';
 
@@ -42,7 +43,7 @@ const KNOWN_TABS = [
 ];
 
 // 상단 메뉴 모드. 새로고침해도 보던 메뉴가 유지되도록 localStorage에 저장한다.
-const TOP_MODES = ['home', 'db-manager', 'inventory-dashboard', 'order-dashboard', 'timebox', 'worklog', 'seller', 'cs'];
+const TOP_MODES = ['home', 'db-manager', 'inventory-dashboard', 'order-dashboard', 'timebox', 'worklog', 'seller', 'order-receiving', 'cs'];
 
 const App = () => {
   const pathname = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
@@ -320,6 +321,7 @@ const App = () => {
         {topMode === 'timebox' && <TimeboxPage currentUser={username} />}
         {topMode === 'worklog' && <WorklogPage currentUser={username} />}
         {topMode === 'seller' && <SellerPage />}
+        {topMode === 'order-receiving' && <OrderReceivingComparePage />}
         {topMode === 'cs' && <CSPage />}
 
         {topMode === 'home' && (

@@ -1,0 +1,75 @@
+.wrap { position: relative; display: inline-block; --dp-ink: #1e2a44; --dp-sub: #7b8aa6; --dp-line: #e6edf7; --dp-blue: #3b82f6; --dp-blue-d: #2563eb; --dp-blue-l: #e8f0ff; }
+
+.trigger {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  padding: 0.45rem 1rem; border-radius: 999px;
+  border: 1px solid var(--dp-line); background: #f2f6fd; color: var(--dp-ink);
+  font-size: 0.82rem; font-weight: 600; cursor: pointer; font-variant-numeric: tabular-nums;
+  box-shadow: 3px 4px 10px rgba(150, 170, 205, 0.2), -2px -2px 6px #fff;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+}
+.trigger svg { color: var(--dp-blue); flex: none; }
+.trigger:hover:not(:disabled) { border-color: var(--dp-blue); transform: translateY(-1px); }
+.trigger:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25); }
+.trigger:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.pop {
+  position: absolute; top: calc(100% + 8px); left: 0; z-index: 80;
+  width: 300px; max-width: calc(100vw - 2rem); padding: 0.9rem;
+  background: #fff; color: var(--dp-ink);
+  border: 1px solid var(--dp-line); border-radius: 22px;
+  box-shadow: 0 20px 50px rgba(30, 42, 68, 0.22);
+  animation: dpIn 0.14s ease-out;
+}
+@keyframes dpIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+.hint { font-size: 0.74rem; font-weight: 600; color: var(--dp-blue-d); background: var(--dp-blue-l); border-radius: 999px; padding: 0.25rem 0.7rem; margin-bottom: 0.6rem; text-align: center; }
+
+.head { display: flex; align-items: center; gap: 0.15rem; margin-bottom: 0.5rem; }
+.title { flex: 1; text-align: center; font-size: 0.92rem; font-weight: 800; letter-spacing: -0.01em; }
+.nav {
+  width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%; background: transparent; color: var(--dp-sub); font-size: 0.9rem; cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.nav:hover { background: var(--dp-blue-l); color: var(--dp-blue-d); }
+
+.dow { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; font-size: 0.7rem; font-weight: 700; color: var(--dp-sub); margin-bottom: 0.2rem; }
+.grid { display: grid; grid-template-columns: repeat(7, 1fr); row-gap: 2px; }
+
+.day {
+  position: relative; height: 36px; display: flex; align-items: center; justify-content: center;
+  border: 0; background: transparent; color: var(--dp-ink);
+  font-size: 0.82rem; font-weight: 600; cursor: pointer; border-radius: 12px; font-variant-numeric: tabular-nums;
+  transition: background 0.1s;
+}
+.day:hover { background: var(--dp-blue-l); }
+.out { color: #b9c4d8; font-weight: 500; }
+.sun { color: #e5626b; }
+.sat { color: #4f7fe0; }
+.out.sun, .out.sat { color: #cdd5e4; }
+.today { box-shadow: inset 0 0 0 1.5px var(--dp-blue); }
+
+/* 선택(단일) / 기간 양 끝 */
+.sel, .rangeStart, .rangeEnd {
+  background: linear-gradient(135deg, #4f94ff, var(--dp-blue-d)); color: #fff;
+  box-shadow: 0 5px 12px rgba(37, 99, 235, 0.35);
+}
+.sel:hover, .rangeStart:hover, .rangeEnd:hover { background: linear-gradient(135deg, #4f94ff, var(--dp-blue-d)); }
+.sel.sun, .sel.sat, .rangeStart.sun, .rangeStart.sat, .rangeEnd.sun, .rangeEnd.sat { color: #fff; }
+/* 기간 가운데는 띠로 이어 보이게 */
+.inRange { background: var(--dp-blue-l); border-radius: 0; color: var(--dp-blue-d); }
+.rangeStart { border-top-right-radius: 12px; border-bottom-right-radius: 12px; }
+.inRange + .rangeEnd, .rangeStart + .inRange { border-radius: 12px; }
+
+.dot { position: absolute; bottom: 4px; left: 50%; width: 5px; height: 5px; margin-left: -2.5px; border-radius: 50%; background: #34c38f; font-style: normal; }
+.sel .dot, .rangeStart .dot, .rangeEnd .dot { background: #fff; }
+.legend .dot { position: static; display: inline-block; margin: 0 0.25rem 0 0; vertical-align: middle; }
+.legend { margin-left: auto; font-size: 0.7rem; color: var(--dp-sub); font-weight: 600; }
+
+.foot { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; margin-top: 0.7rem; padding-top: 0.65rem; border-top: 1px solid var(--dp-line); }
+.quick {
+  padding: 0.22rem 0.7rem; border-radius: 999px; border: 1px solid var(--dp-line); background: #f2f6fd;
+  color: var(--dp-ink); font-size: 0.74rem; font-weight: 600; cursor: pointer; transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.quick:hover { background: var(--dp-blue-l); color: var(--dp-blue-d); border-color: var(--dp-blue); }

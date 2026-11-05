@@ -1,0 +1,62 @@
+.back { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; padding: 1rem; background: rgba(30, 42, 68, 0.35); }
+.card {
+  --ink: #1e2a44; --sub: #7b8aa6; --line: #e6edf7; --blue-l: #e8f0ff; --cyan: #0c7487; --cyan-bg: #dcf4f8;
+  width: min(460px, 100%); max-height: 92vh; display: flex; flex-direction: column;
+  background: #fff; color: var(--ink); border-radius: 22px; overflow: hidden;
+  box-shadow: 0 24px 60px rgba(30, 42, 68, 0.32);
+}
+
+.head { display: flex; align-items: center; gap: 0.5rem; padding: 0.85rem 0.9rem 0.7rem 1.1rem; border-bottom: 1px solid var(--line); }
+.headText { flex: 1; min-width: 0; }
+.title { font-size: 0.95rem; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sub { font-size: 0.74rem; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.iconBtn { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 50%; background: transparent; color: var(--sub); cursor: pointer; }
+.iconBtn:hover { background: var(--blue-l); color: #2563eb; }
+
+.body { flex: 1; min-height: 0; overflow-y: auto; padding: 0.8rem 0.9rem 0.9rem; }
+.empty { text-align: center; color: var(--sub); font-size: 0.84rem; padding: 1.4rem 0; }
+.muted { color: var(--sub); font-size: 0.76rem; }
+
+/* 문의 요약 목록 */
+/* 목록은 문의 6개 높이까지만 보이고, 그 뒤는 스크롤 (카드 높이를 고정해 6개 기준이 정확히 맞게 한다) */
+.count { font-size: 0.74rem; font-weight: 700; color: var(--sub); margin: 0 0.1rem 0.45rem; }
+.list { max-height: min(calc(6 * (5.6rem + 0.45rem)), 55vh); overflow-y: auto; padding-right: 0.15rem; scrollbar-width: thin; }
+.room { display: block; width: 100%; height: 5.6rem; box-sizing: border-box; overflow: hidden; text-align: left; padding: 0.65rem 0.8rem; margin-bottom: 0.45rem; background: #fff; border: 1px solid var(--line); border-radius: 14px; cursor: pointer; color: inherit; transition: border-color 0.12s, background 0.12s; }
+.room:hover { border-color: #8fb0f3; background: #f7faff; }
+.rowTop { display: flex; align-items: center; gap: 0.4rem; font-size: 0.78rem; }
+.rowTop b { font-weight: 800; }
+.cat { color: var(--sub); font-size: 0.72rem; }
+.time { margin-left: auto; color: var(--sub); font-size: 0.7rem; font-variant-numeric: tabular-nums; }
+.state { padding: 0.05rem 0.5rem; border-radius: 999px; font-size: 0.68rem; font-weight: 700; }
+.stateWait { background: #fdeedd; color: #a8641f; }
+.stateDone { background: #eef1f6; color: var(--sub); }
+.preview { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 0.3rem; font-size: 0.84rem; line-height: 1.4; white-space: pre-wrap; word-break: break-word; }
+
+/* 악성지연(확인용) */
+.delayBox { margin-top: 0.7rem; padding: 0.6rem 0.8rem; background: #f5f8fd; border-radius: 14px; }
+.delayHead { font-size: 0.78rem; font-weight: 800; margin-bottom: 0.3rem; }
+.delayHead span { font-weight: 600; color: var(--sub); }
+.delayRow { display: flex; gap: 0.5rem; font-size: 0.78rem; padding: 0.15rem 0; }
+.delayRow .muted { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.delayDays { color: #b04a50; font-weight: 700; }
+
+/* 대화 */
+.msgs { display: flex; flex-direction: column; gap: 0.4rem; max-height: 38vh; overflow-y: auto; padding: 0.7rem; background: #f5f8fd; border-radius: 14px; }
+.msg { align-self: flex-start; max-width: 84%; padding: 0.45rem 0.7rem; background: #fff; border-radius: 14px 14px 14px 4px; box-shadow: 0 1px 2px rgba(30, 42, 68, 0.08); }
+.mine { align-self: flex-end; background: #dbe7ff; border-radius: 14px 14px 4px 14px; }
+.sys { opacity: 0.65; }
+.text { font-size: 0.84rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.img { display: block; max-width: 180px; max-height: 180px; border-radius: 10px; margin-top: 0.2rem; }
+.msgTime { margin-top: 0.15rem; font-size: 0.64rem; color: #8a98b2; text-align: right; }
+
+/* 답변 */
+.reply { margin-top: 0.7rem; }
+.reply textarea { width: 100%; box-sizing: border-box; resize: none; padding: 0.6rem 0.8rem; font-size: 0.84rem; line-height: 1.4; border: 1px solid var(--line); border-radius: 14px; background: #fff; color: var(--ink); outline: none; font-family: inherit; }
+.reply textarea:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18); }
+.actions { display: flex; justify-content: flex-end; gap: 0.4rem; margin-top: 0.45rem; }
+.btn { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.42rem 0.9rem; border-radius: 999px; border: 1px solid var(--line); background: #f2f6fd; color: var(--ink); font-size: 0.8rem; font-weight: 700; cursor: pointer; }
+.btn:hover:not(:disabled) { border-color: #8fb0f3; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.primary { background: linear-gradient(135deg, #4f94ff, #2563eb); border-color: transparent; color: #fff; }
+
+.error { margin: 0 0.9rem 0.8rem; padding: 0.5rem 0.8rem; border-radius: 12px; background: #fde8e8; color: #b04a50; font-size: 0.78rem; }
