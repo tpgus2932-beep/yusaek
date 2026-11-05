@@ -157,7 +157,7 @@ function ReceiptCheck() {
   const items = useMemo(() => {
     if (!data) return [];
     return data.items.filter((it) => {
-      const hay = `${it.name} ${it.option} ${it.code}`.toLowerCase();
+      const hay = `${it.name} ${it.product_name} ${it.client} ${it.color} ${it.size} ${it.option} ${it.code}`.toLowerCase();
       return words.every((w) => hay.includes(w));
     });
   }, [data, q]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -189,11 +189,11 @@ function ReceiptCheck() {
           {items.slice(0, 300).map((it, i) => (
             <div key={i} className={styles.card}>
               <div className={styles.cardTop}>
-                <strong>{it.name}</strong>
+                <strong>{it.product_name || it.name}</strong>
                 <span className={styles.tag}>입고 {it.normal}</span>
               </div>
               <div className={styles.muted}>
-                {[it.option, it.code].filter(Boolean).join(" · ")}
+                {[it.client, it.color, it.size, it.product_name ? "" : it.option, it.code].filter(Boolean).join(" · ")}
                 {it.misong > 0 && ` · 미송 ${it.misong}`}
                 {it.pickup > 0 && ` · 미송픽업 ${it.pickup}`}
               </div>

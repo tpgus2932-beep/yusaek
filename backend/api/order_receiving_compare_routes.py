@@ -539,6 +539,13 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
                 elif kind == KIND_PICKUP:
                     p["pickup"] += qty
         items = [p for p in agg.values() if p["normal"] or p["misong"] or p["pickup"]]
+        infos = _wonbe_infos({p["code"] for p in items})
+        for p in items:
+            w = infos.get(p["code"])
+            p["product_name"] = (w["상품명"] if w else "") or ""
+            p["color"] = (w["색상"] if w else "") or ""
+            p["size"] = (w["사이즈"] if w else "") or ""
+            p["client"] = (w["거래처"] if w else "") or ""
         return {"ok": True, "date": date, "voucher_count": len(sheets), "items": items}
 
     async def _run_compare(order_dates: list[str], voucher_sel: list[dict], refresh: bool) -> dict:
