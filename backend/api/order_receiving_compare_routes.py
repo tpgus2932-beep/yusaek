@@ -242,10 +242,11 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
             conn.close()
 
     @router.get("/client-report")
-    def client_report(client: str = "", date_from: str = "", date_to: str = "", admin: str = Depends(require_admin)):
+    def client_report(client: str = "", date_from: str = "", date_to: str = "", split_days: bool = False,
+                      admin: str = Depends(require_admin)):
         """기간(입고요청일 기준)의 저장된 매칭을 거래처별로 합산해 매칭 결과와 같은 모양({clients:[{client,totals,items}]})으로
         돌려준다. client를 비우면 모든 거래처, 주면 이름에 그 글자가 들어간 거래처(띄어쓰기·대소문자 무시)만. 같은 입고요청일에 매칭이 여러 번이면 가장 최근 것만 쓰고,
-        같은 거래처의 같은 상품은 날짜를 넘어 합산한다."""
+        같은 거래처의 같은 상품은 날짜를 넘어 합산한다. split_days면 합산하지 않고 거래처를 입고요청일별로 나눠 '거래처 · MM-DD' 그룹으로 돌려준다."""
         client = str(client or "").strip()
         today = datetime.now(_KST)
         date_to = _check_date(date_to) if date_to else today.strftime("%Y-%m-%d")
@@ -272,6 +273,8 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
         for r in rows:
             days.add(r["receive_date"])
             name = r["client"] or "(거래처 미확인)"
+            if split_days:
+                name = f"{name} · {r['receive_date'][5:]}"
             p_ = by_client.setdefault(name, {}).setdefault(r["product_code"], {
                 "code": r["product_code"], "name": r["product_name"], "option": r["option_name"], "client": name,
                 **{k: 0 for k in keys}, "cost": 0, "amount": 0, "ordered_amount": 0, "deduct": 0,

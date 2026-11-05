@@ -628,10 +628,6 @@ export default function OrderReceivingComparePage() {
   }), []);
 
   // 일자별 조회: 매칭일(입고요청 전표 날짜) 기준으로 저장된 매칭 리스트를 거른다.
-  const dayRecords = useMemo(
-    () => records.filter((x) => x.vouchers.some((v) => v.date >= lookupDate && v.date <= lookupTo)),
-    [records, lookupDate, lookupTo],
-  );
   const dayChips = useMemo(() => {
     const map = new Map();
     records.forEach((x) => new Set(x.vouchers.map((v) => v.date)).forEach((d) => map.set(d, (map.get(d) || 0) + 1)));
@@ -667,7 +663,7 @@ export default function OrderReceivingComparePage() {
     setMessage("");
     setSelecting(false);
     try {
-      const params = new URLSearchParams({ client: name, date_from: from, date_to: to });
+      const params = new URLSearchParams({ client: name, date_from: from, date_to: to, split_days: "true" });
       const data = await api(`/client-report?${params}`);
       const label = name || "전체 거래처";
       if (!data.result?.clients?.length) {
@@ -1039,22 +1035,20 @@ export default function OrderReceivingComparePage() {
           <button className={styles.chip} onClick={() => setPreset("month")}>이번달</button>
           <button className={styles.chip} onClick={() => setPreset("lastmonth")}>지난달</button>
           {dayChips.length > 0 && <span className={styles.chipSep} />}
-          {dayChips.map(([d, n]) => (
+          {dayChips.map(([d]) => (
             <button
               key={d}
               className={`${styles.chip} ${dayMode && d === lookupDate ? styles.chipOn : ""}`}
               onClick={() => pickLookupDate(d)}
               title="이 날짜에 저장된 매칭"
             >
-              {d.slice(5)} · {n}건 ✓
+              {d.slice(5)}
             </button>
           ))}
         </div>
-        <div className={styles.muted} style={{ marginTop: "0.5rem" }}>
-          {dayMode
-            ? `${lookupDate} 매칭 ${dayRecords.length}건`
-            : `${lookupMode === "day" ? lookupDate : `${lookupDate} ~ ${lookupTo}`} 합산 조회${clientQuery.trim() ? ` · ${clientQuery.trim()}` : " · 전체 거래처"}`}
-        </div>
+        {!dayMode && <div className={styles.muted} style={{ marginTop: "0.5rem" }}>
+          {`${lookupMode === "day" ? lookupDate : `${lookupDate} ~ ${lookupTo}`} 일자별 조회${clientQuery.trim() ? ` · ${clientQuery.trim()}` : " · 전체 거래처"}`}
+        </div>}
       </section>
   );
 
