@@ -1149,6 +1149,17 @@ def _init_post_shipment_cancel():
         conn.execute("ALTER TABLE post_shipment_cancel ADD COLUMN manual INTEGER DEFAULT 0")
     except Exception:
         pass  # 이미 컬럼이 있음
+    # 보류(확인 완료) 표시 - 새로고침이 목록을 다시 쓰므로 별도 테이블에 보관한다. 키는 seq(없으면 송장번호).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS post_shipment_cancel_hold (
+            hold_key TEXT PRIMARY KEY,
+            date TEXT NOT NULL,
+            held_by TEXT,
+            held_at TEXT NOT NULL
+        )
+        """
+    )
     conn.commit()
     conn.close()
 

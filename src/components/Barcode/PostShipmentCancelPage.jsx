@@ -104,6 +104,12 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
   const [replyDrafts, setReplyDrafts] = useState({});
   const [replyingSno, setReplyingSno] = useState(null);
   const [replyModalRow, setReplyModalRow] = useState(null);
+  // 에이블리 '취소 조회' / '취소진행' / '보류'
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [shipLookup, setShipLookup] = useState({}); // id -> 조회 결과
+  const [shipBusy, setShipBusy] = useState(() => new Set());
+  const [shipDone, setShipDone] = useState(() => new Set());
+  const [shipErrors, setShipErrors] = useState({}); // id -> 취소진행 실패 메시지
 
   useEffect(() => {
     const pool = Array.from({ length: 3 }, () => new Audio("/sounds/ice.wav"));
@@ -167,6 +173,10 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
       setFetchedAt(data.fetched_at ?? "");
       setMatchedInvoices(new Set());
       setLastScan(null);
+      setSelectedIds(new Set());
+      setShipLookup({});
+      setShipDone(new Set());
+      setShipErrors({});
       setMessage(`${data.date ?? ""} 배송후취소 ${data.count ?? 0}건 조회 · 저장 완료`);
     } catch (err) {
       setMessage(err.message || "배송후취소 목록 조회 실패");
@@ -661,6 +671,116 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
     }
   }, []);
 
+  const setBusy = (ids, on) =>
+    setShipBusy((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => (on ? next.add(id) : next.delete(id)));
+      return next;
+    });
+
+  // 같은 송장번호(합포장)인 행은 하나만 눌러도 함께 처리한다.
+  const withSameInvoice = useCallback((ids) => {
+    const invoices = new Set(items.filter((it) => ids.includes(it.id)).map((it) => it.invoice_no));
+    return items.filter((it) => ids.includes(it.id) || invoices.has(it.invoice_no)).map((it) => it.id);
+  }, [items]);
+
+  const toggleSelected = (id) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  // 취소 조회 - 에이블리 취소목록 / 배송중에서 주문번호로 검색한다.
+  const handleShipLookup = useCallback(async (ids) => {
+    const targets = withSameInvoice(ids).filter((id) => !items.find((it) => it.id === id)?.held);
+    if (!targets.length) return;
+    setBusy(targets, true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/barcode/post-shipment-cancel/ably-lookup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ ids: targets }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) {
+        openEzadminModal(() => handleShipLookup(targets));
+        return;
+      }
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "취소 조회 실패");
+      setShipLookup((prev) => {
+        const next = { ...prev };
+        (data.results || []).forEach((r) => { next[r.id] = r; });
+        return next;
+      });
+    } catch (err) {
+      setMessage(err.message || "취소 조회 실패");
+    } finally {
+      setBusy(targets, false);
+    }
+  }, [items, openEzadminModal, withSameInvoice]);
+
+  // 취소진행 - 이지어드민 C/S창 배송취소 > 송장삭제 > 전체취소. 한 건씩 순서대로 처리한다.
+  const handleShipCancel = useCallback(async (ids) => {
+    const targets = withSameInvoice(ids).filter((id) => shipLookup[id]?.in_cancel && !shipDone.has(id));
+    if (!targets.length) return;
+    if (!window.confirm(`${targets.length}건을 이지어드민에서 배송취소 → 송장삭제 → 전체취소 처리합니다. 되돌리기 어려운 작업입니다.\n\n진행하시겠습니까?`)) return;
+    setMessage("");
+    let okCount = 0;
+    for (const id of targets) {
+      setBusy([id], true);
+      try {
+        const res = await fetch(`${API}/barcode/post-shipment-cancel/ship-cancel`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+          body: JSON.stringify({ id }),
+        });
+        if (handleUnauthorized(res)) return;
+        const data = await res.json().catch(() => ({}));
+        if (data?.need_session) {
+          openEzadminModal(() => handleShipCancel(targets.filter((t) => !shipDone.has(t))));
+          setBusy([id], false);
+          return;
+        }
+        if (!res.ok || !data.ok) throw new Error(data?.detail || "취소진행 실패");
+        okCount += 1;
+        setShipDone((prev) => new Set(prev).add(id));
+        setShipErrors((prev) => { const next = { ...prev }; delete next[id]; return next; });
+      } catch (err) {
+        setShipErrors((prev) => ({ ...prev, [id]: err.message || "취소진행 실패" }));
+      } finally {
+        setBusy([id], false);
+      }
+    }
+    setMessage(`취소진행 ${okCount}/${targets.length}건 완료`);
+  }, [shipLookup, shipDone, openEzadminModal, withSameInvoice]);
+
+  // 보류 - 확인했다는 표시. 해당 건의 '취소 조회' 버튼을 비활성화한다.
+  const handleShipHold = useCallback(async (ids) => {
+    const targets = withSameInvoice(ids).filter((id) => shipLookup[id]?.in_shipping && !items.find((it) => it.id === id)?.held);
+    for (const id of targets) {
+      try {
+        const res = await fetch(`${API}/barcode/post-shipment-cancel/hold`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+          body: JSON.stringify({ id }),
+        });
+        if (handleUnauthorized(res)) return;
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) throw new Error(data?.detail || "보류 실패");
+        setItems((prev) => prev.map((it) => (it.id === id ? { ...it, held: 1 } : it)));
+      } catch (err) {
+        setMessage(err.message || "보류 실패");
+      }
+    }
+  }, [shipLookup, items, withSameInvoice]);
+
+  const allSelected = items.length > 0 && items.every((it) => selectedIds.has(it.id));
+  const selectedList = items.filter((it) => selectedIds.has(it.id)).map((it) => it.id);
+
   const handleScan = () => {
     const value = scanText.trim();
     if (!value) return;
@@ -695,6 +815,31 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                 {refreshing ? "조회 중..." : "새로고침"}
               </button>
             </div>
+          </div>
+
+          <div className={pageStyles.headerActions} style={{ flexWrap: "wrap", gap: "0.5rem" }}>
+            <span className={pageStyles.pill}>선택 {selectedList.length}건</span>
+            <button
+              className={pageStyles.secondaryBtn}
+              onClick={() => handleShipLookup(selectedList)}
+              disabled={!selectedList.length || selectedList.some((id) => shipBusy.has(id))}
+            >
+              선택 취소 조회
+            </button>
+            <button
+              className={pageStyles.secondaryBtn}
+              onClick={() => handleShipCancel(selectedList)}
+              disabled={!selectedList.some((id) => shipLookup[id]?.in_cancel && !shipDone.has(id)) || shipBusy.size > 0}
+            >
+              선택 취소진행
+            </button>
+            <button
+              className={pageStyles.secondaryBtn}
+              onClick={() => handleShipHold(selectedList)}
+              disabled={!selectedList.some((id) => shipLookup[id]?.in_shipping && !items.find((it) => it.id === id)?.held)}
+            >
+              선택 보류
+            </button>
           </div>
 
           {message && (
@@ -758,6 +903,13 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
             <table className={pageStyles.table}>
               <thead>
                 <tr>
+                  <th>
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={() => setSelectedIds(allSelected ? new Set() : new Set(items.map((it) => it.id)))}
+                    />
+                  </th>
                   <th>송장번호</th>
                   <th>쇼핑몰</th>
                   <th>담당자</th>
@@ -765,6 +917,7 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                   <th>택배사</th>
                   <th>발송시각</th>
                   <th>취소시각</th>
+                  <th>취소 조회</th>
                   <th></th>
                 </tr>
               </thead>
@@ -774,6 +927,9 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                     key={item.id || item.seq || item.invoice_no}
                     className={matchedInvoices.has(item.invoice_no) ? pageStyles.checkedTableRow : ""}
                   >
+                    <td>
+                      <input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => toggleSelected(item.id)} />
+                    </td>
                     <td>{item.invoice_no}</td>
                     <td>{item.shop}</td>
                     <td>{item.manager}</td>
@@ -781,6 +937,41 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                     <td>{item.carrier}</td>
                     <td>{item.ship_time}</td>
                     <td>{item.cancel_time}</td>
+                    <td>
+                      {(() => {
+                        const r = shipLookup[item.id];
+                        const busy = shipBusy.has(item.id);
+                        const done = shipDone.has(item.id);
+                        return (
+                          <div style={{ display: "flex", gap: "0.35rem", alignItems: "center", flexWrap: "wrap" }}>
+                            <button
+                              className={pageStyles.secondaryBtn}
+                              onClick={() => handleShipLookup([item.id])}
+                              disabled={busy || done || !!item.held}
+                            >
+                              {busy ? "처리 중..." : "취소 조회"}
+                            </button>
+                            {item.held ? <span className={pageStyles.pill}>보류됨</span> : null}
+                            {done ? <span className={pageStyles.pill}>취소진행 완료</span> : null}
+                            {!done && r && !r.ok && <span style={{ color: "#dc3545" }}>{r.message}</span>}
+                            {!done && r && r.ok && !r.in_cancel && !r.in_shipping && (
+                              <span style={{ color: "#dc3545" }}>목록안뜸 확인필요</span>
+                            )}
+                            {!done && r && r.ok && r.in_cancel && (
+                              <button className={pageStyles.primaryBtn} onClick={() => handleShipCancel([item.id])} disabled={busy}>
+                                취소진행
+                              </button>
+                            )}
+                            {!done && r && r.ok && r.in_shipping && !item.held && (
+                              <button className={pageStyles.secondaryBtn} onClick={() => handleShipHold([item.id])} disabled={busy}>
+                                보류
+                              </button>
+                            )}
+                            {shipErrors[item.id] && <span style={{ color: "#dc3545" }}>{shipErrors[item.id]}</span>}
+                          </div>
+                        );
+                      })()}
+                    </td>
                     <td>
                       {item.manual ? (
                         <button className={pageStyles.secondaryBtn} onClick={() => handleManualDelete(item.id)}>
@@ -792,7 +983,7 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                 ))}
                 {items.length === 0 && !loading && (
                   <tr>
-                    <td colSpan={8}>저장된 배송후취소 목록이 없습니다. 새로고침을 눌러주세요.</td>
+                    <td colSpan={10}>저장된 배송후취소 목록이 없습니다. 새로고침을 눌러주세요.</td>
                   </tr>
                 )}
               </tbody>

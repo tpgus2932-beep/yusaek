@@ -19,6 +19,7 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, Upl
 from openpyxl import load_workbook
 
 from sdk.ably import AblyClient
+from services import ezadmin_orders as ezo
 from services import ezadmin_product_rename as ez_product_rename
 from services.easyadmin_product import process_easyadmin_product_from_api
 from services.order_history_store import init_order_history_table
@@ -4950,9 +4951,12 @@ def build_barcode_router(
         conn = get_db()
         try:
             rows = conn.execute(
-                "SELECT id, date, seq, invoice_no, shop, manager, ship_time, cancel_time, "
-                "product_name, carrier, fetched_at, COALESCE(manual, 0) AS manual "
-                "FROM post_shipment_cancel ORDER BY id"
+                "SELECT p.id, p.date, p.seq, p.invoice_no, p.shop, p.manager, p.ship_time, p.cancel_time, "
+                "p.product_name, p.carrier, p.fetched_at, COALESCE(p.manual, 0) AS manual, "
+                "CASE WHEN h.hold_key IS NULL THEN 0 ELSE 1 END AS held "
+                "FROM post_shipment_cancel p "
+                "LEFT JOIN post_shipment_cancel_hold h ON h.hold_key = COALESCE(NULLIF(p.seq, ''), p.invoice_no) "
+                "ORDER BY p.id"
             ).fetchall()
         finally:
             conn.close()
@@ -5065,6 +5069,7 @@ def build_barcode_router(
             conn.execute(
                 "DELETE FROM post_shipment_cancel WHERE COALESCE(manual, 0) = 0 OR date <> ?", (today,)
             )
+            conn.execute("DELETE FROM post_shipment_cancel_hold WHERE date <> ?", (today,))
             conn.executemany(
                 "INSERT INTO post_shipment_cancel "
                 "(date, seq, invoice_no, shop, manager, ship_time, cancel_time, product_name, carrier, fetched_at) "
@@ -5081,6 +5086,135 @@ def build_barcode_router(
 
         all_rows = _post_shipment_cancel_rows()
         return {"ok": True, "date": today, "fetched_at": fetched_at, "count": len(all_rows), "items": all_rows}
+
+    # ---- 배송후취소 '취소 조회' / '취소진행' / '보류' ----
+    # 목록의 seq = 이지어드민 C/S창의 pack(관리번호). 합포장이면 송장번호 하나에 seq가 여러 개라 송장번호는 키로 못 쓴다.
+    # pack → 에이블리 주문번호(list_order_id) → 에이블리 취소목록/배송중에서 주문번호 검색.
+    _SHIP_CANCEL_LOOKBACK_DAYS = 30
+
+    def _post_shipment_cancel_row(row_id) -> dict | None:
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT id, seq, invoice_no FROM post_shipment_cancel WHERE id = ?", (row_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        return dict(row) if row else None
+
+    async def _ably_state_for_pack(ably: AblyClient, phpsessid: str, seq: str) -> dict:
+        pack_items = await ezo.pack_rows(phpsessid, seq)
+        order_ids = list(dict.fromkeys(
+            oid for oid in (
+                str(r["cell"].get("list_order_id") or r["row"].get("order_id") or "").strip() for r in pack_items
+            ) if oid
+        ))
+        if not order_ids:
+            return {"ok": False, "message": "이지어드민에서 주문번호를 찾지 못했습니다."}
+        now = datetime.now(_KST)
+        start = (now - timedelta(days=_SHIP_CANCEL_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+        end = now.strftime("%Y-%m-%d")
+        in_cancel = in_shipping = False
+        cancel_snos: list[str] = []
+        for oid in order_ids:
+            cancels, shipping = await asyncio.gather(
+                ably.search_cancels_by_order_sno(oid, start_date=start, end_date=end),
+                ably.search_shipping_items_by_order_sno(oid),
+            )
+            if cancels:
+                in_cancel = True
+                cancel_snos += [str(c.get("sno")) for c in cancels if c.get("sno")]
+            if shipping:
+                in_shipping = True
+        return {
+            "ok": True, "order_ids": order_ids, "in_cancel": in_cancel,
+            "in_shipping": in_shipping, "cancel_snos": cancel_snos,
+        }
+
+    @router.post("/barcode/post-shipment-cancel/ably-lookup")
+    async def post_shipment_cancel_ably_lookup(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """선택한 목록 건을 에이블리 취소목록 / 배송중에서 주문번호로 검색한다 ('취소 조회')."""
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+        ids = [i for i in (payload.get("ids") or []) if i is not None][:100]
+        ably = AblyClient()
+        try:
+            await ably.login()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {exc}")
+        sem = asyncio.Semaphore(4)
+        session_expired = False
+
+        async def _one(row_id):
+            nonlocal session_expired
+            row = _post_shipment_cancel_row(row_id)
+            if row is None:
+                return {"id": row_id, "ok": False, "message": "목록에서 찾지 못했습니다."}
+            seq = str(row.get("seq") or "").strip()
+            if not seq:
+                return {"id": row_id, "ok": False, "message": "이지어드민 관리번호(seq)가 없는 수동 추가 건입니다."}
+            async with sem:
+                try:
+                    state = await _ably_state_for_pack(ably, phpsessid, seq)
+                except ezo.SessionExpired:
+                    session_expired = True
+                    return {"id": row_id, "ok": False, "message": "이지어드민 세션 만료"}
+                except Exception as exc:
+                    return {"id": row_id, "ok": False, "message": f"조회 실패: {exc}"}
+            return {"id": row_id, **state}
+
+        results = await asyncio.gather(*(_one(i) for i in ids))
+        if session_expired:
+            return {"ok": False, "need_session": True}
+        return {"ok": True, "results": results}
+
+    @router.post("/barcode/post-shipment-cancel/ship-cancel")
+    async def post_shipment_cancel_ship_cancel(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """'취소진행' - 이지어드민 C/S창에서 배송취소 → 송장삭제 → 전체취소.
+
+        화면 상태를 믿지 않고, 실행 직전에 에이블리 취소목록에 아직 있는지 다시 확인한다."""
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+        row = _post_shipment_cancel_row(payload.get("id"))
+        seq = str((row or {}).get("seq") or "").strip()
+        if not seq:
+            raise HTTPException(status_code=404, detail="이지어드민 관리번호(seq)가 있는 목록 건이 아닙니다.")
+        ably = AblyClient()
+        try:
+            state = await _ably_state_for_pack(ably, phpsessid, seq)
+            if not state.get("ok"):
+                raise HTTPException(status_code=404, detail=state.get("message") or "주문 확인 실패")
+            if not state["in_cancel"]:
+                raise HTTPException(status_code=409, detail="에이블리 취소목록에서 더 이상 확인되지 않아 중단했습니다. 다시 조회해 주세요.")
+            steps = await ezo.cancel_shipped_pack(phpsessid, seq)
+        except ezo.SessionExpired:
+            return {"ok": False, "need_session": True}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+        return {"ok": True, "id": row["id"], "order_ids": state["order_ids"], "steps": steps}
+
+    @router.post("/barcode/post-shipment-cancel/hold")
+    async def post_shipment_cancel_hold(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """'보류' - 확인했다는 표시. 이후 이 건은 다시 조회하지 않는다 (새로고침해도 유지, 날짜가 바뀌면 정리)."""
+        row = _post_shipment_cancel_row(payload.get("id"))
+        if row is None:
+            raise HTTPException(status_code=404, detail="목록에서 찾지 못했습니다.")
+        hold_key = str(row.get("seq") or "").strip() or row["invoice_no"]
+        now = datetime.now(_KST)
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO post_shipment_cancel_hold (hold_key, date, held_by, held_at) VALUES (?, ?, ?, ?)",
+                (hold_key, now.strftime("%Y-%m-%d"), str(user), now.isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "id": row["id"]}
 
     @router.post("/barcode/post-shipment-cancel/add")
     async def post_shipment_cancel_add(payload: dict = Body(...), user: str = Depends(get_current_user)):

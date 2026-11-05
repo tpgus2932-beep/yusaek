@@ -150,6 +150,58 @@ class AblyClient:
         response.raise_for_status()
         return response.json().get("order_items") or []
 
+    async def search_cancels_by_order_sno(self, order_sno: str | int, *, start_date: str, end_date: str) -> list[dict]:
+        """취소 접수 목록(취소관리 > 진행)에서 주문번호로 검색 (에이블리 취소 har 캡처).
+
+        주문번호가 정확히 같은 주문상품이 든 취소건만 돌려준다."""
+        target = str(order_sno).strip()
+        response = await self.request(
+            "GET", "/seller/order_cancels/",
+            params={
+                "cancel_type": "cancel",
+                "processing_sub_status[]": ["41", "42"],
+                "order": "-cancel_received_at",
+                "date_type": "cancel_received_at",
+                "page": 1,
+                "per_page": 30,
+                "delivery_type[]": ["standard", "today", "combine", "reserved"],
+                "start_date": start_date,
+                "end_date": end_date,
+                "sponsorship_type": -1,
+                "keyword_type": "order_sno",
+                "keyword": target,
+            },
+            origin="my.a-bly.com",
+        )
+        response.raise_for_status()
+        cancels = response.json().get("order_cancels") or []
+        return [
+            c for c in cancels
+            if any(str(it.get("order_sno")) == target for it in (c.get("order_items") or []))
+        ]
+
+    async def search_shipping_items_by_order_sno(self, order_sno: str | int) -> list[dict]:
+        """배송중(processing_status=3) 주문상품 목록에서 주문번호로 검색 (에이블리 배송중 har 캡처)."""
+        target = str(order_sno).strip()
+        response = await self.request(
+            "GET", "/seller/order_items/",
+            params={
+                "processing_status[]": 3,
+                "processing_sub_status[]": 0,
+                "order": "-goods_sent_at",
+                "delivery_type[]": ["standard", "today", "combine", "reserved"],
+                "page": 1,
+                "per_page": 30,
+                "sponsorship_type": -1,
+                "keyword": target,
+                "keyword_type": "order_sno",
+            },
+            origin="my.a-bly.com",
+        )
+        response.raise_for_status()
+        items = response.json().get("order_items") or []
+        return [it for it in items if str(it.get("order_sno")) == target]
+
     async def rollback_order_items_to_prepare(self, sno_list: list[int]) -> httpx.Response:
         return await self.request("PUT", "/seller/order_items/rollback_to_prepare/", json={"sno_list": sno_list}, origin="my.a-bly.com")
 

@@ -315,3 +315,86 @@ async def change_address(phpsessid: str, data: dict, address: str, zip_code: str
     params["timeFlag"] = _time_flag()
     async with _client() as client:
         return await _post(client, phpsessid, params)
+
+
+# ---- 배송후취소: C/S창 > 배송취소 > 송장삭제 > 전체취소 (cs 배송후취소과정.har) ----
+
+async def cancel_trans(phpsessid: str, pack: str) -> dict:
+    """배송취소 (cancel_trans)."""
+    async with _client() as client:
+        return await _post(
+            client, phpsessid,
+            {"template": "E900", "action": "cancel_trans", "seq": str(pack), "content": "", "timeFlag": _time_flag()},
+        )
+
+
+async def delete_trans_no(phpsessid: str, pack: str) -> dict:
+    """송장삭제 (delete_trans_no)."""
+    async with _client() as client:
+        return await _post(
+            client, phpsessid,
+            {"template": "E900", "action": "delete_trans_no", "seq": str(pack), "content": "", "timeFlag": _time_flag()},
+        )
+
+
+async def find_multilocation(phpsessid: str, prd_seq: str) -> dict:
+    """전체취소 창이 채워 넣는 재고 위치/유통기한 기본값. ``{"location": "Def", "expire_date": "YYYY-MM-DD"}``."""
+    async with _client() as client:
+        return await _post(
+            client, phpsessid,
+            {"template": "E900", "action": "find_multilocation", "prd_seq": str(prd_seq), "timeFlag": _time_flag()},
+        )
+
+
+async def cancel_pack(phpsessid: str, pack: str, prd_seq: str, trans_corp: str, location: str, expire_date: str) -> dict:
+    """전체취소 (cancel_pack). 값은 HAR의 요청 그대로(재입고/환불/문자 옵션은 모두 0)."""
+    async with _client() as client:
+        return await _post(
+            client, phpsessid,
+            {
+                "template": "E900", "action": "cancel_pack", "seq": str(pack), "prdSeq": str(prd_seq),
+                "cs_reason": "", "restockin": "0", "restockin_ex": "0", "restockin_bad": "0", "return_comp": "0",
+                "site_p": "", "envelop_p": "", "account_p": "", "notget_p": "", "notget_p2": "0",
+                "trans_corp": str(trans_corp or ""), "trans_no": "", "memo": "", "trans_price": "", "content": "",
+                "do_complete": "0", "callid": "", "confirm_refund": "0", "send_msg": "0",
+                "multi_location": location or "Def", "expire_date": expire_date, "auto_expire_date": "1",
+                "timeFlag": _time_flag(),
+            },
+        )
+
+
+def _check(step: str, res) -> None:
+    if not isinstance(res, dict) or str(res.get("error", "")) != "0":
+        raise RuntimeError(f"{step} 실패: {res}")
+
+
+async def cancel_shipped_pack(phpsessid: str, pack: str) -> list[str]:
+    """배송취소 → 송장삭제 → (상품별) 전체취소. 끝낸 단계 이름 목록을 돌려준다.
+
+    중간에 실패하면 어디까지 했는지 메시지에 담아 RuntimeError 로 올린다(되돌리지 않는다)."""
+    rows = await pack_rows(phpsessid, pack)
+    if not rows:
+        raise RuntimeError("이지어드민에서 주문 상품을 찾지 못했습니다.")
+    if any(str(r["cell"].get("order_cs") or "0") not in ("0", "") for r in rows):
+        raise RuntimeError("이미 C/S 처리된 주문입니다. 이지어드민에서 확인해 주세요.")
+    trans_corp = str(rows[0]["row"].get("trans_corp_id") or "")  # 송장삭제 전에 읽어 둔다
+    prd_seqs = [str(r["row"].get("prd_seq") or "") for r in rows]
+    if not all(prd_seqs):
+        raise RuntimeError("상품 식별번호(prd_seq)를 찾지 못했습니다.")
+
+    done: list[str] = []
+    try:
+        _check("배송취소", await cancel_trans(phpsessid, pack)); done.append("배송취소")
+        _check("송장삭제", await delete_trans_no(phpsessid, pack)); done.append("송장삭제")
+        for prd_seq in prd_seqs:
+            loc = await find_multilocation(phpsessid, prd_seq)
+            if not isinstance(loc, dict):
+                raise RuntimeError(f"재고위치 조회 실패: {loc}")
+            expire = str(loc.get("expire_date") or datetime.now().strftime("%Y-%m-%d"))
+            _check("전체취소", await cancel_pack(phpsessid, pack, prd_seq, trans_corp, str(loc.get("location") or "Def"), expire))
+        done.append("전체취소")
+    except SessionExpired:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"{exc} (완료된 단계: {', '.join(done) or '없음'})") from exc
+    return done
