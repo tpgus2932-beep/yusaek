@@ -59,6 +59,29 @@ const colorFor = (name) => {
 };
 const newRequestId = () => (window.crypto?.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
+const MAX_PHOTOS = 10;
+const mediaCache = new Map(); // 미디어 id -> blob URL (같은 사진을 폴링마다 다시 받지 않는다)
+
+/** 로그인 토큰이 필요한 사진을 받아서 보여 준다(<img src>는 Authorization 헤더를 못 보낸다). */
+const AuthImage = ({ mediaId, className }) => {
+    const [url, setUrl] = useState(() => mediaCache.get(mediaId) || '');
+    useEffect(() => {
+        if (mediaCache.has(mediaId)) return undefined;   // 초기 상태가 캐시된 사진을 이미 보여 준다
+        let alive = true;
+        fetch(`${LOCAL_API_BASE}/kakao/media/${mediaId}`, { headers: getAuthHeaders() })
+            .then((res) => (res.ok ? res.blob() : null))
+            .then((blob) => {
+                if (!blob) return;
+                const made = URL.createObjectURL(blob);
+                mediaCache.set(mediaId, made);
+                if (alive) setUrl(made);
+            })
+            .catch(() => {});
+        return () => { alive = false; };
+    }, [mediaId]);
+    return url ? <img src={url} alt="" className={className} draggable={false} /> : <span className={className} />;
+};
+
 const Avatar = ({ name, size = 44 }) => (
     <span className={styles.avatar} style={{ width: size, height: size, background: colorFor(name) }}>
         <User size={Math.round(size * 0.58)} strokeWidth={2.2} />
@@ -87,6 +110,8 @@ const KakaoTalkPage = () => {
     const [serialInput, setSerialInput] = useState('');
     const [busy, setBusy] = useState(false);
     const [roomSyncOpen, setRoomSyncOpen] = useState(false);
+    const [attachments, setAttachments] = useState([]); // {key, name, preview, id, error}
+    const fileInput = useRef(null);
     const [roomSince, setRoomSince] = useState('');
     const scroller = useRef(null);
     const stickToBottom = useRef(true);
@@ -163,7 +188,63 @@ const KakaoTalkPage = () => {
         if (el) stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
     };
 
+    const addFiles = (fileList) => {
+        const files = Array.from(fileList || []).filter((f) => /^image\//.test(f.type) || /\.(jpe?g|png|gif|webp)$/i.test(f.name));
+        if (!files.length) { showNotice('사진 파일(JPG, PNG, GIF, WEBP)만 첨부할 수 있습니다.'); return; }
+        const room = MAX_PHOTOS - attachments.length;
+        if (room <= 0) { showNotice(`사진은 한 번에 ${MAX_PHOTOS}장까지 보낼 수 있습니다.`); return; }
+        if (files.length > room) showNotice(`사진은 한 번에 ${MAX_PHOTOS}장까지라서 ${room}장만 추가했습니다.`);
+        files.slice(0, room).forEach((file) => {
+            const key = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            setAttachments((list) => [...list, { key, name: file.name, preview: URL.createObjectURL(file), id: '' }]);
+            fetch(`${LOCAL_API_BASE}/kakao/media?name=${encodeURIComponent(file.name)}`, {
+                method: 'POST',
+                headers: { ...getAuthHeaders(), 'Content-Type': 'application/octet-stream' },
+                body: file,
+            })
+                .then(async (res) => {
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(data.detail || '사진을 올리지 못했습니다.');
+                    setAttachments((list) => list.map((a) => (a.key === key ? { ...a, id: data.id } : a)));
+                })
+                .catch((err) => {
+                    showNotice(`${file.name}: ${err.message}`);
+                    setAttachments((list) => list.filter((a) => a.key !== key));
+                });
+        });
+    };
+
+    const removeAttachment = (key) => {
+        setAttachments((list) => {
+            const gone = list.find((a) => a.key === key);
+            if (gone) URL.revokeObjectURL(gone.preview);
+            return list.filter((a) => a.key !== key);
+        });
+    };
+
+    const photosReady = attachments.length > 0 && attachments.every((a) => a.id);
+
+    const sendAttachments = async () => {
+        if (!photosReady) { showNotice('사진을 올리는 중입니다. 잠시 후 다시 눌러 주세요.'); return false; }
+        try {
+            await call('/send-images', { method: 'POST', body: { contact_id: selected.id, media_ids: attachments.map((a) => a.id), request_id: newRequestId() } });
+            attachments.forEach((a) => URL.revokeObjectURL(a.preview));
+            setAttachments([]);
+            return true;
+        } catch (err) {
+            showNotice(err.message);
+            return false;
+        }
+    };
+
     const submit = async (dryRun = false) => {
+        if (!dryRun && attachments.length && selected) {
+            stickToBottom.current = true;
+            if (!(await sendAttachments())) return;
+            await loadMessages(selected.id);
+            loadStatus();
+            if (!draft.trim()) return;   // 사진만 보냄. 글도 있으면 아래에서 이어서 보낸다.
+        }
         const text = dryRun ? (draft.trim() || '(전송 테스트)') : draft;
         if (!selected || !text.trim()) return;
         if (!dryRun) setDraft('');
@@ -466,9 +547,15 @@ const KakaoTalkPage = () => {
                         )}
                         {settled && m.timeKnown && !sameMinuteAsNext && <span className={styles.time}>{clock(m.sentAt || m.createdAt)}</span>}
                     </div>
-                    <div className={`${styles.bubble} ${startsGroup ? styles.bubbleTail : ''} ${m.status === 'failed' ? styles.bubbleFailed : ''}`}>
-                        {m.text}
-                    </div>
+                    {m.kind === 'image' ? (
+                        <div className={`${styles.imgGrid} ${m.mediaIds.length === 1 ? styles.imgOne : ''} ${m.status === 'failed' ? styles.bubbleFailed : ''}`}>
+                            {m.mediaIds.map((id) => <AuthImage key={id} mediaId={id} className={styles.imgThumb} />)}
+                        </div>
+                    ) : (
+                        <div className={`${styles.bubble} ${startsGroup ? styles.bubbleTail : ''} ${m.status === 'failed' ? styles.bubbleFailed : ''}`}>
+                            {m.text}
+                        </div>
+                    )}
                 </div>
                 {m.status === 'failed' && m.error && <div className={styles.errorLine}>{m.error}</div>}
             </div>
@@ -476,7 +563,7 @@ const KakaoTalkPage = () => {
     };
 
     const connected = status?.bound;
-    const canSend = !!selected && !!draft.trim();
+    const canSend = !!selected && (!!draft.trim() || photosReady);
 
     const renderList = () => {
         if (rail === 'more') {
@@ -757,7 +844,23 @@ const KakaoTalkPage = () => {
                         </div>
 
                         <footer className={styles.composer}>
+                            {attachments.length > 0 && (
+                                <div className={styles.attachRow}>
+                                    {attachments.map((a) => (
+                                        <div key={a.key} className={styles.attachItem} title={a.name}>
+                                            <img src={a.preview} alt="" draggable={false} />
+                                            {!a.id && <i className={styles.attachSpin} />}
+                                            <button type="button" onClick={() => removeAttachment(a.key)} title="빼기"><X size={11} /></button>
+                                        </div>
+                                    ))}
+                                    <span className={styles.attachCount}>{attachments.length}/{MAX_PHOTOS}</span>
+                                </div>
+                            )}
                             <textarea
+                                onPaste={(e) => {
+                                    const pasted = Array.from(e.clipboardData?.files || []).filter((f) => /^image\//.test(f.type));
+                                    if (pasted.length) { e.preventDefault(); addFiles(pasted); }
+                                }}
                                 ref={textarea}
                                 rows={1}
                                 value={draft}
@@ -768,7 +871,15 @@ const KakaoTalkPage = () => {
                             <div className={styles.composerBar}>
                                 <div className={styles.composerIcons}>
                                     <button type="button" disabled title="이모티콘은 지원하지 않습니다"><Smile size={20} /></button>
-                                    <button type="button" disabled title="파일 전송은 지원하지 않습니다"><Paperclip size={20} /></button>
+                                    <button type="button" className={styles.attachBtn} title={`사진 첨부 (최대 ${MAX_PHOTOS}장)`} onClick={() => fileInput.current?.click()}><Paperclip size={20} /></button>
+                                    <input
+                                        ref={fileInput}
+                                        type="file"
+                                        hidden
+                                        multiple
+                                        accept="image/jpeg,image/png,image/gif,image/webp"
+                                        onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }}
+                                    />
                                 </div>
                                 <button type="button" className={styles.sendBtn} disabled={!canSend} onClick={() => submit(false)}>
                                     전송

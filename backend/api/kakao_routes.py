@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
+import json
+import pathlib
 import re
 import threading
+import uuid
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 
 from services import kakao_phone
 from services.kakao_store import get_setting, init_kakao_tables, now_iso, set_settings
@@ -15,6 +20,30 @@ _MAX_NAME = 60
 
 # 상태: queued(대기) → sending(전송 중) → sent(보냄) | failed(보내기 전 실패, 재전송 가능)
 #       | needs_check(전송 버튼을 누른 뒤 불확실 — 사람이 폰에서 확인) | tested(전송 없이 테스트 성공)
+
+
+_MEDIA_DIR = pathlib.Path(__file__).resolve().parent.parent / "kakao_media"
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+_MAX_IMAGES = 10
+
+
+def _sniff_image(data: bytes):
+    """내용으로 이미지 종류를 판별한다(확장자·클라이언트가 준 형식은 믿지 않는다). (mime, 확장자) 또는 None."""
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg", "jpg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png", "png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif", "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp", "webp"
+    return None
+
+
+def _safe_name(raw: str, ext: str) -> str:
+    stem = re.sub(r"[\\/\x00-\x1f]", "_", (raw or "").strip())[:100]
+    stem = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", stem).strip(". ") or "image"
+    return f"{stem}.{ext}"
 
 
 def _key(text: str) -> str:
@@ -66,6 +95,8 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             "direction": row["direction"],
             "origin": row["origin"],
             "timeKnown": bool(row["time_known"]),
+            "kind": row["kind"],
+            "mediaIds": [m for m in (row["media_ids"] or "").split(",") if m],
             "requestedBy": row["requested_by"],
             "requestedByDisplay": get_user_display(row["requested_by"]) or row["requested_by"],
             "createdAt": row["created_at"],
@@ -84,7 +115,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
     def _claim_next():
         conn = get_db()
         row = conn.execute(
-            "SELECT m.id, m.text, m.dry_run, c.name FROM kakao_messages m "
+            "SELECT m.id, m.text, m.dry_run, m.kind, m.media_ids, c.name FROM kakao_messages m "
             "JOIN kakao_contacts c ON c.id = m.contact_id WHERE m.status = 'queued' ORDER BY m.id ASC LIMIT 1"
         ).fetchone()
         if not row:
@@ -192,7 +223,11 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             # 대화방에 들어가 최근 대화를 읽은 뒤, 웹과 다르면 입력하기 전에 멈추고(sync_needed) 가져와서 다시 보낸다.
             tail = None if job["id"] in resynced else _db_tail_payload(job)
             with phone_lock:
-                result = kakao_phone.send(config, job["name"], job["text"], dry_run=bool(job["dry_run"]), tail=tail) or {}
+                if job.get("kind") == "image":
+                    files = _load_media(job.get("media_ids") or "")
+                    result = kakao_phone.send_images(config, job["name"], files, tail=tail) or {}
+                else:
+                    result = kakao_phone.send(config, job["name"], job["text"], dry_run=bool(job["dry_run"]), tail=tail) or {}
             if result.get("state") == "sync_needed":
                 imported = 0
                 try:
@@ -676,6 +711,96 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             state["syncing"] = True
         threading.Thread(target=_run_add_friend, args=(kind, name, value, dry_run), name="kakao-add-friend", daemon=True).start()
         return {"ok": True, "started": True}
+
+    def _load_media(media_ids: str) -> list:
+        ids = [m for m in (media_ids or "").split(",") if m]
+        conn = get_db()
+        try:
+            files = []
+            for mid in ids:
+                row = conn.execute("SELECT * FROM kakao_media WHERE id = ?", (mid,)).fetchone()
+                if not row:
+                    raise kakao_phone.Blocked("media_file_missing")
+                files.append({"id": row["id"], "name": row["name"], "mime": row["mime"], "bytes": row["bytes"], "sha256": row["sha256"], "path": row["path"]})
+            return files
+        finally:
+            conn.close()
+
+    @router.post("/media")
+    async def upload_media(request: Request, name: str = Query(""), user: str = Depends(get_current_user)):
+        """사진 한 장을 원본 바이트로 올린다(Content-Type 무관). 내용으로 종류를 검사한다."""
+        data = await request.body()
+        if not data:
+            raise HTTPException(status_code=400, detail="빈 파일입니다.")
+        if len(data) > _MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="사진은 한 장에 20MB까지 보낼 수 있습니다.")
+        kind = _sniff_image(data)
+        if not kind:
+            raise HTTPException(status_code=400, detail="JPG, PNG, GIF, WEBP 사진만 보낼 수 있습니다.")
+        mime, ext = kind
+        media_id = str(uuid.uuid4())
+        _MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+        path = _MEDIA_DIR / f"{media_id}.{ext}"
+        path.write_bytes(data)
+        display = _safe_name(name, ext)
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT INTO kakao_media (id, name, mime, bytes, sha256, path, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (media_id, display, mime, len(data), hashlib.sha256(data).hexdigest(), str(path), user, now_iso()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "id": media_id, "name": display, "mime": mime, "bytes": len(data)}
+
+    @router.get("/media/{media_id}")
+    def get_media(media_id: str, user: str = Depends(get_current_user)):
+        if not re.fullmatch(r"[a-f0-9-]{36}", media_id):
+            raise HTTPException(status_code=404, detail="not found")
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT path, mime FROM kakao_media WHERE id = ?", (media_id,)).fetchone()
+        finally:
+            conn.close()
+        if not row or not pathlib.Path(row["path"]).is_file():
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(row["path"], media_type=row["mime"], headers={"Cache-Control": "private, max-age=86400"})
+
+    @router.post("/send-images")
+    def send_images(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """업로드한 사진(1~10장)을 한 메시지로 큐에 넣는다. 한 번에 한 말풍선(앨범)으로 나간다."""
+        try:
+            contact_id = int(payload.get("contact_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="친구를 선택하세요.")
+        ids = [str(m) for m in (payload.get("media_ids") or [])]
+        if not 1 <= len(ids) <= _MAX_IMAGES or len(set(ids)) != len(ids) or not all(re.fullmatch(r"[a-f0-9-]{36}", m) for m in ids):
+            raise HTTPException(status_code=400, detail=f"사진은 한 번에 1~{_MAX_IMAGES}장까지 보낼 수 있습니다.")
+        request_id = str(payload.get("request_id") or "").strip()[:64] or None
+        conn = get_db()
+        try:
+            _contact_or_404(conn, contact_id)
+            for mid in ids:
+                if not conn.execute("SELECT 1 FROM kakao_media WHERE id = ?", (mid,)).fetchone():
+                    raise HTTPException(status_code=400, detail="업로드되지 않은 사진이 있습니다. 다시 선택하세요.")
+            if request_id:
+                existing = conn.execute("SELECT * FROM kakao_messages WHERE request_id = ?", (request_id,)).fetchone()
+                if existing:
+                    return {"ok": True, "message": _row_to_message(existing), "duplicate": True}
+            stamp = now_iso()
+            cur = conn.execute(
+                "INSERT INTO kakao_messages (contact_id, text, status, dry_run, request_id, requested_by, created_at, updated_at, kind, media_ids) "
+                "VALUES (?, '(사진)', 'queued', 0, ?, ?, ?, ?, 'image', ?)",
+                (contact_id, request_id, user, stamp, stamp, ",".join(ids)),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM kakao_messages WHERE id = ?", (cur.lastrowid,)).fetchone()
+            message = _row_to_message(row)
+        finally:
+            conn.close()
+        _ensure_worker()
+        return {"ok": True, "message": message}
 
     @router.delete("/contacts/{contact_id}")
     def delete_contact(contact_id: int, user: str = Depends(get_current_user)):

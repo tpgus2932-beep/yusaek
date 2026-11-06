@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import pathlib
 import re
+import time
 
 from services.kakao_adb_bridge import Adb, Blocked
 
@@ -53,6 +54,18 @@ _MESSAGES = {
     "friends_screen_changed": "친구 목록을 읽는 중 화면이 바뀌었습니다. 폰을 만지지 말고 다시 시도하세요.",
     "friends_scan_expired": "친구 목록 읽기가 중단되었습니다. 다시 시도하세요.",
     "kakao_id_not_found": "해당 카카오톡 ID를 찾지 못했습니다. ID가 없거나 ID 검색을 허용하지 않은 계정입니다.",
+    "share_sheet_unavailable": "카카오톡 공유 화면을 열지 못했습니다. 폰 잠금을 풀고 카카오톡이 로그인된 상태인지 확인하세요.",
+    "share_target_not_found": "공유 화면에서 정확히 같은 이름의 친구를 찾지 못해 사진을 보내지 않았습니다.",
+    "share_target_ambiguous": "공유 화면에 같은 이름의 친구가 여러 명이라 사진을 보내지 않았습니다.",
+    "share_select_failed": "공유 화면에서 받는 사람을 선택하지 못했습니다.",
+    "share_select_unverified": "받는 사람이 선택됐는지 확인하지 못해 사진을 보내지 않았습니다.",
+    "share_recipient_mismatch": "공유 화면에서 선택된 받는 사람이 다릅니다. 사진을 보내지 않았습니다.",
+    "share_submit_unavailable": "공유 화면의 '1 보내기' 버튼을 찾지 못해 사진을 보내지 않았습니다.",
+    "media_count_invalid": "사진은 한 번에 1~10장까지 보낼 수 있습니다.",
+    "media_file_missing": "서버에 저장된 사진 파일을 찾지 못했습니다. 다시 업로드하세요.",
+    "media_transfer_integrity_failed": "폰으로 사진을 옮기는 중 파일이 깨져서 보내지 않았습니다.",
+    "media_share_helper_required": "폰의 브리지 앱이 최신이 아닙니다. 다시 설치하세요.",
+    "send_result_unverified": "사진을 보냈는지 확인하지 못했습니다. 폰의 대화방을 확인하세요.",
     "contact_input_invalid": "이름(20자 이내)과 전화번호(예: 010-1234-5678) 또는 카카오톡 ID(영문·숫자·._-)를 확인하세요.",
     "contact_add_entry_unavailable": "카카오톡의 '친구 추가' 버튼을 찾지 못했습니다. 폰 잠금을 풀어 주세요.",
     "contact_permission_needed": "폰에 권한 팝업(연락처 접근 등)이 떠 있습니다. 폰에서 허용한 뒤 다시 시도하세요.",
@@ -282,6 +295,90 @@ def read_room_history(config: dict, name: str, since: str) -> tuple[list[dict], 
         except Exception:
             pass
         device.restore_keyboard()
+
+
+MAX_IMAGES = 10  # 카카오톡은 사진 여러 장을 한 말풍선(앨범)으로 묶는다. 10장을 넘기면 말풍선이 나뉜다.
+
+
+def _peek_key(items) -> list:
+    return [(i.get("side"), i.get("text")) for i in items or []]
+
+
+def send_images(config: dict, name: str, files: list, tail=None) -> dict:
+    """사진 1~10장을 카카오톡 '공유'로 1:1 친구에게 보낸다.
+
+    files: [{id(uuid), name, mime, bytes, sha256, path}]. 순서:
+      ① 채팅방에 들어가 최근 말풍선을 읽고 웹 대화와 비교(다르면 sync_needed로 멈춤)
+      ② 사진을 폰에 올리고(해시 검증) 카카오톡 공유 화면을 연다
+      ③ 공유 화면에서 정확히 같은 이름의 1:1 친구 한 명만 골라 '1 보내기'
+      ④ 다시 채팅방을 읽어 내 사진 말풍선이 새로 생겼는지 확인
+    '보내기'를 누른 뒤의 실패·불확실은 SendUncertain — 자동 재시도 금지.
+    """
+    if not config.get("serial") or not config.get("hardware_id") or not config.get("account"):
+        raise Blocked("device_not_bound")
+    if not 1 <= len(files) <= MAX_IMAGES:
+        raise Blocked("media_count_invalid")
+    device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
+    staged: list = []
+    root = "/sdcard/Android/data/com.yusaek.talkbridge/files/outgoing/"
+    try:
+        device.connect_transport()
+        if not device.accessibility_enabled():
+            raise Blocked("accessibility_disabled")
+        peek_payload = {"action": "room_peek", "name": name}
+        if tail is not None:
+            peek_payload["tail"] = tail
+        peek = device.fast_broadcast(peek_payload, timeout=60)
+        if peek.get("state") == "sync_needed":
+            return {"state": "sync_needed", "recent": peek.get("recent")}
+        if peek.get("state") != "verified":
+            raise Blocked(peek.get("error") or "not_in_room")
+        before = peek.get("recent") or []
+        for f in files:
+            import pathlib
+            path = pathlib.Path(f["path"])
+            if not path.is_file():
+                raise Blocked("media_file_missing")
+            folder = root + f["id"]
+            device.run("shell", "mkdir", "-p", folder)
+            device.run("push", str(path), folder + "/data", timeout=90)
+            staged.append(folder)
+            remote = device.run("shell", "sha256sum", folder + "/data").split()
+            if not remote or remote[0] != f["sha256"]:
+                raise Blocked("media_transfer_integrity_failed")
+        items = [{k: f[k] for k in ("id", "name", "mime", "bytes", "sha256")} for f in files]
+        import base64, json
+        encoded = base64.b64encode(json.dumps(items, ensure_ascii=False).encode()).decode()
+        key, value = ("item", base64.b64encode(json.dumps(items[0], ensure_ascii=False).encode()).decode()) if len(items) == 1 else ("items", encoded)
+        reply = device.run("shell", "am", "start", "-n", "com.yusaek.talkbridge/.ShareActivity", "--es", key, value)
+        if "Error" in reply:
+            raise Blocked("media_share_helper_required")
+        time.sleep(0.6)
+        res = device.fast_broadcast({"action": "share_pick", "name": name}, timeout=80)
+        if res.get("send_attempted"):
+            device.send_attempted = True
+        if res.get("state") != "verified":
+            raise Blocked(res.get("error") or "send_result_unverified")
+        # ④ 확인: 방을 다시 읽어 내 사진 말풍선이 새로 생겼는지
+        after = (device.fast_broadcast({"action": "room_peek", "name": name}, timeout=60).get("recent")) or []
+        newest = after[-1] if after else {}
+        if not (newest.get("side") == "me" and newest.get("text") == "(사진)" and _peek_key(after) != _peek_key(before)):
+            raise Blocked("send_result_unverified")
+        return {"state": "verified", "recent": before}
+    except Exception as exc:
+        if device.send_attempted:
+            raise SendUncertain("전송 결과 불확실") from exc
+        raise
+    finally:
+        for folder in staged:
+            try:
+                device.run("shell", "rm", "-rf", folder)
+            except Exception:
+                pass
+        try:
+            device.fast_broadcast({"action": "finish_send", "hold": True})
+        except Exception:
+            pass
 
 
 def send(config: dict, name: str, text: str, dry_run: bool = False, tail=None) -> dict:

@@ -1021,3 +1021,107 @@
     font-weight: 600;
     cursor: pointer;
 }
+
+/* 사진 첨부/말풍선 */
+.composerIcons .attachBtn {
+    color: #6b6b6b;
+    cursor: pointer;
+}
+
+.composerIcons .attachBtn:hover {
+    background: #f1f1f1;
+}
+
+.attachRow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 0 8px;
+    overflow-x: auto;
+}
+
+.attachItem {
+    position: relative;
+    flex: none;
+    width: 58px;
+    height: 58px;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #eee;
+}
+
+.attachItem img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.attachItem button {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 18px;
+    height: 18px;
+    display: grid;
+    place-items: center;
+    border: none;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    cursor: pointer;
+}
+
+.attachSpin {
+    position: absolute;
+    inset: 0;
+    background: rgba(255, 255, 255, 0.55);
+}
+
+.attachSpin::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 16px;
+    height: 16px;
+    margin: -8px 0 0 -8px;
+    border: 2px solid rgba(0, 0, 0, 0.2);
+    border-top-color: rgba(0, 0, 0, 0.65);
+    border-radius: 50%;
+    animation: kkSpin 0.8s linear infinite;
+}
+
+.attachCount {
+    flex: none;
+    font-size: 11.5px;
+    color: var(--kk-sub);
+}
+
+.imgGrid {
+    display: grid;
+    grid-template-columns: repeat(3, 108px);
+    gap: 3px;
+    max-width: 340px;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.imgGrid.imgOne {
+    grid-template-columns: minmax(0, 260px);
+}
+
+.imgThumb {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    display: block;
+    background: rgba(255, 255, 255, 0.5);
+}
+
+.imgOne .imgThumb {
+    aspect-ratio: auto;
+    max-height: 320px;
+    object-fit: contain;
+    background: transparent;
+}
