@@ -28,7 +28,7 @@ _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _MAX_IMAGES = 10
 _MAX_BULK_RECIPIENTS = 500
 _QUEUE_ORDER = "CASE WHEN batch_id IS NULL THEN 0 ELSE 1 END, id"  # 일반 메시지가 일괄 전송보다 먼저 나간다
-_BATCH_GRACE_SEC = 1.2  # 같은 사람에게 연달아 오는 요청이 한 묶음이 되도록 큐가 잠깐 기다리는 시간
+_BATCH_GRACE_SEC = 0.0  # 같은 사람에게 연달아 오는 요청이 한 묶음이 되도록 큐가 잠깐 기다리는 시간
 
 
 def _sniff_image(data: bytes):
@@ -237,7 +237,9 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
 
     def _process(job: dict) -> None:
         config = _device_config()
-        keep = (not job["dry_run"]) and _next_is_same_contact(job)
+        # 앱은 실제 전송 뒤에 항상 방을 유지한다. 나올지는 전송이 끝난 뒤에 정한다(아래) — 전송하는 동안
+        # 들어온 같은 사람의 다음 메시지까지 한 묶음으로 잡기 위해서다.
+        keep = not job["dry_run"]
         try:
             # 대화방에 들어가 최근 대화를 읽은 뒤, 웹과 다르면 입력하기 전에 멈추고(sync_needed) 가져와서 다시 보낸다.
             tail = None if job["id"] in resynced else _db_tail_payload(job)
@@ -261,6 +263,8 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             except Exception:  # noqa: BLE001 — 대화 맞추기가 실패해도 전송 결과는 그대로 기록한다
                 pass
             resynced.discard(job["id"])
+            if not job["dry_run"] and not _next_is_same_contact(job):
+                kakao_phone.leave_room(config)   # 묶음의 마지막: 방에서 나온다
             _set_status(job["id"], "tested" if job["dry_run"] else "sent", sent=not job["dry_run"])
         except kakao_phone.SendUncertain:
             _set_status(job["id"], "needs_check", "전송 버튼을 누른 뒤 결과를 확인하지 못했습니다. 폰에서 확인하세요. 자동으로 다시 보내지 않습니다.")
@@ -822,6 +826,9 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         if not 1 <= len(ids) <= _MAX_IMAGES or len(set(ids)) != len(ids) or not all(re.fullmatch(r"[a-f0-9-]{36}", m) for m in ids):
             raise HTTPException(status_code=400, detail=f"사진은 한 번에 1~{_MAX_IMAGES}장까지 보낼 수 있습니다.")
         request_id = str(payload.get("request_id") or "").strip()[:64] or None
+        caption = str(payload.get("text") or "").replace("\r\n", "\n").strip("\n")
+        if len(caption) > _MAX_TEXT:
+            raise HTTPException(status_code=400, detail=f"메시지는 {_MAX_TEXT}자까지 보낼 수 있습니다.")
         conn = get_db()
         try:
             _contact_or_404(conn, contact_id)
@@ -838,8 +845,15 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                 "VALUES (?, '(사진)', 'queued', 0, ?, ?, ?, ?, 'image', ?)",
                 (contact_id, request_id, user, stamp, stamp, ",".join(ids)),
             )
+            image_id = cur.lastrowid
+            if caption.strip():  # 사진 바로 뒤에 붙는 글: 같은 요청으로 함께 등록해 한 묶음(방 유지)으로 나간다
+                conn.execute(
+                    "INSERT INTO kakao_messages (contact_id, text, status, dry_run, requested_by, created_at, updated_at) "
+                    "VALUES (?, ?, 'queued', 0, ?, ?, ?)",
+                    (contact_id, caption, user, stamp, stamp),
+                )
             conn.commit()
-            row = conn.execute("SELECT * FROM kakao_messages WHERE id = ?", (cur.lastrowid,)).fetchone()
+            row = conn.execute("SELECT * FROM kakao_messages WHERE id = ?", (image_id,)).fetchone()
             message = _row_to_message(row)
         finally:
             conn.close()

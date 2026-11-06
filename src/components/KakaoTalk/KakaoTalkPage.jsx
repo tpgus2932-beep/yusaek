@@ -250,7 +250,7 @@ const KakaoTalkPage = () => {
     const sendAttachments = async () => {
         if (!photosReady) { showNotice('사진을 올리는 중입니다. 잠시 후 다시 눌러 주세요.'); return false; }
         try {
-            await call('/send-images', { method: 'POST', body: { contact_id: selected.id, media_ids: attachments.map((a) => a.id), request_id: newRequestId() } });
+            await call('/send-images', { method: 'POST', body: { contact_id: selected.id, media_ids: attachments.map((a) => a.id), text: draft, request_id: newRequestId() } });
             attachments.forEach((a) => URL.revokeObjectURL(a.preview));
             setAttachments([]);
             return true;
@@ -263,10 +263,11 @@ const KakaoTalkPage = () => {
     const submit = async (dryRun = false) => {
         if (!dryRun && attachments.length && selected) {
             stickToBottom.current = true;
-            if (!(await sendAttachments())) return;
+            if (!(await sendAttachments())) return;   // 글이 있으면 사진과 한 요청으로 함께 등록된다
+            setDraft('');
             await loadMessages(selected.id);
             loadStatus();
-            if (!draft.trim()) return;   // 사진만 보냄. 글도 있으면 아래에서 이어서 보낸다.
+            return;
         }
         const text = dryRun ? (draft.trim() || '(전송 테스트)') : draft;
         if (!selected || !text.trim()) return;

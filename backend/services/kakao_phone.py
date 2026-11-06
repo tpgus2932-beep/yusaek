@@ -101,6 +101,21 @@ _MESSAGES = {
 }
 
 
+# 같은 폰을 연달아 쓸 때 매번 get-state/getprop으로 다시 확인하지 않는다(45초). 실패하면 바로 버린다.
+_VERIFIED: dict = {}
+_VERIFY_TTL = 45.0
+
+
+def _connect(device, serial: str) -> None:
+    last = _VERIFIED.get(serial)
+    if last is not None and time.monotonic() - last < _VERIFY_TTL:
+        device.serial = serial
+        device.verified_hardware = device.expected_hardware
+        return
+    device.connect_transport()
+    _VERIFIED[serial] = time.monotonic()
+
+
 class SendUncertain(Exception):
     """전송 버튼을 누른 뒤 결과를 확인하지 못함 — 중복 발송 위험 때문에 재시도하면 안 된다."""
 
@@ -320,6 +335,25 @@ def read_room_history(config: dict, name: str, since: str) -> tuple[list[dict], 
         device.restore_keyboard()
 
 
+def leave_room(config: dict) -> None:
+    """전송이 끝난 뒤 열려 있는 채팅방에서 나온다(화면은 잠그지 않는다).
+
+    카카오톡이 이미 앞에 있다는 걸 알고 있으므로 화면 깨우기·키가드 해제·앞으로 가져오기 같은
+    준비 호출을 모두 생략한 가벼운 호출이다. 실패해도 다음 전송이 알아서 처리한다.
+    """
+    import base64
+    import json
+
+    from services.kakao_adb_bridge import SEND_RECEIVER
+
+    device = Adb({"adb": adb_path(), "serial": config.get("serial", "")})
+    payload = base64.b64encode(json.dumps({"action": "finish_send", "hold": True}).encode()).decode()
+    try:
+        device.run("shell", "am", "broadcast", "-n", SEND_RECEIVER, "-a", "com.yusaek.talkbridge.SEND", "--es", "payload", payload, timeout=20)
+    except Exception:
+        _VERIFIED.pop(config.get("serial", ""), None)
+
+
 MAX_IMAGES = 10  # 카카오톡은 사진 여러 장을 한 말풍선(앨범)으로 묶는다. 10장을 넘기면 말풍선이 나뉜다.
 
 
@@ -346,7 +380,7 @@ def send_images(config: dict, name: str, files: list, tail=None, keep_room: bool
     completed = False
     root = "/sdcard/Android/data/com.yusaek.talkbridge/files/outgoing/"
     try:
-        device.connect_transport()
+        _connect(device, config["serial"])
         if not device.accessibility_enabled():
             raise Blocked("accessibility_disabled")
         peek_payload = {"action": "room_peek", "name": name}
@@ -417,7 +451,7 @@ def send(config: dict, name: str, text: str, dry_run: bool = False, tail=None, k
     device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
     done = False
     try:
-        device.connect_transport()  # 하드웨어 ID도 함께 확인한다
+        _connect(device, config["serial"])  # 하드웨어 ID 확인(최근에 확인했으면 생략)
         # 채팅방 재진입/스크롤 없이 한 번에: 친구 → 1:1 채팅 → 입력 → 전송. 제목은 폰에서 확인한다.
         room = {"name": name, "locator": {"kind": "friend"}}
         # hold=True: 화면은 잠그지 않는다. keep_room=True: 다음 메시지가 같은 사람이면 방도 나오지 않는다.
@@ -425,11 +459,14 @@ def send(config: dict, name: str, text: str, dry_run: bool = False, tail=None, k
         done = result.get("state") == "verified"
         return result
     except Exception as exc:
+        _VERIFIED.pop(config["serial"], None)
         if device.send_attempted:
             raise SendUncertain("전송 결과 불확실") from exc
         raise
     finally:
-        if not (keep_room and done):  # 묶음의 마지막이거나 실패했으면 방을 나온다
+        # 앱이 실제 전송 직후 스스로 방을 나온다(keep_room이면 일부러 유지). 따로 나오라고 시키는 것은
+        # 실패했거나 전송 테스트(방에서 안 나오고 끝남)일 때만 필요하다.
+        if not done or dry_run:
             try:
                 device.fast_broadcast({"action": "finish_send", "hold": True})
             except Exception:
