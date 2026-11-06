@@ -271,7 +271,7 @@ const KakaoTalkPage = () => {
             if (error) {
                 showNotice(`친구 동기화 실패: ${error}`);
             } else if (result) {
-                const parts = [`친구 ${result.total}명을 읽었습니다`, `새로 ${result.added}명 추가`];
+                const parts = [`친구 ${result.total}명을 읽었습니다 (카카오톡 표시 ${result.expected}명, 추천친구·채널 제외)`, `새로 ${result.added}명 추가`];
                 if (result.duplicates.length) parts.push(`동명이인 ${result.duplicates.length}명(전송 불가)`);
                 if (result.missingCount) parts.push(`폰에 없는 기존 친구 ${result.missingCount}명(삭제하지 않음)`);
                 showNotice(parts.join(' · '));

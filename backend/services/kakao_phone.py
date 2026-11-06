@@ -118,18 +118,19 @@ def bind(serial: str = "") -> dict:
     return {"serial": device.serial, "hardware_id": device.verified_hardware, "account": account}
 
 
-def read_friends(config: dict) -> list[str]:
-    """카카오톡 '친구' 탭을 끝까지 스크롤해 친구 이름 전체를 읽는다.
+def read_friends(config: dict) -> tuple[list[str], int]:
+    """카카오톡 '친구' 탭을 끝까지 스크롤해 (친구 이름 목록, 카카오톡이 표시한 친구 수)를 읽는다.
 
     폰 앱이 읽은 개수와 화면의 '친구 N' 숫자가 같을 때만 성공으로 돌려준다.
-    같은 이름이 둘 이상이면 목록에도 그대로 중복으로 들어 있다.
+    '추천친구'·'채널' 구역은 읽지 않는다. 같은 이름이 둘 이상이면 목록에도 그대로 중복으로 들어 있다.
     """
     if not config.get("serial") or not config.get("hardware_id") or not config.get("account"):
         raise Blocked("device_not_bound")
     device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
     device.connect_transport()
     data = device.onboard_fast()
-    return [str(e["name"]).strip() for e in data["entries"] if str(e.get("name") or "").strip()]
+    names = [str(e["name"]).strip() for e in data["entries"] if str(e.get("name") or "").strip()]
+    return names, int(data.get("expected_count") or len(names))
 
 
 def send(config: dict, name: str, text: str, dry_run: bool = False) -> dict:

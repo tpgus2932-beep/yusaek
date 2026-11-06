@@ -278,10 +278,10 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             if not phone_lock.acquire(timeout=180):
                 raise RuntimeError("busy")
             try:
-                names = kakao_phone.read_friends(_device_config())
+                names, expected = kakao_phone.read_friends(_device_config())
             finally:
                 phone_lock.release()
-            sync["result"] = _apply_friends(names)
+            sync["result"] = {**_apply_friends(names), "expected": expected}
             sync["error"] = ""
         except RuntimeError:
             sync["result"] = None
