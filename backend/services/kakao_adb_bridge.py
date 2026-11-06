@@ -486,7 +486,7 @@ class Adb:
         data['host_ms']=round((time.monotonic()-started)*1000)
         return data
 
-    def send_fast(self,room,text,dry_run=False,hold=False,tail=None):
+    def send_fast(self,room,text,dry_run=False,hold=False,tail=None,keep_room=False):
         if not self.accessibility_enabled():raise Blocked('accessibility_disabled')
         locator=room.get('locator') or {}
         if locator.get('kind')!='friend':raise Blocked('locator_unsupported')
@@ -497,6 +497,7 @@ class Adb:
         fingerprint=locator.get('fingerprint','') if locator.get('source')=='on_device' else ''
         # store = HOLD key so the executor can reuse the room for same-store sends.
         payload={'action':'send','name':room['name'],'store':room.get('store',''),'fingerprint':fingerprint,'text':text,'dry_run':bool(dry_run),'hold':bool(hold)}
+        if keep_room:payload['keep_room']=True  # 다음 메시지가 같은 사람이면 방을 나오지 않는다
         if tail is not None:payload['tail']=tail  # 웹 대화의 끝부분 — 폰 방과 어긋나면 입력 전에 멈춘다
         data=self.fast_broadcast(payload)
         # Only mark send_attempted when the on-device executor actually tapped

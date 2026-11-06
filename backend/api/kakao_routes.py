@@ -6,6 +6,7 @@ import json
 import pathlib
 import re
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta
 
@@ -25,6 +26,7 @@ _MAX_NAME = 60
 _MEDIA_DIR = pathlib.Path(__file__).resolve().parent.parent / "kakao_media"
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _MAX_IMAGES = 10
+_BATCH_GRACE_SEC = 1.2  # 같은 사람에게 연달아 오는 요청이 한 묶음이 되도록 큐가 잠깐 기다리는 시간
 
 
 def _sniff_image(data: bytes):
@@ -115,7 +117,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
     def _claim_next():
         conn = get_db()
         row = conn.execute(
-            "SELECT m.id, m.text, m.dry_run, m.kind, m.media_ids, c.name FROM kakao_messages m "
+            "SELECT m.id, m.contact_id, m.created_at, m.text, m.dry_run, m.kind, m.media_ids, c.name FROM kakao_messages m "
             "JOIN kakao_contacts c ON c.id = m.contact_id WHERE m.status = 'queued' ORDER BY m.id ASC LIMIT 1"
         ).fetchone()
         if not row:
@@ -217,17 +219,30 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         conn.commit()
         return added
 
+    def _next_is_same_contact(job: dict) -> bool:
+        """다음 대기 건이 같은 사람에게 가는 것이면 방을 열어 둔 채로 이어서 보낸다."""
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT contact_id, dry_run FROM kakao_messages WHERE status = 'queued' AND id > ? ORDER BY id ASC LIMIT 1",
+                (job["id"],),
+            ).fetchone()
+        finally:
+            conn.close()
+        return bool(row) and row["contact_id"] == job["contact_id"] and not row["dry_run"]
+
     def _process(job: dict) -> None:
         config = _device_config()
+        keep = (not job["dry_run"]) and _next_is_same_contact(job)
         try:
             # 대화방에 들어가 최근 대화를 읽은 뒤, 웹과 다르면 입력하기 전에 멈추고(sync_needed) 가져와서 다시 보낸다.
             tail = None if job["id"] in resynced else _db_tail_payload(job)
             with phone_lock:
                 if job.get("kind") == "image":
                     files = _load_media(job.get("media_ids") or "")
-                    result = kakao_phone.send_images(config, job["name"], files, tail=tail) or {}
+                    result = kakao_phone.send_images(config, job["name"], files, tail=tail, keep_room=keep) or {}
                 else:
-                    result = kakao_phone.send(config, job["name"], job["text"], dry_run=bool(job["dry_run"]), tail=tail) or {}
+                    result = kakao_phone.send(config, job["name"], job["text"], dry_run=bool(job["dry_run"]), tail=tail, keep_room=keep) or {}
             if result.get("state") == "sync_needed":
                 imported = 0
                 try:
@@ -262,6 +277,13 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                     break
                 state["busy"] = True
                 try:
+                    # 사진 → 글처럼 몇 백 ms 간격으로 들어오는 요청이 한 묶음이 되도록 잠깐 모일 시간을 준다.
+                    try:
+                        age = (datetime.now().astimezone() - datetime.fromisoformat(job["created_at"])).total_seconds()
+                    except (TypeError, ValueError):
+                        age = 99
+                    if 0 <= age < _BATCH_GRACE_SEC:
+                        time.sleep(_BATCH_GRACE_SEC - age)
                     _process(job)
                 finally:
                     state["busy"] = False

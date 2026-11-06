@@ -304,7 +304,7 @@ def _peek_key(items) -> list:
     return [(i.get("side"), i.get("text")) for i in items or []]
 
 
-def send_images(config: dict, name: str, files: list, tail=None) -> dict:
+def send_images(config: dict, name: str, files: list, tail=None, keep_room: bool = False) -> dict:
     """사진 1~10장을 카카오톡 '공유'로 1:1 친구에게 보낸다.
 
     files: [{id(uuid), name, mime, bytes, sha256, path}]. 순서:
@@ -320,6 +320,7 @@ def send_images(config: dict, name: str, files: list, tail=None) -> dict:
         raise Blocked("media_count_invalid")
     device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
     staged: list = []
+    completed = False
     root = "/sdcard/Android/data/com.yusaek.talkbridge/files/outgoing/"
     try:
         device.connect_transport()
@@ -364,6 +365,7 @@ def send_images(config: dict, name: str, files: list, tail=None) -> dict:
         newest = after[-1] if after else {}
         if not (newest.get("side") == "me" and newest.get("text") == "(사진)" and _peek_key(after) != _peek_key(before)):
             raise Blocked("send_result_unverified")
+        completed = True
         return {"state": "verified", "recent": before}
     except Exception as exc:
         if device.send_attempted:
@@ -375,13 +377,14 @@ def send_images(config: dict, name: str, files: list, tail=None) -> dict:
                 device.run("shell", "rm", "-rf", folder)
             except Exception:
                 pass
-        try:
-            device.fast_broadcast({"action": "finish_send", "hold": True})
-        except Exception:
-            pass
+        if not (keep_room and completed):  # 묶음의 마지막이거나 실패했으면 방을 나온다
+            try:
+                device.fast_broadcast({"action": "finish_send", "hold": True})
+            except Exception:
+                pass
 
 
-def send(config: dict, name: str, text: str, dry_run: bool = False, tail=None) -> dict:
+def send(config: dict, name: str, text: str, dry_run: bool = False, tail=None, keep_room: bool = False) -> dict:
     """친구 이름으로 1:1 채팅방에 텍스트를 보낸다. config: serial/hardware_id/account."""
     if not config.get("serial") or not config.get("hardware_id") or not config.get("account"):
         raise Blocked("device_not_bound")
@@ -389,23 +392,26 @@ def send(config: dict, name: str, text: str, dry_run: bool = False, tail=None) -
     if not name or not (text or "").strip():
         raise Blocked("empty_message")
     device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
+    done = False
     try:
         device.connect_transport()  # 하드웨어 ID도 함께 확인한다
         # 채팅방 재진입/스크롤 없이 한 번에: 친구 → 1:1 채팅 → 입력 → 전송. 제목은 폰에서 확인한다.
         room = {"name": name, "locator": {"kind": "friend"}}
-        # hold=True: 방에서 나오되 화면은 잠그지 않는다.
-        return device.send_fast(room, text, dry_run=dry_run, hold=True, tail=tail)
+        # hold=True: 화면은 잠그지 않는다. keep_room=True: 다음 메시지가 같은 사람이면 방도 나오지 않는다.
+        result = device.send_fast(room, text, dry_run=dry_run, hold=True, tail=tail, keep_room=keep_room and not dry_run)
+        done = result.get("state") == "verified"
+        return result
     except Exception as exc:
         if device.send_attempted:
             raise SendUncertain("전송 결과 불확실") from exc
         raise
     finally:
-        try:
-            device.fast_broadcast({"action": "finish_send", "hold": True})
-        except Exception:
-            pass
+        if not (keep_room and done):  # 묶음의 마지막이거나 실패했으면 방을 나온다
+            try:
+                device.fast_broadcast({"action": "finish_send", "hold": True})
+            except Exception:
+                pass
         device.restore_keyboard()
-
 
 def short_account(value: str) -> str:
     return value[:8] if re.fullmatch(r"[0-9a-f]{64}", value or "") else (value or "")[:8]
