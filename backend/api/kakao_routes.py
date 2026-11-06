@@ -468,6 +468,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             SELECT c.*,
               (SELECT text FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 AND m.status <> 'cancelled' ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_text,
               (SELECT created_at FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 AND m.status <> 'cancelled' ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_at,
+              (SELECT direction FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 AND m.status <> 'cancelled' ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_direction,
               (SELECT time_known FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 AND m.status <> 'cancelled' ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_known,
               (SELECT status FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 AND m.status <> 'cancelled' ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_status,
               (SELECT COUNT(*) FROM kakao_messages m WHERE m.contact_id = c.id AND m.status IN ('failed','needs_check')) AS problem_count
@@ -499,6 +500,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                     "autoRegistered": bool(r["auto_registered"]),
                     "lastText": r["last_text"] or "",
                     "lastAt": last_at(r),
+                    "lastDirection": r["last_direction"] or "",
                     "lastStatus": r["last_status"] or "",
                     "problemCount": r["problem_count"],
                 }

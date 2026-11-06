@@ -89,6 +89,7 @@ const KakaoTalkPage = () => {
     const [draft, setDraft] = useState('');
     const [query, setQuery] = useState('');
     const [searchOpen, setSearchOpen] = useState(false);
+    const [repliedOnly, setRepliedOnly] = useState(false);
     const [adding, setAdding] = useState(false);
     const [newName, setNewName] = useState('');
     const [newPhone, setNewPhone] = useState('');
@@ -774,8 +775,12 @@ const KakaoTalkPage = () => {
         const listActive = !!activeListId && !!activeMembers;
         const activeList = lists.find((l) => l.id === activeListId);
         // 리스트를 고르면 대화 기록 유무와 상관없이 그 리스트의 사람들을 모두 보여 준다
-        const rows = listActive ? filtered.filter((c) => activeMembers.has(c.id)) : (rail === 'chats' ? chatList : filtered);
+        const baseRows = listActive ? filtered.filter((c) => activeMembers.has(c.id)) : (rail === 'chats' ? chatList : filtered);
         const chatStyle = rail === 'chats' || listActive;
+        // 마지막 메시지가 거래처(상대방)가 보낸 것 = 답장이 온(내가 아직 답하지 않은) 방
+        const awaiting = (c) => c.lastDirection === 'in';
+        const awaitingCount = baseRows.filter(awaiting).length;
+        const rows = chatStyle && repliedOnly ? baseRows.filter(awaiting) : baseRows;
         return (
             <>
                 <div className={styles.panelHeader}>
@@ -858,6 +863,18 @@ const KakaoTalkPage = () => {
                         </div>
                     </div>
                 )}
+                {chatStyle && (
+                    <div className={styles.replyFilter}>
+                        <button
+                            type="button"
+                            className={repliedOnly ? styles.replyFilterOn : ''}
+                            title="마지막 메시지가 거래처(상대방)가 보낸 답장인 방만 모아 봅니다."
+                            onClick={() => setRepliedOnly((v) => !v)}
+                        >
+                            <i className={styles.replyDot} /> 답장 온 방만 보기 <b>{awaitingCount}</b>
+                        </button>
+                    </div>
+                )}
                 {activeListId && (
                     <div className={styles.listBanner}>
                         <span>리스트 · <b>{activeList?.name || '…'}</b> ({rows.length}명)</span>
@@ -901,7 +918,7 @@ const KakaoTalkPage = () => {
                             key={c.id}
                             role="button"
                             tabIndex={0}
-                            className={`${styles.item} ${c.id === selectedId ? styles.itemActive : ''}`}
+                            className={`${styles.item} ${c.id === selectedId ? styles.itemActive : ''} ${awaiting(c) ? styles.itemReplied : ''}`}
                             onClick={() => openChat(c)}
                             onKeyDown={(e) => { if (e.key === 'Enter') openChat(c); }}
                         >
@@ -919,6 +936,7 @@ const KakaoTalkPage = () => {
                             </div>
                             <div className={styles.itemSide}>
                                 {chatStyle && c.lastAt && <span className={styles.itemTime}>{listTime(c.lastAt)}</span>}
+                                {awaiting(c) && <span className={styles.replyTag}>답장</span>}
                                 {c.problemCount > 0 && <span className={styles.badge}>{c.problemCount}</span>}
                             </div>
                             <button

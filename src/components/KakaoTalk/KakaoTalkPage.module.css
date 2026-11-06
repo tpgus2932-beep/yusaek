@@ -1395,3 +1395,71 @@
     font-size: 12.5px;
     text-align: center;
 }
+
+/* 거래처(상대방)가 마지막으로 보낸 방 */
+.itemReplied {
+    position: relative;
+    background: #fff8e1;
+    box-shadow: inset 4px 0 0 #ff8a00;
+}
+
+.itemReplied .itemName {
+    font-weight: 800;
+}
+
+.itemReplied .itemSub {
+    color: #3c1e1e;
+    font-weight: 700;
+}
+
+.replyTag {
+    padding: 1px 8px;
+    border-radius: 9px;
+    background: #ff8a00;
+    color: #fff;
+    font-size: 10.5px;
+    font-weight: 800;
+    white-space: nowrap;
+}
+
+.replyFilter {
+    padding: 0 14px 8px;
+}
+
+.replyFilter button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border: 1px solid #f0c27a;
+    border-radius: 14px;
+    background: #fff;
+    color: #8a4b00;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.replyFilter button b {
+    min-width: 18px;
+    padding: 0 6px;
+    border-radius: 9px;
+    background: #ff8a00;
+    color: #fff;
+    font-size: 11px;
+    text-align: center;
+}
+
+.replyFilter .replyFilterOn {
+    border-color: transparent;
+    background: #ffe3b0;
+    color: #6b3a00;
+    box-shadow: inset 0 0 0 2px #ff8a00;
+}
+
+.replyDot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ff8a00;
+}
