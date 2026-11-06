@@ -46,7 +46,7 @@ const KakaoBulk = ({ contacts, connected, lists, onNotice, onClose, onListsChang
     const fileInput = useRef(null);
 
     const sendable = useMemo(
-        () => contacts.filter((c) => !hideGone || (c.inPhone && !String(c.memo || '').includes('전송 불가'))),
+        () => contacts.filter((c) => c.kind !== 'group' && (!hideGone || (c.inPhone && !String(c.memo || '').includes('전송 불가')))),
         [contacts, hideGone],
     );
     const visible = useMemo(() => {

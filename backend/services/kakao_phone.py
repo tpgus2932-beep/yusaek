@@ -34,6 +34,7 @@ _MESSAGES = {
     "device_not_bound": "먼저 '더보기'에서 휴대폰을 연결(계정 확인)하세요.",
     "device_missing_or_ambiguous": "승인된 휴대폰이 없거나 여러 대입니다. 한 대만 연결하거나 기기번호를 입력하세요.",
     "empty_message": "친구 이름과 메시지를 입력하세요.",
+    "group_room_unavailable": "단톡방을 검색 결과에서 정확히 하나로 찾지 못했습니다. (같은 이름의 방이 여러 개이거나 검색에 나오지 않음)",
     "PROFILE_NOT_FOUND": "카카오톡 친구 목록에서 정확히 같은 이름을 찾지 못했습니다.",
     "PROFILE_AMBIGUOUS": "같은 이름의 친구가 여러 명이라 보내지 않았습니다.",
     "target_not_found": "카카오톡 친구 목록에서 정확히 같은 이름을 찾지 못했습니다.",
@@ -354,7 +355,7 @@ def read_recent_friends(config: dict, known: set, stop_after: int = 10) -> tuple
     return names, expected, complete
 
 
-def read_room_history(config: dict, name: str, since: str) -> tuple[list[dict], int]:
+def read_room_history(config: dict, name: str, since: str, group: bool = False) -> tuple[list[dict], int]:
     """1:1 채팅방을 위로 스크롤하며 since(YYYY-MM-DD)부터 현재까지의 말풍선을 읽는다(읽기 전용).
 
     반환: ([{side:'me'|'them', text, date}], 읽은 화면 수). 아무것도 입력·전송하지 않는다.
@@ -369,6 +370,8 @@ def read_room_history(config: dict, name: str, since: str) -> tuple[list[dict], 
     try:
         for _ in range(120):
             payload = {"action": "room_history", "name": name, "since": since}
+            if group:
+                payload["group"] = True
             if cursor:
                 payload["cursor"] = cursor
             data = device.fast_broadcast(payload, timeout=60)

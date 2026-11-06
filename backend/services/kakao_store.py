@@ -47,6 +47,7 @@ def init_kakao_tables(get_db) -> None:
         ("synced_at", "ALTER TABLE kakao_contacts ADD COLUMN synced_at TEXT NOT NULL DEFAULT ''"),
         ("auto_registered", "ALTER TABLE kakao_contacts ADD COLUMN auto_registered INTEGER NOT NULL DEFAULT 0"),
         ("is_new", "ALTER TABLE kakao_contacts ADD COLUMN is_new INTEGER NOT NULL DEFAULT 0"),
+        ("kind", "ALTER TABLE kakao_contacts ADD COLUMN kind TEXT NOT NULL DEFAULT 'friend'"),
     ):
         if name not in columns:
             conn.execute(ddl)
@@ -62,6 +63,7 @@ def init_kakao_tables(get_db) -> None:
         ("kind", "ALTER TABLE kakao_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'"),
         ("media_ids", "ALTER TABLE kakao_messages ADD COLUMN media_ids TEXT NOT NULL DEFAULT ''"),
         ("batch_id", "ALTER TABLE kakao_messages ADD COLUMN batch_id INTEGER"),
+        ("sender", "ALTER TABLE kakao_messages ADD COLUMN sender TEXT NOT NULL DEFAULT ''"),
     ):
         if name not in mcols:
             conn.execute(ddl)

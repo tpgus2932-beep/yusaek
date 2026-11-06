@@ -160,6 +160,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             "origin": row["origin"],
             "timeKnown": bool(row["time_known"]),
             "kind": row["kind"],
+            "sender": row["sender"] if "sender" in row.keys() else "",
             "batchId": row["batch_id"],
             "mediaIds": [m for m in (row["media_ids"] or "").split(",") if m],
             "requestedBy": row["requested_by"],
@@ -272,11 +273,11 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             created = f"{day}T00:00:00+09:00" if day else stamp
             conn.execute(
                 "INSERT INTO kakao_messages (contact_id, text, status, dry_run, requested_by, created_at, updated_at, sent_at, "
-                "direction, origin, time_known, sort_no) VALUES (?, ?, ?, 0, '', ?, ?, ?, ?, 'phone', 0, ?)",
+                "direction, origin, time_known, sort_no, sender) VALUES (?, ?, ?, 0, '', ?, ?, ?, ?, 'phone', 0, ?, ?)",
                 (
                     cid, item["text"], "sent" if item["side"] == "me" else "received", created, stamp,
                     created if item["side"] == "me" else "", "out" if item["side"] == "me" else "in",
-                    before_key + spread * index,
+                    before_key + spread * index, str(item.get("sender") or ""),
                 ),
             )
             added += 1
@@ -382,6 +383,10 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                 state["thread"] = thread
                 thread.start()
         wake.set()
+
+    def _reject_group(row) -> None:
+        if row["kind"] == "group":
+            raise HTTPException(status_code=400, detail="단톡방에는 메시지를 보낼 수 없습니다. 대화 읽기만 지원합니다.")
 
     def _contact_or_404(conn, contact_id: int):
         row = conn.execute("SELECT * FROM kakao_contacts WHERE id = ?", (contact_id,)).fetchone()
@@ -489,6 +494,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                     "memo": r["memo"],
                     "source": r["source"],
                     "inPhone": bool(r["in_phone"]),
+                    "kind": r["kind"],
                     "isNew": bool(r["is_new"]),
                     "autoRegistered": bool(r["auto_registered"]),
                     "lastText": r["last_text"] or "",
@@ -554,12 +560,12 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         counts = _count_names(names)
         conn = get_db()
         try:
-            existing = {r["name"]: r for r in conn.execute("SELECT id, name, memo FROM kakao_contacts").fetchall()}
+            existing = {r["name"]: r for r in conn.execute("SELECT id, name, memo FROM kakao_contacts WHERE kind = 'friend'").fetchall()}
             added = _insert_new(conn, counts, existing)
             stamp = now_iso()
-            conn.execute("UPDATE kakao_contacts SET in_phone = 0")
+            conn.execute("UPDATE kakao_contacts SET in_phone = 0 WHERE kind = 'friend'")
             for name in counts:
-                conn.execute("UPDATE kakao_contacts SET in_phone = 1, synced_at = ? WHERE name = ?", (stamp, name))
+                conn.execute("UPDATE kakao_contacts SET in_phone = 1, synced_at = ? WHERE name = ? AND kind = 'friend'", (stamp, name))
             missing = sorted(n for n in existing if n not in counts)
             conn.commit()
         finally:
@@ -581,7 +587,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         counts = _count_names(names)
         conn = get_db()
         try:
-            existing = {r["name"]: r for r in conn.execute("SELECT id, name, memo FROM kakao_contacts").fetchall()}
+            existing = {r["name"]: r for r in conn.execute("SELECT id, name, memo FROM kakao_contacts WHERE kind = 'friend'").fetchall()}
             added = _insert_new(conn, counts, existing)
             conn.commit()
         finally:
@@ -662,18 +668,20 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         for m in messages:
             text = _clean_text(m.get("text"))[:_MAX_TEXT]
             if m.get("side") in ("me", "them") and text:
-                phone_items.append({"side": m["side"], "text": text, "date": str(m.get("date") or "")})
+                phone_items.append({"side": m["side"], "text": text, "date": str(m.get("date") or ""),
+                                    "sender": str(m.get("sender") or "").strip()[:60] if m["side"] == "them" else ""})
         conn = get_db()
         try:
             floor = (datetime.strptime(since, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
             rows = conn.execute(
-                "SELECT id, direction, text, status, COALESCE(sort_no, id) AS k FROM kakao_messages "
+                "SELECT id, direction, text, status, sender, COALESCE(sort_no, id) AS k FROM kakao_messages "
                 "WHERE contact_id = ? AND dry_run = 0 AND substr(created_at, 1, 10) >= ? ORDER BY COALESCE(sort_no, id)",
                 (cid, floor),
             ).fetchall()
             done = [r for r in rows if r["status"] in ("sent", "received")]
-            db_keys = [("me" if r["direction"] == "out" else "them", _key(r["text"])) for r in done]
-            ph_keys = [(i["side"], _key(i["text"])) for i in phone_items]
+            # 단톡방은 누가 보냈는지도 같아야 같은 메시지다(다른 사람의 "네"를 하나로 합치지 않는다)
+            db_keys = [("me" if r["direction"] == "out" else "them", (r["sender"] or "") + "|" + _key(r["text"])) for r in done]
+            ph_keys = [(i["side"], i["sender"] + "|" + _key(i["text"])) for i in phone_items]
             matcher = difflib.SequenceMatcher(None, db_keys, ph_keys, autojunk=False)
             everything = conn.execute(
                 "SELECT COALESCE(sort_no, id) AS k, status FROM kakao_messages WHERE contact_id = ? ORDER BY k", (cid,)
@@ -704,12 +712,12 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         finally:
             conn.close()
 
-    def _run_room_sync(contact_id: int, name: str, since: str) -> None:
+    def _run_room_sync(contact_id: int, name: str, since: str, group: bool = False) -> None:
         try:
             if not phone_lock.acquire(timeout=180):
                 raise RuntimeError("busy")
             try:
-                messages, pages = kakao_phone.read_room_history(_device_config(), name, since)
+                messages, pages = kakao_phone.read_room_history(_device_config(), name, since, group=group)
             finally:
                 phone_lock.release()
             stats = _import_history(contact_id, messages, since)
@@ -742,7 +750,8 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             raise HTTPException(status_code=400, detail=kakao_phone.describe_error("device_not_bound"))
         conn = get_db()
         try:
-            name = _contact_or_404(conn, contact_id)["name"]
+            contact_row = _contact_or_404(conn, contact_id)
+            name, is_group = contact_row["name"], contact_row["kind"] == "group"
         finally:
             conn.close()
         with start_lock:
@@ -750,7 +759,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                 raise HTTPException(status_code=409, detail="이미 동기화가 진행 중입니다.")
             room_sync.update(running=True, contactId=contact_id, since=since, startedAt=now_iso(), finishedAt="", result=None, error="")
             state["syncing"] = True
-        threading.Thread(target=_run_room_sync, args=(contact_id, name, since), name="kakao-room-sync", daemon=True).start()
+        threading.Thread(target=_run_room_sync, args=(contact_id, name, since, is_group), name="kakao-room-sync", daemon=True).start()
         return {"ok": True, "started": True}
 
     def _record_added_friend(name: str, newly_added: bool) -> None:
@@ -908,7 +917,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             raise HTTPException(status_code=400, detail=f"메시지는 {_MAX_TEXT}자까지 보낼 수 있습니다.")
         conn = get_db()
         try:
-            _contact_or_404(conn, contact_id)
+            _reject_group(_contact_or_404(conn, contact_id))
             for mid in ids:
                 if not conn.execute("SELECT 1 FROM kakao_media WHERE id = ?", (mid,)).fetchone():
                     raise HTTPException(status_code=400, detail="업로드되지 않은 사진이 있습니다. 다시 선택하세요.")
@@ -1261,14 +1270,18 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                 conn = get_db()
                 try:
                     contacts = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM kakao_contacts").fetchall()}
+                    kinds = {r["name"]: r["kind"] for r in conn.execute("SELECT name, kind FROM kakao_contacts").fetchall()}
                     snaps = {r["name"]: {"preview_key": r["preview_key"], "date": r["msg_date"], "minutes": r["minutes"]}
                              for r in conn.execute("SELECT * FROM kakao_room_snapshot").fetchall()}
                     ignored = {r["name"] for r in conn.execute("SELECT name FROM kakao_ignored_rooms").fetchall()}
                     candidates, keep_fp = [], {}
                     for row in rows:
                         name = row["name"]
-                        if row.get("group"):
+                        is_group = bool(row.get("group"))
+                        if is_group:
                             summary["groups"] += 1
+                        if name in kinds and (kinds[name] == "group") != is_group:
+                            summary["skipped"].append({"name": name, "reason": "같은 이름의 친구·단톡방이 있어 건너뜀"})
                             continue
                         fp = _row_fp(row, today)
                         day = date.fromisoformat(fp["date"]) if fp["date"] else None
@@ -1284,27 +1297,27 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                             summary["unchanged"] += 1
                             keep_fp[name] = fp
                             continue
-                        if not cid and (name in ignored or _SERVICE_NAME.search(name)):
+                        if not cid and (name in ignored or (not is_group and _SERVICE_NAME.search(name))):
                             summary["skipped"].append({"name": name, "reason": "서비스·알림 방으로 보여 등록하지 않음"})
                             continue
-                        candidates.append((name, fp, cid))
+                        candidates.append((name, fp, cid, is_group))
                 finally:
                     conn.close()
                 summary["candidates"] = len(candidates)
 
                 since_str = since.isoformat()
-                for index, (name, fp, cid) in enumerate(candidates, 1):
+                for index, (name, fp, cid, is_group) in enumerate(candidates, 1):
                     if refresh["cancel"]:
                         summary["skipped"].append({"name": "(나머지)", "reason": "사용자가 중단함"})
                         break
                     progress("방 확인 중", index, len(candidates), name)
                     try:
-                        messages, _pages = kakao_phone.read_room_history(config, name, since_str)
+                        messages, _pages = kakao_phone.read_room_history(config, name, since_str, group=is_group)
                     except Exception as exc:  # noqa: BLE001
                         code = kakao_phone.error_code(exc)
                         if code in kakao_phone.FATAL_ERRORS:
                             raise
-                        not_friend = code in ("PROFILE_NOT_FOUND", "target_not_found", "target_missing_or_ambiguous", "not_in_room",
+                        not_friend = not is_group and code in ("PROFILE_NOT_FOUND", "target_not_found", "target_missing_or_ambiguous", "not_in_room",
                                               "chat_open_unverified", "chat_open_button_missing", "friend_tab_unavailable", "kakao_main_unavailable")
                         reason = ("친구가 아니거나 보낼 수 없는 방이라 등록하지 않음" if not cid and not_friend
                                   else kakao_phone.describe_error(code))
@@ -1324,9 +1337,9 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                         try:
                             stamp = now_iso()
                             cid = conn.execute(
-                                "INSERT INTO kakao_contacts (name, memo, created_by, created_at, source, in_phone, synced_at, auto_registered, is_new) "
-                                "VALUES (?, '자동 등록', 'refresh', ?, 'auto', 1, ?, 1, 1)",
-                                (name[:_MAX_NAME], stamp, stamp),
+                                "INSERT INTO kakao_contacts (name, memo, created_by, created_at, source, in_phone, synced_at, auto_registered, is_new, kind) "
+                                "VALUES (?, ?, 'refresh', ?, 'auto', 1, ?, 1, 1, ?)",
+                                (name[:_MAX_NAME], "단톡방 자동 등록" if is_group else "자동 등록", stamp, stamp, "group" if is_group else "friend"),
                             ).lastrowid
                             conn.commit()
                         finally:
@@ -1550,7 +1563,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         dry_run = bool(payload.get("dry_run"))
         conn = get_db()
         try:
-            _contact_or_404(conn, contact_id)
+            _reject_group(_contact_or_404(conn, contact_id))
             if request_id:  # 같은 요청이 다시 오면(버튼 두 번 클릭 등) 새로 만들지 않는다
                 existing = conn.execute("SELECT * FROM kakao_messages WHERE request_id = ?", (request_id,)).fetchone()
                 if existing:

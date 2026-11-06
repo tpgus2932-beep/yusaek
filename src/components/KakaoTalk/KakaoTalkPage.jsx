@@ -623,6 +623,8 @@ const KakaoTalkPage = () => {
         [filtered],
     );
 
+    const isGroup = selected?.kind === 'group';
+
     const renderMessage = (m, index) => {
         const prev = messages[index - 1];
         const next = messages[index + 1];
@@ -645,14 +647,16 @@ const KakaoTalkPage = () => {
         }
 
         if (m.direction === 'in') {
-            const sameSenderAbove = prev && !prev.dryRun && prev.direction === 'in';
+            const who = isGroup ? (m.sender || '(보낸 사람 모름)') : selected.name;
+            const sameSenderAbove = prev && !prev.dryRun && prev.direction === 'in' && (!isGroup || (prev.sender || '') === (m.sender || ''))
+                && dayKey(prev.createdAt) === dayKey(m.createdAt);
             return (
                 <div key={m.id}>
                     {dayDivider}
                     <div className={styles.rowTheirs}>
-                        <span className={styles.theirAvatar}>{!sameSenderAbove && <Avatar name={selected.name} size={36} />}</span>
+                        <span className={styles.theirAvatar}>{!sameSenderAbove && <Avatar name={who} size={36} />}</span>
                         <div className={styles.theirCol}>
-                            {!sameSenderAbove && <span className={styles.theirName}>{selected.name}</span>}
+                            {!sameSenderAbove && <span className={styles.theirName}>{who}</span>}
                             <div className={`${styles.bubbleTheirs} ${!sameSenderAbove ? styles.bubbleTheirsTail : ''}`}>{m.text}</div>
                         </div>
                     </div>
@@ -906,6 +910,7 @@ const KakaoTalkPage = () => {
                                 <div className={styles.itemName}>
                                     {c.name}
                                     {c.isNew && <span className={styles.newBadge}>신규</span>}
+                                    {c.kind === 'group' && <span className={styles.groupBadge}>단톡</span>}
                                     {!c.inPhone && <span className={styles.gone}>폰에 없음</span>}
                                 </div>
                                 {chatStyle
@@ -962,17 +967,19 @@ const KakaoTalkPage = () => {
                             <Avatar name={selected.name} size={38} />
                             <div className={styles.chatTitle}>
                                 <b>{selected.name}</b>
-                                <span>{selected.memo || '나와의 1:1 채팅'}</span>
+                                <span>{isGroup ? '단톡방 · 대화 읽기만 가능' : (selected.memo || '나와의 1:1 채팅')}</span>
                             </div>
-                            <button
-                                type="button"
-                                className={styles.headerBtn}
-                                disabled={anySyncing || addingFriend}
-                                title="폰의 카카오톡에서 이 친구의 이름을 바꿉니다(내 폰에서만 보이는 이름)."
-                                onClick={() => { setRenameValue(selected.name); setRenameOpen((v) => !v); setRoomSyncOpen(false); }}
-                            >
-                                <Pencil size={14} /> 이름 변경
-                            </button>
+                            {!isGroup && (
+                                <button
+                                    type="button"
+                                    className={styles.headerBtn}
+                                    disabled={anySyncing || addingFriend}
+                                    title="폰의 카카오톡에서 이 친구의 이름을 바꿉니다(내 폰에서만 보이는 이름)."
+                                    onClick={() => { setRenameValue(selected.name); setRenameOpen((v) => !v); setRoomSyncOpen(false); }}
+                                >
+                                    <Pencil size={14} /> 이름 변경
+                                </button>
+                            )}
                             <button
                                 type="button"
                                 className={styles.headerBtn}
@@ -1056,6 +1063,11 @@ const KakaoTalkPage = () => {
                             {messages.map(renderMessage)}
                         </div>
 
+                        {isGroup ? (
+                            <footer className={styles.groupNote}>
+                                단톡방은 대화를 읽기만 할 수 있습니다. 새 대화는 상단의 “최신화”나 “대화 동기화”로 가져오세요.
+                            </footer>
+                        ) : (
                         <footer className={styles.composer}>
                             {attachments.length > 0 && (
                                 <div className={styles.attachRow}>
@@ -1095,6 +1107,7 @@ const KakaoTalkPage = () => {
                                 </button>
                             </div>
                         </footer>
+                        )}
                     </>
                 )}
             </section>
