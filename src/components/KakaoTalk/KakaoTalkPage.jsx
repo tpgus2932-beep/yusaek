@@ -79,6 +79,7 @@ const KakaoTalkPage = () => {
     const [searchOpen, setSearchOpen] = useState(false);
     const [adding, setAdding] = useState(false);
     const [newName, setNewName] = useState('');
+    const [newPhone, setNewPhone] = useState('');
     const [notice, setNotice] = useState('');
     const [devices, setDevices] = useState(null);
     const [serialInput, setSerialInput] = useState('');
@@ -185,6 +186,20 @@ const KakaoTalkPage = () => {
     const addContact = async () => {
         const name = newName.trim();
         if (!name) return;
+        if (newPhone.trim()) {
+            // 전화번호가 있으면 폰의 카카오톡에 실제로 친구를 추가한다(전화번호는 저장하지 않음).
+            try {
+                await call('/friends/add', { method: 'POST', body: { name, phone: newPhone.trim() } });
+                showNotice(`'${name}' 님을 폰의 카카오톡에 추가하는 중입니다. 끝날 때까지 폰을 만지지 마세요.`);
+                setNewPhone('');
+                setNewName('');
+                setAdding(false);
+                loadStatus();
+            } catch (err) {
+                showNotice(err.message);
+            }
+            return;
+        }
         try {
             const data = await call('/contacts', { method: 'POST', body: { name } });
             setNewName('');
@@ -331,6 +346,24 @@ const KakaoTalkPage = () => {
         }
         return undefined;
     }, [roomSyncing, status, loadStatus, loadMessages, selectedId, showNotice]);
+
+    const addingFriend = !!status?.addFriend?.running;
+    const wasAddingFriend = useRef(false);
+    useEffect(() => {
+        if (addingFriend) {
+            wasAddingFriend.current = true;
+            const timer = window.setInterval(loadStatus, 1500);
+            return () => window.clearInterval(timer);
+        }
+        if (wasAddingFriend.current && status?.addFriend) {
+            wasAddingFriend.current = false;
+            const { result, error } = status.addFriend;
+            if (error) showNotice(`친구 추가 실패: ${error}`);
+            else if (result) showNotice(`'${result.name}' 님을 폰의 카카오톡 친구로 추가했습니다.`);
+            loadContacts();
+        }
+        return undefined;
+    }, [addingFriend, status, loadStatus, loadContacts, showNotice]);
 
     const toggleQueue = async () => {
         try {
@@ -509,13 +542,27 @@ const KakaoTalkPage = () => {
                     <div className={styles.addBox}>
                         <input
                             autoFocus
-                            placeholder="카카오톡 친구 이름"
+                            placeholder="친구 이름"
                             value={newName}
                             onChange={(e) => setNewName(e.target.value)}
                             onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) addContact(); }}
                         />
-                        <button type="button" className={styles.btnYellow} onClick={addContact}><Plus size={14} /> 추가</button>
-                        <p>폰의 카카오톡 친구 목록에 보이는 이름과 <b>정확히 같아야</b> 합니다.</p>
+                        <button type="button" className={styles.btnYellow} disabled={addingFriend || anySyncing} onClick={addContact}>
+                            <Plus size={14} /> {newPhone.trim() ? '폰에 추가' : '목록에 추가'}
+                        </button>
+                        <input
+                            className={styles.phoneInput}
+                            placeholder="전화번호 (예: 010-1234-5678)"
+                            inputMode="tel"
+                            value={newPhone}
+                            onChange={(e) => setNewPhone(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) addContact(); }}
+                        />
+                        <p>
+                            <b>전화번호를 입력하면</b> 폰의 카카오톡에 실제로 친구를 추가합니다(카카오톡 가입자만 추가됩니다).
+                            비워 두면 이미 폰에 있는 친구를 목록에만 추가하며, 이때 이름은 폰의 친구 이름과 <b>정확히 같아야</b> 합니다.
+                            전화번호는 저장하지 않습니다.
+                        </p>
                     </div>
                 )}
                 {rail === 'friends' && (

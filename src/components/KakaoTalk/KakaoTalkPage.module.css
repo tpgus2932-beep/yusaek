@@ -960,3 +960,15 @@
 .popBtns .btnYellow {
     flex: 1;
 }
+
+.phoneInput {
+    grid-column: 1 / -1;
+    min-width: 0;
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid #e3dd9a;
+    border-radius: 6px;
+    background: #fff;
+    outline: none;
+    font-size: 13px;
+}

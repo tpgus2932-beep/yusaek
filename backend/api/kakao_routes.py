@@ -31,6 +31,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
     state = {"paused": False, "pause_reason": "", "busy": False, "thread": None, "syncing": False}
     sync = {"running": False, "startedAt": "", "finishedAt": "", "result": None, "error": ""}
     room_sync = {"running": False, "contactId": 0, "since": "", "startedAt": "", "finishedAt": "", "result": None, "error": ""}
+    add_friend = {"running": False, "name": "", "startedAt": "", "finishedAt": "", "result": None, "error": ""}
     resynced: set = set()  # 대화를 가져온 뒤 다시 보내는 작업 — 같은 작업은 한 번만 재확인한다
     wake = threading.Event()
     start_lock = threading.Lock()
@@ -266,6 +267,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             "busy": state["busy"],
             "sync": dict(sync),
             "roomSync": dict(room_sync),
+            "addFriend": dict(add_friend),
             "queued": counts.get("queued", 0),
             "sending": counts.get("sending", 0),
             "needsCheck": counts.get("needs_check", 0),
@@ -487,7 +489,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             raise HTTPException(status_code=400, detail=kakao_phone.describe_error("device_not_bound"))
         force_full = str((payload or {}).get("mode") or "") == "full"
         with start_lock:
-            if sync["running"] or room_sync["running"]:
+            if sync["running"] or room_sync["running"] or add_friend["running"]:
                 raise HTTPException(status_code=409, detail="이미 동기화가 진행 중입니다.")
             sync.update(running=True, startedAt=now_iso(), finishedAt="", result=None, error="")
             state["syncing"] = True
@@ -584,11 +586,75 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         finally:
             conn.close()
         with start_lock:
-            if sync["running"] or room_sync["running"]:
+            if sync["running"] or room_sync["running"] or add_friend["running"]:
                 raise HTTPException(status_code=409, detail="이미 동기화가 진행 중입니다.")
             room_sync.update(running=True, contactId=contact_id, since=since, startedAt=now_iso(), finishedAt="", result=None, error="")
             state["syncing"] = True
         threading.Thread(target=_run_room_sync, args=(contact_id, name, since), name="kakao-room-sync", daemon=True).start()
+        return {"ok": True, "started": True}
+
+    def _run_add_friend(name: str, phone: str) -> None:
+        try:
+            if not phone_lock.acquire(timeout=180):
+                raise RuntimeError("busy")
+            try:
+                kakao_phone.add_friend(_device_config(), name, phone)
+            finally:
+                phone_lock.release()
+            # 폰에 추가됐으니 목록에도 넣는다. 카카오톡이 표시하는 친구 수도 1 늘었다.
+            conn = get_db()
+            try:
+                row = conn.execute("SELECT id FROM kakao_contacts WHERE name = ?", (name,)).fetchone()
+                stamp = now_iso()
+                if row:
+                    conn.execute("UPDATE kakao_contacts SET in_phone = 1, synced_at = ? WHERE id = ?", (stamp, row["id"]))
+                else:
+                    conn.execute(
+                        "INSERT INTO kakao_contacts (name, memo, created_by, created_at, source, in_phone, synced_at) "
+                        "VALUES (?, '', 'add', ?, 'sync', 1, ?)",
+                        (name, stamp, stamp),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+            try:
+                previous = int(get_setting(get_db, "phone_friend_count", "0") or 0)
+            except ValueError:
+                previous = 0
+            if previous > 0:
+                set_settings(get_db, {"phone_friend_count": previous + 1})
+            add_friend["result"] = {"name": name}
+            add_friend["error"] = ""
+        except RuntimeError:
+            add_friend["result"] = None
+            add_friend["error"] = "폰이 다른 작업을 처리 중입니다. 잠시 후 다시 시도하세요."
+        except Exception as exc:  # noqa: BLE001
+            add_friend["result"] = None
+            add_friend["error"] = kakao_phone.describe_error(kakao_phone.error_code(exc))
+        finally:
+            add_friend["running"] = False
+            add_friend["finishedAt"] = now_iso()
+            state["syncing"] = False
+            wake.set()
+
+    @router.post("/friends/add")
+    def add_phone_friend(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """이름과 전화번호로 폰의 카카오톡에 친구를 추가한다. 전화번호는 저장하지 않는다."""
+        name = str(payload.get("name") or "").strip()
+        phone = kakao_phone.normalize_phone(str(payload.get("phone") or ""))
+        if not name or len(name) > 20:
+            raise HTTPException(status_code=400, detail="친구 이름을 20자 이내로 입력하세요.")
+        if not phone:
+            raise HTTPException(status_code=400, detail="전화번호를 올바르게 입력하세요. (예: 010-1234-5678)")
+        config = _device_config()
+        if not (config["serial"] and config["hardware_id"] and config["account"]):
+            raise HTTPException(status_code=400, detail=kakao_phone.describe_error("device_not_bound"))
+        with start_lock:
+            if sync["running"] or room_sync["running"] or add_friend["running"]:
+                raise HTTPException(status_code=409, detail="이미 동기화 또는 친구 추가가 진행 중입니다.")
+            add_friend.update(running=True, name=name, startedAt=now_iso(), finishedAt="", result=None, error="")
+            state["syncing"] = True
+        threading.Thread(target=_run_add_friend, args=(name, phone), name="kakao-add-friend", daemon=True).start()
         return {"ok": True, "started": True}
 
     @router.delete("/contacts/{contact_id}")

@@ -52,6 +52,13 @@ _MESSAGES = {
     "friends_home_unavailable": "카카오톡 친구 화면(상단 '친구' 칩)으로 이동하지 못했습니다. 폰 잠금을 풀어 주세요.",
     "friends_screen_changed": "친구 목록을 읽는 중 화면이 바뀌었습니다. 폰을 만지지 말고 다시 시도하세요.",
     "friends_scan_expired": "친구 목록 읽기가 중단되었습니다. 다시 시도하세요.",
+    "contact_input_invalid": "이름(20자 이내)과 전화번호(예: 010-1234-5678)를 확인하세요.",
+    "contact_add_entry_unavailable": "카카오톡의 '친구 추가' 버튼을 찾지 못했습니다. 폰 잠금을 풀어 주세요.",
+    "contact_add_form_unavailable": "카카오톡의 '연락처로 추가' 화면을 열지 못했습니다.",
+    "contact_input_unverified": "이름·전화번호 입력을 확인하지 못했습니다.",
+    "contact_submit_unavailable": "추가 화면의 '확인' 버튼을 찾지 못했습니다.",
+    "contact_add_unverified": "추가했지만 친구로 확인하지 못했습니다. 카카오톡 가입자가 아닌 번호이거나 확인에 실패한 것입니다. 폰의 친구 목록을 확인하세요.",
+    "korean_input_helper_required": "폰에 한글 입력 도우미(YUSAEK ADB Input 키보드)가 설치되어 있지 않습니다. 브리지 앱을 다시 설치하세요.",
     "history_since_invalid": "동기화할 날짜 형식이 올바르지 않습니다.",
     "history_scan_gap": "대화를 위로 넘기다 일부를 건너뛰어 끝까지 읽지 못했습니다. 다시 시도하세요.",
     "history_scan_limit": "대화가 너무 길어 끝까지 읽지 못했습니다. 날짜를 가깝게 지정하세요.",
@@ -123,6 +130,33 @@ def bind(serial: str = "") -> dict:
     device.connect_transport()
     account = device.account_fast()
     return {"serial": device.serial, "hardware_id": device.verified_hardware, "account": account}
+
+
+def normalize_phone(raw: str) -> str:
+    """숫자만 남긴다. +82 10… → 8210…, 010-1234-5678 → 01012345678. 올바르지 않으면 빈 문자열."""
+    digits = re.sub(r"\D", "", raw or "")
+    return digits if re.fullmatch(r"(?:0[0-9]{8,10}|82[0-9]{8,10})", digits) else ""
+
+
+def add_friend(config: dict, name: str, phone: str) -> dict:
+    """폰의 카카오톡에 (이름, 전화번호)로 친구를 추가한다: 친구 탭 → 친구 추가 → 연락처 → 입력 → 확인.
+
+    추가 후 친구 프로필이 열리면 verified. 확인 버튼을 누른 뒤 프로필을 확인하지 못하면
+    contact_add_unverified — 폰에서 직접 확인해야 하며 자동으로 다시 시도하지 않는다.
+    전화번호는 폰으로 넘기기만 하고 어디에도 저장·기록하지 않는다.
+    """
+    if not config.get("serial") or not config.get("hardware_id") or not config.get("account"):
+        raise Blocked("device_not_bound")
+    name = (name or "").strip()
+    number = normalize_phone(phone)
+    if not name or len(name) > 20 or not number:
+        raise Blocked("contact_input_invalid")
+    device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
+    try:
+        device.connect_transport()
+        return device.add_contact_fast(name, number)
+    finally:
+        device.restore_keyboard()
 
 
 def read_friends(config: dict) -> tuple[list[str], int]:
