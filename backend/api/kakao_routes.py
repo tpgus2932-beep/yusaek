@@ -463,12 +463,23 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             SELECT c.*,
               (SELECT text FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 AND m.status <> 'cancelled' ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_text,
               (SELECT created_at FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 AND m.status <> 'cancelled' ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_at,
+              (SELECT time_known FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 AND m.status <> 'cancelled' ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_known,
               (SELECT status FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 AND m.status <> 'cancelled' ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_status,
               (SELECT COUNT(*) FROM kakao_messages m WHERE m.contact_id = c.id AND m.status IN ('failed','needs_check')) AS problem_count
             FROM kakao_contacts c ORDER BY c.name COLLATE NOCASE ASC
             """
         ).fetchall()
+        snaps = {s["name"]: s for s in conn.execute("SELECT name, msg_date, minutes FROM kakao_room_snapshot").fetchall()}
         conn.close()
+
+        def last_at(r):
+            """분을 모르는 폰 메시지(0시 0분으로 저장됨)는 최신화가 읽어 둔 채팅 목록 시각으로 보정한다."""
+            at = r["last_at"] or ""
+            snap = snaps.get(r["name"])
+            if at and r["last_known"] == 0 and snap and snap["minutes"] is not None and snap["msg_date"] == at[:10]:
+                return f"{at[:10]}T{snap['minutes'] // 60:02d}:{snap['minutes'] % 60:02d}:00+09:00"
+            return at
+
         return {
             "ok": True,
             "contacts": [
@@ -481,7 +492,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                     "isNew": bool(r["is_new"]),
                     "autoRegistered": bool(r["auto_registered"]),
                     "lastText": r["last_text"] or "",
-                    "lastAt": r["last_at"] or "",
+                    "lastAt": last_at(r),
                     "lastStatus": r["last_status"] or "",
                     "problemCount": r["problem_count"],
                 }
