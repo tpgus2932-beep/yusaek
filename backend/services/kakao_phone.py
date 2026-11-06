@@ -52,6 +52,7 @@ _MESSAGES = {
     "friends_home_unavailable": "카카오톡 친구 화면(상단 '친구' 칩)으로 이동하지 못했습니다. 폰 잠금을 풀어 주세요.",
     "friends_screen_changed": "친구 목록을 읽는 중 화면이 바뀌었습니다. 폰을 만지지 말고 다시 시도하세요.",
     "friends_scan_expired": "친구 목록 읽기가 중단되었습니다. 다시 시도하세요.",
+    "friends_scan_gap": "스크롤이 친구 목록을 건너뛰어 끝까지 읽지 못했습니다. 다시 시도하세요.",
     "friends_scan_limit": "친구 목록이 너무 길어 끝까지 읽지 못했습니다.",
     "friends_top_unavailable": "친구 목록의 맨 위로 이동하지 못했습니다.",
     "friends_window_unavailable": "카카오톡 화면을 읽지 못했습니다. 폰 잠금을 풀어 주세요.",

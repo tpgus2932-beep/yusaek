@@ -458,7 +458,7 @@ class Adb:
     def onboard_fast(self):
         if not self.accessibility_enabled():raise Blocked('accessibility_disabled')
         started=time.monotonic();cursor=''
-        for _ in range(40):
+        for _ in range(200):  # 6 pages per call; ~866 friends need well over 120 pages
             data=self.fast_broadcast({'action':'onboard_friends',**({'cursor':cursor} if cursor else {})},timeout=25)
             if data.get('state')=='verified':break
             if data.get('state')!='partial' or not isinstance(data.get('cursor'),str) or not data['cursor']:
