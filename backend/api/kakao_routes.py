@@ -82,10 +82,20 @@ def _parse_list_time(label: str, today: date):
     return None, None
 
 
+_REPLY_LABEL = re.compile(r"^답장 메시지\s+")
+
+
+def _clean_text(text: str) -> str:
+    """카카오톡의 답장 기능이 말풍선 글자 앞에 붙이는 읽기용 라벨('답장 메시지')을 뗀다. 라벨뿐이면 그대로 둔다."""
+    t = str(text or "").strip()
+    stripped = _REPLY_LABEL.sub("", t, count=1).strip()
+    return stripped or t
+
+
 def _key(text: str) -> str:
     """메시지 비교 키: 공백을 하나로 줄이고 앞 40자(UTF-16 단위)만 쓴다.
     긴 말풍선은 폰에서 잘려 보이므로 앞부분만 비교한다. 폰 앱의 msgKey()와 같아야 한다."""
-    collapsed = re.sub(r"\s+", " ", (text or "").strip())
+    collapsed = re.sub(r"\s+", " ", _clean_text(text))
     return collapsed.encode("utf-16-le")[:80].decode("utf-16-le", errors="ignore")
 
 
@@ -219,7 +229,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         items = []
         for entry in recent or []:
             side = entry.get("side")
-            text = str(entry.get("text") or "").strip()[:_MAX_TEXT]
+            text = _clean_text(entry.get("text"))[:_MAX_TEXT]
             if side in ("me", "them") and text:
                 items.append({"side": side, "text": text, "date": str(entry.get("date") or "")})
         if not items:
@@ -639,7 +649,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         """폰에서 읽은 since 이후의 대화를 웹 대화와 맞춘다. 이미 있는 것은 건드리지 않고 없는 것만 제 위치에 끼운다."""
         phone_items = []
         for m in messages:
-            text = str(m.get("text") or "").strip()[:_MAX_TEXT]
+            text = _clean_text(m.get("text"))[:_MAX_TEXT]
             if m.get("side") in ("me", "them") and text:
                 phone_items.append({"side": m["side"], "text": text, "date": str(m.get("date") or "")})
         conn = get_db()
