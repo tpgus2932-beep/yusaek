@@ -54,6 +54,7 @@ _MESSAGES = {
     "friends_scan_expired": "친구 목록 읽기가 중단되었습니다. 다시 시도하세요.",
     "contact_input_invalid": "이름(20자 이내)과 전화번호(예: 010-1234-5678)를 확인하세요.",
     "contact_add_entry_unavailable": "카카오톡의 '친구 추가' 버튼을 찾지 못했습니다. 폰 잠금을 풀어 주세요.",
+    "contact_permission_needed": "폰에 권한 팝업(연락처 접근 등)이 떠 있습니다. 폰에서 허용한 뒤 다시 시도하세요.",
     "contact_add_form_unavailable": "카카오톡의 '연락처로 추가' 화면을 열지 못했습니다.",
     "contact_input_unverified": "이름·전화번호 입력을 확인하지 못했습니다.",
     "contact_submit_unavailable": "추가 화면의 '확인' 버튼을 찾지 못했습니다.",
