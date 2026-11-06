@@ -211,6 +211,8 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                     "id": r["id"],
                     "name": r["name"],
                     "memo": r["memo"],
+                    "source": r["source"],
+                    "inPhone": bool(r["in_phone"]),
                     "lastText": r["last_text"] or "",
                     "lastAt": r["last_at"] or "",
                     "lastStatus": r["last_status"] or "",
@@ -239,49 +241,115 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         finally:
             conn.close()
 
-    def _apply_friends(names: list[str]) -> dict:
-        """폰에서 읽은 이름을 목록에 반영한다. 새 친구만 추가하고, 기존 친구·대화 기록은 지우지 않는다."""
+    def _stored_names() -> set:
+        conn = get_db()
+        names = {r["name"] for r in conn.execute("SELECT name FROM kakao_contacts").fetchall()}
+        conn.close()
+        return names
+
+    def _count_names(names: list[str]) -> dict:
         counts: dict[str, int] = {}
         for name in names:
             counts[name] = counts.get(name, 0) + 1
+        return counts
+
+    def _insert_new(conn, counts: dict, existing: dict) -> list[str]:
+        """아직 없는 이름만 추가한다(출처=sync). 동명이인은 메모에 표시한다."""
+        added = []
+        stamp = now_iso()
+        for name, n in counts.items():
+            note = f"동명이인 {n}명 · 전송 불가" if n > 1 else ""
+            row = existing.get(name)
+            if row is None:
+                conn.execute(
+                    "INSERT INTO kakao_contacts (name, memo, created_by, created_at, source, in_phone, synced_at) "
+                    "VALUES (?, ?, 'sync', ?, 'sync', 1, ?)",
+                    (name[:_MAX_NAME], note, stamp, stamp),
+                )
+                added.append(name)
+            elif note and not row["memo"]:
+                conn.execute("UPDATE kakao_contacts SET memo = ? WHERE id = ?", (note, row["id"]))
+        return added
+
+    def _apply_full(names: list[str], expected: int) -> dict:
+        """폰 전체 목록을 반영한다. 새 친구는 추가, 폰에 없는 친구는 '폰에 없음'으로 표시만 한다(삭제 안 함)."""
+        counts = _count_names(names)
         conn = get_db()
         try:
             existing = {r["name"]: r for r in conn.execute("SELECT id, name, memo FROM kakao_contacts").fetchall()}
-            added = 0
-            for name, n in counts.items():
-                note = f"동명이인 {n}명 · 전송 불가" if n > 1 else ""
-                row = existing.get(name)
-                if row is None:
-                    conn.execute(
-                        "INSERT INTO kakao_contacts (name, memo, created_by, created_at) VALUES (?, ?, 'sync', ?)",
-                        (name[:_MAX_NAME], note, now_iso()),
-                    )
-                    added += 1
-                elif note and not row["memo"]:
-                    conn.execute("UPDATE kakao_contacts SET memo = ? WHERE id = ?", (note, row["id"]))
+            added = _insert_new(conn, counts, existing)
+            stamp = now_iso()
+            conn.execute("UPDATE kakao_contacts SET in_phone = 0")
+            for name in counts:
+                conn.execute("UPDATE kakao_contacts SET in_phone = 1, synced_at = ? WHERE name = ?", (stamp, name))
             missing = sorted(n for n in existing if n not in counts)
             conn.commit()
         finally:
             conn.close()
+        set_settings(get_db, {"phone_friend_count": expected})
         return {
+            "mode": "full",
             "total": len(names),
-            "unique": len(counts),
-            "added": added,
+            "expected": expected,
+            "added": len(added),
+            "addedNames": added[:10],
             "duplicates": sorted(n for n, c in counts.items() if c > 1),
             "missing": missing[:20],
             "missingCount": len(missing),
         }
 
-    def _run_sync() -> None:
+    def _apply_additions(names: list[str], expected: int, scanned: int) -> dict:
+        """최근 추가된 친구만 반영한다. 기존 친구 상태는 건드리지 않는다."""
+        counts = _count_names(names)
+        conn = get_db()
+        try:
+            existing = {r["name"]: r for r in conn.execute("SELECT id, name, memo FROM kakao_contacts").fetchall()}
+            added = _insert_new(conn, counts, existing)
+            conn.commit()
+        finally:
+            conn.close()
+        set_settings(get_db, {"phone_friend_count": expected})
+        return {
+            "mode": "incremental",
+            "total": scanned,
+            "expected": expected,
+            "added": len(added),
+            "addedNames": added[:10],
+            "duplicates": sorted(n for n, c in counts.items() if c > 1),
+            "missing": [],
+            "missingCount": 0,
+        }
+
+    def _run_sync(force_full: bool) -> None:
         try:
             # 전송 중인 작업이 끝날 때까지 기다린 뒤, 동기화 중에는 새 전송을 시작하지 않는다.
             if not phone_lock.acquire(timeout=180):
                 raise RuntimeError("busy")
             try:
-                names, expected = kakao_phone.read_friends(_device_config())
+                config = _device_config()
+                result = None
+                known = _stored_names()
+                try:
+                    previous = int(get_setting(get_db, "phone_friend_count", "0") or 0)
+                except ValueError:
+                    previous = 0
+                if not force_full and previous > 0 and known:
+                    # 증분: 최근 추가순으로 위에서부터 읽다가 아는 이름이 이어지면 멈춘다.
+                    names, expected, complete = kakao_phone.read_recent_friends(config, known)
+                    fresh = [n for n in names if n not in known]
+                    if complete:
+                        result = _apply_full(names, expected)  # 끝까지 읽었으면 전체 반영과 같다
+                    elif expected == previous + len(fresh):
+                        result = _apply_additions(fresh, expected, scanned=len(names))
+                    # 그 외(친구가 삭제·차단·이름 변경되었거나 순서 가정이 어긋남)는 전체를 다시 읽는다
+                if result is None:
+                    names, expected = kakao_phone.read_friends(config)
+                    result = _apply_full(names, expected)
+                    if not force_full and previous > 0:
+                        result["fallback"] = True
             finally:
                 phone_lock.release()
-            sync["result"] = {**_apply_friends(names), "expected": expected}
+            sync["result"] = result
             sync["error"] = ""
         except RuntimeError:
             sync["result"] = None
@@ -296,17 +364,19 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             wake.set()
 
     @router.post("/contacts/sync")
-    def sync_contacts(user: str = Depends(get_current_user)):
+    def sync_contacts(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        """기본은 바뀐 것만(증분). {"mode": "full"}이면 전체를 다시 읽는다."""
         config = _device_config()
         if not (config["serial"] and config["hardware_id"] and config["account"]):
             raise HTTPException(status_code=400, detail=kakao_phone.describe_error("device_not_bound"))
+        force_full = str((payload or {}).get("mode") or "") == "full"
         with start_lock:
             if sync["running"]:
                 raise HTTPException(status_code=409, detail="이미 친구 목록을 동기화하고 있습니다.")
             sync.update(running=True, startedAt=now_iso(), finishedAt="", result=None, error="")
             state["syncing"] = True
-        threading.Thread(target=_run_sync, name="kakao-friend-sync", daemon=True).start()
-        return {"ok": True, "started": True}
+        threading.Thread(target=_run_sync, args=(force_full,), name="kakao-friend-sync", daemon=True).start()
+        return {"ok": True, "started": True, "mode": "full" if force_full else "auto"}
 
     @router.delete("/contacts/{contact_id}")
     def delete_contact(contact_id: int, user: str = Depends(get_current_user)):

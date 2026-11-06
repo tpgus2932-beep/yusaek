@@ -815,3 +815,19 @@
     font-size: 12px;
     line-height: 1.45;
 }
+
+.syncGroup {
+    display: inline-flex;
+    gap: 4px;
+}
+
+.gone {
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: #fdeceb;
+    color: #c0392b;
+    font-size: 10.5px;
+    font-weight: 600;
+    vertical-align: 1px;
+}

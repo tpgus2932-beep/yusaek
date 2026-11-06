@@ -248,10 +248,12 @@ const KakaoTalkPage = () => {
     const syncing = !!status?.sync?.running;
     const wasSyncing = useRef(false);
 
-    const syncFriends = async () => {
+    const syncFriends = async (mode = 'auto') => {
         try {
-            await call('/contacts/sync', { method: 'POST' });
-            showNotice('휴대폰에서 친구 목록을 읽는 중입니다. 끝날 때까지 폰을 만지지 마세요.');
+            await call('/contacts/sync', { method: 'POST', body: { mode } });
+            showNotice(mode === 'full'
+                ? '휴대폰에서 친구 목록 전체를 읽는 중입니다. 끝날 때까지 폰을 만지지 마세요.'
+                : '휴대폰에서 바뀐 친구를 확인하는 중입니다. 끝날 때까지 폰을 만지지 마세요.');
             loadStatus();
         } catch (err) {
             showNotice(err.message);
@@ -271,9 +273,12 @@ const KakaoTalkPage = () => {
             if (error) {
                 showNotice(`친구 동기화 실패: ${error}`);
             } else if (result) {
-                const parts = [`친구 ${result.total}명을 읽었습니다 (카카오톡 표시 ${result.expected}명, 추천친구·채널 제외)`, `새로 ${result.added}명 추가`];
+                const parts = result.mode === 'incremental'
+                    ? [result.added ? `새 친구 ${result.added}명 추가` : '바뀐 친구가 없습니다', `최근 추가 ${result.total}명만 확인`]
+                    : [`친구 ${result.total}명을 모두 읽었습니다 (카카오톡 표시 ${result.expected}명, 추천친구·채널 제외)`, `새로 ${result.added}명 추가`];
+                if (result.fallback) parts.unshift('변경이 감지되어 전체를 다시 읽었습니다');
                 if (result.duplicates.length) parts.push(`동명이인 ${result.duplicates.length}명(전송 불가)`);
-                if (result.missingCount) parts.push(`폰에 없는 기존 친구 ${result.missingCount}명(삭제하지 않음)`);
+                if (result.missingCount) parts.push(`폰에 없는 기존 친구 ${result.missingCount}명('폰에 없음' 표시, 삭제하지 않음)`);
                 showNotice(parts.join(' · '));
             }
             loadContacts();
@@ -452,16 +457,27 @@ const KakaoTalkPage = () => {
                 {rail === 'friends' && (
                     <div className={styles.sectionLabel}>
                         <span>친구 {filtered.length}</span>
-                        <button
-                            type="button"
-                            className={styles.syncBtn}
-                            disabled={syncing}
-                            title="폰의 카카오톡 친구 목록을 읽어 옵니다. 읽는 동안 폰을 만지지 마세요."
-                            onClick={syncFriends}
-                        >
-                            <RefreshCw size={12} className={syncing ? styles.spin : ''} />
-                            {syncing ? '동기화 중…' : '폰에서 동기화'}
-                        </button>
+                        <span className={styles.syncGroup}>
+                            <button
+                                type="button"
+                                className={styles.syncBtn}
+                                disabled={syncing}
+                                title="최근에 추가된 친구만 확인해서 바뀐 것만 반영합니다. 처음에는 전체를 읽습니다. 읽는 동안 폰을 만지지 마세요."
+                                onClick={() => syncFriends('auto')}
+                            >
+                                <RefreshCw size={12} className={syncing ? styles.spin : ''} />
+                                {syncing ? '동기화 중…' : '폰에서 동기화'}
+                            </button>
+                            <button
+                                type="button"
+                                className={styles.syncBtn}
+                                disabled={syncing}
+                                title="친구 목록 전체를 처음부터 다시 읽습니다(이름 변경·삭제까지 확인, 1~2분)."
+                                onClick={() => syncFriends('full')}
+                            >
+                                전체
+                            </button>
+                        </span>
                     </div>
                 )}
                 <div className={styles.list}>
@@ -481,7 +497,10 @@ const KakaoTalkPage = () => {
                         >
                             <Avatar name={c.name} />
                             <div className={styles.itemBody}>
-                                <div className={styles.itemName}>{c.name}</div>
+                                <div className={styles.itemName}>
+                                    {c.name}
+                                    {!c.inPhone && <span className={styles.gone}>폰에 없음</span>}
+                                </div>
                                 {rail === 'chats'
                                     ? <div className={styles.itemSub}>{c.lastText}</div>
                                     : c.memo && <div className={styles.itemSub}>{c.memo}</div>}

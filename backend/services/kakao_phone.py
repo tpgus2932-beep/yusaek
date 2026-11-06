@@ -52,6 +52,7 @@ _MESSAGES = {
     "friends_home_unavailable": "카카오톡 친구 화면(상단 '친구' 칩)으로 이동하지 못했습니다. 폰 잠금을 풀어 주세요.",
     "friends_screen_changed": "친구 목록을 읽는 중 화면이 바뀌었습니다. 폰을 만지지 말고 다시 시도하세요.",
     "friends_scan_expired": "친구 목록 읽기가 중단되었습니다. 다시 시도하세요.",
+    "friends_sort_unavailable": "친구 목록 정렬(친구추가순)을 바꾸지 못했습니다. 폰을 만지지 말고 다시 시도하세요.",
     "friends_scan_gap": "스크롤이 친구 목록을 건너뛰어 끝까지 읽지 못했습니다. 다시 시도하세요.",
     "friends_scan_limit": "친구 목록이 너무 길어 끝까지 읽지 못했습니다.",
     "friends_top_unavailable": "친구 목록의 맨 위로 이동하지 못했습니다.",
@@ -131,6 +132,56 @@ def read_friends(config: dict) -> tuple[list[str], int]:
     data = device.onboard_fast()
     names = [str(e["name"]).strip() for e in data["entries"] if str(e.get("name") or "").strip()]
     return names, int(data.get("expected_count") or len(names))
+
+
+def read_recent_friends(config: dict, known: set, stop_after: int = 10) -> tuple[list[str], int, bool]:
+    """'친구추가순'으로 바꿔 맨 위(가장 최근에 추가한 친구)부터 읽다가, 이미 아는 이름이
+    stop_after개 연속 나오면 멈춘다. 정렬은 끝나면 원래대로 돌려놓는다.
+
+    반환: (읽은 이름들, 카카오톡이 표시한 친구 수, 목록 끝까지 다 읽었는지)
+    """
+    if not config.get("serial") or not config.get("hardware_id") or not config.get("account"):
+        raise Blocked("device_not_bound")
+    device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
+    device.connect_transport()
+    if not device.accessibility_enabled():
+        raise Blocked("accessibility_disabled")
+    cursor = ""
+    entries: list = []
+    expected = 0
+    complete = False
+    try:
+        for _ in range(200):
+            payload = {"action": "onboard_friends", "recent": True}
+            if cursor:
+                payload["cursor"] = cursor
+            data = device.fast_broadcast(payload, timeout=25)
+            state = data.get("state")
+            if state == "verified":
+                entries = data.get("entries") or []
+                expected = int(data.get("expected_count") or 0)
+                complete = True
+                break
+            if state != "partial" or not isinstance(data.get("cursor"), str) or not data["cursor"]:
+                error = data.get("error") or "friend_onboarding_invalid"
+                if error == "friend_count_mismatch":
+                    error = f"friend_count_mismatch:{data.get('count')}/{data.get('expected_count')}"
+                raise Blocked(error)
+            cursor = data["cursor"]
+            entries = data.get("entries") or entries
+            expected = int(data.get("expected_count") or expected)
+            names = [str(e.get("name") or "").strip() for e in entries]
+            if len(names) >= stop_after and all(n in known for n in names[-stop_after:]):
+                break
+        else:
+            raise Blocked("friend_onboarding_incomplete")
+    finally:
+        try:
+            device.fast_broadcast({"action": "friends_done"}, timeout=90)  # 정렬 복구 + 메인 화면 복귀
+        except Exception:
+            pass
+    names = [str(e.get("name") or "").strip() for e in entries if str(e.get("name") or "").strip()]
+    return names, expected, complete
 
 
 def send(config: dict, name: str, text: str, dry_run: bool = False) -> dict:

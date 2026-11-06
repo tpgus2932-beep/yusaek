@@ -39,6 +39,15 @@ def init_kakao_tables(get_db) -> None:
         )
         """
     )
+    # 폰 동기화용 컬럼. 기존 DB에는 ALTER로 추가한다(앱 시작 시 한 번).
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(kakao_contacts)").fetchall()}
+    for name, ddl in (
+        ("source", "ALTER TABLE kakao_contacts ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'"),
+        ("in_phone", "ALTER TABLE kakao_contacts ADD COLUMN in_phone INTEGER NOT NULL DEFAULT 1"),
+        ("synced_at", "ALTER TABLE kakao_contacts ADD COLUMN synced_at TEXT NOT NULL DEFAULT ''"),
+    ):
+        if name not in columns:
+            conn.execute(ddl)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_kakao_messages_contact ON kakao_messages(contact_id, id)"
     )

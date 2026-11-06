@@ -779,6 +779,15 @@ def _get_order_recommendation_db():
     return conn
 
 
+def _get_kakao_db():
+    """카카오톡 탭 전용 로컬 SQLite. Turso 설정 여부와 무관하게 항상 로컬을 쓴다 —
+    폰(ADB)은 이 PC에 붙어 있고, 전송 큐 워커가 수 초마다 DB를 읽고 쓰기 때문이다."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=15)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 _restore_amood_ezadmin_file_from_db()
 
 
@@ -2392,7 +2401,7 @@ app.include_router(
 app.include_router(
     build_kakao_router(
         get_current_user=_get_current_user,
-        get_db=_get_shared_db,
+        get_db=_get_kakao_db,
         get_user_display=_get_user_display,
     )
 )
