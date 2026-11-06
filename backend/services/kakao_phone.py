@@ -1,0 +1,132 @@
+"""휴대폰(ADB + 접근성 브리지 앱)으로 카카오톡 1:1 메시지를 보내는 어댑터.
+
+- 폰 한 대를 여러 사람이 쓰므로 호출하는 쪽(kakao_routes)이 반드시 한 번에 한 건씩만 부른다.
+- 전송 버튼을 누른 뒤의 실패는 SendUncertain으로 올린다. 자동 재시도 금지 — 폰에서 직접 확인해야 한다.
+- 계정(account)은 연결 시 한 번만 확인하고, 전송마다는 폰 하드웨어 ID만 다시 본다(화면 이동 없음).
+"""
+from __future__ import annotations
+
+import os
+import pathlib
+import re
+
+from services.kakao_adb_bridge import Adb, Blocked
+
+_BACKEND = pathlib.Path(__file__).resolve().parent.parent
+
+# 이 오류가 나면 큐를 멈춘다(다음 건도 같은 이유로 실패하므로).
+FATAL_ERRORS = {
+    "accessibility_disabled",
+    "account_changed",
+    "device_identity_mismatch",
+    "adb_connection_failed",
+    "adb_command_failed",
+    "device_not_bound",
+}
+
+_MESSAGES = {
+    "accessibility_disabled": "휴대폰의 접근성 서비스(YUSAEK TALK 화면 속도 시험)가 꺼져 있습니다.",
+    "account_changed": "휴대폰의 카카오 계정이 연결 시점과 다릅니다. 다시 연결(계정 확인)하세요.",
+    "device_identity_mismatch": "연결된 휴대폰이 처음 등록한 폰과 다릅니다.",
+    "adb_connection_failed": "휴대폰과 연결할 수 없습니다. USB 케이블과 디버깅 허용을 확인하세요.",
+    "adb_command_failed": "휴대폰 명령이 실패했습니다. 연결 상태를 확인하세요.",
+    "device_not_bound": "먼저 '더보기'에서 휴대폰을 연결(계정 확인)하세요.",
+    "device_missing_or_ambiguous": "승인된 휴대폰이 없거나 여러 대입니다. 한 대만 연결하거나 기기번호를 입력하세요.",
+    "empty_message": "친구 이름과 메시지를 입력하세요.",
+    "PROFILE_NOT_FOUND": "카카오톡 친구 목록에서 정확히 같은 이름을 찾지 못했습니다.",
+    "PROFILE_AMBIGUOUS": "같은 이름의 친구가 여러 명이라 보내지 않았습니다.",
+    "target_not_found": "카카오톡 친구 목록에서 정확히 같은 이름을 찾지 못했습니다.",
+    "target_missing_or_ambiguous": "같은 이름의 친구가 없거나 여러 명입니다.",
+    "results_unstable": "검색 결과 화면이 안정되지 않아 보내지 않았습니다.",
+    "friend_tab_unavailable": "카카오톡 검색 결과의 '친구' 탭을 찾지 못했습니다.",
+    "kakao_main_unavailable": "카카오톡 메인 화면으로 이동하지 못했습니다. 폰 잠금을 풀어 주세요.",
+    "search_field_missing": "카카오톡 검색창을 찾지 못했습니다.",
+    "search_input_failed": "검색어 입력에 실패했습니다.",
+    "chat_open_button_missing": "프로필의 '1:1 채팅' 버튼을 찾지 못했습니다.",
+    "chat_open_failed": "'1:1 채팅' 버튼을 누르지 못했습니다.",
+    "chat_open_unverified": "채팅방이 열렸는지 확인하지 못했습니다.",
+    "not_in_chat_input": "채팅 입력창을 찾지 못했습니다.",
+    "input_set_failed": "메시지 입력에 실패했습니다.",
+    "send_button_missing": "전송 버튼을 찾지 못해 보내지 않았습니다.",
+    "executor_busy": "폰이 다른 작업을 처리 중입니다.",
+    "executor_no_result": "폰에서 응답이 없습니다.",
+    "payload_invalid": "폰으로 보낸 요청이 올바르지 않습니다.",
+}
+
+
+class SendUncertain(Exception):
+    """전송 버튼을 누른 뒤 결과를 확인하지 못함 — 중복 발송 위험 때문에 재시도하면 안 된다."""
+
+
+def adb_path() -> str:
+    env = os.environ.get("KAKAO_ADB_PATH", "").strip()
+    if env:
+        return env
+    bundled = _BACKEND / "kakao_tools" / "platform-tools" / ("adb.exe" if os.name == "nt" else "adb")
+    return str(bundled) if bundled.is_file() else "adb"
+
+
+def describe_error(code: str) -> str:
+    code = str(code or "")
+    return _MESSAGES.get(code, f"전송에 실패했습니다. ({code or 'unknown'})")
+
+
+def error_code(exc: Exception) -> str:
+    return str(exc) if isinstance(exc, Blocked) else "adb_adapter_failed"
+
+
+def list_devices() -> list[dict]:
+    """`adb devices -l` 결과를 [{serial, state, model}]로."""
+    text = Adb({"adb": adb_path()}).global_run("devices", "-l")
+    rows = []
+    for line in text.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        model = next((f.split(":", 1)[1] for f in fields[2:] if f.startswith("model:")), "")
+        rows.append({"serial": fields[0], "state": fields[1], "model": model.replace("_", " ")})
+    return rows
+
+
+def bind(serial: str = "") -> dict:
+    """폰과 카카오 계정을 확인하고 고정할 값을 돌려준다."""
+    serial = (serial or "").strip()
+    if not serial:
+        ready = [d["serial"] for d in list_devices() if d["state"] == "device"]
+        if len(ready) != 1:
+            raise Blocked("device_missing_or_ambiguous")
+        serial = ready[0]
+    device = Adb({"adb": adb_path(), "serial": serial})
+    device.connect_transport()
+    account = device.account_fast()
+    return {"serial": device.serial, "hardware_id": device.verified_hardware, "account": account}
+
+
+def send(config: dict, name: str, text: str, dry_run: bool = False) -> dict:
+    """친구 이름으로 1:1 채팅방에 텍스트를 보낸다. config: serial/hardware_id/account."""
+    if not config.get("serial") or not config.get("hardware_id") or not config.get("account"):
+        raise Blocked("device_not_bound")
+    name = (name or "").strip()
+    if not name or not (text or "").strip():
+        raise Blocked("empty_message")
+    device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
+    try:
+        device.connect_transport()  # 하드웨어 ID도 함께 확인한다
+        # 채팅방 재진입/스크롤 없이 한 번에: 친구 → 1:1 채팅 → 입력 → 전송. 제목은 폰에서 확인한다.
+        room = {"name": name, "locator": {"kind": "friend"}}
+        # hold=True: 방에서 나오되 화면은 잠그지 않는다.
+        return device.send_fast(room, text, dry_run=dry_run, hold=True)
+    except Exception as exc:
+        if device.send_attempted:
+            raise SendUncertain("전송 결과 불확실") from exc
+        raise
+    finally:
+        try:
+            device.fast_broadcast({"action": "finish_send", "hold": True})
+        except Exception:
+            pass
+        device.restore_keyboard()
+
+
+def short_account(value: str) -> str:
+    return value[:8] if re.fullmatch(r"[0-9a-f]{64}", value or "") else (value or "")[:8]

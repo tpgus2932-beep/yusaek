@@ -6,6 +6,7 @@ import CSProducts from './CSProducts';
 import CSConversation from './CSConversation';
 import CSMalignantDelay from './CSMalignantDelay';
 import SellerPage from '../Seller/SellerPage';
+import KakaoTalkPage from '../KakaoTalk/KakaoTalkPage';
 import CSMyTemplates from './CSMyTemplates';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
@@ -85,7 +86,7 @@ const CSPage = () => {
     const [view, setView] = useState(() => {
         try {
             const saved = localStorage.getItem('csView');
-            return ['dashboard', 'products', 'inbox', 'malignant', 'seller'].includes(saved) ? saved : 'dashboard';
+            return ['dashboard', 'products', 'inbox', 'malignant', 'seller', 'kakao'].includes(saved) ? saved : 'dashboard';
         } catch {
             return 'dashboard';
         }
@@ -308,6 +309,13 @@ const CSPage = () => {
                 >
                     판매자
                 </button>
+                <button
+                    type="button"
+                    className={`${styles.tab} ${view === 'kakao' ? styles.tabActive : ''}`}
+                    onClick={() => setView('kakao')}
+                >
+                    카카오톡
+                </button>
                 {view === 'inbox' && (
                     <>
                 <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
@@ -371,6 +379,7 @@ const CSPage = () => {
             )}
             {view === 'malignant' && <CSMalignantDelay />}
             {view === 'seller' && <SellerPage />}
+            {view === 'kakao' && <KakaoTalkPage />}
             <div className={styles.body} style={view === 'inbox' ? undefined : { display: 'none' }}>
                 <aside className={styles.list}>
                     <div className={styles.sortBar}>

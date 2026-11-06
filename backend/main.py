@@ -92,6 +92,7 @@ from api.return_anomaly_routes import build_return_anomaly_router
 from api.daily_checklist_routes import build_daily_checklist_router
 from api.timebox_routes import build_timebox_router
 from api.worklog_routes import build_worklog_router
+from api.kakao_routes import build_kakao_router
 from api.equipment_routes import build_equipment_router
 from services.equipment_store import init_equipment_tables
 from services.delivery_anomaly_store import init_delivery_anomaly_tables
@@ -2382,6 +2383,14 @@ init_worklog_tables(_get_shared_db)
 
 app.include_router(
     build_worklog_router(
+        get_current_user=_get_current_user,
+        get_db=_get_shared_db,
+        get_user_display=_get_user_display,
+    )
+)
+
+app.include_router(
+    build_kakao_router(
         get_current_user=_get_current_user,
         get_db=_get_shared_db,
         get_user_display=_get_user_display,

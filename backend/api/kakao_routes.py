@@ -1,0 +1,352 @@
+from __future__ import annotations
+
+import threading
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+
+from services import kakao_phone
+from services.kakao_store import get_setting, init_kakao_tables, now_iso, set_settings
+
+_MAX_TEXT = 2000
+_MAX_NAME = 60
+
+# 상태: queued(대기) → sending(전송 중) → sent(보냄) | failed(보내기 전 실패, 재전송 가능)
+#       | needs_check(전송 버튼을 누른 뒤 불확실 — 사람이 폰에서 확인) | tested(전송 없이 테스트 성공)
+
+
+def build_kakao_router(*, get_current_user, get_db, get_user_display):
+    router = APIRouter(prefix="/kakao")
+    init_kakao_tables(get_db)
+
+    state = {"paused": False, "pause_reason": "", "busy": False, "thread": None}
+    wake = threading.Event()
+    start_lock = threading.Lock()
+    phone_lock = threading.Lock()  # 폰은 한 번에 하나의 작업만
+
+    # 서버가 전송 도중 꺼졌다면 결과를 알 수 없다 — 자동으로 다시 보내지 않고 사람이 확인하게 한다.
+    conn = get_db()
+    conn.execute(
+        "UPDATE kakao_messages SET status = 'needs_check', updated_at = ?, "
+        "error = '서버가 다시 시작되어 전송 결과를 알 수 없습니다. 폰에서 확인하세요.' WHERE status = 'sending'",
+        (now_iso(),),
+    )
+    conn.commit()
+    conn.close()
+
+    # ---- helpers -----------------------------------------------------
+    def _device_config() -> dict:
+        return {
+            "serial": get_setting(get_db, "serial"),
+            "hardware_id": get_setting(get_db, "hardware_id"),
+            "account": get_setting(get_db, "account"),
+        }
+
+    def _row_to_message(row) -> dict:
+        return {
+            "id": row["id"],
+            "contactId": row["contact_id"],
+            "text": row["text"],
+            "status": row["status"],
+            "error": row["error"],
+            "dryRun": bool(row["dry_run"]),
+            "requestedBy": row["requested_by"],
+            "requestedByDisplay": get_user_display(row["requested_by"]) or row["requested_by"],
+            "createdAt": row["created_at"],
+            "sentAt": row["sent_at"],
+        }
+
+    def _set_status(message_id: int, status: str, error: str = "", sent: bool = False) -> None:
+        conn = get_db()
+        conn.execute(
+            "UPDATE kakao_messages SET status = ?, error = ?, updated_at = ?, sent_at = CASE WHEN ? THEN ? ELSE sent_at END WHERE id = ?",
+            (status, error, now_iso(), 1 if sent else 0, now_iso(), message_id),
+        )
+        conn.commit()
+        conn.close()
+
+    def _claim_next():
+        conn = get_db()
+        row = conn.execute(
+            "SELECT m.id, m.text, m.dry_run, c.name FROM kakao_messages m "
+            "JOIN kakao_contacts c ON c.id = m.contact_id WHERE m.status = 'queued' ORDER BY m.id ASC LIMIT 1"
+        ).fetchone()
+        if not row:
+            conn.close()
+            return None
+        cur = conn.execute(
+            "UPDATE kakao_messages SET status = 'sending', updated_at = ? WHERE id = ? AND status = 'queued'",
+            (now_iso(), row["id"]),
+        )
+        conn.commit()
+        conn.close()
+        return dict(row) if cur.rowcount else None
+
+    def _pause(reason: str) -> None:
+        state["paused"] = True
+        state["pause_reason"] = reason
+
+    def _process(job: dict) -> None:
+        config = _device_config()
+        try:
+            with phone_lock:
+                kakao_phone.send(config, job["name"], job["text"], dry_run=bool(job["dry_run"]))
+            _set_status(job["id"], "tested" if job["dry_run"] else "sent", sent=not job["dry_run"])
+        except kakao_phone.SendUncertain:
+            _set_status(job["id"], "needs_check", "전송 버튼을 누른 뒤 결과를 확인하지 못했습니다. 폰에서 확인하세요. 자동으로 다시 보내지 않습니다.")
+            _pause("전송 결과가 불확실한 메시지가 있어 큐를 멈췄습니다. 폰에서 확인한 뒤 처리하고 재개하세요.")
+        except Exception as exc:  # noqa: BLE001
+            code = kakao_phone.error_code(exc)
+            _set_status(job["id"], "failed", kakao_phone.describe_error(code))
+            if code in kakao_phone.FATAL_ERRORS:
+                _pause(kakao_phone.describe_error(code))
+
+    def _worker() -> None:
+        while True:
+            wake.wait(timeout=3)
+            wake.clear()
+            while not state["paused"]:
+                job = _claim_next()
+                if not job:
+                    break
+                state["busy"] = True
+                try:
+                    _process(job)
+                finally:
+                    state["busy"] = False
+
+    def _ensure_worker() -> None:
+        with start_lock:
+            thread = state["thread"]
+            if thread is None or not thread.is_alive():
+                thread = threading.Thread(target=_worker, name="kakao-queue-worker", daemon=True)
+                state["thread"] = thread
+                thread.start()
+        wake.set()
+
+    def _contact_or_404(conn, contact_id: int):
+        row = conn.execute("SELECT * FROM kakao_contacts WHERE id = ?", (contact_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="친구를 찾을 수 없습니다.")
+        return row
+
+    # ---- status / device --------------------------------------------
+    @router.get("/status")
+    def get_status(user: str = Depends(get_current_user)):
+        _ensure_worker()
+        config = _device_config()
+        conn = get_db()
+        counts = {
+            r["status"]: r["n"]
+            for r in conn.execute("SELECT status, COUNT(*) AS n FROM kakao_messages WHERE status IN ('queued','sending','needs_check') GROUP BY status")
+        }
+        conn.close()
+        return {
+            "ok": True,
+            "bound": bool(config["serial"] and config["hardware_id"] and config["account"]),
+            "serial": config["serial"],
+            "account": kakao_phone.short_account(config["account"]),
+            "paused": state["paused"],
+            "pauseReason": state["pause_reason"],
+            "busy": state["busy"],
+            "queued": counts.get("queued", 0),
+            "sending": counts.get("sending", 0),
+            "needsCheck": counts.get("needs_check", 0),
+        }
+
+    @router.get("/devices")
+    def get_devices(user: str = Depends(get_current_user)):
+        try:
+            return {"ok": True, "devices": kakao_phone.list_devices()}
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=kakao_phone.describe_error(kakao_phone.error_code(exc)))
+
+    @router.post("/device/bind")
+    def bind_device(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        serial = str((payload or {}).get("serial") or "").strip()
+        if not phone_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="폰이 다른 작업을 처리 중입니다. 잠시 후 다시 시도하세요.")
+        try:
+            result = kakao_phone.bind(serial)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=kakao_phone.describe_error(kakao_phone.error_code(exc)))
+        finally:
+            phone_lock.release()
+        set_settings(get_db, result)
+        state["paused"] = False
+        state["pause_reason"] = ""
+        wake.set()
+        return {"ok": True, "serial": result["serial"], "account": kakao_phone.short_account(result["account"])}
+
+    @router.post("/queue")
+    def set_queue(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        if payload.get("paused"):
+            _pause("관리자가 큐를 멈췄습니다.")
+        else:
+            state["paused"] = False
+            state["pause_reason"] = ""
+            _ensure_worker()
+        return {"ok": True, "paused": state["paused"]}
+
+    # ---- contacts ----------------------------------------------------
+    @router.get("/contacts")
+    def list_contacts(user: str = Depends(get_current_user)):
+        conn = get_db()
+        rows = conn.execute(
+            """
+            SELECT c.*,
+              (SELECT text FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 ORDER BY m.id DESC LIMIT 1) AS last_text,
+              (SELECT created_at FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 ORDER BY m.id DESC LIMIT 1) AS last_at,
+              (SELECT status FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 ORDER BY m.id DESC LIMIT 1) AS last_status,
+              (SELECT COUNT(*) FROM kakao_messages m WHERE m.contact_id = c.id AND m.status IN ('failed','needs_check')) AS problem_count
+            FROM kakao_contacts c ORDER BY c.name COLLATE NOCASE ASC
+            """
+        ).fetchall()
+        conn.close()
+        return {
+            "ok": True,
+            "contacts": [
+                {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "memo": r["memo"],
+                    "lastText": r["last_text"] or "",
+                    "lastAt": r["last_at"] or "",
+                    "lastStatus": r["last_status"] or "",
+                    "problemCount": r["problem_count"],
+                }
+                for r in rows
+            ],
+        }
+
+    @router.post("/contacts")
+    def add_contact(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        name = str(payload.get("name") or "").strip()
+        memo = str(payload.get("memo") or "").strip()[:200]
+        if not name or len(name) > _MAX_NAME:
+            raise HTTPException(status_code=400, detail="카카오톡 친구 이름을 입력하세요.")
+        conn = get_db()
+        try:
+            if conn.execute("SELECT 1 FROM kakao_contacts WHERE name = ?", (name,)).fetchone():
+                raise HTTPException(status_code=409, detail="이미 추가된 친구입니다.")
+            cur = conn.execute(
+                "INSERT INTO kakao_contacts (name, memo, created_by, created_at) VALUES (?, ?, ?, ?)",
+                (name, memo, user, now_iso()),
+            )
+            conn.commit()
+            return {"ok": True, "id": cur.lastrowid}
+        finally:
+            conn.close()
+
+    @router.delete("/contacts/{contact_id}")
+    def delete_contact(contact_id: int, user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            _contact_or_404(conn, contact_id)
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM kakao_messages WHERE contact_id = ? AND status IN ('queued','sending','needs_check')",
+                (contact_id,),
+            ).fetchone()["n"]
+            if pending:
+                raise HTTPException(status_code=409, detail="대기 중이거나 확인이 필요한 메시지가 있어 삭제할 수 없습니다.")
+            conn.execute("DELETE FROM kakao_messages WHERE contact_id = ?", (contact_id,))
+            conn.execute("DELETE FROM kakao_contacts WHERE id = ?", (contact_id,))
+            conn.commit()
+            return {"ok": True}
+        finally:
+            conn.close()
+
+    # ---- messages ----------------------------------------------------
+    @router.get("/messages")
+    def list_messages(contact_id: int = Query(...), limit: int = Query(300, ge=1, le=1000), user: str = Depends(get_current_user)):
+        conn = get_db()
+        _contact_or_404(conn, contact_id)
+        rows = conn.execute(
+            "SELECT * FROM (SELECT * FROM kakao_messages WHERE contact_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC",
+            (contact_id, limit),
+        ).fetchall()
+        ahead = {
+            r["id"]: i
+            for i, r in enumerate(conn.execute("SELECT id FROM kakao_messages WHERE status = 'queued' ORDER BY id ASC").fetchall())
+        }
+        conn.close()
+        out = []
+        for r in rows:
+            item = _row_to_message(r)
+            if r["status"] == "queued":
+                item["queuePosition"] = ahead.get(r["id"], 0)
+            out.append(item)
+        return {"ok": True, "messages": out}
+
+    @router.post("/send")
+    def send_message(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        text = str(payload.get("text") or "").replace("\r\n", "\n").strip("\n")
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="메시지를 입력하세요.")
+        if len(text) > _MAX_TEXT:
+            raise HTTPException(status_code=400, detail=f"메시지는 {_MAX_TEXT}자까지 보낼 수 있습니다.")
+        try:
+            contact_id = int(payload.get("contact_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="친구를 선택하세요.")
+        request_id = str(payload.get("request_id") or "").strip()[:64] or None
+        dry_run = bool(payload.get("dry_run"))
+        conn = get_db()
+        try:
+            _contact_or_404(conn, contact_id)
+            if request_id:  # 같은 요청이 다시 오면(버튼 두 번 클릭 등) 새로 만들지 않는다
+                existing = conn.execute("SELECT * FROM kakao_messages WHERE request_id = ?", (request_id,)).fetchone()
+                if existing:
+                    return {"ok": True, "message": _row_to_message(existing), "duplicate": True}
+            stamp = now_iso()
+            cur = conn.execute(
+                "INSERT INTO kakao_messages (contact_id, text, status, dry_run, request_id, requested_by, created_at, updated_at) "
+                "VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)",
+                (contact_id, text, 1 if dry_run else 0, request_id, user, stamp, stamp),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM kakao_messages WHERE id = ?", (cur.lastrowid,)).fetchone()
+            message = _row_to_message(row)
+        finally:
+            conn.close()
+        _ensure_worker()
+        return {"ok": True, "message": message}
+
+    @router.post("/messages/{message_id}/retry")
+    def retry_message(message_id: int, user: str = Depends(get_current_user)):
+        # 'failed'는 전송 버튼을 누르기 전에 실패한 경우뿐이므로 다시 큐에 넣어도 중복 발송이 없다.
+        conn = get_db()
+        try:
+            cur = conn.execute(
+                "UPDATE kakao_messages SET status = 'queued', error = '', updated_at = ? WHERE id = ? AND status = 'failed'",
+                (now_iso(), message_id),
+            )
+            conn.commit()
+            if not cur.rowcount:
+                raise HTTPException(status_code=409, detail="다시 보낼 수 없는 상태입니다.")
+        finally:
+            conn.close()
+        _ensure_worker()
+        return {"ok": True}
+
+    @router.post("/messages/{message_id}/resolve")
+    def resolve_message(message_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
+        # 사람이 폰에서 직접 확인한 결과를 기록한다. (보냈다 / 안 보냈다)
+        decision = str(payload.get("status") or "")
+        if decision not in ("sent", "failed"):
+            raise HTTPException(status_code=400, detail="status는 sent 또는 failed여야 합니다.")
+        note = "" if decision == "sent" else "확인 결과 전송되지 않았습니다."
+        conn = get_db()
+        try:
+            cur = conn.execute(
+                "UPDATE kakao_messages SET status = ?, error = ?, updated_at = ?, sent_at = CASE WHEN ? = 'sent' THEN ? ELSE sent_at END "
+                "WHERE id = ? AND status = 'needs_check'",
+                (decision, note, now_iso(), decision, now_iso(), message_id),
+            )
+            conn.commit()
+            if not cur.rowcount:
+                raise HTTPException(status_code=409, detail="확인이 필요한 메시지가 아닙니다.")
+        finally:
+            conn.close()
+        return {"ok": True}
+
+    return router
