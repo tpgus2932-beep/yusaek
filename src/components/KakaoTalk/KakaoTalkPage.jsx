@@ -222,6 +222,39 @@ const KakaoTalkPage = () => {
         });
     };
 
+    // Ctrl+V: 커서가 입력창에 있든 대화창을 눌러 둔 상태든 사진이면 첨부한다.
+    // (다른 입력칸 — 검색, 친구 추가 — 에 붙여넣는 글자는 건드리지 않는다.)
+    const pasteRef = useRef({ addFiles: null, canAttach: false, notify: null });
+    useEffect(() => {
+        pasteRef.current = { addFiles, canAttach: !!selected, notify: showNotice };
+    });
+    useEffect(() => {
+        const onPaste = (e) => {
+            const { addFiles: add, canAttach, notify } = pasteRef.current;
+            if (!canAttach || !add) return;
+            const target = e.target;
+            if (target instanceof Element && target.closest('input, textarea, [contenteditable="true"]') && target !== textarea.current) return;
+            const data = e.clipboardData;
+            if (!data) return;
+            // 탐색기에서 복사한 파일·스크린샷은 files에, 웹의 '이미지 복사'는 items에만 있는 경우가 있다.
+            const found = new Map();
+            Array.from(data.files || []).forEach((f) => found.set(`${f.name}|${f.size}|${f.type}`, f));
+            Array.from(data.items || []).forEach((item) => {
+                if (item.kind !== 'file') return;
+                const f = item.getAsFile();
+                if (f) found.set(`${f.name}|${f.size}|${f.type}`, f);
+            });
+            const files = Array.from(found.values());
+            if (!files.length) return;                       // 글자 붙여넣기는 그대로 둔다
+            const images = files.filter((f) => /^image\//.test(f.type) || /\.(jpe?g|png|gif|webp)$/i.test(f.name));
+            if (!images.length) { notify('사진 파일(JPG, PNG, GIF, WEBP)만 붙여넣을 수 있습니다.'); return; }
+            e.preventDefault();
+            add(images.map((f) => (f.name && f.name !== 'image.png' ? f : new File([f], `붙여넣은 사진-${Date.now()}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type }))));
+        };
+        document.addEventListener('paste', onPaste);
+        return () => document.removeEventListener('paste', onPaste);
+    }, []);
+
     const photosReady = attachments.length > 0 && attachments.every((a) => a.id);
 
     const sendAttachments = async () => {
@@ -857,10 +890,6 @@ const KakaoTalkPage = () => {
                                 </div>
                             )}
                             <textarea
-                                onPaste={(e) => {
-                                    const pasted = Array.from(e.clipboardData?.files || []).filter((f) => /^image\//.test(f.type));
-                                    if (pasted.length) { e.preventDefault(); addFiles(pasted); }
-                                }}
                                 ref={textarea}
                                 rows={1}
                                 value={draft}
