@@ -83,6 +83,8 @@ const KakaoTalkPage = () => {
     const [devices, setDevices] = useState(null);
     const [serialInput, setSerialInput] = useState('');
     const [busy, setBusy] = useState(false);
+    const [roomSyncOpen, setRoomSyncOpen] = useState(false);
+    const [roomSince, setRoomSince] = useState('');
     const scroller = useRef(null);
     const stickToBottom = useRef(true);
     const textarea = useRef(null);
@@ -286,6 +288,50 @@ const KakaoTalkPage = () => {
         return undefined;
     }, [syncing, status, loadStatus, loadContacts, showNotice]);
 
+    const isoDay = (offset = 0) => {
+        const d = new Date();
+        d.setDate(d.getDate() - offset);
+        const p = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    };
+
+    const roomSyncing = !!status?.roomSync?.running;
+    const wasRoomSyncing = useRef(false);
+    const anySyncing = syncing || roomSyncing;
+
+    const openRoomSync = () => {
+        setRoomSince((v) => v || isoDay(7));
+        setRoomSyncOpen((v) => !v);
+    };
+
+    const syncRoom = async () => {
+        if (!selected || !roomSince) return;
+        try {
+            await call(`/contacts/${selected.id}/sync-room`, { method: 'POST', body: { since: roomSince } });
+            setRoomSyncOpen(false);
+            showNotice(`${selected.name} 님과의 대화를 ${roomSince}부터 폰에서 읽는 중입니다. 끝날 때까지 폰을 만지지 마세요.`);
+            loadStatus();
+        } catch (err) {
+            showNotice(err.message);
+        }
+    };
+
+    useEffect(() => {
+        if (roomSyncing) {
+            wasRoomSyncing.current = true;
+            const timer = window.setInterval(loadStatus, 1500);
+            return () => window.clearInterval(timer);
+        }
+        if (wasRoomSyncing.current && status?.roomSync) {
+            wasRoomSyncing.current = false;
+            const { result, error } = status.roomSync;
+            if (error) showNotice(`대화 동기화 실패: ${error}`);
+            else if (result) showNotice(`${result.since}부터 대화 ${result.read}개를 확인해 ${result.added}개를 가져왔습니다.`);
+            loadMessages(selectedId);
+        }
+        return undefined;
+    }, [roomSyncing, status, loadStatus, loadMessages, selectedId, showNotice]);
+
     const toggleQueue = async () => {
         try {
             await call('/queue', { method: 'POST', body: { paused: !status?.paused } });
@@ -352,7 +398,7 @@ const KakaoTalkPage = () => {
                 {dayDivider}
                 <div className={styles.rowMine}>
                     <div className={styles.meta}>
-                        {m.status === 'queued' && <span className={styles.pending}>대기 중{m.queuePosition ? ` (앞 ${m.queuePosition}건)` : ''}</span>}
+                        {m.status === 'queued' && <span className={styles.pending}>{m.error || `대기 중${m.queuePosition ? ` (앞 ${m.queuePosition}건)` : ''}`}</span>}
                         {m.status === 'sending' && <span className={styles.pending}><i className={styles.spinner} />전송 중</span>}
                         {m.status === 'failed' && (
                             <span className={styles.fail} title={m.error}>
@@ -479,7 +525,7 @@ const KakaoTalkPage = () => {
                             <button
                                 type="button"
                                 className={styles.syncBtn}
-                                disabled={syncing}
+                                disabled={anySyncing}
                                 title="최근에 추가된 친구만 확인해서 바뀐 것만 반영합니다. 처음에는 전체를 읽습니다. 읽는 동안 폰을 만지지 마세요."
                                 onClick={() => syncFriends('auto')}
                             >
@@ -489,7 +535,7 @@ const KakaoTalkPage = () => {
                             <button
                                 type="button"
                                 className={styles.syncBtn}
-                                disabled={syncing}
+                                disabled={anySyncing}
                                 title="친구 목록 전체를 처음부터 다시 읽습니다(이름 변경·삭제까지 확인, 1~2분)."
                                 onClick={() => syncFriends('full')}
                             >
@@ -575,9 +621,37 @@ const KakaoTalkPage = () => {
                                 <b>{selected.name}</b>
                                 <span>{selected.memo || '나와의 1:1 채팅'}</span>
                             </div>
+                            <button
+                                type="button"
+                                className={styles.headerBtn}
+                                disabled={anySyncing}
+                                title="폰의 이 대화방을 위로 읽어서 선택한 날짜부터 현재까지의 대화를 웹과 맞춥니다."
+                                onClick={openRoomSync}
+                            >
+                                <RefreshCw size={14} className={roomSyncing && status.roomSync.contactId === selected.id ? styles.spin : ''} />
+                                {roomSyncing && status.roomSync.contactId === selected.id ? '동기화 중…' : '대화 동기화'}
+                            </button>
                             <button type="button" className={styles.headerBtn} title="실제로 보내지 않고 상대·채팅방만 확인" onClick={() => submit(true)}>
                                 <FlaskConical size={15} /> 전송 테스트
                             </button>
+                            {roomSyncOpen && (
+                                <div className={styles.syncPop}>
+                                    <b>대화 동기화</b>
+                                    <p>선택한 날짜부터 지금까지, 폰 대화방에 있고 웹에 없는 대화만 가져옵니다. 읽는 동안 폰을 만지지 마세요.</p>
+                                    <div className={styles.presetRow}>
+                                        {[[0, '오늘'], [1, '어제'], [3, '3일'], [7, '7일'], [30, '30일']].map(([d, label]) => (
+                                            <button key={label} type="button" className={roomSince === isoDay(d) ? styles.presetOn : ''} onClick={() => setRoomSince(isoDay(d))}>{label}</button>
+                                        ))}
+                                    </div>
+                                    <input type="date" value={roomSince} max={isoDay(0)} onChange={(e) => setRoomSince(e.target.value)} />
+                                    <div className={styles.popBtns}>
+                                        <button type="button" className={styles.btn} onClick={() => setRoomSyncOpen(false)}>닫기</button>
+                                        <button type="button" className={styles.btnYellow} disabled={!roomSince || anySyncing} onClick={syncRoom}>
+                                            {roomSince ? `${roomSince}부터 동기화` : '날짜를 선택하세요'}
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                         </header>
 
                         {!connected && (

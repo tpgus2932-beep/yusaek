@@ -881,3 +881,82 @@
     border-right-color: #fff;
     border-top-width: 8px;
 }
+
+/* 방별 대화 동기화 팝오버 */
+.chatHeader {
+    position: relative;
+}
+
+.headerBtn:disabled {
+    opacity: 0.55;
+    cursor: wait;
+}
+
+.syncPop {
+    position: absolute;
+    top: 100%;
+    right: 14px;
+    z-index: 6;
+    width: 280px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    font-size: 12.5px;
+}
+
+.syncPop b {
+    font-size: 13.5px;
+}
+
+.syncPop p {
+    margin: 0;
+    color: var(--kk-sub);
+    font-size: 11.5px;
+    line-height: 1.5;
+}
+
+.syncPop input[type='date'] {
+    height: 34px;
+    padding: 0 10px;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+}
+
+.presetRow {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+.presetRow button {
+    padding: 4px 10px;
+    border: 1px solid #e3e3e3;
+    border-radius: 12px;
+    background: #fff;
+    color: #555;
+    font-size: 11.5px;
+    cursor: pointer;
+}
+
+.presetRow .presetOn {
+    border-color: transparent;
+    background: var(--kk-yellow);
+    color: #3c1e1e;
+    font-weight: 700;
+}
+
+.popBtns {
+    display: flex;
+    gap: 6px;
+}
+
+.popBtns .btnYellow {
+    flex: 1;
+}

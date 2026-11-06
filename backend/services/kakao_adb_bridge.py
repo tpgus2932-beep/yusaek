@@ -475,7 +475,7 @@ class Adb:
         data['host_ms']=round((time.monotonic()-started)*1000)
         return data
 
-    def send_fast(self,room,text,dry_run=False,hold=False):
+    def send_fast(self,room,text,dry_run=False,hold=False,tail=None):
         if not self.accessibility_enabled():raise Blocked('accessibility_disabled')
         locator=room.get('locator') or {}
         if locator.get('kind')!='friend':raise Blocked('locator_unsupported')
@@ -486,12 +486,15 @@ class Adb:
         fingerprint=locator.get('fingerprint','') if locator.get('source')=='on_device' else ''
         # store = HOLD key so the executor can reuse the room for same-store sends.
         payload={'action':'send','name':room['name'],'store':room.get('store',''),'fingerprint':fingerprint,'text':text,'dry_run':bool(dry_run),'hold':bool(hold)}
+        if tail is not None:payload['tail']=tail  # 웹 대화의 끝부분 — 폰 방과 어긋나면 입력 전에 멈춘다
         data=self.fast_broadcast(payload)
         # Only mark send_attempted when the on-device executor actually tapped
         # send. Pre-send failures (navigation, identity, chat not open) leave it
         # False so the worker can safely fall back to the slow path without any
         # risk of a double send; a post-tap uncertain result stays needs_check.
         self.send_attempted=bool(data.get('send_attempted'))
+        if data.get('state')=='sync_needed':
+            return {'state':'sync_needed','recent':data.get('recent'),'stages':data.get('stages')}
         if data.get('state')!='verified':
             # Keep stages on the exception (see init_room_fast) — a real send failure (e.g. 장효재,
             # chat_open_unverified) with stages=null left "서버가 본다" blind on exactly the thing

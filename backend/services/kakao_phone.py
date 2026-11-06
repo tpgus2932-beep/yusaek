@@ -52,6 +52,12 @@ _MESSAGES = {
     "friends_home_unavailable": "카카오톡 친구 화면(상단 '친구' 칩)으로 이동하지 못했습니다. 폰 잠금을 풀어 주세요.",
     "friends_screen_changed": "친구 목록을 읽는 중 화면이 바뀌었습니다. 폰을 만지지 말고 다시 시도하세요.",
     "friends_scan_expired": "친구 목록 읽기가 중단되었습니다. 다시 시도하세요.",
+    "history_since_invalid": "동기화할 날짜 형식이 올바르지 않습니다.",
+    "history_scan_gap": "대화를 위로 넘기다 일부를 건너뛰어 끝까지 읽지 못했습니다. 다시 시도하세요.",
+    "history_scan_limit": "대화가 너무 길어 끝까지 읽지 못했습니다. 날짜를 가깝게 지정하세요.",
+    "history_scan_expired": "대화 읽기가 중단되었습니다. 다시 시도하세요.",
+    "history_failed": "대화를 읽지 못했습니다.",
+    "not_in_room": "카카오톡 채팅방에 들어가지 못했습니다.",
     "friends_sort_unavailable": "친구 목록 정렬(친구추가순)을 바꾸지 못했습니다. 폰을 만지지 말고 다시 시도하세요.",
     "friends_scan_gap": "스크롤이 친구 목록을 건너뛰어 끝까지 읽지 못했습니다. 다시 시도하세요.",
     "friends_scan_limit": "친구 목록이 너무 길어 끝까지 읽지 못했습니다.",
@@ -184,7 +190,40 @@ def read_recent_friends(config: dict, known: set, stop_after: int = 10) -> tuple
     return names, expected, complete
 
 
-def send(config: dict, name: str, text: str, dry_run: bool = False) -> dict:
+def read_room_history(config: dict, name: str, since: str) -> tuple[list[dict], int]:
+    """1:1 채팅방을 위로 스크롤하며 since(YYYY-MM-DD)부터 현재까지의 말풍선을 읽는다(읽기 전용).
+
+    반환: ([{side:'me'|'them', text, date}], 읽은 화면 수). 아무것도 입력·전송하지 않는다.
+    """
+    if not config.get("serial") or not config.get("hardware_id") or not config.get("account"):
+        raise Blocked("device_not_bound")
+    device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
+    device.connect_transport()
+    if not device.accessibility_enabled():
+        raise Blocked("accessibility_disabled")
+    cursor = ""
+    try:
+        for _ in range(120):
+            payload = {"action": "room_history", "name": name, "since": since}
+            if cursor:
+                payload["cursor"] = cursor
+            data = device.fast_broadcast(payload, timeout=60)
+            state = data.get("state")
+            if state == "verified":
+                return list(data.get("messages") or []), int(data.get("pages") or 0)
+            if state != "partial" or not isinstance(data.get("cursor"), str) or not data["cursor"]:
+                raise Blocked(data.get("error") or "history_failed")
+            cursor = data["cursor"]
+        raise Blocked("history_scan_limit")
+    finally:
+        try:
+            device.fast_broadcast({"action": "finish_send", "hold": True})  # 방에서 나온다(화면은 잠그지 않음)
+        except Exception:
+            pass
+        device.restore_keyboard()
+
+
+def send(config: dict, name: str, text: str, dry_run: bool = False, tail=None) -> dict:
     """친구 이름으로 1:1 채팅방에 텍스트를 보낸다. config: serial/hardware_id/account."""
     if not config.get("serial") or not config.get("hardware_id") or not config.get("account"):
         raise Blocked("device_not_bound")
@@ -197,7 +236,7 @@ def send(config: dict, name: str, text: str, dry_run: bool = False) -> dict:
         # 채팅방 재진입/스크롤 없이 한 번에: 친구 → 1:1 채팅 → 입력 → 전송. 제목은 폰에서 확인한다.
         room = {"name": name, "locator": {"kind": "friend"}}
         # hold=True: 방에서 나오되 화면은 잠그지 않는다.
-        return device.send_fast(room, text, dry_run=dry_run, hold=True)
+        return device.send_fast(room, text, dry_run=dry_run, hold=True, tail=tail)
     except Exception as exc:
         if device.send_attempted:
             raise SendUncertain("전송 결과 불확실") from exc
