@@ -245,6 +245,42 @@ const KakaoTalkPage = () => {
         }
     };
 
+    const syncing = !!status?.sync?.running;
+    const wasSyncing = useRef(false);
+
+    const syncFriends = async () => {
+        try {
+            await call('/contacts/sync', { method: 'POST' });
+            showNotice('휴대폰에서 친구 목록을 읽는 중입니다. 끝날 때까지 폰을 만지지 마세요.');
+            loadStatus();
+        } catch (err) {
+            showNotice(err.message);
+        }
+    };
+
+    // 동기화가 끝나는 순간 결과를 알리고 목록을 새로 읽는다. 진행 중에는 상태를 더 자주 확인한다.
+    useEffect(() => {
+        if (syncing) {
+            wasSyncing.current = true;
+            const timer = window.setInterval(loadStatus, 1500);
+            return () => window.clearInterval(timer);
+        }
+        if (wasSyncing.current && status?.sync) {
+            wasSyncing.current = false;
+            const { result, error } = status.sync;
+            if (error) {
+                showNotice(`친구 동기화 실패: ${error}`);
+            } else if (result) {
+                const parts = [`친구 ${result.total}명을 읽었습니다`, `새로 ${result.added}명 추가`];
+                if (result.duplicates.length) parts.push(`동명이인 ${result.duplicates.length}명(전송 불가)`);
+                if (result.missingCount) parts.push(`폰에 없는 기존 친구 ${result.missingCount}명(삭제하지 않음)`);
+                showNotice(parts.join(' · '));
+            }
+            loadContacts();
+        }
+        return undefined;
+    }, [syncing, status, loadStatus, loadContacts, showNotice]);
+
     const toggleQueue = async () => {
         try {
             await call('/queue', { method: 'POST', body: { paused: !status?.paused } });
@@ -413,7 +449,21 @@ const KakaoTalkPage = () => {
                         <p>폰의 카카오톡 친구 목록에 보이는 이름과 <b>정확히 같아야</b> 합니다.</p>
                     </div>
                 )}
-                {rail === 'friends' && <div className={styles.sectionLabel}>친구 {filtered.length}</div>}
+                {rail === 'friends' && (
+                    <div className={styles.sectionLabel}>
+                        <span>친구 {filtered.length}</span>
+                        <button
+                            type="button"
+                            className={styles.syncBtn}
+                            disabled={syncing}
+                            title="폰의 카카오톡 친구 목록을 읽어 옵니다. 읽는 동안 폰을 만지지 마세요."
+                            onClick={syncFriends}
+                        >
+                            <RefreshCw size={12} className={syncing ? styles.spin : ''} />
+                            {syncing ? '동기화 중…' : '폰에서 동기화'}
+                        </button>
+                    </div>
+                )}
                 <div className={styles.list}>
                     {rows.length === 0 && (
                         <div className={styles.empty}>

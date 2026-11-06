@@ -48,6 +48,16 @@ _MESSAGES = {
     "not_in_chat_input": "채팅 입력창을 찾지 못했습니다.",
     "input_set_failed": "메시지 입력에 실패했습니다.",
     "send_button_missing": "전송 버튼을 찾지 못해 보내지 않았습니다.",
+    "friends_tab_unavailable": "카카오톡 '친구' 탭으로 이동하지 못했습니다. 폰 잠금을 풀어 주세요.",
+    "friends_screen_changed": "친구 목록을 읽는 중 화면이 바뀌었습니다. 폰을 만지지 말고 다시 시도하세요.",
+    "friends_scan_expired": "친구 목록 읽기가 중단되었습니다. 다시 시도하세요.",
+    "friends_scan_limit": "친구 목록이 너무 길어 끝까지 읽지 못했습니다.",
+    "friends_top_unavailable": "친구 목록의 맨 위로 이동하지 못했습니다.",
+    "friends_window_unavailable": "카카오톡 화면을 읽지 못했습니다. 폰 잠금을 풀어 주세요.",
+    "friend_count_changed": "친구 목록을 읽는 도중 친구 수가 바뀌었습니다. 다시 시도하세요.",
+    "friend_count_mismatch": "읽은 친구 수가 카카오톡에 표시된 친구 수와 달라 가져오지 않았습니다.",
+    "friend_onboarding_incomplete": "친구 목록을 끝까지 읽지 못했습니다.",
+    "friend_onboarding_invalid": "친구 목록 형식이 올바르지 않습니다.",
     "executor_busy": "폰이 다른 작업을 처리 중입니다.",
     "executor_no_result": "폰에서 응답이 없습니다.",
     "payload_invalid": "폰으로 보낸 요청이 올바르지 않습니다.",
@@ -68,7 +78,11 @@ def adb_path() -> str:
 
 def describe_error(code: str) -> str:
     code = str(code or "")
-    return _MESSAGES.get(code, f"전송에 실패했습니다. ({code or 'unknown'})")
+    head, _, detail = code.partition(":")  # 예: friend_count_mismatch:12/15
+    text = _MESSAGES.get(head)
+    if text is None:
+        return f"전송에 실패했습니다. ({code or 'unknown'})"
+    return f"{text} ({detail})" if detail else text
 
 
 def error_code(exc: Exception) -> str:
@@ -100,6 +114,20 @@ def bind(serial: str = "") -> dict:
     device.connect_transport()
     account = device.account_fast()
     return {"serial": device.serial, "hardware_id": device.verified_hardware, "account": account}
+
+
+def read_friends(config: dict) -> list[str]:
+    """카카오톡 '친구' 탭을 끝까지 스크롤해 친구 이름 전체를 읽는다.
+
+    폰 앱이 읽은 개수와 화면의 '친구 N' 숫자가 같을 때만 성공으로 돌려준다.
+    같은 이름이 둘 이상이면 목록에도 그대로 중복으로 들어 있다.
+    """
+    if not config.get("serial") or not config.get("hardware_id") or not config.get("account"):
+        raise Blocked("device_not_bound")
+    device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
+    device.connect_transport()
+    data = device.onboard_fast()
+    return [str(e["name"]).strip() for e in data["entries"] if str(e.get("name") or "").strip()]
 
 
 def send(config: dict, name: str, text: str, dry_run: bool = False) -> dict:

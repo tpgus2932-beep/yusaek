@@ -18,7 +18,8 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
     router = APIRouter(prefix="/kakao")
     init_kakao_tables(get_db)
 
-    state = {"paused": False, "pause_reason": "", "busy": False, "thread": None}
+    state = {"paused": False, "pause_reason": "", "busy": False, "thread": None, "syncing": False}
+    sync = {"running": False, "startedAt": "", "finishedAt": "", "result": None, "error": ""}
     wake = threading.Event()
     start_lock = threading.Lock()
     phone_lock = threading.Lock()  # 폰은 한 번에 하나의 작업만
@@ -104,7 +105,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         while True:
             wake.wait(timeout=3)
             wake.clear()
-            while not state["paused"]:
+            while not state["paused"] and not state["syncing"]:
                 job = _claim_next()
                 if not job:
                     break
@@ -148,6 +149,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             "paused": state["paused"],
             "pauseReason": state["pause_reason"],
             "busy": state["busy"],
+            "sync": dict(sync),
             "queued": counts.get("queued", 0),
             "sending": counts.get("sending", 0),
             "needsCheck": counts.get("needs_check", 0),
@@ -236,6 +238,75 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             return {"ok": True, "id": cur.lastrowid}
         finally:
             conn.close()
+
+    def _apply_friends(names: list[str]) -> dict:
+        """폰에서 읽은 이름을 목록에 반영한다. 새 친구만 추가하고, 기존 친구·대화 기록은 지우지 않는다."""
+        counts: dict[str, int] = {}
+        for name in names:
+            counts[name] = counts.get(name, 0) + 1
+        conn = get_db()
+        try:
+            existing = {r["name"]: r for r in conn.execute("SELECT id, name, memo FROM kakao_contacts").fetchall()}
+            added = 0
+            for name, n in counts.items():
+                note = f"동명이인 {n}명 · 전송 불가" if n > 1 else ""
+                row = existing.get(name)
+                if row is None:
+                    conn.execute(
+                        "INSERT INTO kakao_contacts (name, memo, created_by, created_at) VALUES (?, ?, 'sync', ?)",
+                        (name[:_MAX_NAME], note, now_iso()),
+                    )
+                    added += 1
+                elif note and not row["memo"]:
+                    conn.execute("UPDATE kakao_contacts SET memo = ? WHERE id = ?", (note, row["id"]))
+            missing = sorted(n for n in existing if n not in counts)
+            conn.commit()
+        finally:
+            conn.close()
+        return {
+            "total": len(names),
+            "unique": len(counts),
+            "added": added,
+            "duplicates": sorted(n for n, c in counts.items() if c > 1),
+            "missing": missing[:20],
+            "missingCount": len(missing),
+        }
+
+    def _run_sync() -> None:
+        try:
+            # 전송 중인 작업이 끝날 때까지 기다린 뒤, 동기화 중에는 새 전송을 시작하지 않는다.
+            if not phone_lock.acquire(timeout=180):
+                raise RuntimeError("busy")
+            try:
+                names = kakao_phone.read_friends(_device_config())
+            finally:
+                phone_lock.release()
+            sync["result"] = _apply_friends(names)
+            sync["error"] = ""
+        except RuntimeError:
+            sync["result"] = None
+            sync["error"] = "폰이 다른 작업을 처리 중입니다. 잠시 후 다시 시도하세요."
+        except Exception as exc:  # noqa: BLE001
+            sync["result"] = None
+            sync["error"] = kakao_phone.describe_error(kakao_phone.error_code(exc))
+        finally:
+            sync["running"] = False
+            sync["finishedAt"] = now_iso()
+            state["syncing"] = False
+            wake.set()
+
+    @router.post("/contacts/sync")
+    def sync_contacts(user: str = Depends(get_current_user)):
+        config = _device_config()
+        if not (config["serial"] and config["hardware_id"] and config["account"]):
+            raise HTTPException(status_code=400, detail=kakao_phone.describe_error("device_not_bound"))
+        with start_lock:
+            if sync["running"]:
+                raise HTTPException(status_code=409, detail="이미 친구 목록을 동기화하고 있습니다.")
+            sync.update(running=True, startedAt=now_iso(), finishedAt="", result=None, error="")
+            state["syncing"] = True
+        threading.Thread(target=_run_sync, name="kakao-friend-sync", daemon=True).start()
+        return {"ok": True, "started": True}
 
     @router.delete("/contacts/{contact_id}")
     def delete_contact(contact_id: int, user: str = Depends(get_current_user)):
