@@ -27,6 +27,7 @@ _MEDIA_DIR = pathlib.Path(__file__).resolve().parent.parent / "kakao_media"
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _MAX_IMAGES = 10
 _MAX_BULK_RECIPIENTS = 500
+_MAX_LIST_NAME = 30
 _QUEUE_ORDER = "CASE WHEN batch_id IS NULL THEN 0 ELSE 1 END, id"  # 일반 메시지가 일괄 전송보다 먼저 나간다
 _BATCH_GRACE_SEC = 0.0  # 같은 사람에게 연달아 오는 요청이 한 묶음이 되도록 큐가 잠깐 기다리는 시간
 
@@ -950,6 +951,9 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         except (TypeError, ValueError):
             interval = 5
         request_id = str(payload.get("request_id") or "").strip()[:64] or None
+        list_name = re.sub(r"\s+", " ", str(payload.get("list_name") or "")).strip()
+        if len(list_name) > _MAX_LIST_NAME:
+            raise HTTPException(status_code=400, detail=f"리스트 이름은 {_MAX_LIST_NAME}자까지 입력할 수 있습니다.")
         conn = get_db()
         try:
             for mid in media_ids:
@@ -969,9 +973,20 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             if not targets:
                 raise HTTPException(status_code=400, detail="선택한 친구를 찾을 수 없습니다.")
             stamp = now_iso()
+            list_id = None
+            list_created = False
+            if list_name:
+                row = conn.execute("SELECT id FROM kakao_lists WHERE name = ?", (list_name,)).fetchone()
+                if row:
+                    list_id = row["id"]
+                else:
+                    list_id = conn.execute("INSERT INTO kakao_lists (name, created_by, created_at) VALUES (?, ?, ?)", (list_name, user, stamp)).lastrowid
+                    list_created = True
+                for cid, _name in targets:
+                    conn.execute("INSERT OR IGNORE INTO kakao_list_members (list_id, contact_id, added_at) VALUES (?, ?, ?)", (list_id, cid, stamp))
             cur = conn.execute(
-                "INSERT INTO kakao_batches (text, media_ids, interval_sec, total, request_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (text, ",".join(media_ids), interval, len(targets), request_id, user, stamp),
+                "INSERT INTO kakao_batches (text, media_ids, interval_sec, total, request_id, created_by, created_at, list_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (text, ",".join(media_ids), interval, len(targets), request_id, user, stamp, list_id),
             )
             batch_id = cur.lastrowid
             messages = 0
@@ -994,7 +1009,10 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         finally:
             conn.close()
         _ensure_worker()
-        return {"ok": True, "batchId": batch_id, "recipients": len(targets), "messages": messages, "skipped": len(ids) - len(targets)}
+        return {
+            "ok": True, "batchId": batch_id, "recipients": len(targets), "messages": messages, "skipped": len(ids) - len(targets),
+            "listId": list_id, "listName": list_name, "listCreated": list_created,
+        }
 
     def _batch_counts(conn, batch_ids: list) -> dict:
         counts: dict = {b: {} for b in batch_ids}
@@ -1011,7 +1029,9 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
     def list_bulk(user: str = Depends(get_current_user)):
         conn = get_db()
         try:
-            rows = conn.execute("SELECT * FROM kakao_batches ORDER BY id DESC LIMIT 20").fetchall()
+            rows = conn.execute(
+                "SELECT b.*, l.name AS list_name FROM kakao_batches b LEFT JOIN kakao_lists l ON l.id = b.list_id ORDER BY b.id DESC LIMIT 20"
+            ).fetchall()
             counts = _batch_counts(conn, [r["id"] for r in rows])
         finally:
             conn.close()
@@ -1023,6 +1043,8 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                     "text": r["text"],
                     "photos": len([m for m in r["media_ids"].split(",") if m]),
                     "recipients": r["total"],
+                    "listId": r["list_id"],
+                    "listName": r["list_name"] or "",
                     "intervalSec": r["interval_sec"],
                     "createdBy": r["created_by"],
                     "createdByDisplay": get_user_display(r["created_by"]) or r["created_by"],
@@ -1055,6 +1077,50 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                 for r in items
             ],
         }
+
+    # ---- 리스트: 일괄 전송 때 묶어 둔 받는 사람 모음 ------------------------------
+    @router.get("/lists")
+    def list_lists(user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT l.id, l.name, l.created_at, "
+                "(SELECT COUNT(*) FROM kakao_list_members m WHERE m.list_id = l.id) AS n "
+                "FROM kakao_lists l ORDER BY l.id DESC"
+            ).fetchall()
+        finally:
+            conn.close()
+        return {"ok": True, "lists": [{"id": r["id"], "name": r["name"], "count": r["n"], "createdAt": r["created_at"]} for r in rows]}
+
+    @router.get("/lists/{list_id}")
+    def get_list(list_id: int, user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT id, name FROM kakao_lists WHERE id = ?", (list_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="리스트를 찾을 수 없습니다.")
+            members = [r["contact_id"] for r in conn.execute(
+                "SELECT m.contact_id FROM kakao_list_members m JOIN kakao_contacts c ON c.id = m.contact_id WHERE m.list_id = ? ORDER BY c.name COLLATE NOCASE",
+                (list_id,),
+            ).fetchall()]
+        finally:
+            conn.close()
+        return {"ok": True, "id": row["id"], "name": row["name"], "contactIds": members}
+
+    @router.delete("/lists/{list_id}")
+    def delete_list(list_id: int, user: str = Depends(get_current_user)):
+        """리스트만 지운다. 친구와 대화 기록은 그대로다."""
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM kakao_list_members WHERE list_id = ?", (list_id,))
+            conn.execute("UPDATE kakao_batches SET list_id = NULL WHERE list_id = ?", (list_id,))
+            cur = conn.execute("DELETE FROM kakao_lists WHERE id = ?", (list_id,))
+            conn.commit()
+            if not cur.rowcount:
+                raise HTTPException(status_code=404, detail="리스트를 찾을 수 없습니다.")
+        finally:
+            conn.close()
+        return {"ok": True}
 
     @router.post("/bulk/{batch_id}/cancel")
     def cancel_bulk(batch_id: int, user: str = Depends(get_current_user)):
@@ -1100,6 +1166,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             if pending:
                 raise HTTPException(status_code=409, detail="대기 중이거나 확인이 필요한 메시지가 있어 삭제할 수 없습니다.")
             conn.execute("DELETE FROM kakao_messages WHERE contact_id = ?", (contact_id,))
+            conn.execute("DELETE FROM kakao_list_members WHERE contact_id = ?", (contact_id,))
             conn.execute("DELETE FROM kakao_contacts WHERE id = ?", (contact_id,))
             conn.commit()
             return {"ok": True}

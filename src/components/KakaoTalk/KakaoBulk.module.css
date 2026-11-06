@@ -7,6 +7,169 @@
     background: #f7f7f7;
 }
 
+/* 모달: 어두운 바깥 영역은 클릭해도 아무 일도 하지 않는다(닫기 버튼으로만 닫힘) */
+.overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    display: grid;
+    place-items: center;
+    background: rgba(0, 0, 0, 0.42);
+}
+
+.overlayInner {
+    z-index: 5;
+    border-radius: 16px;
+}
+
+.modal {
+    position: relative;
+    width: min(1040px, 94%);
+    height: min(740px, 92%);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-radius: 14px;
+    background: #fff;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+}
+
+.modalHead {
+    flex: none;
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    padding: 16px 20px;
+    background: var(--kk-yellow);
+    color: #3c1e1e;
+}
+
+.modalHead h2 {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 800;
+}
+
+.modalHead span {
+    flex: 1;
+    font-size: 12.5px;
+}
+
+.closeBtn {
+    align-self: center;
+    padding: 6px 16px;
+    border: none;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.75);
+    color: #3c1e1e;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.closeBtn:hover {
+    background: #fff;
+}
+
+.confirm {
+    width: min(460px, 92%);
+    padding: 20px;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
+}
+
+.confirm h3 {
+    margin: 0 0 8px;
+    font-size: 16px;
+}
+
+.confirmSummary {
+    margin: 0 0 10px;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #444;
+}
+
+.confirmPreview {
+    max-height: 90px;
+    overflow-y: auto;
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--kk-bg);
+    font-size: 12.5px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.confirmLabel {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.confirmLabel small {
+    font-weight: 400;
+    color: var(--kk-sub);
+}
+
+.confirmLabel input {
+    height: 36px;
+    padding: 0 10px;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    outline: none;
+    font-size: 13.5px;
+}
+
+.confirmLabel input:focus {
+    border-color: #e0c800;
+}
+
+.confirmHint {
+    margin: 8px 0 14px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--kk-sub);
+}
+
+.confirmBtns {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.confirmBtns .spacer {
+    flex: 1;
+}
+
+.confirmBtns .start {
+    min-width: 0;
+    height: 34px;
+    font-size: 13px;
+}
+
+.confirmBtns button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.listTag {
+    display: inline-block;
+    margin-right: 6px;
+    padding: 1px 8px;
+    border-radius: 9px;
+    background: var(--kk-yellow);
+    color: #3c1e1e;
+    font-size: 11px;
+    font-style: normal;
+    font-weight: 700;
+}
+
 .picker {
     width: 310px;
     flex: none;
@@ -22,6 +185,10 @@
     align-items: baseline;
     justify-content: space-between;
     padding: 22px 18px 10px;
+}
+
+.picker .searchBox {
+    margin-top: 14px;
 }
 
 .pickerHead h2 {

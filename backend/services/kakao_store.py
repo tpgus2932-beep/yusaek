@@ -74,6 +74,27 @@ def init_kakao_tables(get_db) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS kakao_lists (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            created_by TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kakao_list_members (
+            list_id INTEGER NOT NULL,
+            contact_id INTEGER NOT NULL,
+            added_at TEXT NOT NULL,
+            PRIMARY KEY (list_id, contact_id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_kakao_list_members_contact ON kakao_list_members(contact_id)")
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS kakao_batches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             text TEXT NOT NULL DEFAULT '',
@@ -86,6 +107,9 @@ def init_kakao_tables(get_db) -> None:
         )
         """
     )
+    bcols = {r["name"] for r in conn.execute("PRAGMA table_info(kakao_batches)").fetchall()}
+    if "list_id" not in bcols:
+        conn.execute("ALTER TABLE kakao_batches ADD COLUMN list_id INTEGER")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS kakao_media (

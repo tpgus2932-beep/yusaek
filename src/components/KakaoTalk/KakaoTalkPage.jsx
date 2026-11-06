@@ -98,6 +98,10 @@ const KakaoTalkPage = () => {
     const [serialInput, setSerialInput] = useState('');
     const [busy, setBusy] = useState(false);
     const [roomSyncOpen, setRoomSyncOpen] = useState(false);
+    const [bulkOpen, setBulkOpen] = useState(false);
+    const [lists, setLists] = useState([]);
+    const [activeListId, setActiveListId] = useState(null);
+    const [activeMembers, setActiveMembers] = useState(null); // Set<contact id> | null
     const [attachments, setAttachments] = useState([]); // {key, name, preview, id, error}
     const fileInput = useRef(null);
     const [roomSince, setRoomSince] = useState('');
@@ -126,6 +130,14 @@ const KakaoTalkPage = () => {
         }
     }, [showNotice]);
 
+    const loadLists = useCallback(async () => {
+        try {
+            setLists((await call('/lists')).lists || []);
+        } catch {
+            /* 다음 폴링에서 복구 */
+        }
+    }, []);
+
     const loadStatus = useCallback(async () => {
         try {
             setStatus(await call('/status'));
@@ -147,9 +159,27 @@ const KakaoTalkPage = () => {
     useEffect(() => {
         loadContacts();
         loadStatus();
-        const timer = window.setInterval(() => { loadContacts(); loadStatus(); }, STATUS_POLL_MS);
+        loadLists();
+        const timer = window.setInterval(() => { loadContacts(); loadStatus(); loadLists(); }, STATUS_POLL_MS);
         return () => window.clearInterval(timer);
-    }, [loadContacts, loadStatus]);
+    }, [loadContacts, loadStatus, loadLists]);
+
+    // 선택한 리스트의 구성원: 리스트를 고르고 있는 동안 주기적으로 새로 읽는다
+    useEffect(() => {
+        if (!activeListId) return undefined;
+        let alive = true;
+        const load = async () => {
+            try {
+                const data = await call(`/lists/${activeListId}`);
+                if (alive) setActiveMembers(new Set(data.contactIds || []));
+            } catch {
+                if (alive) { setActiveListId(null); setActiveMembers(null); }   // 지워진 리스트
+            }
+        };
+        load();
+        const timer = window.setInterval(load, STATUS_POLL_MS);
+        return () => { alive = false; window.clearInterval(timer); };
+    }, [activeListId]);
 
     useEffect(() => {
         setMessages([]);
@@ -502,6 +532,31 @@ const KakaoTalkPage = () => {
         }
     };
 
+    const pickList = (list) => {
+        if (activeListId === list.id) {
+            setActiveListId(null);
+            setActiveMembers(null);
+            return;
+        }
+        setActiveMembers(null);
+        setActiveListId(list.id);
+        setRail('chats');
+        setQuery('');
+        setSearchOpen(false);
+        setAdding(false);
+    };
+
+    const removeList = async (list) => {
+        if (!window.confirm(`'${list.name}' 리스트를 삭제할까요?\n친구와 대화 기록은 그대로 남습니다.`)) return;
+        try {
+            await call(`/lists/${list.id}`, { method: 'DELETE' });
+            if (activeListId === list.id) { setActiveListId(null); setActiveMembers(null); }
+            loadLists();
+        } catch (err) {
+            showNotice(err.message);
+        }
+    };
+
     const toggleQueue = async () => {
         try {
             await call('/queue', { method: 'POST', body: { paused: !status?.paused } });
@@ -665,13 +720,18 @@ const KakaoTalkPage = () => {
             );
         }
 
-        const rows = rail === 'chats' ? chatList : filtered;
+        const listActive = !!activeListId && !!activeMembers;
+        const activeList = lists.find((l) => l.id === activeListId);
+        // 리스트를 고르면 대화 기록 유무와 상관없이 그 리스트의 사람들을 모두 보여 준다
+        const rows = listActive ? filtered.filter((c) => activeMembers.has(c.id)) : (rail === 'chats' ? chatList : filtered);
+        const chatStyle = rail === 'chats' || listActive;
         return (
             <>
                 <div className={styles.panelHeader}>
                     <h2>{rail === 'friends' ? '친구' : '채팅'}</h2>
                     <div className={styles.panelIcons}>
                         <button type="button" title="검색" onClick={() => { setSearchOpen((v) => !v); setQuery(''); }}><Search size={18} /></button>
+                        <button type="button" title="일괄 전송" onClick={() => setBulkOpen(true)}><Send size={18} /></button>
                         <button type="button" title="친구 추가" onClick={() => setAdding((v) => !v)}><UserPlus size={18} /></button>
                     </div>
                 </div>
@@ -729,7 +789,13 @@ const KakaoTalkPage = () => {
                         </p>
                     </div>
                 )}
-                {rail === 'friends' && (
+                {activeListId && (
+                    <div className={styles.listBanner}>
+                        <span>리스트 · <b>{activeList?.name || '…'}</b> ({rows.length}명)</span>
+                        <button type="button" onClick={() => { setActiveListId(null); setActiveMembers(null); }}>전체 보기 <X size={12} /></button>
+                    </div>
+                )}
+                {rail === 'friends' && !activeListId && (
                     <div className={styles.sectionLabel}>
                         <span>친구 {filtered.length}</span>
                         <span className={styles.syncGroup}>
@@ -776,12 +842,12 @@ const KakaoTalkPage = () => {
                                     {c.name}
                                     {!c.inPhone && <span className={styles.gone}>폰에 없음</span>}
                                 </div>
-                                {rail === 'chats'
+                                {chatStyle
                                     ? <div className={styles.itemSub}>{c.lastText}</div>
                                     : c.memo && <div className={styles.itemSub}>{c.memo}</div>}
                             </div>
                             <div className={styles.itemSide}>
-                                {rail === 'chats' && <span className={styles.itemTime}>{listTime(c.lastAt)}</span>}
+                                {chatStyle && c.lastAt && <span className={styles.itemTime}>{listTime(c.lastAt)}</span>}
                                 {c.problemCount > 0 && <span className={styles.badge}>{c.problemCount}</span>}
                             </div>
                             <button
@@ -809,9 +875,6 @@ const KakaoTalkPage = () => {
                     <MessageCircle size={24} fill={rail === 'chats' ? 'currentColor' : 'none'} />
                     {status?.needsCheck > 0 && <i className={styles.railDot} />}
                 </button>
-                <button type="button" className={rail === 'bulk' ? styles.railActive : ''} title="일괄전송" onClick={() => setRail('bulk')}>
-                    <Send size={22} />
-                </button>
                 <span className={styles.railSpacer} />
                 <button type="button" className={rail === 'more' ? styles.railActive : ''} title="더보기" onClick={() => setRail('more')}>
                     <MoreHorizontal size={24} />
@@ -819,13 +882,6 @@ const KakaoTalkPage = () => {
                 </button>
             </nav>
 
-            {rail === 'bulk' ? (
-                <>
-                    <KakaoBulk contacts={contacts} connected={!!connected} onNotice={showNotice} />
-                    {notice && <div className={styles.toast}>{notice}</div>}
-                </>
-            ) : (
-                <>
             <section className={styles.panel}>{renderList()}</section>
 
             <section className={styles.chat}>
@@ -967,10 +1023,51 @@ const KakaoTalkPage = () => {
                         </footer>
                     </>
                 )}
-                {notice && <div className={styles.toast}>{notice}</div>}
             </section>
-                </>
+
+            {lists.length > 0 && (
+                <aside className={styles.listsCol}>
+                    <header className={styles.listsHead}>
+                        <b>리스트</b>
+                        <span>{lists.length}</span>
+                    </header>
+                    <div className={styles.listsBody}>
+                        {lists.map((l) => (
+                            <div
+                                key={l.id}
+                                role="button"
+                                tabIndex={0}
+                                className={`${styles.listItem} ${activeListId === l.id ? styles.listItemOn : ''}`}
+                                onClick={() => pickList(l)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') pickList(l); }}
+                            >
+                                <span className={styles.listName}>{l.name}</span>
+                                <span className={styles.listCount}>{l.count}명</span>
+                                <button
+                                    type="button"
+                                    className={styles.listDelete}
+                                    title="리스트 삭제(친구와 대화는 그대로)"
+                                    onClick={(e) => { e.stopPropagation(); removeList(l); }}
+                                >
+                                    <Trash2 size={13} />
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                </aside>
             )}
+
+            {bulkOpen && (
+                <KakaoBulk
+                    contacts={contacts}
+                    connected={!!connected}
+                    lists={lists}
+                    onNotice={showNotice}
+                    onClose={() => setBulkOpen(false)}
+                    onListsChanged={loadLists}
+                />
+            )}
+            {notice && <div className={styles.toast}>{notice}</div>}
         </div>
     );
 };
