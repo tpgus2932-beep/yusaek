@@ -35,6 +35,7 @@ _MESSAGES = {
     "device_missing_or_ambiguous": "승인된 휴대폰이 없거나 여러 대입니다. 한 대만 연결하거나 기기번호를 입력하세요.",
     "empty_message": "친구 이름과 메시지를 입력하세요.",
     "group_room_unavailable": "단톡방을 검색 결과에서 정확히 하나로 찾지 못했습니다. (같은 이름의 방이 여러 개이거나 검색에 나오지 않음)",
+    "rename_room_not_found": "폰의 채팅 목록에서 그 단톡방을 찾지 못했습니다.",
     "PROFILE_NOT_FOUND": "카카오톡 친구 목록에서 정확히 같은 이름을 찾지 못했습니다.",
     "PROFILE_AMBIGUOUS": "같은 이름의 친구가 여러 명이라 보내지 않았습니다.",
     "target_not_found": "카카오톡 친구 목록에서 정확히 같은 이름을 찾지 못했습니다.",
@@ -240,6 +241,19 @@ def rename_friend(config: dict, old: str, new: str, dry_run: bool = False) -> di
     device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
     device.connect_transport()
     return device.rename_friend_fast(old, new, dry_run=dry_run)
+
+
+def rename_room(config: dict, old: str, new: str, dry_run: bool = False) -> dict:
+    """폰의 카카오톡에서 단톡방 이름을 바꾼다: 채팅 목록에서 방을 길게 누름 → 채팅방 정보 설정 → 이름 → 확인.
+    내 폰에서만 보이는 이름이다. 저장 뒤 새 이름으로 방을 찾을 수 없으면 rename_unverified(자동 재시도 없음)."""
+    if not config.get("serial") or not config.get("hardware_id") or not config.get("account"):
+        raise Blocked("device_not_bound")
+    old, new = (old or "").strip(), (new or "").strip()
+    if not old or not new or len(new) > 50 or old == new:
+        raise Blocked("rename_input_invalid")
+    device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
+    _connect(device, config["serial"])
+    return device.rename_room_fast(old, new, dry_run=dry_run)
 
 
 def read_chat_list(config: dict, should_stop, max_calls: int = 40) -> list:

@@ -254,11 +254,27 @@
 }
 
 .itemName {
+    display: flex;
+    align-items: center;
+    min-width: 0;
     font-size: 14px;
     font-weight: 600;
     white-space: nowrap;
     overflow: hidden;
+}
+
+.itemNameText {
+    min-width: 0;
+    overflow: hidden;
     text-overflow: ellipsis;
+}
+
+/* 이름이 길어도 배지는 잘리지 않는다 */
+.itemName .newBadge,
+.itemName .groupBadge,
+.itemName .gone {
+    flex: none;
+    white-space: nowrap;
 }
 
 .itemSub {

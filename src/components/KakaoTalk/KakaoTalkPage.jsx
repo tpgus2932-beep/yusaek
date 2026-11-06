@@ -908,7 +908,7 @@ const KakaoTalkPage = () => {
                             <Avatar name={c.name} />
                             <div className={styles.itemBody}>
                                 <div className={styles.itemName}>
-                                    {c.name}
+                                    <span className={styles.itemNameText}>{c.name}</span>
                                     {c.isNew && <span className={styles.newBadge}>신규</span>}
                                     {c.kind === 'group' && <span className={styles.groupBadge}>단톡</span>}
                                     {!c.inPhone && <span className={styles.gone}>폰에 없음</span>}
@@ -969,17 +969,15 @@ const KakaoTalkPage = () => {
                                 <b>{selected.name}</b>
                                 <span>{isGroup ? '단톡방 · 대화 읽기만 가능' : (selected.memo || '나와의 1:1 채팅')}</span>
                             </div>
-                            {!isGroup && (
-                                <button
-                                    type="button"
-                                    className={styles.headerBtn}
-                                    disabled={anySyncing || addingFriend}
-                                    title="폰의 카카오톡에서 이 친구의 이름을 바꿉니다(내 폰에서만 보이는 이름)."
-                                    onClick={() => { setRenameValue(selected.name); setRenameOpen((v) => !v); setRoomSyncOpen(false); }}
-                                >
-                                    <Pencil size={14} /> 이름 변경
-                                </button>
-                            )}
+                            <button
+                                type="button"
+                                className={styles.headerBtn}
+                                disabled={anySyncing || addingFriend}
+                                title={isGroup ? '폰의 카카오톡에서 이 단톡방의 이름을 바꿉니다(내 폰에서만 보이는 이름).' : '폰의 카카오톡에서 이 친구의 이름을 바꿉니다(내 폰에서만 보이는 이름).'}
+                                onClick={() => { setRenameValue(selected.name); setRenameOpen((v) => !v); setRoomSyncOpen(false); }}
+                            >
+                                <Pencil size={14} /> 이름 변경
+                            </button>
                             <button
                                 type="button"
                                 className={styles.headerBtn}
@@ -995,12 +993,14 @@ const KakaoTalkPage = () => {
                             </button>
                             {renameOpen && (
                                 <div className={styles.syncPop}>
-                                    <b>친구 이름 변경</b>
-                                    <p>폰의 카카오톡 &gt; 친구 설정에서 이 친구의 이름을 바꿉니다. 내 폰에서만 보이는 이름이며 상대 계정은 바뀌지 않습니다. 대화 기록은 그대로 유지됩니다.</p>
+                                    <b>{isGroup ? '단톡방 이름 변경' : '친구 이름 변경'}</b>
+                                    {isGroup
+                                        ? <p>폰의 카카오톡 채팅 목록에서 이 단톡방을 길게 눌러 “채팅방 정보 설정”으로 이름을 바꿉니다. 내 폰에서만 보이는 이름이며 다른 참여자에게는 바뀌지 않습니다. 대화 기록은 그대로 유지됩니다. 채팅 목록에서 방을 찾느라 20초쯤 걸립니다.</p>
+                                        : <p>폰의 카카오톡 &gt; 친구 설정에서 이 친구의 이름을 바꿉니다. 내 폰에서만 보이는 이름이며 상대 계정은 바뀌지 않습니다. 대화 기록은 그대로 유지됩니다.</p>}
                                     <input
                                         autoFocus
                                         className={styles.fullInput}
-                                        maxLength={20}
+                                        maxLength={isGroup ? 50 : 20}
                                         value={renameValue}
                                         onChange={(e) => setRenameValue(e.target.value)}
                                         onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) startRename(); }}

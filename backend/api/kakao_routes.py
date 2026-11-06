@@ -946,17 +946,23 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         _ensure_worker()
         return {"ok": True, "message": message}
 
-    def _run_rename(contact_id: int, old: str, new: str) -> None:
+    def _run_rename(contact_id: int, old: str, new: str, group: bool = False) -> None:
         try:
             if not phone_lock.acquire(timeout=180):
                 raise RuntimeError("busy")
             try:
-                kakao_phone.rename_friend(_device_config(), old, new)
+                if group:
+                    kakao_phone.rename_room(_device_config(), old, new)
+                else:
+                    kakao_phone.rename_friend(_device_config(), old, new)
             finally:
                 phone_lock.release()
             conn = get_db()
             try:
                 conn.execute("UPDATE kakao_contacts SET name = ?, in_phone = 1, synced_at = ? WHERE id = ?", (new, now_iso(), contact_id))
+                # 최신화가 이름을 열쇠로 삼는 마지막 메시지 기록도 새 이름으로 옮겨, 이름만 바뀐 방을 새 방으로 보지 않게 한다
+                if not conn.execute("SELECT 1 FROM kakao_room_snapshot WHERE name = ?", (new,)).fetchone():
+                    conn.execute("UPDATE kakao_room_snapshot SET name = ? WHERE name = ?", (new, old))
                 conn.commit()
             finally:
                 conn.close()
@@ -978,14 +984,16 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
     def rename_contact(contact_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
         """폰의 카카오톡 친구 이름을 바꾸고 목록 이름도 같이 바꾼다. 대화 기록은 그대로 따라간다."""
         new = str((payload or {}).get("new_name") or "").strip()
-        if not new or len(new) > 20:
-            raise HTTPException(status_code=400, detail="새 이름을 20자 이내로 입력하세요.")
         config = _device_config()
         if not (config["serial"] and config["hardware_id"] and config["account"]):
             raise HTTPException(status_code=400, detail=kakao_phone.describe_error("device_not_bound"))
         conn = get_db()
         try:
-            old = _contact_or_404(conn, contact_id)["name"]
+            found = _contact_or_404(conn, contact_id)
+            old, is_group = found["name"], found["kind"] == "group"
+            limit = 50 if is_group else 20
+            if not new or len(new) > limit:
+                raise HTTPException(status_code=400, detail=f"새 이름을 {limit}자 이내로 입력하세요.")
             if new == old:
                 raise HTTPException(status_code=400, detail="현재 이름과 같습니다.")
             if conn.execute("SELECT 1 FROM kakao_contacts WHERE name = ? AND id <> ?", (new, contact_id)).fetchone():
@@ -1002,7 +1010,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                 raise HTTPException(status_code=409, detail="이미 동기화 또는 폰 작업이 진행 중입니다.")
             add_friend.update(running=True, name=new, startedAt=now_iso(), finishedAt="", result=None, error="")
             state["syncing"] = True
-        threading.Thread(target=_run_rename, args=(contact_id, old, new), name="kakao-rename", daemon=True).start()
+        threading.Thread(target=_run_rename, args=(contact_id, old, new, is_group), name="kakao-rename", daemon=True).start()
         return {"ok": True, "started": True}
 
     @router.post("/bulk")
