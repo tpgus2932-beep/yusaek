@@ -26,6 +26,8 @@ _MAX_NAME = 60
 _MEDIA_DIR = pathlib.Path(__file__).resolve().parent.parent / "kakao_media"
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _MAX_IMAGES = 10
+_MAX_BULK_RECIPIENTS = 500
+_QUEUE_ORDER = "CASE WHEN batch_id IS NULL THEN 0 ELSE 1 END, id"  # 일반 메시지가 일괄 전송보다 먼저 나간다
 _BATCH_GRACE_SEC = 1.2  # 같은 사람에게 연달아 오는 요청이 한 묶음이 되도록 큐가 잠깐 기다리는 시간
 
 
@@ -98,6 +100,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             "origin": row["origin"],
             "timeKnown": bool(row["time_known"]),
             "kind": row["kind"],
+            "batchId": row["batch_id"],
             "mediaIds": [m for m in (row["media_ids"] or "").split(",") if m],
             "requestedBy": row["requested_by"],
             "requestedByDisplay": get_user_display(row["requested_by"]) or row["requested_by"],
@@ -117,8 +120,9 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
     def _claim_next():
         conn = get_db()
         row = conn.execute(
-            "SELECT m.id, m.contact_id, m.created_at, m.text, m.dry_run, m.kind, m.media_ids, c.name FROM kakao_messages m "
-            "JOIN kakao_contacts c ON c.id = m.contact_id WHERE m.status = 'queued' ORDER BY m.id ASC LIMIT 1"
+            "SELECT m.id, m.contact_id, m.created_at, m.text, m.dry_run, m.kind, m.media_ids, m.batch_id, b.interval_sec, c.name "
+            "FROM kakao_messages m JOIN kakao_contacts c ON c.id = m.contact_id LEFT JOIN kakao_batches b ON b.id = m.batch_id "
+            "WHERE m.status = 'queued' ORDER BY CASE WHEN m.batch_id IS NULL THEN 0 ELSE 1 END, m.id ASC LIMIT 1"
         ).fetchone()
         if not row:
             conn.close()
@@ -224,7 +228,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         conn = get_db()
         try:
             row = conn.execute(
-                "SELECT contact_id, dry_run FROM kakao_messages WHERE status = 'queued' AND id > ? ORDER BY id ASC LIMIT 1",
+                f"SELECT contact_id, dry_run FROM kakao_messages WHERE status = 'queued' AND id <> ? ORDER BY {_QUEUE_ORDER} LIMIT 1",
                 (job["id"],),
             ).fetchone()
         finally:
@@ -267,6 +271,23 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             if code in kakao_phone.FATAL_ERRORS:
                 _pause(kakao_phone.describe_error(code))
 
+    def _bulk_pause(job: dict) -> None:
+        """일괄 전송의 사람 사이 간격. 일반 메시지가 기다리거나 큐가 멈추면 바로 끝낸다."""
+        if not job.get("batch_id"):
+            return
+        wait = float(job.get("interval_sec") or 0)
+        end = time.time() + wait
+        while time.time() < end and not state["paused"]:
+            conn = get_db()
+            try:
+                more = conn.execute("SELECT 1 FROM kakao_messages WHERE status = 'queued' LIMIT 1").fetchone()
+                normal = conn.execute("SELECT 1 FROM kakao_messages WHERE status = 'queued' AND batch_id IS NULL LIMIT 1").fetchone()
+            finally:
+                conn.close()
+            if not more or normal:
+                return
+            time.sleep(0.25)
+
     def _worker() -> None:
         while True:
             wake.wait(timeout=3)
@@ -285,6 +306,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                     if 0 <= age < _BATCH_GRACE_SEC:
                         time.sleep(_BATCH_GRACE_SEC - age)
                     _process(job)
+                    _bulk_pause(job)
                 finally:
                     state["busy"] = False
 
@@ -371,9 +393,9 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         rows = conn.execute(
             """
             SELECT c.*,
-              (SELECT text FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_text,
-              (SELECT created_at FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_at,
-              (SELECT status FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_status,
+              (SELECT text FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 AND m.status <> 'cancelled' ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_text,
+              (SELECT created_at FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 AND m.status <> 'cancelled' ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_at,
+              (SELECT status FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 AND m.status <> 'cancelled' ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_status,
               (SELECT COUNT(*) FROM kakao_messages m WHERE m.contact_id = c.id AND m.status IN ('failed','needs_check')) AS problem_count
             FROM kakao_contacts c ORDER BY c.name COLLATE NOCASE ASC
             """
@@ -883,6 +905,175 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         threading.Thread(target=_run_rename, args=(contact_id, old, new), name="kakao-rename", daemon=True).start()
         return {"ok": True, "started": True}
 
+    @router.post("/bulk")
+    def create_bulk(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """여러 친구에게 같은 메시지(와 사진)를 차례로 보낸다. 사람마다 메시지 하나씩 큐에 쌓는다.
+        글에 {이름}이 있으면 받는 사람 이름으로 바뀐다."""
+        raw_ids = payload.get("contact_ids") or []
+        ids, seen = [], set()
+        for value in raw_ids:
+            try:
+                cid = int(value)
+            except (TypeError, ValueError):
+                continue
+            if cid not in seen:
+                seen.add(cid)
+                ids.append(cid)
+        if not ids:
+            raise HTTPException(status_code=400, detail="받는 사람을 선택하세요.")
+        if len(ids) > _MAX_BULK_RECIPIENTS:
+            raise HTTPException(status_code=400, detail=f"한 번에 {_MAX_BULK_RECIPIENTS}명까지 보낼 수 있습니다.")
+        text = str(payload.get("text") or "").replace("\r\n", "\n").strip("\n")
+        if len(text) > _MAX_TEXT:
+            raise HTTPException(status_code=400, detail=f"메시지는 {_MAX_TEXT}자까지 보낼 수 있습니다.")
+        media_ids = [str(m) for m in (payload.get("media_ids") or [])]
+        if len(media_ids) > _MAX_IMAGES or len(set(media_ids)) != len(media_ids) or not all(re.fullmatch(r"[a-f0-9-]{36}", m) for m in media_ids):
+            raise HTTPException(status_code=400, detail=f"사진은 한 번에 1~{_MAX_IMAGES}장까지 보낼 수 있습니다.")
+        if not text.strip() and not media_ids:
+            raise HTTPException(status_code=400, detail="보낼 메시지나 사진을 입력하세요.")
+        try:
+            interval = max(0, min(120, int(payload.get("interval_sec", 5))))
+        except (TypeError, ValueError):
+            interval = 5
+        request_id = str(payload.get("request_id") or "").strip()[:64] or None
+        conn = get_db()
+        try:
+            for mid in media_ids:
+                if not conn.execute("SELECT 1 FROM kakao_media WHERE id = ?", (mid,)).fetchone():
+                    raise HTTPException(status_code=400, detail="업로드되지 않은 사진이 있습니다. 다시 선택하세요.")
+            if request_id:
+                existing = conn.execute("SELECT id, total FROM kakao_batches WHERE request_id = ?", (request_id,)).fetchone()
+                if existing:
+                    return {"ok": True, "batchId": existing["id"], "recipients": existing["total"], "duplicate": True}
+            found = {}
+            for start in range(0, len(ids), 200):
+                chunk = ids[start:start + 200]
+                marks = ",".join("?" * len(chunk))
+                for r in conn.execute(f"SELECT id, name FROM kakao_contacts WHERE id IN ({marks})", chunk).fetchall():
+                    found[r["id"]] = r["name"]
+            targets = [(cid, found[cid]) for cid in ids if cid in found]
+            if not targets:
+                raise HTTPException(status_code=400, detail="선택한 친구를 찾을 수 없습니다.")
+            stamp = now_iso()
+            cur = conn.execute(
+                "INSERT INTO kakao_batches (text, media_ids, interval_sec, total, request_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (text, ",".join(media_ids), interval, len(targets), request_id, user, stamp),
+            )
+            batch_id = cur.lastrowid
+            messages = 0
+            for cid, name in targets:
+                if media_ids:
+                    conn.execute(
+                        "INSERT INTO kakao_messages (contact_id, text, status, dry_run, requested_by, created_at, updated_at, kind, media_ids, batch_id) "
+                        "VALUES (?, '(사진)', 'queued', 0, ?, ?, ?, 'image', ?, ?)",
+                        (cid, user, stamp, stamp, ",".join(media_ids), batch_id),
+                    )
+                    messages += 1
+                if text.strip():
+                    conn.execute(
+                        "INSERT INTO kakao_messages (contact_id, text, status, dry_run, requested_by, created_at, updated_at, batch_id) "
+                        "VALUES (?, ?, 'queued', 0, ?, ?, ?, ?)",
+                        (cid, text.replace("{이름}", name), user, stamp, stamp, batch_id),
+                    )
+                    messages += 1
+            conn.commit()
+        finally:
+            conn.close()
+        _ensure_worker()
+        return {"ok": True, "batchId": batch_id, "recipients": len(targets), "messages": messages, "skipped": len(ids) - len(targets)}
+
+    def _batch_counts(conn, batch_ids: list) -> dict:
+        counts: dict = {b: {} for b in batch_ids}
+        if not batch_ids:
+            return counts
+        marks = ",".join("?" * len(batch_ids))
+        for r in conn.execute(
+            f"SELECT batch_id, status, COUNT(*) AS n FROM kakao_messages WHERE batch_id IN ({marks}) GROUP BY batch_id, status", batch_ids
+        ).fetchall():
+            counts[r["batch_id"]][r["status"]] = r["n"]
+        return counts
+
+    @router.get("/bulk")
+    def list_bulk(user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            rows = conn.execute("SELECT * FROM kakao_batches ORDER BY id DESC LIMIT 20").fetchall()
+            counts = _batch_counts(conn, [r["id"] for r in rows])
+        finally:
+            conn.close()
+        return {
+            "ok": True,
+            "batches": [
+                {
+                    "id": r["id"],
+                    "text": r["text"],
+                    "photos": len([m for m in r["media_ids"].split(",") if m]),
+                    "recipients": r["total"],
+                    "intervalSec": r["interval_sec"],
+                    "createdBy": r["created_by"],
+                    "createdByDisplay": get_user_display(r["created_by"]) or r["created_by"],
+                    "createdAt": r["created_at"],
+                    "counts": counts.get(r["id"], {}),
+                }
+                for r in rows
+            ],
+        }
+
+    @router.get("/bulk/{batch_id}")
+    def get_bulk(batch_id: int, user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            batch = conn.execute("SELECT * FROM kakao_batches WHERE id = ?", (batch_id,)).fetchone()
+            if not batch:
+                raise HTTPException(status_code=404, detail="일괄 전송을 찾을 수 없습니다.")
+            items = conn.execute(
+                "SELECT m.id, m.contact_id, c.name, m.kind, m.status, m.error FROM kakao_messages m "
+                "JOIN kakao_contacts c ON c.id = m.contact_id WHERE m.batch_id = ? ORDER BY m.id",
+                (batch_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return {
+            "ok": True,
+            "id": batch["id"],
+            "items": [
+                {"messageId": r["id"], "contactId": r["contact_id"], "name": r["name"], "kind": r["kind"], "status": r["status"], "error": r["error"]}
+                for r in items
+            ],
+        }
+
+    @router.post("/bulk/{batch_id}/cancel")
+    def cancel_bulk(batch_id: int, user: str = Depends(get_current_user)):
+        """아직 시작하지 않은(대기 중) 메시지만 취소한다. 이미 나갔거나 전송 중인 것은 그대로다."""
+        conn = get_db()
+        try:
+            cur = conn.execute(
+                "UPDATE kakao_messages SET status = 'cancelled', error = '일괄 전송이 취소되었습니다.', updated_at = ? "
+                "WHERE batch_id = ? AND status = 'queued'",
+                (now_iso(), batch_id),
+            )
+            conn.commit()
+            return {"ok": True, "cancelled": cur.rowcount}
+        finally:
+            conn.close()
+
+    @router.post("/bulk/{batch_id}/retry-failed")
+    def retry_failed_bulk(batch_id: int, user: str = Depends(get_current_user)):
+        """보내기 전에 실패한 것만 다시 큐에 넣는다. 확인 필요(needs_check)는 포함하지 않는다(중복 발송 위험)."""
+        conn = get_db()
+        try:
+            cur = conn.execute(
+                "UPDATE kakao_messages SET status = 'queued', error = '', updated_at = ? WHERE batch_id = ? AND status = 'failed'",
+                (now_iso(), batch_id),
+            )
+            conn.commit()
+            retried = cur.rowcount
+        finally:
+            conn.close()
+        if retried:
+            _ensure_worker()
+        return {"ok": True, "retried": retried}
+
     @router.delete("/contacts/{contact_id}")
     def delete_contact(contact_id: int, user: str = Depends(get_current_user)):
         conn = get_db()
@@ -912,7 +1103,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         ).fetchall()
         ahead = {
             r["id"]: i
-            for i, r in enumerate(conn.execute("SELECT id FROM kakao_messages WHERE status = 'queued' ORDER BY id ASC").fetchall())
+            for i, r in enumerate(conn.execute(f"SELECT id FROM kakao_messages WHERE status = 'queued' ORDER BY {_QUEUE_ORDER}").fetchall())
         }
         conn.close()
         out = []

@@ -59,6 +59,7 @@ def init_kakao_tables(get_db) -> None:
         ("sort_no", "ALTER TABLE kakao_messages ADD COLUMN sort_no REAL"),
         ("kind", "ALTER TABLE kakao_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'"),
         ("media_ids", "ALTER TABLE kakao_messages ADD COLUMN media_ids TEXT NOT NULL DEFAULT ''"),
+        ("batch_id", "ALTER TABLE kakao_messages ADD COLUMN batch_id INTEGER"),
     ):
         if name not in mcols:
             conn.execute(ddl)
@@ -67,6 +68,23 @@ def init_kakao_tables(get_db) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_kakao_messages_status ON kakao_messages(status, id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_kakao_messages_batch ON kakao_messages(batch_id, id)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kakao_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT NOT NULL DEFAULT '',
+            media_ids TEXT NOT NULL DEFAULT '',
+            interval_sec INTEGER NOT NULL DEFAULT 5,
+            total INTEGER NOT NULL DEFAULT 0,
+            request_id TEXT UNIQUE,
+            created_by TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
     )
     conn.execute(
         """

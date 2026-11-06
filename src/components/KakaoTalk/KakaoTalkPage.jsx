@@ -1,28 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-    AlertCircle, FlaskConical, Pencil, MessageCircle, MoreHorizontal, Paperclip, Pause, Play,
+    AlertCircle, FlaskConical, Pencil, Send, MessageCircle, MoreHorizontal, Paperclip, Pause, Play,
     Plus, RefreshCw, Search, Settings, Smile, Smartphone, Trash2, User, UserPlus, X,
 } from 'lucide-react';
 import styles from './KakaoTalkPage.module.css';
-import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
+import { LOCAL_API_BASE, getAuthHeaders } from '../../lib/api';
+import { call, newRequestId } from './kakaoApi';
+import KakaoBulk from './KakaoBulk';
 
 const MESSAGE_POLL_MS = 1500;
 const STATUS_POLL_MS = 4000;
 const WEEKDAYS = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
 const AVATAR_COLORS = ['#a8c4e6', '#f2b8a2', '#b7d9b0', '#d8c1e8', '#f4d58d', '#9fd3d6'];
-
-const call = async (path, { method = 'GET', body, params } = {}) => {
-    const qs = params ? `?${new URLSearchParams(params)}` : '';
-    const res = await fetch(`${LOCAL_API_BASE}/kakao${path}${qs}`, {
-        method,
-        headers: body ? { ...getAuthHeaders(), 'Content-Type': 'application/json' } : getAuthHeaders(),
-        body: body ? JSON.stringify(body) : undefined,
-    });
-    if (handleUnauthorized(res)) throw new Error('로그인이 만료되었습니다.');
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || '요청에 실패했습니다.');
-    return data;
-};
 
 const toDate = (iso) => {
     const d = new Date(iso);
@@ -57,7 +46,6 @@ const colorFor = (name) => {
     for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
     return AVATAR_COLORS[hash % AVATAR_COLORS.length];
 };
-const newRequestId = () => (window.crypto?.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
 const MAX_PHOTOS = 10;
 const mediaCache = new Map(); // 미디어 id -> blob URL (같은 사진을 폴링마다 다시 받지 않는다)
@@ -579,6 +567,7 @@ const KakaoTalkPage = () => {
                 {dayDivider}
                 <div className={styles.rowMine}>
                     <div className={styles.meta}>
+                        {m.status === 'cancelled' && <span className={styles.pending}>취소됨</span>}
                         {m.status === 'queued' && <span className={styles.pending}>{m.error || `대기 중${m.queuePosition ? ` (앞 ${m.queuePosition}건)` : ''}`}</span>}
                         {m.status === 'sending' && <span className={styles.pending}><i className={styles.spinner} />전송 중</span>}
                         {m.status === 'failed' && (
@@ -819,6 +808,9 @@ const KakaoTalkPage = () => {
                     <MessageCircle size={24} fill={rail === 'chats' ? 'currentColor' : 'none'} />
                     {status?.needsCheck > 0 && <i className={styles.railDot} />}
                 </button>
+                <button type="button" className={rail === 'bulk' ? styles.railActive : ''} title="일괄전송" onClick={() => setRail('bulk')}>
+                    <Send size={22} />
+                </button>
                 <span className={styles.railSpacer} />
                 <button type="button" className={rail === 'more' ? styles.railActive : ''} title="더보기" onClick={() => setRail('more')}>
                     <MoreHorizontal size={24} />
@@ -826,6 +818,13 @@ const KakaoTalkPage = () => {
                 </button>
             </nav>
 
+            {rail === 'bulk' ? (
+                <>
+                    <KakaoBulk contacts={contacts} connected={!!connected} onNotice={showNotice} />
+                    {notice && <div className={styles.toast}>{notice}</div>}
+                </>
+            ) : (
+                <>
             <section className={styles.panel}>{renderList()}</section>
 
             <section className={styles.chat}>
@@ -969,6 +968,8 @@ const KakaoTalkPage = () => {
                 )}
                 {notice && <div className={styles.toast}>{notice}</div>}
             </section>
+                </>
+            )}
         </div>
     );
 };
