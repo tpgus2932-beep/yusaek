@@ -1304,8 +1304,19 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                         code = kakao_phone.error_code(exc)
                         if code in kakao_phone.FATAL_ERRORS:
                             raise
-                        reason = ("친구가 아니거나 보낼 수 없는 방이라 등록하지 않음" if not cid and code in ("PROFILE_NOT_FOUND", "target_not_found", "target_missing_or_ambiguous", "not_in_room", "chat_open_unverified", "chat_open_button_missing")
+                        not_friend = code in ("PROFILE_NOT_FOUND", "target_not_found", "target_missing_or_ambiguous", "not_in_room",
+                                              "chat_open_unverified", "chat_open_button_missing", "friend_tab_unavailable", "kakao_main_unavailable")
+                        reason = ("친구가 아니거나 보낼 수 없는 방이라 등록하지 않음" if not cid and not_friend
                                   else kakao_phone.describe_error(code))
+                        if not cid and not_friend:
+                            # 채널·서비스 방처럼 친구 검색에 나오지 않는 방: 검색하다가 카카오톡이 튕기기도 하므로 다음부터는 건드리지 않는다
+                            conn = get_db()
+                            try:
+                                conn.execute("INSERT OR IGNORE INTO kakao_ignored_rooms (name, reason, created_at) VALUES (?, ?, ?)",
+                                             (name, "친구 검색 실패로 자동 제외", now_iso()))
+                                conn.commit()
+                            finally:
+                                conn.close()
                         summary["skipped"].append({"name": name, "reason": reason})
                         continue
                     if not cid:
