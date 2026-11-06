@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-    AlertCircle, FlaskConical, MessageCircle, MoreHorizontal, Paperclip, Pause, Play,
+    AlertCircle, FlaskConical, Pencil, MessageCircle, MoreHorizontal, Paperclip, Pause, Play,
     Plus, RefreshCw, Search, Settings, Smile, Smartphone, Trash2, User, UserPlus, X,
 } from 'lucide-react';
 import styles from './KakaoTalkPage.module.css';
@@ -113,6 +113,8 @@ const KakaoTalkPage = () => {
     const [attachments, setAttachments] = useState([]); // {key, name, preview, id, error}
     const fileInput = useRef(null);
     const [roomSince, setRoomSince] = useState('');
+    const [renameOpen, setRenameOpen] = useState(false);
+    const [renameValue, setRenameValue] = useState('');
     const scroller = useRef(null);
     const stickToBottom = useRef(true);
     const textarea = useRef(null);
@@ -491,11 +493,25 @@ const KakaoTalkPage = () => {
             wasAddingFriend.current = false;
             const { result, error } = status.addFriend;
             if (error) showNotice(`친구 추가 실패: ${error}`);
+            else if (result?.renamedFrom) showNotice(`'${result.renamedFrom}' → '${result.name}' 이름을 바꿨습니다. 대화 기록은 그대로 유지됩니다.`);
             else if (result) showNotice(result.already ? `'${result.name}' 님은 이미 카카오톡 친구입니다. 목록에 추가했습니다.` : `'${result.name}' 님을 폰의 카카오톡 친구로 추가했습니다.`);
             loadContacts();
         }
         return undefined;
     }, [addingFriend, status, loadStatus, loadContacts, showNotice]);
+
+    const startRename = async () => {
+        const next = renameValue.trim();
+        if (!selected || !next) return;
+        try {
+            await call(`/contacts/${selected.id}/rename`, { method: 'POST', body: { new_name: next } });
+            setRenameOpen(false);
+            showNotice(`'${selected.name}' 님의 이름을 폰의 카카오톡에서 '${next}'(으)로 바꾸는 중입니다. 끝날 때까지 폰을 만지지 마세요.`);
+            loadStatus();
+        } catch (err) {
+            showNotice(err.message);
+        }
+    };
 
     const toggleQueue = async () => {
         try {
@@ -829,6 +845,15 @@ const KakaoTalkPage = () => {
                             <button
                                 type="button"
                                 className={styles.headerBtn}
+                                disabled={anySyncing || addingFriend}
+                                title="폰의 카카오톡에서 이 친구의 이름을 바꿉니다(내 폰에서만 보이는 이름)."
+                                onClick={() => { setRenameValue(selected.name); setRenameOpen((v) => !v); setRoomSyncOpen(false); }}
+                            >
+                                <Pencil size={14} /> 이름 변경
+                            </button>
+                            <button
+                                type="button"
+                                className={styles.headerBtn}
                                 disabled={anySyncing}
                                 title="폰의 이 대화방을 위로 읽어서 선택한 날짜부터 현재까지의 대화를 웹과 맞춥니다."
                                 onClick={openRoomSync}
@@ -839,6 +864,31 @@ const KakaoTalkPage = () => {
                             <button type="button" className={styles.headerBtn} title="실제로 보내지 않고 상대·채팅방만 확인" onClick={() => submit(true)}>
                                 <FlaskConical size={15} /> 전송 테스트
                             </button>
+                            {renameOpen && (
+                                <div className={styles.syncPop}>
+                                    <b>친구 이름 변경</b>
+                                    <p>폰의 카카오톡 &gt; 친구 설정에서 이 친구의 이름을 바꿉니다. 내 폰에서만 보이는 이름이며 상대 계정은 바뀌지 않습니다. 대화 기록은 그대로 유지됩니다.</p>
+                                    <input
+                                        autoFocus
+                                        className={styles.fullInput}
+                                        maxLength={20}
+                                        value={renameValue}
+                                        onChange={(e) => setRenameValue(e.target.value)}
+                                        onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) startRename(); }}
+                                    />
+                                    <div className={styles.popBtns}>
+                                        <button type="button" className={styles.btn} onClick={() => setRenameOpen(false)}>닫기</button>
+                                        <button
+                                            type="button"
+                                            className={styles.btnYellow}
+                                            disabled={!renameValue.trim() || renameValue.trim() === selected.name || anySyncing || addingFriend}
+                                            onClick={startRename}
+                                        >
+                                            이름 바꾸기
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                             {roomSyncOpen && (
                                 <div className={styles.syncPop}>
                                     <b>대화 동기화</b>

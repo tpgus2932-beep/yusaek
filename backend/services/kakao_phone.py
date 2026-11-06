@@ -66,6 +66,12 @@ _MESSAGES = {
     "media_transfer_integrity_failed": "폰으로 사진을 옮기는 중 파일이 깨져서 보내지 않았습니다.",
     "media_share_helper_required": "폰의 브리지 앱이 최신이 아닙니다. 다시 설치하세요.",
     "send_result_unverified": "사진을 보냈는지 확인하지 못했습니다. 폰의 대화방을 확인하세요.",
+    "rename_input_invalid": "새 이름은 현재 이름과 달라야 하고 20자 이내여야 합니다.",
+    "rename_menu_unavailable": "카카오톡의 '친구 설정' 화면으로 이동하지 못했습니다. 폰 잠금을 풀고 다시 시도하세요.",
+    "rename_wrong_friend": "폰에 보이는 친구 이름이 다릅니다. 이름을 바꾸지 않았습니다.",
+    "rename_input_failed": "새 이름 입력을 확인하지 못해 저장하지 않았습니다.",
+    "rename_save_unavailable": "이름 저장('확인') 버튼을 누르지 못했습니다. 이름을 바꾸지 않았습니다.",
+    "rename_unverified": "저장했지만 새 이름으로 친구를 찾지 못했습니다. 폰에서 이름이 바뀌었는지 확인한 뒤 '폰에서 동기화'를 누르세요.",
     "contact_input_invalid": "이름(20자 이내)과 전화번호(예: 010-1234-5678) 또는 카카오톡 ID(영문·숫자·._-)를 확인하세요.",
     "contact_add_entry_unavailable": "카카오톡의 '친구 추가' 버튼을 찾지 못했습니다. 폰 잠금을 풀어 주세요.",
     "contact_permission_needed": "폰에 권한 팝업(연락처 접근 등)이 떠 있습니다. 폰에서 허용한 뒤 다시 시도하세요.",
@@ -197,6 +203,23 @@ def add_friend_by_id(config: dict, kakao_id: str, dry_run: bool = False) -> dict
         return device.add_by_id_fast(value, dry_run=dry_run)
     finally:
         device.restore_keyboard()
+
+
+def rename_friend(config: dict, old: str, new: str, dry_run: bool = False) -> dict:
+    """폰의 카카오톡에서 친구 이름을 바꾼다: 프로필 → ⋮ → 친구 설정 → 이름 → 입력 → 확인.
+
+    카카오톡의 '친구 설정' 이름은 내 폰에서만 보이는 이름이다(상대 계정은 바뀌지 않는다).
+    저장 후 새 이름으로 친구를 찾을 수 있어야 verified. 저장 뒤 확인 실패는 rename_unverified —
+    바뀌었는지 모르므로 폰에서 확인해야 하며 자동으로 다시 시도하지 않는다.
+    """
+    if not config.get("serial") or not config.get("hardware_id") or not config.get("account"):
+        raise Blocked("device_not_bound")
+    old, new = (old or "").strip(), (new or "").strip()
+    if not old or not new or len(new) > 20 or old == new:
+        raise Blocked("rename_input_invalid")
+    device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
+    device.connect_transport()
+    return device.rename_friend_fast(old, new, dry_run=dry_run)
 
 
 def read_friends(config: dict) -> tuple[list[str], int]:

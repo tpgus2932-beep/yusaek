@@ -460,6 +460,13 @@ class Adb:
             raise Blocked(data.get('error','contact_add_unverified'))
         return {'state':data['state'],'name':data['name'],'already_friend':bool(data.get('already_friend'))}
 
+    def rename_friend_fast(self,old,new,dry_run=False):
+        if not self.accessibility_enabled():raise Blocked('accessibility_disabled')
+        data=self.fast_broadcast({'action':'rename_friend','old':old,'new':new,'dry_run':bool(dry_run)},timeout=90)
+        if data.get('state') in ('verified','ready'):return data
+        # 저장 버튼을 누른 뒤 새 이름으로 확인하지 못함: 바뀌었는지 모른다 — 자동으로 다시 시도하지 않는다
+        raise Blocked(data.get('error','rename_unverified'))
+
     def account_fast(self):
         if not self.accessibility_enabled():raise Blocked('accessibility_disabled')
         data=self.fast_broadcast({'action':'account'})

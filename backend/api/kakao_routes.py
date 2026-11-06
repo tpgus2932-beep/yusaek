@@ -824,6 +824,65 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         _ensure_worker()
         return {"ok": True, "message": message}
 
+    def _run_rename(contact_id: int, old: str, new: str) -> None:
+        try:
+            if not phone_lock.acquire(timeout=180):
+                raise RuntimeError("busy")
+            try:
+                kakao_phone.rename_friend(_device_config(), old, new)
+            finally:
+                phone_lock.release()
+            conn = get_db()
+            try:
+                conn.execute("UPDATE kakao_contacts SET name = ?, in_phone = 1, synced_at = ? WHERE id = ?", (new, now_iso(), contact_id))
+                conn.commit()
+            finally:
+                conn.close()
+            add_friend["result"] = {"name": new, "renamedFrom": old, "already": False, "preview": False}
+            add_friend["error"] = ""
+        except RuntimeError:
+            add_friend["result"] = None
+            add_friend["error"] = "폰이 다른 작업을 처리 중입니다. 잠시 후 다시 시도하세요."
+        except Exception as exc:  # noqa: BLE001
+            add_friend["result"] = None
+            add_friend["error"] = kakao_phone.describe_error(kakao_phone.error_code(exc))
+        finally:
+            add_friend["running"] = False
+            add_friend["finishedAt"] = now_iso()
+            state["syncing"] = False
+            wake.set()
+
+    @router.post("/contacts/{contact_id}/rename")
+    def rename_contact(contact_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """폰의 카카오톡 친구 이름을 바꾸고 목록 이름도 같이 바꾼다. 대화 기록은 그대로 따라간다."""
+        new = str((payload or {}).get("new_name") or "").strip()
+        if not new or len(new) > 20:
+            raise HTTPException(status_code=400, detail="새 이름을 20자 이내로 입력하세요.")
+        config = _device_config()
+        if not (config["serial"] and config["hardware_id"] and config["account"]):
+            raise HTTPException(status_code=400, detail=kakao_phone.describe_error("device_not_bound"))
+        conn = get_db()
+        try:
+            old = _contact_or_404(conn, contact_id)["name"]
+            if new == old:
+                raise HTTPException(status_code=400, detail="현재 이름과 같습니다.")
+            if conn.execute("SELECT 1 FROM kakao_contacts WHERE name = ? AND id <> ?", (new, contact_id)).fetchone():
+                raise HTTPException(status_code=409, detail="이미 같은 이름의 친구가 목록에 있습니다.")
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM kakao_messages WHERE contact_id = ? AND status IN ('queued','sending','needs_check')", (contact_id,)
+            ).fetchone()["n"]
+            if pending:
+                raise HTTPException(status_code=409, detail="대기 중이거나 확인이 필요한 메시지가 있어 이름을 바꿀 수 없습니다.")
+        finally:
+            conn.close()
+        with start_lock:
+            if sync["running"] or room_sync["running"] or add_friend["running"]:
+                raise HTTPException(status_code=409, detail="이미 동기화 또는 폰 작업이 진행 중입니다.")
+            add_friend.update(running=True, name=new, startedAt=now_iso(), finishedAt="", result=None, error="")
+            state["syncing"] = True
+        threading.Thread(target=_run_rename, args=(contact_id, old, new), name="kakao-rename", daemon=True).start()
+        return {"ok": True, "started": True}
+
     @router.delete("/contacts/{contact_id}")
     def delete_contact(contact_id: int, user: str = Depends(get_current_user)):
         conn = get_db()
