@@ -8,7 +8,7 @@ import re
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -51,6 +51,37 @@ def _safe_name(raw: str, ext: str) -> str:
     return f"{stem}.{ext}"
 
 
+_KST = timezone(timedelta(hours=9))
+# 카카오 서비스·알림 방(친구가 아니거나 보낼 수 없는 방)은 자동 등록하지 않는다
+_SERVICE_NAME = re.compile(r"^카카오|알림톡$|알림$|^\[?광고")
+
+
+def _parse_list_time(label: str, today: date):
+    """채팅 목록의 시각 표시를 (날짜, 분)으로. 분을 모르면 None. 해석 못 하면 (None, None).
+    오늘 '오후 3:23' → (오늘, 923) / '어제' → (어제, None) / '11월 5일' → (그 날짜, None)."""
+    label = (label or "").strip()
+    m = re.search(r"(오전|오후)\s*(\d{1,2}):(\d{2})", label)
+    if m:
+        hour = int(m.group(2)) % 12 + (12 if m.group(1) == "오후" else 0)
+        return today, hour * 60 + int(m.group(3))
+    if "어제" in label:
+        return today - timedelta(days=1), None
+    m = re.match(r"(\d{4})[년.\-/]\s*(\d{1,2})[월.\-/]\s*(\d{1,2})", label)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3))), None
+        except ValueError:
+            return None, None
+    m = re.match(r"(\d{1,2})월\s*(\d{1,2})일", label)
+    if m:
+        try:
+            day = date(today.year, int(m.group(1)), int(m.group(2)))
+        except ValueError:
+            return None, None
+        return (day if day <= today else date(today.year - 1, day.month, day.day)), None
+    return None, None
+
+
 def _key(text: str) -> str:
     """메시지 비교 키: 공백을 하나로 줄이고 앞 40자(UTF-16 단위)만 쓴다.
     긴 말풍선은 폰에서 잘려 보이므로 앞부분만 비교한다. 폰 앱의 msgKey()와 같아야 한다."""
@@ -66,6 +97,10 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
     sync = {"running": False, "startedAt": "", "finishedAt": "", "result": None, "error": ""}
     room_sync = {"running": False, "contactId": 0, "since": "", "startedAt": "", "finishedAt": "", "result": None, "error": ""}
     add_friend = {"running": False, "name": "", "startedAt": "", "finishedAt": "", "result": None, "error": ""}
+    refresh = {
+        "running": False, "cancel": False, "phase": "", "done": 0, "total": 0, "current": "",
+        "startedAt": "", "finishedAt": "", "result": None, "error": "",
+    }
     resynced: set = set()  # 대화를 가져온 뒤 다시 보내는 작업 — 같은 작업은 한 번만 재확인한다
     wake = threading.Event()
     start_lock = threading.Lock()
@@ -80,6 +115,20 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
     )
     conn.commit()
     conn.close()
+
+    def _last_refresh_summary():
+        raw = get_setting(get_db, "last_refresh_summary", "")
+        try:
+            return json.loads(raw) if raw else None
+        except ValueError:
+            return None
+
+    def _count_new_contacts() -> int:
+        conn = get_db()
+        try:
+            return conn.execute("SELECT COUNT(*) AS n FROM kakao_contacts WHERE is_new = 1").fetchone()["n"]
+        finally:
+            conn.close()
 
     # ---- helpers -----------------------------------------------------
     def _device_config() -> dict:
@@ -352,6 +401,10 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             "sync": dict(sync),
             "roomSync": dict(room_sync),
             "addFriend": dict(add_friend),
+            "refresh": dict(refresh),
+            "lastRefreshAt": get_setting(get_db, "last_refresh_at", ""),
+            "lastRefresh": _last_refresh_summary(),
+            "newContacts": _count_new_contacts(),
             "queued": counts.get("queued", 0),
             "sending": counts.get("sending", 0),
             "needsCheck": counts.get("needs_check", 0),
@@ -415,6 +468,8 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                     "memo": r["memo"],
                     "source": r["source"],
                     "inPhone": bool(r["in_phone"]),
+                    "isNew": bool(r["is_new"]),
+                    "autoRegistered": bool(r["auto_registered"]),
                     "lastText": r["last_text"] or "",
                     "lastAt": r["last_at"] or "",
                     "lastStatus": r["last_status"] or "",
@@ -573,7 +628,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             raise HTTPException(status_code=400, detail=kakao_phone.describe_error("device_not_bound"))
         force_full = str((payload or {}).get("mode") or "") == "full"
         with start_lock:
-            if sync["running"] or room_sync["running"] or add_friend["running"]:
+            if sync["running"] or room_sync["running"] or add_friend["running"] or refresh["running"]:
                 raise HTTPException(status_code=409, detail="이미 동기화가 진행 중입니다.")
             sync.update(running=True, startedAt=now_iso(), finishedAt="", result=None, error="")
             state["syncing"] = True
@@ -670,7 +725,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         finally:
             conn.close()
         with start_lock:
-            if sync["running"] or room_sync["running"] or add_friend["running"]:
+            if sync["running"] or room_sync["running"] or add_friend["running"] or refresh["running"]:
                 raise HTTPException(status_code=409, detail="이미 동기화가 진행 중입니다.")
             room_sync.update(running=True, contactId=contact_id, since=since, startedAt=now_iso(), finishedAt="", result=None, error="")
             state["syncing"] = True
@@ -754,7 +809,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         if not (config["serial"] and config["hardware_id"] and config["account"]):
             raise HTTPException(status_code=400, detail=kakao_phone.describe_error("device_not_bound"))
         with start_lock:
-            if sync["running"] or room_sync["running"] or add_friend["running"]:
+            if sync["running"] or room_sync["running"] or add_friend["running"] or refresh["running"]:
                 raise HTTPException(status_code=409, detail="이미 동기화 또는 친구 추가가 진행 중입니다.")
             add_friend.update(running=True, name=name or kakao_id, startedAt=now_iso(), finishedAt="", result=None, error="")
             state["syncing"] = True
@@ -913,7 +968,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         finally:
             conn.close()
         with start_lock:
-            if sync["running"] or room_sync["running"] or add_friend["running"]:
+            if sync["running"] or room_sync["running"] or add_friend["running"] or refresh["running"]:
                 raise HTTPException(status_code=409, detail="이미 동기화 또는 폰 작업이 진행 중입니다.")
             add_friend.update(running=True, name=new, startedAt=now_iso(), finishedAt="", result=None, error="")
             state["syncing"] = True
@@ -1118,6 +1173,259 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             conn.commit()
             if not cur.rowcount:
                 raise HTTPException(status_code=404, detail="리스트를 찾을 수 없습니다.")
+        finally:
+            conn.close()
+        return {"ok": True}
+
+    # ---- 최신화: 채팅 목록에서 바뀐 방만 골라 폰에서 대화를 가져온다 ------------------------
+    def _norm_preview(text: str) -> str:
+        t = re.sub(r"\s+", " ", (text or "").strip())
+        return "(사진)" if t in ("사진", "(사진)") else t
+
+    def _row_fp(row: dict, today: date) -> dict:
+        day, minutes = _parse_list_time(row.get("time", ""), today)
+        return {"preview_key": _key(_norm_preview(row.get("preview", ""))), "date": day.isoformat() if day else "", "minutes": minutes}
+
+    def _same_fp(old: dict, new: dict) -> bool:
+        """같은 마지막 메시지인가: 미리보기·날짜가 같고, 둘 다 아는 경우 분도 같다(오늘 → '어제'로 표시가 바뀌어도 같은 것으로 본다)."""
+        if old["preview_key"] != new["preview_key"] or old["date"] != new["date"]:
+            return False
+        return old["minutes"] is None or new["minutes"] is None or old["minutes"] == new["minutes"]
+
+    def _already_have(conn, contact_id: int, fp: dict) -> bool:
+        """우리가 방금 보낸 메시지라 이미 웹에 있는가(대시보드로 보낸 방을 다시 열지 않으려는 용도)."""
+        row = conn.execute(
+            "SELECT direction, text, sent_at, created_at FROM kakao_messages WHERE contact_id = ? AND dry_run = 0 "
+            "AND status IN ('sent','received') ORDER BY COALESCE(sort_no, id) DESC LIMIT 1",
+            (contact_id,),
+        ).fetchone()
+        if not row or row["direction"] != "out" or _key(_norm_preview(row["text"])) != fp["preview_key"]:
+            return False
+        stamp = row["sent_at"] or row["created_at"]
+        try:
+            at = datetime.fromisoformat(stamp).astimezone(_KST)
+        except (TypeError, ValueError):
+            return False
+        if at.date().isoformat() != fp["date"]:
+            return False
+        return fp["minutes"] is None or abs(at.hour * 60 + at.minute - fp["minutes"]) <= 1
+
+    def _run_refresh(since: date) -> None:
+        today = datetime.now(_KST).date()
+        started = now_iso()
+        summary = {
+            "since": since.isoformat(), "scanned": 0, "candidates": 0, "importedRooms": 0, "importedMessages": 0,
+            "registered": [], "skipped": [], "groups": 0, "unchanged": 0, "startedAt": started,
+        }
+
+        def progress(phase, done=0, total=0, current=""):
+            refresh.update(phase=phase, done=done, total=total, current=current)
+
+        try:
+            if not phone_lock.acquire(timeout=180):
+                raise RuntimeError("busy")
+            try:
+                config = _device_config()
+                progress("채팅 목록 읽는 중")
+
+                def old_enough(rows):
+                    if len(rows) < 12:
+                        return False
+                    tail = rows[-5:]
+                    return all((_parse_list_time(r.get("time", ""), today)[0] or today) < since for r in tail)
+
+                rows = kakao_phone.read_chat_list(config, old_enough)
+                summary["scanned"] = len(rows)
+
+                conn = get_db()
+                try:
+                    contacts = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM kakao_contacts").fetchall()}
+                    snaps = {r["name"]: {"preview_key": r["preview_key"], "date": r["msg_date"], "minutes": r["minutes"]}
+                             for r in conn.execute("SELECT * FROM kakao_room_snapshot").fetchall()}
+                    ignored = {r["name"] for r in conn.execute("SELECT name FROM kakao_ignored_rooms").fetchall()}
+                    candidates, keep_fp = [], {}
+                    for row in rows:
+                        name = row["name"]
+                        if row.get("group"):
+                            summary["groups"] += 1
+                            continue
+                        fp = _row_fp(row, today)
+                        day = date.fromisoformat(fp["date"]) if fp["date"] else None
+                        older = day is not None and day < since
+                        snap = snaps.get(name)
+                        changed = (not _same_fp(snap, fp)) if snap else (not older)
+                        if not changed:
+                            summary["unchanged"] += 1
+                            keep_fp[name] = fp
+                            continue
+                        cid = contacts.get(name)
+                        if cid and _already_have(conn, cid, fp):
+                            summary["unchanged"] += 1
+                            keep_fp[name] = fp
+                            continue
+                        if not cid and (name in ignored or _SERVICE_NAME.search(name)):
+                            summary["skipped"].append({"name": name, "reason": "서비스·알림 방으로 보여 등록하지 않음"})
+                            continue
+                        candidates.append((name, fp, cid))
+                finally:
+                    conn.close()
+                summary["candidates"] = len(candidates)
+
+                since_str = since.isoformat()
+                for index, (name, fp, cid) in enumerate(candidates, 1):
+                    if refresh["cancel"]:
+                        summary["skipped"].append({"name": "(나머지)", "reason": "사용자가 중단함"})
+                        break
+                    progress("방 확인 중", index, len(candidates), name)
+                    try:
+                        messages, _pages = kakao_phone.read_room_history(config, name, since_str)
+                    except Exception as exc:  # noqa: BLE001
+                        code = kakao_phone.error_code(exc)
+                        if code in kakao_phone.FATAL_ERRORS:
+                            raise
+                        reason = ("친구가 아니거나 보낼 수 없는 방이라 등록하지 않음" if not cid and code in ("PROFILE_NOT_FOUND", "target_not_found", "target_missing_or_ambiguous", "not_in_room", "chat_open_unverified", "chat_open_button_missing")
+                                  else kakao_phone.describe_error(code))
+                        summary["skipped"].append({"name": name, "reason": reason})
+                        continue
+                    if not cid:
+                        conn = get_db()
+                        try:
+                            stamp = now_iso()
+                            cid = conn.execute(
+                                "INSERT INTO kakao_contacts (name, memo, created_by, created_at, source, in_phone, synced_at, auto_registered, is_new) "
+                                "VALUES (?, '자동 등록', 'refresh', ?, 'auto', 1, ?, 1, 1)",
+                                (name[:_MAX_NAME], stamp, stamp),
+                            ).lastrowid
+                            conn.commit()
+                        finally:
+                            conn.close()
+                        summary["registered"].append({"id": cid, "name": name})
+                    stats = _import_history(cid, messages, since_str)
+                    if stats["added"]:
+                        summary["importedRooms"] += 1
+                        summary["importedMessages"] += stats["added"]
+                    keep_fp[name] = fp
+
+                # 처리에 성공한 방(과 변화 없던 방)의 지문을 저장한다. 실패한 방은 다음에 다시 시도하도록 남긴다.
+                conn = get_db()
+                try:
+                    stamp = now_iso()
+                    for name, fp in keep_fp.items():
+                        conn.execute(
+                            "INSERT INTO kakao_room_snapshot (name, preview_key, msg_date, minutes, seen_at) VALUES (?, ?, ?, ?, ?) "
+                            "ON CONFLICT(name) DO UPDATE SET preview_key = excluded.preview_key, msg_date = excluded.msg_date, "
+                            "minutes = excluded.minutes, seen_at = excluded.seen_at",
+                            (name, fp["preview_key"], fp["date"], fp["minutes"], stamp),
+                        )
+                    conn.commit()
+                finally:
+                    conn.close()
+            finally:
+                phone_lock.release()
+            summary["finishedAt"] = now_iso()
+            if not refresh["cancel"]:
+                set_settings(get_db, {"last_refresh_at": started})
+            set_settings(get_db, {"last_refresh_summary": json.dumps(summary, ensure_ascii=False)})
+            refresh["result"] = summary
+            refresh["error"] = ""
+            # 쉬게 한다: 대기 중인 전송이 없을 때만 화면을 잠근다
+            conn = get_db()
+            try:
+                busy = conn.execute("SELECT 1 FROM kakao_messages WHERE status IN ('queued','sending') LIMIT 1").fetchone()
+            finally:
+                conn.close()
+            if not busy:
+                kakao_phone.lock_screen(_device_config())
+        except RuntimeError:
+            refresh["result"] = None
+            refresh["error"] = "폰이 다른 작업을 처리 중입니다. 잠시 후 다시 시도하세요."
+        except Exception as exc:  # noqa: BLE001
+            code = kakao_phone.error_code(exc)
+            refresh["result"] = summary
+            refresh["error"] = kakao_phone.describe_error(code)
+            if code in kakao_phone.FATAL_ERRORS:
+                _pause(kakao_phone.describe_error(code))
+        finally:
+            refresh["running"] = False
+            refresh["cancel"] = False
+            refresh["phase"] = ""
+            refresh["finishedAt"] = now_iso()
+            state["syncing"] = False
+            wake.set()
+
+    @router.post("/refresh")
+    def start_refresh(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        """채팅 목록에서 마지막 최신화 이후 바뀐 방을 찾아 폰에서 대화를 가져온다.
+        처음에는 {"since": "YYYY-MM-DD"}가 필요하다. 이후에는 마지막 최신화 날짜부터 자동으로 이어서 한다."""
+        config = _device_config()
+        if not (config["serial"] and config["hardware_id"] and config["account"]):
+            raise HTTPException(status_code=400, detail=kakao_phone.describe_error("device_not_bound"))
+        raw = str((payload or {}).get("since") or "").strip()
+        last = get_setting(get_db, "last_refresh_at", "")
+        if raw:
+            try:
+                since = datetime.strptime(raw, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="시작 날짜를 올바르게 선택하세요.")
+        elif last:
+            since = datetime.fromisoformat(last).astimezone(_KST).date()
+        else:
+            raise HTTPException(status_code=400, detail="처음에는 어느 날짜부터 가져올지 선택하세요.")
+        if since > datetime.now(_KST).date():
+            raise HTTPException(status_code=400, detail="오늘 이후 날짜는 선택할 수 없습니다.")
+        conn = get_db()
+        try:
+            waiting = conn.execute("SELECT COUNT(*) AS n FROM kakao_messages WHERE status IN ('queued','sending')").fetchone()["n"]
+        finally:
+            conn.close()
+        if waiting:
+            raise HTTPException(status_code=409, detail=f"전송 대기 중인 메시지가 {waiting}건 있습니다. 전송이 끝난 뒤 최신화하세요.")
+        with start_lock:
+            if sync["running"] or room_sync["running"] or add_friend["running"] or refresh["running"]:
+                raise HTTPException(status_code=409, detail="이미 동기화 또는 폰 작업이 진행 중입니다.")
+            refresh.update(running=True, cancel=False, phase="시작", done=0, total=0, current="", startedAt=now_iso(), finishedAt="", result=None, error="")
+            state["syncing"] = True
+        threading.Thread(target=_run_refresh, args=(since,), name="kakao-refresh", daemon=True).start()
+        return {"ok": True, "started": True, "since": since.isoformat()}
+
+    @router.post("/refresh/cancel")
+    def cancel_refresh(user: str = Depends(get_current_user)):
+        if refresh["running"]:
+            refresh["cancel"] = True
+        return {"ok": True}
+
+    @router.post("/contacts/ack-new")
+    def ack_new_contacts(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        """자동 등록된 신규 표시를 확인 처리한다. contact_id가 없으면 전체."""
+        conn = get_db()
+        try:
+            cid = (payload or {}).get("contact_id")
+            if cid:
+                conn.execute("UPDATE kakao_contacts SET is_new = 0 WHERE id = ?", (int(cid),))
+            else:
+                conn.execute("UPDATE kakao_contacts SET is_new = 0")
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True}
+
+    @router.post("/contacts/{contact_id}/exclude")
+    def exclude_contact(contact_id: int, user: str = Depends(get_current_user)):
+        """잘못 자동 등록된 방을 지우고, 다음 최신화부터 다시 등록되지 않게 한다."""
+        conn = get_db()
+        try:
+            row = _contact_or_404(conn, contact_id)
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM kakao_messages WHERE contact_id = ? AND status IN ('queued','sending','needs_check')", (contact_id,)
+            ).fetchone()["n"]
+            if pending:
+                raise HTTPException(status_code=409, detail="대기 중이거나 확인이 필요한 메시지가 있어 제외할 수 없습니다.")
+            conn.execute("INSERT OR IGNORE INTO kakao_ignored_rooms (name, reason, created_at) VALUES (?, '사용자 제외', ?)", (row["name"], now_iso()))
+            conn.execute("DELETE FROM kakao_messages WHERE contact_id = ?", (contact_id,))
+            conn.execute("DELETE FROM kakao_list_members WHERE contact_id = ?", (contact_id,))
+            conn.execute("DELETE FROM kakao_room_snapshot WHERE name = ?", (row["name"],))
+            conn.execute("DELETE FROM kakao_contacts WHERE id = ?", (contact_id,))
+            conn.commit()
         finally:
             conn.close()
         return {"ok": True}

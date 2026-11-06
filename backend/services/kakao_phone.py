@@ -72,6 +72,10 @@ _MESSAGES = {
     "rename_input_failed": "새 이름 입력을 확인하지 못해 저장하지 않았습니다.",
     "rename_save_unavailable": "이름 저장('확인') 버튼을 누르지 못했습니다. 이름을 바꾸지 않았습니다.",
     "rename_unverified": "저장했지만 새 이름으로 친구를 찾지 못했습니다. 폰에서 이름이 바뀌었는지 확인한 뒤 '폰에서 동기화'를 누르세요.",
+    "chat_list_unavailable": "카카오톡 채팅 목록을 열지 못했습니다. 폰 잠금을 풀고 다시 시도하세요.",
+    "chat_list_gap": "채팅 목록을 넘기다 일부를 건너뛰어 끝까지 읽지 못했습니다. 다시 시도하세요.",
+    "chat_list_expired": "채팅 목록 읽기가 중단되었습니다. 다시 시도하세요.",
+    "chat_list_failed": "채팅 목록을 읽지 못했습니다.",
     "contact_input_invalid": "이름(20자 이내)과 전화번호(예: 010-1234-5678) 또는 카카오톡 ID(영문·숫자·._-)를 확인하세요.",
     "contact_add_entry_unavailable": "카카오톡의 '친구 추가' 버튼을 찾지 못했습니다. 폰 잠금을 풀어 주세요.",
     "contact_permission_needed": "폰에 권한 팝업(연락처 접근 등)이 떠 있습니다. 폰에서 허용한 뒤 다시 시도하세요.",
@@ -237,6 +241,54 @@ def rename_friend(config: dict, old: str, new: str, dry_run: bool = False) -> di
     return device.rename_friend_fast(old, new, dry_run=dry_run)
 
 
+def read_chat_list(config: dict, should_stop, max_calls: int = 40) -> list:
+    """카카오톡 채팅 탭을 위에서부터 읽는다(읽기 전용). 반환: [{name, preview, time, unread, group}].
+
+    한 번 호출에 몇 페이지씩 읽고, 읽은 줄 전체를 should_stop(rows)에 넘겨 멈출지 정한다.
+    """
+    if not config.get("serial") or not config.get("hardware_id") or not config.get("account"):
+        raise Blocked("device_not_bound")
+    device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
+    _connect(device, config["serial"])
+    if not device.accessibility_enabled():
+        raise Blocked("accessibility_disabled")
+    cursor = ""
+    rows: list = []
+    try:
+        for _ in range(max_calls):
+            payload = {"action": "chat_list"}
+            if cursor:
+                payload["cursor"] = cursor
+            data = device.fast_broadcast(payload, timeout=90)
+            if data.get("state") != "partial" or not isinstance(data.get("cursor"), str):
+                raise Blocked(data.get("error") or "chat_list_failed")
+            cursor = data["cursor"]
+            rows = data.get("rows") or []
+            if data.get("end") or should_stop(rows):
+                break
+    finally:
+        try:  # 목록을 맨 위로 되돌려 카카오톡의 위쪽 바(검색 버튼)가 다시 보이게 한다
+            device.fast_broadcast({"action": "chat_list_done"}, timeout=60)
+        except Exception:
+            pass
+    return rows
+
+
+def lock_screen(config: dict) -> None:
+    """작업이 끝난 폰 화면을 잠가 쉬게 한다(발열·배터리). 실패해도 상관없다."""
+    import base64
+    import json
+
+    from services.kakao_adb_bridge import SEND_RECEIVER
+
+    device = Adb({"adb": adb_path(), "serial": config.get("serial", "")})
+    payload = base64.b64encode(json.dumps({"action": "batch_finish"}).encode()).decode()
+    try:
+        device.run("shell", "am", "broadcast", "-n", SEND_RECEIVER, "-a", "com.yusaek.talkbridge.SEND", "--es", "payload", payload, timeout=20)
+    except Exception:
+        pass
+
+
 def read_friends(config: dict) -> tuple[list[str], int]:
     """카카오톡 '친구' 탭을 끝까지 스크롤해 (친구 이름 목록, 카카오톡이 표시한 친구 수)를 읽는다.
 
@@ -310,7 +362,7 @@ def read_room_history(config: dict, name: str, since: str) -> tuple[list[dict], 
     if not config.get("serial") or not config.get("hardware_id") or not config.get("account"):
         raise Blocked("device_not_bound")
     device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
-    device.connect_transport()
+    _connect(device, config["serial"])
     if not device.accessibility_enabled():
         raise Blocked("accessibility_disabled")
     cursor = ""

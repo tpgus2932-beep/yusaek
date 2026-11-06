@@ -45,6 +45,8 @@ def init_kakao_tables(get_db) -> None:
         ("source", "ALTER TABLE kakao_contacts ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'"),
         ("in_phone", "ALTER TABLE kakao_contacts ADD COLUMN in_phone INTEGER NOT NULL DEFAULT 1"),
         ("synced_at", "ALTER TABLE kakao_contacts ADD COLUMN synced_at TEXT NOT NULL DEFAULT ''"),
+        ("auto_registered", "ALTER TABLE kakao_contacts ADD COLUMN auto_registered INTEGER NOT NULL DEFAULT 0"),
+        ("is_new", "ALTER TABLE kakao_contacts ADD COLUMN is_new INTEGER NOT NULL DEFAULT 0"),
     ):
         if name not in columns:
             conn.execute(ddl)
@@ -71,6 +73,26 @@ def init_kakao_tables(get_db) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_kakao_messages_batch ON kakao_messages(batch_id, id)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kakao_room_snapshot (
+            name TEXT PRIMARY KEY,
+            preview_key TEXT NOT NULL DEFAULT '',
+            msg_date TEXT NOT NULL DEFAULT '',
+            minutes INTEGER,
+            seen_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kakao_ignored_rooms (
+            name TEXT PRIMARY KEY,
+            reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
     )
     conn.execute(
         """

@@ -7,6 +7,7 @@ import styles from './KakaoTalkPage.module.css';
 import { LOCAL_API_BASE, getAuthHeaders } from '../../lib/api';
 import { call, newRequestId } from './kakaoApi';
 import KakaoBulk from './KakaoBulk';
+import KakaoRefresh from './KakaoRefresh';
 
 const MESSAGE_POLL_MS = 1500;
 const STATUS_POLL_MS = 4000;
@@ -99,6 +100,7 @@ const KakaoTalkPage = () => {
     const [busy, setBusy] = useState(false);
     const [roomSyncOpen, setRoomSyncOpen] = useState(false);
     const [bulkOpen, setBulkOpen] = useState(false);
+    const [refreshOpen, setRefreshOpen] = useState(false);
     const [lists, setLists] = useState([]);
     const [activeListId, setActiveListId] = useState(null);
     const [activeMembers, setActiveMembers] = useState(null); // Set<contact id> | null
@@ -557,6 +559,51 @@ const KakaoTalkPage = () => {
         }
     };
 
+    const refreshRunning = !!status?.refresh?.running;
+    const wasRefreshing = useRef(false);
+    useEffect(() => {
+        if (refreshRunning) {
+            wasRefreshing.current = true;
+            const timer = window.setInterval(loadStatus, 1500);
+            return () => window.clearInterval(timer);
+        }
+        if (wasRefreshing.current && status?.refresh) {
+            wasRefreshing.current = false;
+            const { result, error } = status.refresh;
+            if (error) showNotice(`최신화 실패: ${error}`);
+            else if (result) {
+                const parts = [`최신화 완료 · 방 ${result.importedRooms}개에서 ${result.importedMessages}건을 가져왔습니다`];
+                if (result.registered?.length) parts.push(`새 친구 ${result.registered.length}명 자동 등록`);
+                showNotice(parts.join(' · '));
+            }
+            loadContacts();
+        }
+        return undefined;
+    }, [refreshRunning, status, loadStatus, loadContacts, showNotice]);
+
+    const ackNew = async (contactId) => {
+        try {
+            await call('/contacts/ack-new', { method: 'POST', body: contactId ? { contact_id: contactId } : {} });
+            loadContacts();
+            loadStatus();
+        } catch (err) {
+            showNotice(err.message);
+        }
+    };
+
+    const excludeNew = async (contact) => {
+        if (!window.confirm(`'${contact.name}' 방을 목록에서 지우고, 앞으로 자동 등록하지 않을까요?`)) return;
+        try {
+            await call(`/contacts/${contact.id}/exclude`, { method: 'POST' });
+            if (selectedId === contact.id) setSelectedId(null);
+            showNotice(`'${contact.name}' 방을 제외했습니다.`);
+            loadContacts();
+            loadStatus();
+        } catch (err) {
+            showNotice(err.message);
+        }
+    };
+
     const toggleQueue = async () => {
         try {
             await call('/queue', { method: 'POST', body: { paused: !status?.paused } });
@@ -731,6 +778,10 @@ const KakaoTalkPage = () => {
                     <h2>{rail === 'friends' ? '친구' : '채팅'}</h2>
                     <div className={styles.panelIcons}>
                         <button type="button" title="검색" onClick={() => { setSearchOpen((v) => !v); setQuery(''); }}><Search size={18} /></button>
+                        <button type="button" className={styles.refreshIconBtn} title="최신화 — 폰의 새 대화 가져오기" onClick={() => setRefreshOpen(true)}>
+                            <RefreshCw size={18} className={refreshRunning ? styles.spin : ''} />
+                            {status?.newContacts > 0 && <i className={styles.iconDot} />}
+                        </button>
                         <button type="button" title="일괄 전송" onClick={() => setBulkOpen(true)}><Send size={18} /></button>
                         <button type="button" title="친구 추가" onClick={() => setAdding((v) => !v)}><UserPlus size={18} /></button>
                     </div>
@@ -789,6 +840,20 @@ const KakaoTalkPage = () => {
                         </p>
                     </div>
                 )}
+                {contacts.some((c) => c.isNew) && (
+                    <div className={styles.newBanner}>
+                        <div className={styles.newBannerHead}>
+                            <b>새 친구 {contacts.filter((c) => c.isNew).length}명이 자동 등록되었습니다</b>
+                            <button type="button" onClick={() => ackNew()}>모두 확인</button>
+                        </div>
+                        <div className={styles.newBannerNames}>
+                            {contacts.filter((c) => c.isNew).slice(0, 8).map((c) => (
+                                <button key={c.id} type="button" onClick={() => { openChat(c); ackNew(c.id); }}>{c.name}</button>
+                            ))}
+                            {contacts.filter((c) => c.isNew).length > 8 && <span>외 {contacts.filter((c) => c.isNew).length - 8}명</span>}
+                        </div>
+                    </div>
+                )}
                 {activeListId && (
                     <div className={styles.listBanner}>
                         <span>리스트 · <b>{activeList?.name || '…'}</b> ({rows.length}명)</span>
@@ -840,6 +905,7 @@ const KakaoTalkPage = () => {
                             <div className={styles.itemBody}>
                                 <div className={styles.itemName}>
                                     {c.name}
+                                    {c.isNew && <span className={styles.newBadge}>신규</span>}
                                     {!c.inPhone && <span className={styles.gone}>폰에 없음</span>}
                                 </div>
                                 {chatStyle
@@ -965,6 +1031,14 @@ const KakaoTalkPage = () => {
                             )}
                         </header>
 
+                        {selected.isNew && (
+                            <div className={styles.newChatNote}>
+                                <b>신규</b> 최신화에서 자동 등록된 친구입니다. 맞는 친구인지 확인해 주세요.
+                                <button type="button" onClick={() => ackNew(selected.id)}>맞아요</button>
+                                <button type="button" className={styles.newChatExclude} onClick={() => excludeNew(selected)}>제외</button>
+                            </div>
+                        )}
+
                         {!connected && (
                             <div className={styles.banner}>
                                 휴대폰이 연결되지 않았습니다. <button type="button" onClick={() => setRail('more')}>더보기에서 연결하기</button>
@@ -1057,6 +1131,15 @@ const KakaoTalkPage = () => {
                 </aside>
             )}
 
+            {refreshOpen && (
+                <KakaoRefresh
+                    status={status}
+                    connected={!!connected}
+                    onClose={() => setRefreshOpen(false)}
+                    onNotice={showNotice}
+                    onChanged={() => { loadStatus(); loadContacts(); }}
+                />
+            )}
             {bulkOpen && (
                 <KakaoBulk
                     contacts={contacts}
