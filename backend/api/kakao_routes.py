@@ -50,6 +50,9 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             "status": row["status"],
             "error": row["error"],
             "dryRun": bool(row["dry_run"]),
+            "direction": row["direction"],
+            "origin": row["origin"],
+            "timeKnown": bool(row["time_known"]),
             "requestedBy": row["requested_by"],
             "requestedByDisplay": get_user_display(row["requested_by"]) or row["requested_by"],
             "createdAt": row["created_at"],
@@ -86,11 +89,77 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         state["paused"] = True
         state["pause_reason"] = reason
 
+    def _sync_recent(job: dict, recent) -> int:
+        """폰 대화방에서 읽은 최근 말풍선(최대 3개)을 웹 대화와 맞춘다. 가져온 개수를 돌려준다.
+
+        웹 쪽 마지막 대화(전송 완료·수신)의 끝부분과 폰의 앞부분이 이어지는 최대 길이를 찾고,
+        그 뒤의 것만 새로 넣는다. 한 번 맞춰 두면 이후에는 겹치기만 해서 아무것도 넣지 않는다.
+        폰은 말풍선의 분 단위 시각을 알려주지 않으므로 time_known=0으로 저장한다.
+        """
+        items = []
+        for entry in recent or []:
+            side = entry.get("side")
+            text = str(entry.get("text") or "").strip()[:_MAX_TEXT]
+            if side in ("me", "them") and text:
+                items.append({"side": side, "text": text, "date": str(entry.get("date") or "")})
+        if not items:
+            return 0
+        conn = get_db()
+        try:
+            contact = conn.execute("SELECT id FROM kakao_contacts WHERE name = ?", (job["name"],)).fetchone()
+            if not contact:
+                return 0
+            cid = contact["id"]
+            rows = conn.execute(
+                "SELECT direction, text FROM kakao_messages WHERE contact_id = ? AND dry_run = 0 AND id <> ? "
+                "AND status IN ('sent', 'received') ORDER BY COALESCE(sort_no, id) DESC LIMIT 20",
+                (cid, job["id"]),
+            ).fetchall()
+            tail = [("me" if r["direction"] == "out" else "them", r["text"]) for r in reversed(rows)]
+            phone = [(i["side"], i["text"]) for i in items]
+            overlap = 0
+            for k in range(min(len(phone), len(tail)), 0, -1):
+                if phone[:k] == tail[-k:]:
+                    overlap = k
+                    break
+            added = 0
+            stamp = now_iso()
+            for index, item in enumerate(items[overlap:]):
+                if item["side"] == "me":
+                    # 불확실하게 끝났던 내 메시지가 폰에 보이면 '보냄'으로 확정한다
+                    cur = conn.execute(
+                        "UPDATE kakao_messages SET status = 'sent', error = '', updated_at = ?, sent_at = ? WHERE id = ("
+                        "SELECT id FROM kakao_messages WHERE contact_id = ? AND text = ? AND status = 'needs_check' ORDER BY id DESC LIMIT 1)",
+                        (stamp, stamp, cid, item["text"]),
+                    )
+                    if cur.rowcount:
+                        continue
+                day = item["date"]
+                created = f"{day}T00:00:00+09:00" if day else stamp
+                conn.execute(
+                    "INSERT INTO kakao_messages (contact_id, text, status, dry_run, requested_by, created_at, updated_at, sent_at, "
+                    "direction, origin, time_known, sort_no) VALUES (?, ?, ?, 0, '', ?, ?, ?, ?, 'phone', 0, ?)",
+                    (
+                        cid, item["text"], "sent" if item["side"] == "me" else "received", created, stamp,
+                        created if item["side"] == "me" else "", "out" if item["side"] == "me" else "in",
+                        job["id"] - 0.5 + 0.01 * index,
+                    ),
+                )
+                added += 1
+            conn.commit()
+            return added
+        finally:
+            conn.close()
+
     def _process(job: dict) -> None:
         config = _device_config()
         try:
             with phone_lock:
-                kakao_phone.send(config, job["name"], job["text"], dry_run=bool(job["dry_run"]))
+                result = kakao_phone.send(config, job["name"], job["text"], dry_run=bool(job["dry_run"]))
+            try:
+                _sync_recent(job, (result or {}).get("recent"))
+            except Exception:  # noqa: BLE001 — 대화 맞추기가 실패해도 전송 결과는 그대로 기록한다
+                pass
             _set_status(job["id"], "tested" if job["dry_run"] else "sent", sent=not job["dry_run"])
         except kakao_phone.SendUncertain:
             _set_status(job["id"], "needs_check", "전송 버튼을 누른 뒤 결과를 확인하지 못했습니다. 폰에서 확인하세요. 자동으로 다시 보내지 않습니다.")
@@ -196,9 +265,9 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         rows = conn.execute(
             """
             SELECT c.*,
-              (SELECT text FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 ORDER BY m.id DESC LIMIT 1) AS last_text,
-              (SELECT created_at FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 ORDER BY m.id DESC LIMIT 1) AS last_at,
-              (SELECT status FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 ORDER BY m.id DESC LIMIT 1) AS last_status,
+              (SELECT text FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_text,
+              (SELECT created_at FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_at,
+              (SELECT status FROM kakao_messages m WHERE m.contact_id = c.id AND m.dry_run = 0 ORDER BY COALESCE(m.sort_no, m.id) DESC LIMIT 1) AS last_status,
               (SELECT COUNT(*) FROM kakao_messages m WHERE m.contact_id = c.id AND m.status IN ('failed','needs_check')) AS problem_count
             FROM kakao_contacts c ORDER BY c.name COLLATE NOCASE ASC
             """
@@ -402,7 +471,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         conn = get_db()
         _contact_or_404(conn, contact_id)
         rows = conn.execute(
-            "SELECT * FROM (SELECT * FROM kakao_messages WHERE contact_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC",
+            "SELECT * FROM (SELECT * FROM kakao_messages WHERE contact_id = ? ORDER BY COALESCE(sort_no, id) DESC LIMIT ?) ORDER BY COALESCE(sort_no, id) ASC",
             (contact_id, limit),
         ).fetchall()
         ahead = {

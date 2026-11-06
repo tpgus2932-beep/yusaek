@@ -831,3 +831,53 @@
     font-weight: 600;
     vertical-align: 1px;
 }
+
+/* 상대방(왼쪽) 말풍선 — 폰 대화방에서 가져온 메시지 */
+.rowTheirs {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.theirAvatar {
+    flex: none;
+    width: 36px;
+}
+
+.theirCol {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    min-width: 0;
+    max-width: min(62%, 460px);
+}
+
+.theirName {
+    margin: 2px 0 3px 2px;
+    font-size: 12px;
+    color: rgba(0, 0, 0, 0.6);
+}
+
+.bubbleTheirs {
+    position: relative;
+    padding: 8px 11px;
+    border-radius: 8px;
+    background: #fff;
+    color: var(--kk-text);
+    font-size: 13.5px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.bubbleTheirsTail::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -6px;
+    border: 7px solid transparent;
+    border-top-color: #fff;
+    border-right-color: #fff;
+    border-top-width: 8px;
+}

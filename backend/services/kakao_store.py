@@ -48,6 +48,18 @@ def init_kakao_tables(get_db) -> None:
     ):
         if name not in columns:
             conn.execute(ddl)
+    # 폰 대화방에서 가져온 메시지용 컬럼. direction: out=내가 보냄 / in=상대가 보냄,
+    # origin: web=이 화면에서 보냄 / phone=폰에서 가져옴, time_known=0이면 분 단위 시각을 모름,
+    # sort_no: 가져온 메시지를 '보내려던 메시지' 바로 앞에 끼워 넣기 위한 정렬값(없으면 id)
+    mcols = {r["name"] for r in conn.execute("PRAGMA table_info(kakao_messages)").fetchall()}
+    for name, ddl in (
+        ("direction", "ALTER TABLE kakao_messages ADD COLUMN direction TEXT NOT NULL DEFAULT 'out'"),
+        ("origin", "ALTER TABLE kakao_messages ADD COLUMN origin TEXT NOT NULL DEFAULT 'web'"),
+        ("time_known", "ALTER TABLE kakao_messages ADD COLUMN time_known INTEGER NOT NULL DEFAULT 1"),
+        ("sort_no", "ALTER TABLE kakao_messages ADD COLUMN sort_no REAL"),
+    ):
+        if name not in mcols:
+            conn.execute(ddl)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_kakao_messages_contact ON kakao_messages(contact_id, id)"
     )

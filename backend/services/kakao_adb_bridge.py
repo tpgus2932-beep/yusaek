@@ -499,7 +499,7 @@ class Adb:
             blocked=Blocked(data.get('error','send_result_unverified'));blocked.stages=data.get('stages')
             raise blocked
         return {'state':'verified','stages':data.get('stages'),'total_ms':data.get('total_ms'),
-                'fingerprint':data.get('fingerprint'),
+                'recent':data.get('recent'),'fingerprint':data.get('fingerprint'),
                 'sent_at':time.strftime('%Y-%m-%dT%H:%M:%S',time.gmtime())+'.000Z'}
 
     def scan_room_fast(self,name):

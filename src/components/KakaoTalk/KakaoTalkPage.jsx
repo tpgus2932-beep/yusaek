@@ -326,8 +326,26 @@ const KakaoTalkPage = () => {
             );
         }
 
-        const sameMinuteAsNext = next && !next.dryRun && minuteKey(next.createdAt) === minuteKey(m.createdAt);
-        const startsGroup = !prev || prev.dryRun || minuteKey(prev.createdAt) !== minuteKey(m.createdAt);
+        if (m.direction === 'in') {
+            const sameSenderAbove = prev && !prev.dryRun && prev.direction === 'in';
+            return (
+                <div key={m.id}>
+                    {dayDivider}
+                    <div className={styles.rowTheirs}>
+                        <span className={styles.theirAvatar}>{!sameSenderAbove && <Avatar name={selected.name} size={36} />}</span>
+                        <div className={styles.theirCol}>
+                            {!sameSenderAbove && <span className={styles.theirName}>{selected.name}</span>}
+                            <div className={`${styles.bubbleTheirs} ${!sameSenderAbove ? styles.bubbleTheirsTail : ''}`}>{m.text}</div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const sameMinuteAsNext = m.timeKnown && next && !next.dryRun && next.direction !== 'in' && next.timeKnown
+            && minuteKey(next.createdAt) === minuteKey(m.createdAt);
+        const startsGroup = !prev || prev.dryRun || prev.direction === 'in' || !m.timeKnown
+            || minuteKey(prev.createdAt) !== minuteKey(m.createdAt);
         const settled = m.status === 'sent';
         return (
             <div key={m.id}>
@@ -349,7 +367,7 @@ const KakaoTalkPage = () => {
                                 <button type="button" onClick={() => act(`/messages/${m.id}/resolve`, { method: 'POST', body: { status: 'failed' } })}>안 보냄</button>
                             </span>
                         )}
-                        {settled && !sameMinuteAsNext && <span className={styles.time}>{clock(m.sentAt || m.createdAt)}</span>}
+                        {settled && m.timeKnown && !sameMinuteAsNext && <span className={styles.time}>{clock(m.sentAt || m.createdAt)}</span>}
                     </div>
                     <div className={`${styles.bubble} ${startsGroup ? styles.bubbleTail : ''} ${m.status === 'failed' ? styles.bubbleFailed : ''}`}>
                         {m.text}
