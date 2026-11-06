@@ -80,6 +80,8 @@ const KakaoTalkPage = () => {
     const [adding, setAdding] = useState(false);
     const [newName, setNewName] = useState('');
     const [newPhone, setNewPhone] = useState('');
+    const [newKakaoId, setNewKakaoId] = useState('');
+    const [addMode, setAddMode] = useState('phone'); // phone | id | list
     const [notice, setNotice] = useState('');
     const [devices, setDevices] = useState(null);
     const [serialInput, setSerialInput] = useState('');
@@ -183,23 +185,39 @@ const KakaoTalkPage = () => {
         }
     };
 
+    const startPhoneAdd = async (body, message) => {
+        try {
+            await call('/friends/add', { method: 'POST', body });
+            showNotice(message);
+            setNewPhone('');
+            setNewKakaoId('');
+            setNewName('');
+            setAdding(false);
+            loadStatus();
+        } catch (err) {
+            showNotice(err.message);
+        }
+    };
+
     const addContact = async () => {
         const name = newName.trim();
-        if (!name) return;
-        if (newPhone.trim()) {
-            // 전화번호가 있으면 폰의 카카오톡에 실제로 친구를 추가한다(전화번호는 저장하지 않음).
-            try {
-                await call('/friends/add', { method: 'POST', body: { name, phone: newPhone.trim() } });
-                showNotice(`'${name}' 님을 폰의 카카오톡에 추가하는 중입니다. 끝날 때까지 폰을 만지지 마세요.`);
-                setNewPhone('');
-                setNewName('');
-                setAdding(false);
-                loadStatus();
-            } catch (err) {
-                showNotice(err.message);
-            }
+        if (addMode === 'phone' && name && newPhone.trim()) {
+            // 이름+전화번호: 폰의 카카오톡에 실제로 친구를 추가한다(전화번호는 저장하지 않음).
+            await startPhoneAdd({ name, phone: newPhone.trim() },
+                `'${name}' 님을 폰의 카카오톡에 추가하는 중입니다. 끝날 때까지 폰을 만지지 마세요.`);
             return;
         }
+        if (addMode === 'id' && newKakaoId.trim()) {
+            // 카카오톡 ID: 프로필을 검색해 친구 추가. 이름은 프로필 닉네임으로 저장된다.
+            await startPhoneAdd({ kakao_id: newKakaoId.trim() },
+                `카카오톡 ID '${newKakaoId.trim()}' 를 폰에서 검색해 추가하는 중입니다. 끝날 때까지 폰을 만지지 마세요.`);
+            return;
+        }
+        if (addMode !== 'list') {
+            showNotice(addMode === 'phone' ? '이름과 전화번호를 모두 입력하세요.' : '카카오톡 ID를 입력하세요.');
+            return;
+        }
+        if (!name) return;
         try {
             const data = await call('/contacts', { method: 'POST', body: { name } });
             setNewName('');
@@ -359,7 +377,7 @@ const KakaoTalkPage = () => {
             wasAddingFriend.current = false;
             const { result, error } = status.addFriend;
             if (error) showNotice(`친구 추가 실패: ${error}`);
-            else if (result) showNotice(`'${result.name}' 님을 폰의 카카오톡 친구로 추가했습니다.`);
+            else if (result) showNotice(result.already ? `'${result.name}' 님은 이미 카카오톡 친구입니다. 목록에 추가했습니다.` : `'${result.name}' 님을 폰의 카카오톡 친구로 추가했습니다.`);
             loadContacts();
         }
         return undefined;
@@ -540,28 +558,48 @@ const KakaoTalkPage = () => {
                 )}
                 {adding && (
                     <div className={styles.addBox}>
-                        <input
-                            autoFocus
-                            placeholder="친구 이름"
-                            value={newName}
-                            onChange={(e) => setNewName(e.target.value)}
-                            onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) addContact(); }}
-                        />
-                        <button type="button" className={styles.btnYellow} disabled={addingFriend || anySyncing} onClick={addContact}>
-                            <Plus size={14} /> {newPhone.trim() ? '폰에 추가' : '목록에 추가'}
+                        <div className={styles.modeRow}>
+                            {[['phone', '전화번호'], ['id', '카카오톡 ID'], ['list', '목록만']].map(([key, label]) => (
+                                <button key={key} type="button" className={addMode === key ? styles.modeOn : ''} onClick={() => setAddMode(key)}>{label}</button>
+                            ))}
+                        </div>
+                        {addMode !== 'id' && (
+                            <input
+                                autoFocus
+                                className={styles.fullInput}
+                                placeholder="친구 이름"
+                                value={newName}
+                                onChange={(e) => setNewName(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) addContact(); }}
+                            />
+                        )}
+                        {addMode === 'phone' && (
+                            <input
+                                className={styles.fullInput}
+                                placeholder="전화번호 (예: 010-1234-5678)"
+                                inputMode="tel"
+                                value={newPhone}
+                                onChange={(e) => setNewPhone(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) addContact(); }}
+                            />
+                        )}
+                        {addMode === 'id' && (
+                            <input
+                                autoFocus
+                                className={styles.fullInput}
+                                placeholder="상대의 카카오톡 ID"
+                                value={newKakaoId}
+                                onChange={(e) => setNewKakaoId(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) addContact(); }}
+                            />
+                        )}
+                        <button type="button" className={`${styles.btnYellow} ${styles.fullInput}`} disabled={addMode !== 'list' && (addingFriend || anySyncing)} onClick={addContact}>
+                            <Plus size={14} /> {addMode === 'list' ? '목록에 추가' : '폰에 친구 추가'}
                         </button>
-                        <input
-                            className={styles.phoneInput}
-                            placeholder="전화번호 (예: 010-1234-5678)"
-                            inputMode="tel"
-                            value={newPhone}
-                            onChange={(e) => setNewPhone(e.target.value)}
-                            onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) addContact(); }}
-                        />
                         <p>
-                            <b>전화번호를 입력하면</b> 폰의 카카오톡에 실제로 친구를 추가합니다(카카오톡 가입자만 추가됩니다).
-                            비워 두면 이미 폰에 있는 친구를 목록에만 추가하며, 이때 이름은 폰의 친구 이름과 <b>정확히 같아야</b> 합니다.
-                            전화번호는 저장하지 않습니다.
+                            {addMode === 'phone' && '폰의 카카오톡에 이름·전화번호로 친구를 추가합니다(카카오톡 가입자만 추가됨). 전화번호는 저장하지 않습니다.'}
+                            {addMode === 'id' && '폰의 카카오톡에서 이 ID를 검색해 친구로 추가합니다. 이름은 상대 프로필의 닉네임으로 저장됩니다. (ID 검색을 허용한 계정만 찾을 수 있습니다)'}
+                            {addMode === 'list' && '이미 폰에 있는 친구를 목록에만 추가합니다. 이름은 폰의 친구 이름과 정확히 같아야 합니다.'}
                         </p>
                     </div>
                 )}

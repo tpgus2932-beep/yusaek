@@ -593,37 +593,48 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         threading.Thread(target=_run_room_sync, args=(contact_id, name, since), name="kakao-room-sync", daemon=True).start()
         return {"ok": True, "started": True}
 
-    def _run_add_friend(name: str, phone: str) -> None:
+    def _record_added_friend(name: str, newly_added: bool) -> None:
+        """폰에서 친구가 확인됐을 때 목록에 넣고, 새로 추가된 경우 저장한 친구 수를 1 늘린다."""
+        conn = get_db()
         try:
-            if not phone_lock.acquire(timeout=180):
-                raise RuntimeError("busy")
-            try:
-                kakao_phone.add_friend(_device_config(), name, phone)
-            finally:
-                phone_lock.release()
-            # 폰에 추가됐으니 목록에도 넣는다. 카카오톡이 표시하는 친구 수도 1 늘었다.
-            conn = get_db()
-            try:
-                row = conn.execute("SELECT id FROM kakao_contacts WHERE name = ?", (name,)).fetchone()
-                stamp = now_iso()
-                if row:
-                    conn.execute("UPDATE kakao_contacts SET in_phone = 1, synced_at = ? WHERE id = ?", (stamp, row["id"]))
-                else:
-                    conn.execute(
-                        "INSERT INTO kakao_contacts (name, memo, created_by, created_at, source, in_phone, synced_at) "
-                        "VALUES (?, '', 'add', ?, 'sync', 1, ?)",
-                        (name, stamp, stamp),
-                    )
-                conn.commit()
-            finally:
-                conn.close()
+            row = conn.execute("SELECT id FROM kakao_contacts WHERE name = ?", (name,)).fetchone()
+            stamp = now_iso()
+            if row:
+                conn.execute("UPDATE kakao_contacts SET in_phone = 1, synced_at = ? WHERE id = ?", (stamp, row["id"]))
+            else:
+                conn.execute(
+                    "INSERT INTO kakao_contacts (name, memo, created_by, created_at, source, in_phone, synced_at) "
+                    "VALUES (?, '', 'add', ?, 'sync', 1, ?)",
+                    (name[:_MAX_NAME], stamp, stamp),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        if newly_added:
             try:
                 previous = int(get_setting(get_db, "phone_friend_count", "0") or 0)
             except ValueError:
                 previous = 0
             if previous > 0:
                 set_settings(get_db, {"phone_friend_count": previous + 1})
-            add_friend["result"] = {"name": name}
+
+    def _run_add_friend(kind: str, name: str, value: str, dry_run: bool = False) -> None:
+        """kind: 'phone'(이름+전화번호) | 'id'(카카오톡 ID). 전화번호·ID는 저장하지 않는다."""
+        try:
+            if not phone_lock.acquire(timeout=180):
+                raise RuntimeError("busy")
+            try:
+                if kind == "id":
+                    found = kakao_phone.add_friend_by_id(_device_config(), value, dry_run=dry_run)
+                else:
+                    kakao_phone.add_friend(_device_config(), name, value)
+                    found = {"name": name, "already_friend": False, "state": "verified"}
+            finally:
+                phone_lock.release()
+            result = {"name": found["name"], "already": bool(found.get("already_friend")), "preview": found["state"] == "ready"}
+            if found["state"] == "verified":
+                _record_added_friend(found["name"], newly_added=not result["already"])
+            add_friend["result"] = result
             add_friend["error"] = ""
         except RuntimeError:
             add_friend["result"] = None
@@ -639,22 +650,31 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
 
     @router.post("/friends/add")
     def add_phone_friend(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        """이름과 전화번호로 폰의 카카오톡에 친구를 추가한다. 전화번호는 저장하지 않는다."""
-        name = str(payload.get("name") or "").strip()
-        phone = kakao_phone.normalize_phone(str(payload.get("phone") or ""))
-        if not name or len(name) > 20:
-            raise HTTPException(status_code=400, detail="친구 이름을 20자 이내로 입력하세요.")
-        if not phone:
-            raise HTTPException(status_code=400, detail="전화번호를 올바르게 입력하세요. (예: 010-1234-5678)")
+        """폰의 카카오톡에 친구를 추가한다. {name, phone} 또는 {kakao_id}. 전화번호·ID는 저장하지 않는다.
+        kakao_id에 dry_run=true면 검색까지만 해서 누구인지 보여준다(추가하지 않음)."""
+        kakao_id = str(payload.get("kakao_id") or "").strip()
+        if kakao_id:
+            value = kakao_phone.normalize_kakao_id(kakao_id)
+            if not value:
+                raise HTTPException(status_code=400, detail="카카오톡 ID는 영문·숫자·. _ - 만 1~20자로 입력하세요.")
+            kind, name, dry_run = "id", "", bool(payload.get("dry_run"))
+        else:
+            name = str(payload.get("name") or "").strip()
+            value = kakao_phone.normalize_phone(str(payload.get("phone") or ""))
+            if not name or len(name) > 20:
+                raise HTTPException(status_code=400, detail="친구 이름을 20자 이내로 입력하세요.")
+            if not value:
+                raise HTTPException(status_code=400, detail="전화번호를 올바르게 입력하세요. (예: 010-1234-5678)")
+            kind, dry_run = "phone", False
         config = _device_config()
         if not (config["serial"] and config["hardware_id"] and config["account"]):
             raise HTTPException(status_code=400, detail=kakao_phone.describe_error("device_not_bound"))
         with start_lock:
             if sync["running"] or room_sync["running"] or add_friend["running"]:
                 raise HTTPException(status_code=409, detail="이미 동기화 또는 친구 추가가 진행 중입니다.")
-            add_friend.update(running=True, name=name, startedAt=now_iso(), finishedAt="", result=None, error="")
+            add_friend.update(running=True, name=name or kakao_id, startedAt=now_iso(), finishedAt="", result=None, error="")
             state["syncing"] = True
-        threading.Thread(target=_run_add_friend, args=(name, phone), name="kakao-add-friend", daemon=True).start()
+        threading.Thread(target=_run_add_friend, args=(kind, name, value, dry_run), name="kakao-add-friend", daemon=True).start()
         return {"ok": True, "started": True}
 
     @router.delete("/contacts/{contact_id}")

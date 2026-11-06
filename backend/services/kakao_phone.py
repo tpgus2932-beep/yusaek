@@ -52,7 +52,8 @@ _MESSAGES = {
     "friends_home_unavailable": "카카오톡 친구 화면(상단 '친구' 칩)으로 이동하지 못했습니다. 폰 잠금을 풀어 주세요.",
     "friends_screen_changed": "친구 목록을 읽는 중 화면이 바뀌었습니다. 폰을 만지지 말고 다시 시도하세요.",
     "friends_scan_expired": "친구 목록 읽기가 중단되었습니다. 다시 시도하세요.",
-    "contact_input_invalid": "이름(20자 이내)과 전화번호(예: 010-1234-5678)를 확인하세요.",
+    "kakao_id_not_found": "해당 카카오톡 ID를 찾지 못했습니다. ID가 없거나 ID 검색을 허용하지 않은 계정입니다.",
+    "contact_input_invalid": "이름(20자 이내)과 전화번호(예: 010-1234-5678) 또는 카카오톡 ID(영문·숫자·._-)를 확인하세요.",
     "contact_add_entry_unavailable": "카카오톡의 '친구 추가' 버튼을 찾지 못했습니다. 폰 잠금을 풀어 주세요.",
     "contact_permission_needed": "폰에 권한 팝업(연락처 접근 등)이 떠 있습니다. 폰에서 허용한 뒤 다시 시도하세요.",
     "contact_add_form_unavailable": "카카오톡의 '연락처로 추가' 화면을 열지 못했습니다.",
@@ -156,6 +157,31 @@ def add_friend(config: dict, name: str, phone: str) -> dict:
     try:
         device.connect_transport()
         return device.add_contact_fast(name, number)
+    finally:
+        device.restore_keyboard()
+
+
+def normalize_kakao_id(raw: str) -> str:
+    """카카오톡 ID(영문·숫자·._-, 1~20자). 올바르지 않으면 빈 문자열."""
+    value = (raw or "").strip()
+    return value if re.fullmatch(r"[A-Za-z0-9._-]{1,20}", value) else ""
+
+
+def add_friend_by_id(config: dict, kakao_id: str, dry_run: bool = False) -> dict:
+    """카카오톡 ID로 친구를 추가한다: 친구 추가 → 카카오톡 ID → 입력 → 확인(검색) → '친구 추가'.
+
+    반환: {state:'verified'|'ready', name:<프로필 닉네임>, already_friend:bool}.
+    dry_run이면 검색까지만 하고 추가하지 않는다(ready). 차단 버튼은 절대 누르지 않는다.
+    """
+    if not config.get("serial") or not config.get("hardware_id") or not config.get("account"):
+        raise Blocked("device_not_bound")
+    value = normalize_kakao_id(kakao_id)
+    if not value:
+        raise Blocked("contact_input_invalid")
+    device = Adb({"adb": adb_path(), "serial": config["serial"], "hardware_id": config["hardware_id"], "account": config["account"]})
+    try:
+        device.connect_transport()
+        return device.add_by_id_fast(value, dry_run=dry_run)
     finally:
         device.restore_keyboard()
 

@@ -449,6 +449,17 @@ class Adb:
         return {'state':'verified','name':name,'kakao_room_id':None,
                 'locator':{'kind':'friend','name':name,'fingerprint':data['fingerprint'],'source':'on_device'}}
 
+    def add_by_id_fast(self,kakao_id,dry_run=False):
+        if not self.accessibility_enabled():raise Blocked('accessibility_disabled')
+        self.old_ime=self.run('shell','settings','get','secure','default_input_method').strip()
+        if IME not in self.run('shell','ime','list','-a','-s'):raise Blocked('korean_input_helper_required')
+        self.run('shell','ime','enable',IME)
+        self.run('shell','ime','set',IME)
+        data=self.fast_broadcast({'action':'add_by_id','id':kakao_id,'dry_run':bool(dry_run)},timeout=60)
+        if data.get('state') not in ('verified','ready') or not data.get('name'):
+            raise Blocked(data.get('error','contact_add_unverified'))
+        return {'state':data['state'],'name':data['name'],'already_friend':bool(data.get('already_friend'))}
+
     def account_fast(self):
         if not self.accessibility_enabled():raise Blocked('accessibility_disabled')
         data=self.fast_broadcast({'action':'account'})
