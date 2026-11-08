@@ -3,6 +3,7 @@ import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import styles from "./NoyeKimPage.module.css";
 import { getDownloadFilename } from "../../lib/download";
 import PurchaseManager from "./PurchaseManager";
+import DefectPurchaseManager from "./DefectPurchaseManager";
 import {
   AlertTriangle, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, Clock, Clipboard, FileSpreadsheet,
   MessageSquare, Package, Pencil, Plus, Printer, RefreshCw, Search, Shuffle, Table2, Trash2, X, Zap,
@@ -2036,6 +2037,7 @@ export default function NoyeKimPage() {
         {[
           { key: "misong",        label: "미송관리",                icon: <Package size={13} />,       badge: misongItems.length > 0 ? misongItems.length : null },
           { key: "purchase",      label: "매입관리",                icon: <Clipboard size={13} />,     badge: null },
+          { key: "defect-purchase", label: "거래처 불량 매입 관리",   icon: <Clipboard size={13} />,     badge: null },
           { key: "kdg",           label: "케이디지가공2",           icon: <Shuffle size={13} />,       badge: null },
           { key: "today",         label: "오늘출발",                icon: <Zap size={13} />,           badge: null },
           { key: "receipt-excel", label: "입고전표 엑셀전환",        icon: <FileSpreadsheet size={13} />, badge: null },
@@ -2761,6 +2763,10 @@ export default function NoyeKimPage() {
 
       {activeTab === "purchase" && (
         <PurchaseManager />
+      )}
+
+      {activeTab === "defect-purchase" && (
+        <DefectPurchaseManager />
       )}
 
       {activeTab === "kdg" && (

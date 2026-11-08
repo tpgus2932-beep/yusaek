@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from "react";
 import purchaseManagerHtml from "./purchase-manager.html?raw";
 import { LOCAL_API_BASE, getAuthHeaders } from "../../lib/api";
+import DefectRecordsViewer from "./DefectRecordsViewer";
 
 function normalizeCell(value) {
   return String(value ?? "").trim();
@@ -170,6 +171,7 @@ export default function PurchaseManager() {
         hidden
         onChange={handleFileChange}
       />
+      <DefectRecordsViewer />
       <iframe
         ref={iframeRef}
         title="매입관리"

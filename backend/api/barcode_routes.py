@@ -2207,6 +2207,7 @@ def build_barcode_router(
             raise HTTPException(status_code=400, detail="code is required")
 
         code = normalize_code(raw) or raw
+        _sync_defect_records()
         defect_counts = dict(get_shared_defect_counts())
         defect_counts[code] = defect_counts.get(code, 0) + 1
         set_shared_defect_counts(defect_counts)
@@ -2386,6 +2387,9 @@ def build_barcode_router(
             with defect_tab_service.use_tab(_KDG_TAB):
                 kdg_defect = dict(get_shared_defect_counts())
                 kdg_summon = dict(get_shared_defect_summon_counts())
+        _sync_defect_records()
+        with defect_tab_service.use_tab(_KDG_TAB):
+            _sync_defect_records()
         moved_total = 0
         for code in moved_codes:
             qty = kimsungil_counts.pop(code, 0)
@@ -2453,6 +2457,7 @@ def build_barcode_router(
         set_shared_defect_counts(defect_counts)
         set_shared_defect_summon_counts(summon_counts)
         set_shared_kimsungil_counts(kimsungil_counts)
+        _sync_defect_records()
         _log_kimsungil_event(
             code=code,
             name=_kimsungil_display_name(state, code),
@@ -2677,8 +2682,36 @@ def build_barcode_router(
             )
             """
         )
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(barcode_defect_records)").fetchall()}
+        if "closed_at" not in cols:
+            # 불량이 목록에서 빠진 뒤에는 '지난 불량'이므로 closed_at 을 채워 현재 불량과 분리한다.
+            conn.execute("ALTER TABLE barcode_defect_records ADD COLUMN closed_at TEXT NOT NULL DEFAULT ''")
         conn.commit()
         return conn
+
+    def _sync_defect_records(conn=None):
+        """현재 불량 목록에 없는 상품의 사진·사유 기록을 '지난 불량'으로 닫는다 (지우지는 않음).
+        사진·사유는 그 불량을 찍은 그때 한 세트이므로, 불량이 사라지면 같은 상품코드를 다시 찍어도 이어붙지 않는다."""
+        own = conn is None
+        if own:
+            conn = _defect_record_conn()
+        try:
+            tab = defect_tab_service.current_tab()
+            alive = [c for c, q in dict(get_shared_defect_counts()).items() if (q or 0) > 0]
+            rows = conn.execute(
+                "SELECT DISTINCT code FROM barcode_defect_records WHERE tab = ? AND closed_at = ''", (tab,)
+            ).fetchall()
+            stale = [r["code"] for r in rows if r["code"] not in set(alive)]
+            if stale:
+                marks = ",".join("?" for _ in stale)
+                conn.execute(
+                    f"UPDATE barcode_defect_records SET closed_at = ? WHERE tab = ? AND closed_at = '' AND code IN ({marks})",
+                    (datetime.now(_KST).isoformat(), tab, *stale),
+                )
+                conn.commit()
+        finally:
+            if own:
+                conn.close()
 
     def _defect_record_qty(value) -> int:
         try:
@@ -2723,10 +2756,12 @@ def build_barcode_router(
 
     def _list_defect_records_for_tab(conn, tab: str) -> list[dict]:
         rows = conn.execute(
-            "SELECT * FROM barcode_defect_records WHERE tab = ? ORDER BY id DESC",
+            "SELECT * FROM barcode_defect_records WHERE tab = ? AND closed_at = '' ORDER BY id DESC",
             (tab,),
         ).fetchall()
-        records = [dict(row) for row in rows]
+        return _with_photo_ids(conn, [dict(row) for row in rows])
+
+    def _with_photo_ids(conn, records: list[dict]) -> list[dict]:
         if not records:
             return records
         ids = [rec["id"] for rec in records]
@@ -2749,9 +2784,44 @@ def build_barcode_router(
     def list_defect_records(user: str = Depends(get_current_user)):
         conn = _defect_record_conn()
         try:
+            _sync_defect_records(conn)
             return _defect_records_response(conn)
         finally:
             conn.close()
+
+    @router.get("/barcode/defect/record/search")
+    def search_defect_records(
+        q: str = "",
+        date_from: str = "",
+        date_to: str = "",
+        limit: int = 200,
+        user: str = Depends(get_current_user),
+    ):
+        """매입관리 등에서 쓰는 조회용: 모든 탭의 사진·사유 기록을 불량 목록에 남아 있는지와 무관하게 DB 에서 찾는다."""
+        where, params = [], []
+        keyword = (q or "").strip()
+        if keyword:
+            like = f"%{keyword}%"
+            where.append("(product_name LIKE ? OR code LIKE ? OR reason LIKE ?)")
+            params.extend([like, like, like])
+        if (date_from or "").strip():
+            where.append("substr(created_at, 1, 10) >= ?")
+            params.append(date_from.strip()[:10])
+        if (date_to or "").strip():
+            where.append("substr(created_at, 1, 10) <= ?")
+            params.append(date_to.strip()[:10])
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        limit = min(max(int(limit or 200), 1), 500)
+        conn = _defect_record_conn()
+        try:
+            rows = conn.execute(
+                f"SELECT * FROM barcode_defect_records {clause} ORDER BY id DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+            records = _with_photo_ids(conn, [dict(row) for row in rows])
+        finally:
+            conn.close()
+        return {"ok": True, "records": records}
 
     @router.get("/barcode/defect/record/photo/{photo_id}")
     def get_defect_record_photo(photo_id: int, user: str = Depends(get_current_user)):
@@ -2814,6 +2884,7 @@ def build_barcode_router(
         conn = _defect_record_conn()
         record_ids = []
         try:
+            _sync_defect_records(conn)  # 같은 코드의 지난 불량 기록이 새 불량에 이어붙지 않게 먼저 닫는다
             for qty, reason, photos in specs:
                 cur = conn.execute(
                     "INSERT INTO barcode_defect_records (tab, code, product_name, qty, reason, created_at, updated_at, username)"
@@ -3797,7 +3868,7 @@ def build_barcode_router(
         conn = _get_wonbe_db()
         try:
             base_rows = conn.execute(
-                "SELECT 상품코드, 거래처, 거래처상품명, 색상, 사이즈, 원가 FROM wonbe"
+                "SELECT 상품코드, 거래처, 거래처상품명, 상품명, 색상, 사이즈, 원가 FROM wonbe"
             ).fetchall()
         finally:
             conn.close()
@@ -3808,6 +3879,23 @@ def build_barcode_router(
             if code and code not in wonbe_by_code:
                 wonbe_by_code[code] = row
 
+        # 거래처 불량 매입 관리에서 사유·사진을 보여줄 수 있도록 코드별 불량 기록을 함께 넘긴다.
+        records_by_code: dict[str, list[dict]] = {}
+        rec_conn = _defect_record_conn()
+        try:
+            _sync_defect_records(rec_conn)
+            for rec in _list_defect_records_for_tab(rec_conn, defect_tab_service.current_tab()):
+                key = normalize_to_s5(rec["code"]) or rec["code"]
+                records_by_code.setdefault(key, []).append({
+                    "id": rec["id"],
+                    "qty": rec["qty"],
+                    "reason": rec["reason"],
+                    "photo_ids": rec["photo_ids"],
+                    "created_at": rec["created_at"],
+                })
+        finally:
+            rec_conn.close()
+
         rows = []
         unmatched_codes = []
         for raw_code, qty in sorted(defect_counts.items()):
@@ -3817,9 +3905,11 @@ def build_barcode_router(
                 unmatched_codes.append(code or str(raw_code or ""))
                 continue
             rows.append({
+                "records": records_by_code.get(code, []),
                 "code": code,
                 "vendor": str(matched["거래처"] or "").strip(),
                 "productName": str(matched["거래처상품명"] or "").strip(),
+                "ownName": str(matched["상품명"] or "").strip(),
                 "color": str(matched["색상"] or "").strip(),
                 "size": str(matched["사이즈"] or "").strip(),
                 "cost": matched["원가"],
@@ -3993,6 +4083,7 @@ def build_barcode_router(
             if defect_counts[code] <= 0:
                 del defect_counts[code]
         set_shared_defect_counts(defect_counts)
+        _sync_defect_records()
 
         summon_counts = dict(get_shared_defect_summon_counts())
         if code in summon_counts:
@@ -4023,6 +4114,7 @@ def build_barcode_router(
         defect_counts = dict(get_shared_defect_counts())
         defect_counts.pop(code, None)
         set_shared_defect_counts(defect_counts)
+        _sync_defect_records()
 
         summon_counts = dict(get_shared_defect_summon_counts())
         if code in summon_counts:

@@ -4,8 +4,12 @@ import DefectPhotoPicker from "./DefectPhotoPicker";
 import styles from "./DefectRecord.module.css";
 
 // 불량 리스트의 한 상품코드에 붙은 등록 기록(수량·사유·사진). 기본은 모두 접힘/숨김 상태.
-export default function DefectRecordsPanel({ records, tabHeaders, onChanged }) {
-  const [open, setOpen] = useState(false);
+export default function DefectRecordsPanel({ records, tabHeaders, onChanged, controlledOpen }) {
+  // controlledOpen 이 boolean 이면 부모(📷 버튼)가 열림을 제어하고 자체 토글 버튼은 숨긴다.
+  const [innerOpen, setInnerOpen] = useState(false);
+  const isControlled = typeof controlledOpen === "boolean";
+  const open = isControlled ? controlledOpen : innerOpen;
+  const setOpen = setInnerOpen;
   const [showReason, setShowReason] = useState({}); // { [recordId]: true }
   const [showPhotos, setShowPhotos] = useState({}); // { [recordId]: true }
   const [photoCache, setPhotoCache] = useState({}); // { [photoId]: dataURL }
@@ -141,9 +145,11 @@ export default function DefectRecordsPanel({ records, tabHeaders, onChanged }) {
 
   return (
     <div className={styles.panel}>
-      <button type="button" className={styles.panelToggle} onClick={() => setOpen((v) => !v)}>
-        사진·사유 {records.length}건 {open ? "▴" : "▾"}
-      </button>
+      {!isControlled && (
+        <button type="button" className={styles.panelToggle} onClick={() => setOpen((v) => !v)}>
+          사진·사유 {records.length}건 {open ? "▴" : "▾"}
+        </button>
+      )}
       {open && (
         <div className={styles.recordList}>
           {records.map((record) => (

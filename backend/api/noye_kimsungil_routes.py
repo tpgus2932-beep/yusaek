@@ -1415,6 +1415,441 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
         finally:
             conn.close()
 
+    # ---- 거래처 불량 매입 관리 (불량 등록 → 거래처별 잡힌 금액 / 차감 / 재매입 로그) ----
+    def _init_defect_purchase_tables(conn):
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS defect_purchase_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vendor TEXT NOT NULL DEFAULT '',
+                code TEXT NOT NULL DEFAULT '',
+                product_name TEXT NOT NULL DEFAULT '',
+                color TEXT NOT NULL DEFAULT '',
+                size TEXT NOT NULL DEFAULT '',
+                qty INTEGER NOT NULL DEFAULT 0,
+                unit_cost REAL NOT NULL DEFAULT 0,
+                amount REAL NOT NULL DEFAULT 0,
+                defect_date TEXT NOT NULL DEFAULT '',
+                records_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'held',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS defect_purchase_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL DEFAULT '',
+                vendor TEXT NOT NULL DEFAULT '',
+                item_id INTEGER,
+                product_name TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT '',
+                delta REAL NOT NULL DEFAULT 0,
+                vendor_balance_after REAL NOT NULL DEFAULT 0,
+                username TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        item_cols = {r[1] for r in conn.execute("PRAGMA table_info(defect_purchase_items)").fetchall()}
+        if "own_name" not in item_cols:
+            conn.execute("ALTER TABLE defect_purchase_items ADD COLUMN own_name TEXT NOT NULL DEFAULT ''")
+        if "memo" not in item_cols:
+            conn.execute("ALTER TABLE defect_purchase_items ADD COLUMN memo TEXT NOT NULL DEFAULT ''")
+        for col, ddl in (("tab", "TEXT NOT NULL DEFAULT ''"), ("normal_qty", "INTEGER NOT NULL DEFAULT 0"), ("summon_qty", "INTEGER NOT NULL DEFAULT 0")):
+            if col not in item_cols:
+                conn.execute(f"ALTER TABLE defect_purchase_items ADD COLUMN {col} {ddl}")
+        if "source" not in item_cols:
+            conn.execute("ALTER TABLE defect_purchase_items ADD COLUMN source TEXT NOT NULL DEFAULT 'product'")
+        # 이미 매입관리로 보낸 수량(탭·상품코드·종류별). 같은 불량을 다시 보내도 신규 수량만 이동시키는 이중 장치.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS defect_purchase_sent (
+                tab TEXT NOT NULL DEFAULT '',
+                code TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT '',
+                sent_qty INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (tab, code, kind)
+            )
+        """)
+        conn.commit()
+
+    _DP_KINDS = ("normal", "summon")
+
+    def _dp_clean_parts(parts) -> dict:
+        cleaned = {}
+        if not isinstance(parts, dict):
+            return cleaned
+        for code, value in parts.items():
+            if not isinstance(value, dict):
+                continue
+            entry = {}
+            for kind in _DP_KINDS:
+                try:
+                    entry[kind] = max(int(float(value.get(kind) or 0)), 0)
+                except (TypeError, ValueError):
+                    entry[kind] = 0
+            cleaned[str(code).strip()] = entry
+        return cleaned
+
+    def _dp_sent_map(conn, tab: str) -> dict:
+        sent: dict[str, dict] = {}
+        for r in conn.execute("SELECT code, kind, sent_qty FROM defect_purchase_sent WHERE tab = ?", (tab,)).fetchall():
+            sent.setdefault(r["code"], {"normal": 0, "summon": 0})[r["kind"]] = int(r["sent_qty"] or 0)
+        return sent
+
+    def _dp_reconcile_sent(conn, tab: str, parts: dict) -> dict:
+        """현재 불량 목록(parts) 기준으로 보낸 수량 기록을 정리한다: 목록에서 빠진 상품은 삭제, 수량이 줄었으면 그 수량으로 낮춘다."""
+        sent = _dp_sent_map(conn, tab)
+        for code, kinds in sent.items():
+            for kind in _DP_KINDS:
+                current = parts.get(code, {}).get(kind, 0)
+                if kinds.get(kind, 0) > current:
+                    if current <= 0:
+                        conn.execute("DELETE FROM defect_purchase_sent WHERE tab = ? AND code = ? AND kind = ?", (tab, code, kind))
+                    else:
+                        conn.execute(
+                            "UPDATE defect_purchase_sent SET sent_qty = ?, updated_at = ? WHERE tab = ? AND code = ? AND kind = ?",
+                            (current, _dp_now(), tab, code, kind),
+                        )
+                    kinds[kind] = max(current, 0)
+        conn.commit()
+        return sent
+
+    def _dp_backfill_names(conn):
+        """원가베이스(wonbe)의 상품코드로 비어 있는 상품명(own_name)을 채운다. 이전에 등록된 항목도 자동 보정."""
+        rows = conn.execute(
+            "SELECT id, code, product_name FROM defect_purchase_items WHERE own_name = '' AND code != ''"
+        ).fetchall()
+        if not rows:
+            return
+        codes = sorted({r["code"] for r in rows})
+        names: dict[str, tuple[str, str]] = {}
+        wconn = _get_wonbe_db()
+        try:
+            for i in range(0, len(codes), 500):
+                chunk = codes[i:i + 500]
+                marks = ",".join("?" for _ in chunk)
+                for w in wconn.execute(
+                    f"SELECT 상품코드, 상품명, 거래처상품명 FROM wonbe WHERE 상품코드 IN ({marks})", chunk
+                ).fetchall():
+                    names[str(w["상품코드"] or "").strip()] = (str(w["상품명"] or "").strip(), str(w["거래처상품명"] or "").strip())
+        finally:
+            wconn.close()
+        for r in rows:
+            own, vendor_name = names.get(r["code"], ("", ""))
+            if own:
+                conn.execute(
+                    "UPDATE defect_purchase_items SET own_name = ?, product_name = CASE WHEN product_name = '' THEN ? ELSE product_name END WHERE id = ?",
+                    (own, vendor_name, r["id"]),
+                )
+        conn.commit()
+
+    def _dp_now() -> str:
+        return datetime.now(timezone(timedelta(hours=9))).isoformat(timespec="seconds")
+
+    def _dp_vendor_balance(conn, vendor: str) -> float:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) AS total FROM defect_purchase_items WHERE vendor = ? AND status = 'held'",
+            (vendor,),
+        ).fetchone()
+        return float(row["total"] or 0)
+
+    def _dp_log(conn, vendor, item, kind, delta, user):
+        conn.execute(
+            "INSERT INTO defect_purchase_logs (created_at, vendor, item_id, product_name, kind, delta, vendor_balance_after, username)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (_dp_now(), vendor, item["id"], item["product_name"], kind, delta, _dp_vendor_balance(conn, vendor), user),
+        )
+
+    def _dp_item_dict(row) -> dict:
+        item = dict(row)
+        try:
+            item["records"] = json.loads(item.pop("records_json") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            item["records"] = []
+        return item
+
+    @router.post("/defect-purchase/sent-state")
+    def get_defect_purchase_sent_state(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        tab = str(payload.get("tab") or "")
+        parts = _dp_clean_parts(payload.get("parts"))
+        conn = get_db()
+        try:
+            _init_defect_purchase_tables(conn)
+            if payload.get("reconcile") is False:  # 표시용 조회: 기록을 정리(삭제)하지 않는다
+                return {"ok": True, "sent": _dp_sent_map(conn, tab)}
+            return {"ok": True, "sent": _dp_reconcile_sent(conn, tab, parts)}
+        finally:
+            conn.close()
+
+    @router.post("/defect-purchase/add")
+    def add_defect_purchase_items(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        rows = payload.get("rows")
+        if not isinstance(rows, list) or not rows:
+            raise HTTPException(status_code=400, detail="rows is required")
+        conn = get_db()
+        try:
+            _init_defect_purchase_tables(conn)
+            tab = str(payload.get("tab") or "")
+            manual_add = bool(payload.get("manual"))  # 화면에서 직접 추가: 바코드 불량 이동 중복 방지 장치를 거치지 않는다
+            parts = _dp_clean_parts(payload.get("parts"))
+            sent = {} if manual_add else (_dp_reconcile_sent(conn, tab, parts) if parts else _dp_sent_map(conn, tab))
+            known_ids = set()
+            for r in conn.execute("SELECT records_json FROM defect_purchase_items").fetchall():
+                try:
+                    known_ids.update(rec.get("id") for rec in json.loads(r["records_json"] or "[]"))
+                except (TypeError, json.JSONDecodeError):
+                    continue
+            added, skipped, invalid = 0, 0, 0
+            results = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                vendor = str(row.get("vendor") or "").strip() or "(거래처 미상)"
+                try:
+                    qty = int(float(row.get("qty") or 0))
+                except (TypeError, ValueError):
+                    qty = 0
+                try:
+                    unit_cost = float(re.sub(r"[^\d.\-]", "", str(row.get("cost") or "")) or 0)
+                except ValueError:
+                    unit_cost = 0.0
+                if qty <= 0:
+                    invalid += 1
+                    results.append({"code": str(row.get("code") or ""), "status": "invalid"})
+                    continue
+                # 이중 장치: 이미 보낸 수량은 빼고 신규 수량만 이동한다.
+                code_key = str(row.get("code") or "").strip()
+                requested = qty
+                gross = parts.get(code_key) or {"normal": qty, "summon": 0}
+                if manual_add:
+                    gross = {"normal": qty, "summon": 0}
+                already = sent.get(code_key, {"normal": 0, "summon": 0})
+                new_by_kind = {k: max(gross.get(k, 0) - already.get(k, 0), 0) for k in _DP_KINDS}
+                new_qty = sum(new_by_kind.values())
+                if new_qty <= 0:
+                    skipped += 1
+                    results.append({"code": code_key, "status": "skipped", "reason": "sent", "requested": requested})
+                    continue
+                qty = new_qty
+                records = [rec for rec in (row.get("records") or []) if isinstance(rec, dict)]
+                records = [rec for rec in records if rec.get("id") not in known_ids]
+                known_ids.update(rec.get("id") for rec in records)
+                snapshot = [
+                    {
+                        "id": rec.get("id"),
+                        "qty": rec.get("qty"),
+                        "reason": str(rec.get("reason") or ""),
+                        "photo_ids": [p for p in (rec.get("photo_ids") or []) if isinstance(p, int)],
+                        "created_at": str(rec.get("created_at") or ""),
+                    }
+                    for rec in records
+                ]
+                dates = sorted(s["created_at"][:10] for s in snapshot if s["created_at"])
+                defect_date = str(row.get("defectDate") or "")[:10] or (dates[0] if dates else _dp_now()[:10])
+                now = _dp_now()
+                cur = conn.execute(
+                    "INSERT INTO defect_purchase_items (vendor, code, product_name, own_name, color, size, qty, unit_cost, amount,"
+                    " defect_date, records_json, status, created_at, updated_at, tab, normal_qty, summon_qty) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'held', ?, ?, ?, ?, ?)",
+                    (vendor, str(row.get("code") or ""), str(row.get("productName") or ""), str(row.get("ownName") or ""),
+                     str(row.get("color") or ""), str(row.get("size") or ""), qty, unit_cost, unit_cost * qty,
+                     defect_date, json.dumps(snapshot, ensure_ascii=False), now, now,
+                     tab, 0 if manual_add else new_by_kind["normal"], 0 if manual_add else new_by_kind["summon"]),
+                )
+                item = {"id": cur.lastrowid, "product_name": str(row.get("productName") or "")}
+                _dp_log(conn, vendor, item, "add", unit_cost * qty, user)
+                for kind in _DP_KINDS:
+                    if new_by_kind[kind] > 0 and not manual_add:
+                        conn.execute(
+                            "INSERT INTO defect_purchase_sent (tab, code, kind, sent_qty, updated_at) VALUES (?, ?, ?, ?, ?)"
+                            " ON CONFLICT(tab, code, kind) DO UPDATE SET sent_qty = sent_qty + excluded.sent_qty, updated_at = excluded.updated_at",
+                            (tab, code_key, kind, new_by_kind[kind], _dp_now()),
+                        )
+                        already[kind] = already.get(kind, 0) + new_by_kind[kind]
+                sent[code_key] = already
+                added += 1
+                results.append({"code": code_key, "status": "added", "vendor": vendor, "amount": unit_cost * qty, "qty": qty, "requested": requested, "already": sum(already.values()) - qty})
+            conn.commit()
+            return {"ok": True, "added": added, "skipped": skipped, "invalid": invalid, "results": results}
+        finally:
+            conn.close()
+
+    @router.post("/defect-purchase/manual")
+    def add_defect_purchase_manual(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """직접입력: 거래처 / 금액(+잡힘, -차감) / 사유 만으로 매입 금액을 증감한다."""
+        vendor = str(payload.get("vendor") or "").strip()
+        memo = str(payload.get("memo") or "").strip()
+        if not vendor:
+            raise HTTPException(status_code=400, detail="거래처를 입력해 주세요")
+        try:
+            amount = float(re.sub(r"[^\d.\-]", "", str(payload.get("amount") or "")) or 0)
+        except ValueError:
+            amount = 0.0
+        if amount == 0:
+            raise HTTPException(status_code=400, detail="금액을 입력해 주세요 (예: -23000)")
+        conn = get_db()
+        try:
+            _init_defect_purchase_tables(conn)
+            now = _dp_now()
+            cur = conn.execute(
+                "INSERT INTO defect_purchase_items (vendor, code, product_name, own_name, color, size, qty, unit_cost, amount,"
+                " defect_date, records_json, status, memo, source, created_at, updated_at)"
+                " VALUES (?, '', ?, '', '', '', 0, 0, ?, ?, '[]', 'held', ?, 'manual', ?, ?)",
+                (vendor, memo, amount, str(payload.get("date") or "")[:10] or now[:10], memo, now, now),
+            )
+            _dp_log(conn, vendor, {"id": cur.lastrowid, "product_name": memo}, "manual", amount, user)
+            conn.commit()
+            return {"ok": True, "vendor_balance": _dp_vendor_balance(conn, vendor)}
+        finally:
+            conn.close()
+
+    @router.get("/defect-purchase/list")
+    def list_defect_purchase_items(user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            _init_defect_purchase_tables(conn)
+            try:
+                _dp_backfill_names(conn)
+            except Exception:
+                pass  # 원가베이스 연동 실패해도 목록은 보여준다
+            rows = conn.execute("SELECT * FROM defect_purchase_items WHERE status != 'deleted' ORDER BY id DESC").fetchall()
+            vendors: dict[str, dict] = {}
+            for row in rows:
+                item = _dp_item_dict(row)
+                group = vendors.setdefault(item["vendor"], {"vendor": item["vendor"], "held_amount": 0, "items": []})
+                group["items"].append(item)
+                if item["status"] == "held":
+                    group["held_amount"] += item["amount"]
+            result = sorted(vendors.values(), key=lambda g: (-g["held_amount"], g["vendor"]))
+            return {"ok": True, "vendors": result}
+        finally:
+            conn.close()
+
+    @router.post("/defect-purchase/status")
+    def set_defect_purchase_status(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        status = payload.get("status")
+        if status not in ("deducted", "held"):
+            raise HTTPException(status_code=400, detail="status must be deducted or held")
+        ids = [int(i) for i in (payload.get("item_ids") or []) if str(i).lstrip("-").isdigit()]
+        if not ids:
+            raise HTTPException(status_code=400, detail="item_ids is required")
+        conn = get_db()
+        try:
+            _init_defect_purchase_tables(conn)
+            changed = 0
+            for item_id in ids:
+                row = conn.execute("SELECT * FROM defect_purchase_items WHERE id = ?", (item_id,)).fetchone()
+                if not row or row["status"] in (status, "deleted"):
+                    continue
+                conn.execute(
+                    "UPDATE defect_purchase_items SET status = ?, updated_at = ? WHERE id = ?",
+                    (status, _dp_now(), item_id),
+                )
+                if status == "deducted":
+                    _dp_log(conn, row["vendor"], row, "deduct", -row["amount"], user)
+                else:
+                    _dp_log(conn, row["vendor"], row, "restore", row["amount"], user)
+                changed += 1
+            conn.commit()
+            return {"ok": True, "changed": changed}
+        finally:
+            conn.close()
+
+    @router.post("/defect-purchase/delete")
+    def delete_defect_purchase_item(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """항목 삭제: 목록에서 숨기고(기록은 로그용으로 보존), 잡혀 있던 금액이면 그만큼 되돌리는 로그를 남긴다.
+        바코드에서 이동했던 항목이면 '이미 보낸 수량'도 되돌려 다시 보낼 수 있게 한다."""
+        try:
+            item_id = int(payload.get("item_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="item_id is required")
+        conn = get_db()
+        try:
+            _init_defect_purchase_tables(conn)
+            row = conn.execute("SELECT * FROM defect_purchase_items WHERE id = ?", (item_id,)).fetchone()
+            if not row or row["status"] == "deleted":
+                raise HTTPException(status_code=404, detail="항목을 찾을 수 없습니다")
+            was_held = row["status"] == "held"
+            conn.execute(
+                "UPDATE defect_purchase_items SET status = 'deleted', updated_at = ? WHERE id = ?", (_dp_now(), item_id)
+            )
+            for kind, qty in (("normal", row["normal_qty"]), ("summon", row["summon_qty"])):
+                if row["source"] == "product" and row["code"] and (qty or 0) > 0:
+                    conn.execute(
+                        "UPDATE defect_purchase_sent SET sent_qty = MAX(sent_qty - ?, 0), updated_at = ? WHERE tab = ? AND code = ? AND kind = ?",
+                        (qty, _dp_now(), row["tab"], row["code"], kind),
+                    )
+            conn.execute("DELETE FROM defect_purchase_sent WHERE sent_qty <= 0")
+            _dp_log(conn, row["vendor"], row, "delete", -row["amount"] if was_held else 0, user)
+            conn.commit()
+            return {"ok": True, "vendor_balance": _dp_vendor_balance(conn, row["vendor"])}
+        finally:
+            conn.close()
+
+    @router.get("/defect-purchase/log-vendors")
+    def list_defect_purchase_log_vendors(user: str = Depends(get_current_user)):
+        """로그가 한 번이라도 남은 모든 거래처 (현재 목록에서 사라졌거나 항목을 전부 삭제한 거래처 포함)."""
+        conn = get_db()
+        try:
+            _init_defect_purchase_tables(conn)
+            rows = conn.execute(
+                "SELECT vendor, COUNT(*) AS log_count, MAX(created_at) AS last_at FROM defect_purchase_logs"
+                " GROUP BY vendor ORDER BY last_at DESC"
+            ).fetchall()
+            return {
+                "ok": True,
+                "vendors": [
+                    {"vendor": r["vendor"], "log_count": r["log_count"], "last_at": r["last_at"],
+                     "held_amount": _dp_vendor_balance(conn, r["vendor"])}
+                    for r in rows
+                ],
+            }
+        finally:
+            conn.close()
+
+    @router.get("/defect-purchase/logs")
+    def list_defect_purchase_logs(
+        vendor: str = "",
+        date_from: str = "",
+        date_to: str = "",
+        limit: int = 500,
+        user: str = Depends(get_current_user),
+    ):
+        where, params = [], []
+        if vendor.strip():
+            where.append("vendor = ?")
+            params.append(vendor.strip())
+        if date_from.strip():
+            where.append("substr(created_at, 1, 10) >= ?")
+            params.append(date_from.strip()[:10])
+        if date_to.strip():
+            where.append("substr(created_at, 1, 10) <= ?")
+            params.append(date_to.strip()[:10])
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        limit = min(max(int(limit or 500), 1), 2000)
+        conn = get_db()
+        try:
+            _init_defect_purchase_tables(conn)
+            try:
+                _dp_backfill_names(conn)
+            except Exception:
+                pass
+            rows = conn.execute(
+                "SELECT l.*, i.own_name, i.color, i.size, i.qty, i.memo, i.source, i.status AS item_status, i.amount AS item_amount, i.records_json FROM defect_purchase_logs l"
+                " LEFT JOIN defect_purchase_items i ON i.id = l.item_id "
+                + clause.replace("vendor", "l.vendor").replace("created_at", "l.created_at")
+                + " ORDER BY l.id DESC LIMIT ?", (*params, limit)
+            ).fetchall()
+            logs = []
+            for r in rows:
+                log = dict(r)
+                try:
+                    log["records"] = json.loads(log.pop("records_json") or "[]")
+                except (TypeError, json.JSONDecodeError):
+                    log["records"] = []
+                logs.append(log)
+            return {"ok": True, "logs": logs}
+        finally:
+            conn.close()
+
     # ---- 오늘출발 4단계(불러오기/초기화/오출로변경/오출마이너스) 실행 진행 기록 ----
     _TODAY_STEPS = ("load", "reset", "delivery", "minus")
 

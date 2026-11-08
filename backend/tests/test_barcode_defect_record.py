@@ -213,3 +213,46 @@ def test_attach_existing_keeps_count_unchanged(monkeypatch):
     assert res.status_code == 200
     assert store["counts"]["P1"] == 1
     assert res.json()["records"][0]["reason"] == "얼룩"
+
+
+def test_search_finds_records_across_tabs_even_after_defect_removed(monkeypatch):
+    """매입관리 조회용: 탭과 무관하게, 불량 목록에서 빠진 상품의 기록도 DB 에서 찾는다."""
+    client, db, store = _make_client(monkeypatch)
+    add = "/barcode/defect/record/add"
+    client.post(add, json={"code": "P1", "reason": "얼룩", "photos": [_photo("a")]}, headers={"X-Defect-Tab": "A"})
+    client.post(add, json={"code": "P2", "reason": "구멍", "photos": [_photo("b")]}, headers={"X-Defect-Tab": "B"})
+
+    # 불량 목록(수량)에서 P1 을 지워도 기록은 DB 에 남아 있다
+    client.post("/barcode/defect/remove", json={"code": "P1"}, headers={"X-Defect-Tab": "A"})
+
+    everything = client.get("/barcode/defect/record/search").json()["records"]
+    assert {r["code"] for r in everything} == {"P1", "P2"}
+    assert {r["tab"] for r in everything} == {"A", "B"}
+    assert all(len(r["photo_ids"]) == 1 for r in everything)
+
+    assert [r["code"] for r in client.get("/barcode/defect/record/search", params={"q": "구멍"}).json()["records"]] == ["P2"]
+    assert [r["code"] for r in client.get("/barcode/defect/record/search", params={"q": "P1"}).json()["records"]] == ["P1"]
+    # 사진 본문은 목록에 싣지 않는다 (가볍게 조회, 클릭 시 한 장씩 로드)
+    assert "data" not in everything[0] and "data_url" not in everything[0]
+    # 날짜 필터: 오늘 포함 / 과거만이면 제외
+    from datetime import datetime
+    today = datetime.now().strftime("%Y-%m-%d")
+    assert len(client.get("/barcode/defect/record/search", params={"date_from": today, "date_to": today}).json()["records"]) == 2
+    assert client.get("/barcode/defect/record/search", params={"date_to": "2000-01-01"}).json()["records"] == []
+
+
+def test_past_defect_record_does_not_attach_to_new_defect_of_same_code(monkeypatch):
+    client, db, store = _make_client(monkeypatch)
+    client.post("/barcode/defect/record/add", json={"code": "P1", "qty": 1, "reason": "옛날 사유", "photos": [_photo("old")]})
+    assert [r["reason"] for r in client.get("/barcode/defect/record/list").json()["records"]] == ["옛날 사유"]
+
+    # 불량이 목록에서 사라진 뒤(삭제/출고 등) 같은 상품코드를 다시 불량으로 찍는다
+    client.post("/barcode/defect/remove", json={"code": "P1"})
+    assert client.get("/barcode/defect/record/list").json()["records"] == []
+    client.post("/barcode/defect/add", json={"code": "P1"})
+    assert client.get("/barcode/defect/record/list").json()["records"] == []  # 옛날 사진·사유가 이어붙지 않는다
+
+    # 이번에 찍은 사진·사유만 붙는다. 조회 화면(search)에는 지난 기록도 이력으로 남아 있다.
+    client.post("/barcode/defect/record/add", json={"code": "P1", "qty": 1, "reason": "새 사유", "photos": [_photo("new")], "attach_existing": True})
+    assert [r["reason"] for r in client.get("/barcode/defect/record/list").json()["records"]] == ["새 사유"]
+    assert len(client.get("/barcode/defect/record/search").json()["records"]) == 2

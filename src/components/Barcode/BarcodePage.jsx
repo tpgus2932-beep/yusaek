@@ -4,7 +4,7 @@ import styles from "./BarcodePage.module.css";
 import LabelReprintPage from "./LabelReprintPage";
 import StockLogModal from "./StockLogModal";
 import DefectRecordSheet from "./DefectRecordSheet";
-import DefectRecordsPanel from "./DefectRecordsPanel";
+import DefectRecordDetailModal from "./DefectRecordDetailModal";
 import DefectMatchModal from "./DefectMatchModal";
 import { getDownloadFilename } from "../../lib/download";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
@@ -114,6 +114,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
   const [kimsungilSearchMessage, setKimsungilSearchMessage] = useState("");
   const [kimsungilSummonLoading, setKimsungilSummonLoading] = useState(false);
   const [purchaseModePicker, setPurchaseModePicker] = useState(false); // 매입관리 보내기 범위 선택 창
+  const [purchaseScope, setPurchaseScope] = useState("all"); // normal | summon | all
+  const [purchaseSelected, setPurchaseSelected] = useState({}); // 코드 → 선택 여부
+  const [purchaseSending, setPurchaseSending] = useState(false);
+  const [defectPhotoCode, setDefectPhotoCode] = useState(null); // 📷 버튼으로 연 사진·사유 팝업의 상품코드
+  const [purchaseSent, setPurchaseSent] = useState({}); // 이미 매입관리로 보낸 수량: 코드 → {normal, summon}
+  const [purchaseResult, setPurchaseResult] = useState(null); // 보내기 결과 팝업
   const [kimsungilSummonPicker, setKimsungilSummonPicker] = useState(null); // { tabs, counts: { 탭: {kinds,total}|null|"?" } }
   const [unifiedQuery, setUnifiedQuery] = useState("");
   const [unifiedRows, setUnifiedRows] = useState(null); // null = 아직 검색 안 함
@@ -1298,6 +1304,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
   };
 
   const handleDefectRemove = async (code) => {
+    const target = defectList.find((i) => i.code === code);
+    const sentNote = target && purchaseStateOf(target) !== "none" ? "\n(이미 매입관리로 이동된 항목입니다. 매입관리 쪽 기록은 그대로 남습니다.)" : "";
+    if (!window.confirm(`"${target ? renderDefectLabel(target) : code}" 불량을 목록에서 삭제할까요?${sentNote}`)) return;
     try {
       const res = await fetch(`${API}/barcode/defect/remove`, {
         method: "POST", headers: { "Content-Type": "application/json", ...tabHeaders() },
@@ -1352,6 +1361,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
   useEffect(() => {
     if (showDefectList) fetchSummonedAllTabs();
   }, [showDefectList, defectList]);
+
+  // 불량 리스트를 열 때(탭 전환 포함) 매입관리 이동 상태를 읽어 표시한다 (조회만, 기록은 건드리지 않음).
+  useEffect(() => {
+    if (showDefectList) refreshPurchaseSent(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showDefectList, defectTab, defectList]);
 
   const handleKimsungilRevert = async (tab, code) => {
     if (!window.confirm(`${tab}탭 ${code} 소환 수량을 김승일 리스트로 되돌릴까요?`)) return;
@@ -1686,19 +1701,85 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     return Number(item.count) || 0;
   };
 
-  const handleDefectPurchaseManager = async (mode = "all") => {
-    setPurchaseModePicker(false);
+  // 현재 불량 목록의 종류별(직접 찍은 불량 / 소환술) 수량
+  const purchaseParts = (item) => ({
+    normal: Number(item.normal_qty ?? item.count) || 0,
+    summon: Number(item.kimsungil_summon_qty) || 0,
+  });
+  const allPurchaseParts = () => {
+    const parts = {};
+    defectList.forEach((item) => { parts[String(item.code || "").trim()] = purchaseParts(item); });
+    return parts;
+  };
+  // 선택 범위에서 아직 매입관리로 안 보낸 신규 수량 (이미 보낸 수량은 제외)
+  const purchaseNewQty = (item, scope, sent = purchaseSent) => {
+    const gross = purchaseParts(item);
+    const done = sent[String(item.code || "").trim()] || {};
+    const kinds = scope === "normal" ? ["normal"] : scope === "summon" ? ["summon"] : ["normal", "summon"];
+    return kinds.reduce((sum, k) => sum + Math.max(gross[k] - (Number(done[k]) || 0), 0), 0);
+  };
+  const selectAllNew = (scope, sent) => {
+    const selected = {};
+    defectList.forEach((item) => { if (purchaseNewQty(item, scope, sent) > 0) selected[item.code] = true; });
+    setPurchaseSelected(selected);
+  };
+
+  // 서버에 기록된 "이미 매입관리로 보낸 수량"을 현재 불량 목록과 맞춰 가져온다.
+  const refreshPurchaseSent = async (reconcile = true) => {
+    let sent = {};
     try {
-      // 선택한 범위의 불량리스트 코드/수량을 보낸다
-      const counts = {};
-      defectList.forEach((item) => {
-        const code = String(item.code || "").trim();
-        const qty = purchaseQty(item, mode);
-        if (code && qty > 0) counts[code] = (counts[code] || 0) + qty;
+      const res = await fetch(`${API}/noye-kimsungil/defect-purchase/sent-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ tab: defectTabRef.current, parts: allPurchaseParts(), reconcile }),
       });
-      if (Object.keys(counts).length === 0) {
-        throw new Error("선택한 범위에 매입관리로 보낼 불량 항목이 없습니다.");
-      }
+      if (handleUnauthorized(res)) return null;
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) sent = data.sent || {};
+    } catch {
+      sent = {};
+    }
+    setPurchaseSent(sent);
+    return sent;
+  };
+
+  const openPurchasePicker = async () => {
+    setPurchaseScope("all");
+    setPurchaseSelected({});
+    setPurchaseModePicker(true);
+    const sent = await refreshPurchaseSent();
+    if (sent) selectAllNew("all", sent);
+  };
+
+  // 불량 리스트 항목의 매입관리 이동 상태: none | partial | done (직접 찍은 불량 기준)
+  const purchaseStateOf = (item) => {
+    const gross = Number(item.normal_qty ?? item.count) || 0;
+    const done = Number((purchaseSent[String(item.code || "").trim()] || {}).normal) || 0;
+    if (gross > 0 && done >= gross) return "done";
+    if (done > 0) return "partial";
+    return "none";
+  };
+
+  // 선택한 범위·항목만 거래처 불량 매입 관리에 등록하고, 항목별 결과를 팝업으로 보여준다.
+  const handleDefectPurchaseManager = async () => {
+    if (purchaseSending) return;
+    const targets = defectList.filter((item) => purchaseSelected[item.code] && purchaseNewQty(item, purchaseScope) > 0);
+    if (targets.length === 0) { alert("보낼 항목을 선택해 주세요."); return; }
+    setPurchaseSending(true);
+    try {
+      const counts = {};
+      const labelByCode = {};
+      const partsToSend = {};
+      targets.forEach((item) => {
+        const code = String(item.code || "").trim();
+        counts[code] = (counts[code] || 0) + purchaseNewQty(item, purchaseScope);
+        labelByCode[code] = renderDefectLabel(item);
+        const gross = purchaseParts(item);
+        partsToSend[code] = {
+          normal: purchaseScope === "summon" ? 0 : gross.normal,
+          summon: purchaseScope === "normal" ? 0 : gross.summon,
+        };
+      });
       const res = await fetch(`${API}/barcode/defect/purchase-manager-handoff`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...tabHeaders() },
@@ -1707,25 +1788,60 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "매입관리 데이터 변환에 실패했습니다.");
-      if (!(data.rows || []).length) {
-        throw new Error(`원가베이스유에서 일치하는 상품코드를 찾지 못했습니다.${data.unmatched_codes?.length ? ` (${data.unmatched_codes.join(", ")})` : ""}`);
+      const rows = data.rows || [];
+      const unmatched = new Set((data.unmatched_codes || []).map((c) => String(c)));
+
+      const statusByCode = {};
+      let addError = "";
+      if (rows.length > 0) {
+        try {
+          const addRes = await fetch(`${API}/noye-kimsungil/defect-purchase/add`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+            body: JSON.stringify({ rows, tab: defectTabRef.current, parts: partsToSend }),
+          });
+          if (handleUnauthorized(addRes)) return;
+          const addData = await addRes.json().catch(() => ({}));
+          if (!addRes.ok) throw new Error(addData?.detail || "등록 실패");
+          (addData.results || []).forEach((r) => { statusByCode[r.code] = r; });
+        } catch (err) {
+          addError = err.message || "등록 실패";
+        }
       }
 
-      localStorage.setItem("activeTab", "noye-kimsungil");
-      localStorage.setItem("noye-kimsungil-active-tab", "purchase");
-      localStorage.setItem(
-        "noye-kimsungil-purchase-handoff",
-        JSON.stringify({
-          rows: data.rows,
-          unmatched_codes: data.unmatched_codes || [],
-          created_at: Date.now(),
-        })
-      );
-      window.location.reload();
+      const items = Object.keys(counts).map((code) => {
+        const label = labelByCode[code] || code;
+        const qty = counts[code];
+        if (unmatched.has(code)) return { code, label, qty, state: "fail", note: "원가베이스에 없는 상품코드" };
+        if (addError) return { code, label, qty, state: "fail", note: addError };
+        const st = statusByCode[code];
+        if (st?.status === "added") {
+          const partial = st.already > 0 ? ` (신규 ${st.qty}개만 · 기존 ${st.already}개는 이미 이동됨)` : "";
+          return { code, label, qty: st.qty ?? qty, state: "ok", note: `${st.vendor || ""} · ${Math.round(st.amount || 0).toLocaleString("ko-KR")}원${partial}` };
+        }
+        if (st?.status === "skipped") return { code, label, qty, state: "skip", note: "이미 매입관리로 이동됨 (신규 수량 없음)" };
+        return { code, label, qty, state: "fail", note: "등록되지 않음" };
+      });
+      setPurchaseModePicker(false);
+      setPurchaseResult({ items });
+      refreshPurchaseSent(false);
+      items.filter((i) => i.state === "fail").forEach((i) => pushLog(`매입관리 전송 실패: ${i.label} (${i.note})`));
     } catch (err) {
       alert(err.message || "매입관리 전송에 실패했습니다.");
       pushLog(`매입관리 전송 실패: ${err.message || ""}`.trim());
+    } finally {
+      setPurchaseSending(false);
     }
+  };
+
+  const openDefectPurchaseMenu = () => {
+    localStorage.setItem("topMode", "home");
+    localStorage.setItem("activeTab", "noye-kimsungil");
+    localStorage.setItem("noye-kimsungil-active-tab", "defect-purchase");
+    // 모바일 전용 화면(/bacode)은 메인 앱이 아니라서 reload 만 하면 노예김승일 탭으로 못 간다 → 루트로 이동.
+    const onMobileOnlyRoute = ["/bacode", "/barcode"].includes((window.location.pathname || "").replace(/\/+$/, "").toLowerCase());
+    if (onMobileOnlyRoute) window.location.assign("/");
+    else window.location.reload();
   };
 
   const handleDefectExportAndOchuul = async (excludeKimsungilOverride) => {
@@ -3163,6 +3279,19 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
         </div>
       )}
 
+      {defectPhotoCode && (
+        <DefectRecordDetailModal
+          title={(() => {
+            const it = defectList.find((i) => i.code === defectPhotoCode);
+            return `📷 ${it ? renderDefectLabel(it) : defectPhotoCode} · 사진·사유`;
+          })()}
+          records={defectRecords.filter((r) => r.code === defectPhotoCode)}
+          tabHeaders={tabHeaders}
+          onChanged={setDefectRecords}
+          onClose={() => setDefectPhotoCode(null)}
+        />
+      )}
+
       {purchaseModePicker && (
         <div className={styles.modalOverlay} style={{ zIndex: 1100 }} onClick={() => setPurchaseModePicker(false)}>
           <div className={styles.modal} style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
@@ -3172,29 +3301,113 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                 <button className={styles.secondaryBtn} onClick={() => setPurchaseModePicker(false)}>닫기</button>
               </div>
             </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
-              {[
-                ["normal", "불량 항목", "직접 찍은 불량만"],
-                ["summon", "소환술 항목", "김승일 소환술로 들어온 것만"],
-                ["all", "둘 다", "불량 + 소환술 전부"],
-              ].map(([mode, label, desc]) => {
-                const rows = defectList.filter((i) => purchaseQty(i, mode) > 0);
-                const total = rows.reduce((s, i) => s + purchaseQty(i, mode), 0);
-                return (
-                  <button
-                    key={mode}
-                    className={mode === "all" ? styles.primaryBtn : styles.secondaryBtn}
-                    style={{ flex: "1 1 130px", padding: "14px 8px", fontWeight: 700, opacity: rows.length === 0 ? 0.5 : 1 }}
-                    disabled={rows.length === 0}
-                    onClick={() => handleDefectPurchaseManager(mode)}
-                  >
-                    {label}
-                    <div style={{ fontSize: "0.8rem", fontWeight: 500 }}>{desc}</div>
-                    <div style={{ fontSize: "0.85rem", fontWeight: 600 }}>{rows.length === 0 ? "없음" : `${rows.length}종 ${total}개`}</div>
-                  </button>
-                );
-              })}
+            <div style={{ display: "flex", gap: "0.4rem", marginBottom: "0.6rem" }}>
+              {[["all", "둘 다"], ["normal", "불량만"], ["summon", "소환술만"]].map(([mode, label]) => (
+                <button
+                  key={mode}
+                  className={purchaseScope === mode ? styles.primaryBtn : styles.secondaryBtn}
+                  style={{ flex: 1, padding: "10px 4px", fontWeight: 700 }}
+                  onClick={() => {
+                    setPurchaseScope(mode);
+                    selectAllNew(mode, purchaseSent);
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
+            {(() => {
+              // 해당 범위에 수량이 있는 항목 중 신규가 있는 것을 먼저, 이미 이동된 것은 아래에 흐리게 표시
+              const inScope = defectList.filter((i) => purchaseQty(i, purchaseScope) > 0);
+              const rows = [...inScope.filter((i) => purchaseNewQty(i, purchaseScope) > 0), ...inScope.filter((i) => purchaseNewQty(i, purchaseScope) <= 0)];
+              const sentRows = rows.filter((i) => purchaseNewQty(i, purchaseScope) <= 0);
+              const selectable = rows.filter((i) => purchaseNewQty(i, purchaseScope) > 0);
+              const checked = selectable.filter((i) => purchaseSelected[i.code]);
+              const total = checked.reduce((s, i) => s + purchaseNewQty(i, purchaseScope), 0);
+              const allOn = selectable.length > 0 && checked.length === selectable.length;
+              return (
+                <>
+                  <label style={{ display: "flex", gap: "0.5rem", alignItems: "center", padding: "6px 2px", fontWeight: 700 }}>
+                    <input
+                      type="checkbox"
+                      checked={allOn}
+                      onChange={() => {
+                        const selected = {};
+                        if (!allOn) selectable.forEach((i) => { selected[i.code] = true; });
+                        setPurchaseSelected(selected);
+                      }}
+                    />
+                    전체 선택 ({checked.length}/{selectable.length}종){sentRows.length > 0 ? ` · 이미 이동 ${sentRows.length}종` : ""}
+                  </label>
+                  <div style={{ maxHeight: "42vh", overflowY: "auto", borderTop: "1px solid #e5e7eb" }}>
+                    {rows.length === 0 && <div className={styles.hint} style={{ padding: "12px 4px" }}>해당 범위에 보낼 항목이 없습니다.</div>}
+                    {rows.map((item) => {
+                      const newQty = purchaseNewQty(item, purchaseScope);
+                      const gross = purchaseQty(item, purchaseScope);
+                      const done = newQty <= 0;
+                      return (
+                        <label key={item.code} style={{ display: "flex", gap: "0.5rem", alignItems: "center", padding: "10px 2px", borderBottom: "1px solid #f1f5f9", opacity: done ? 0.5 : 1 }}>
+                          <input
+                            type="checkbox"
+                            disabled={done}
+                            checked={!done && !!purchaseSelected[item.code]}
+                            onChange={() => setPurchaseSelected((prev) => ({ ...prev, [item.code]: !prev[item.code] }))}
+                          />
+                          <span style={{ flex: 1, wordBreak: "break-all" }}>{renderDefectLabel(item)}</span>
+                          {done ? (
+                            <span className={styles.inlineTagDanger} style={{ background: "#e5e7eb", color: "#374151" }}>이동됨</span>
+                          ) : (
+                            <span className={styles.inlineTagDanger}>{newQty === gross ? `${newQty}개` : `신규 ${newQty}개`}</span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <button
+                    className={styles.primaryBtn}
+                    style={{ width: "100%", padding: "14px 8px", fontWeight: 700, marginTop: "0.7rem", opacity: checked.length === 0 ? 0.5 : 1 }}
+                    disabled={checked.length === 0 || purchaseSending}
+                    onClick={handleDefectPurchaseManager}
+                  >
+                    {purchaseSending ? "보내는 중..." : `보내기 (${checked.length}종 ${total}개)`}
+                  </button>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
+      {purchaseResult && (
+        <div className={styles.modalOverlay} style={{ zIndex: 1200 }}>
+          <div className={styles.modal} style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+            {(() => {
+              const items = purchaseResult.items;
+              const ok = items.filter((i) => i.state === "ok").length;
+              const skip = items.filter((i) => i.state === "skip").length;
+              const fail = items.filter((i) => i.state === "fail").length;
+              const icon = { ok: "✅ 이동됨", skip: "⚠️ 이미 등록", fail: "❌ 이동 안 됨" };
+              return (
+                <>
+                  <h4 className={styles.modalTitle}>매입관리 전송 결과</h4>
+                  <p className={styles.subtitle} style={{ margin: "0.4rem 0 0.6rem" }}>
+                    이동 {ok}종{skip ? ` · 이미 등록 ${skip}종` : ""}{fail ? ` · 실패 ${fail}종` : ""}
+                  </p>
+                  <div style={{ maxHeight: "48vh", overflowY: "auto" }}>
+                    {items.map((i) => (
+                      <div key={i.code} style={{ padding: "8px 2px", borderBottom: "1px solid #f1f5f9" }}>
+                        <div style={{ fontWeight: 600, wordBreak: "break-all" }}>{i.label} · {i.qty}개</div>
+                        <div className={styles.hint} style={{ color: i.state === "fail" ? "#dc2626" : undefined }}>{icon[i.state]} — {i.note}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.7rem" }}>
+                    <button className={styles.secondaryBtn} style={{ flex: 1, padding: "12px 4px" }} onClick={() => setPurchaseResult(null)}>닫기</button>
+                    <button className={styles.primaryBtn} style={{ flex: 2, padding: "12px 4px", fontWeight: 700 }} onClick={openDefectPurchaseMenu}>거래처 불량 매입 관리 열기</button>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -3279,7 +3492,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
               <div className={styles.modalActions}>
                 <button className={styles.secondaryBtn} onClick={handleDefectExport}>내보내기</button>
                 <button className={styles.secondaryBtn} onClick={handleDefectPrint}>불량출력</button>
-                <button className={styles.secondaryBtn} onClick={() => setPurchaseModePicker(true)} disabled={defectList.length === 0}>매입관리</button>
+                <button className={styles.secondaryBtn} onClick={openPurchasePicker} disabled={defectList.length === 0}>매입관리</button>
                 <button
                   className={styles.secondaryBtn}
                   onClick={openKimsungilSummonPicker}
@@ -3364,10 +3577,37 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                 {defectList.filter((item) => (item.normal_qty ?? item.count) > 0).map((item, idx) => (
                   <div key={`${item.code}-defect-${idx}`} className={styles.defectLine}>
                     <span className={styles.defectText}>{renderDefectLabel(item)}</span>
-                    <span className={styles.inlineTagDanger}>불량 {item.normal_qty ?? item.count}</span>
+                    {(() => {
+                      const st = purchaseStateOf(item);
+                      return (
+                        <>
+                          <span
+                            className={styles.inlineTagDanger}
+                            style={st === "done" ? { background: "#e5e7eb", color: "#6b7280", borderColor: "#d1d5db" } : undefined}
+                          >
+                            불량 {item.normal_qty ?? item.count}
+                          </span>
+                          {st === "done" && <span className={styles.inlineTagDanger} style={{ background: "#dcfce7", color: "#166534", borderColor: "#86efac" }}>✅ 매입관리 이동완료</span>}
+                          {st === "partial" && <span className={styles.inlineTagDanger} style={{ background: "#fef9c3", color: "#854d0e", borderColor: "#fde047" }}>일부 이동됨</span>}
+                        </>
+                      );
+                    })()}
                     <div className={styles.defectActions}>
                       <button className={styles.ghostBtn} onClick={() => handleDefectDec(item.code)}>-1</button>
                       <button className={styles.ghostBtn} onClick={() => handleDefectRemove(item.code)}>삭제</button>
+                      {(() => {
+                        const recCount = defectRecords.filter((r) => r.code === item.code).length;
+                        return (
+                          <button
+                            className={styles.ghostBtn}
+                            title="사진·사유 보기 / 수정"
+                            disabled={recCount === 0}
+                            onClick={() => setDefectPhotoCode(item.code)}
+                          >
+                            📷{recCount > 0 ? recCount : ""}
+                          </button>
+                        );
+                      })()}
                     </div>
                     {(() => {
                       // 불량 수량 중 아직 사진·사유 기록이 없는 개수 (기존 등록분 / 기록 없이 쌓인 불량)
@@ -3382,11 +3622,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                         </button>
                       ) : null;
                     })()}
-                    <DefectRecordsPanel
-                      records={defectRecords.filter((r) => r.code === item.code)}
-                      tabHeaders={tabHeaders}
-                      onChanged={setDefectRecords}
-                    />
                   </div>
                 ))}
               </div>
