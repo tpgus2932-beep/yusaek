@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python .claude/hooks/check_dev_update.py" }
+        ]
+      }
+    ]
+  }
+}

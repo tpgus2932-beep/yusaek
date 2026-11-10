@@ -698,7 +698,7 @@ def build_collab_router(
             "completed_by_display": row["completed_by_display"],
             "completed_at": row["completed_at"],
             "can_complete": row["status"] == "open" and admin_flag,
-            "can_delete": row["status"] == "open" and (admin_flag or row["requester_username"] == user),
+            "can_delete": admin_flag or row["requester_username"] == user,
         }
 
     @router.get("/dev-requests")
@@ -761,9 +761,9 @@ def build_collab_router(
         finally:
             conn.close()
 
-        # 요청자에게 '요청 보내기'로 완료 통보 (본인이 완료한 경우는 생략)
+        # 요청자에게 '요청 보내기'로 완료 통보 (본인이 올리고 본인이 완료해도 받은 요청에 남긴다)
         notified = False
-        if requester and requester != user:
+        if requester:
             snippet = original if len(original) <= 80 else original[:80] + "..."
             _create_request_row(
                 requester_username=user,
@@ -784,8 +784,6 @@ def build_collab_router(
             row = conn.execute("SELECT * FROM dev_requests WHERE id = ?", (dev_request_id,)).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="개발요청을 찾을 수 없습니다.")
-            if row["status"] != "open":
-                raise HTTPException(status_code=400, detail="완료된 요청은 삭제할 수 없습니다.")
             if not (is_admin(user) or row["requester_username"] == user):
                 raise HTTPException(status_code=403, detail="본인이 올린 요청만 삭제할 수 있습니다.")
             conn.execute("DELETE FROM dev_requests WHERE id = ?", (dev_request_id,))

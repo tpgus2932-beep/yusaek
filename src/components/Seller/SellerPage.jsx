@@ -29,8 +29,8 @@ const SellerPage = () => {
         setError('');
         try {
             const [retRes, exRes] = await Promise.all([
-                fetch(`${API}/return-shipping/seller-fault-pending`, { headers: getAuthHeaders() }),
-                fetch(`${API}/exchange-return/seller-fault-pending`, { headers: getAuthHeaders() }),
+                fetch(`${API}/return-shipping/seller-fault-pending?include_processed=true`, { headers: getAuthHeaders() }),
+                fetch(`${API}/exchange-return/seller-fault-pending?include_processed=true`, { headers: getAuthHeaders() }),
             ]);
             const [retData, exData] = await Promise.all([
                 retRes.json().catch(() => ({})),
@@ -56,6 +56,7 @@ const SellerPage = () => {
                 key: `return:${r.invoice}_${r.sno}`,
                 goods_name: r.goods_name,
                 reason: r.reason,
+                stage: r.sub_status === '42' ? '회수신청 후' : r.sub_status === '41' ? '회수신청 전' : '',
                 comment: r.user_comment,
                 invoice: r.invoice,
                 order_sno: r.order_sno,
@@ -69,6 +70,7 @@ const SellerPage = () => {
                 key: `exchange:${e.exchange_sno}`,
                 goods_name: e.goods_name,
                 reason: e.reason,
+                stage: ({ 2: '교환요청', 3: '수거중', 4: '수거완료' })[e.ex_status] || '',
                 comment: e.detail_reason,
                 invoice: e.invoice,
                 order_sno: e.order_sno,
@@ -128,6 +130,7 @@ const SellerPage = () => {
                     </span>
                     {!groupByProduct && <span className={styles.goodsName}>{r.goods_name}</span>}
                     <span className={styles.reason}>{r.reason}</span>
+                    {r.stage && <span className={styles.reason}>· {r.stage}</span>}
                 </div>
                 {r.comment && <div className={styles.comment}>고객메모: {r.comment}</div>}
                 <div className={styles.meta}>
@@ -143,7 +146,7 @@ const SellerPage = () => {
                 <div>
                     <h1 className={styles.title}>판매자 사유 (에이블리)</h1>
                     <p className={styles.subtitle}>
-                        반품 화면에서 판매자로 분류되는 반품·교환 중 미처리 건 · 최근 30일
+                        반품 화면에서 판매자로 분류되는 반품·교환 (회수 전/후 포함) · 최근 1년
                     </p>
                 </div>
                 <div className={styles.segment}>

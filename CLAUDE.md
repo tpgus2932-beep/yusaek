@@ -130,3 +130,10 @@ Key integrations:
 - `main.py` handles only app init and router registration — no business logic directly in `main.py`
 - Schema changes use `ALTER TABLE ... ADD COLUMN` pattern at startup (`_ensure_*_column` functions)
 - `collab_app.py` imports from `main.py` — be careful not to introduce import-time side effects in `main.py` that break the collab-only server
+
+### 개발 업데이트 기록 규칙 (필수)
+
+- 코드를 수정/추가/삭제할 때마다 `src/data/devUpdates.js`의 `DEV_UPDATES` **맨 위**에 한 줄을 추가한다. 대시보드의 "개발 업데이트" 카드에 그대로 표시된다.
+- 개발을 전혀 모르는 사람이 이해할 수 있게 **짧고 쉬운 말**로 쓴다. 파일명·함수명·기술 용어는 쓰지 않는다.
+  - 예) `{ date: '2026-11-10', text: '개발요청: 완료된 요청도 삭제 가능' }`
+- 한 번의 작업에 여러 변경이 있으면 기능 단위로 나눠서 각각 한 줄씩 쓴다.

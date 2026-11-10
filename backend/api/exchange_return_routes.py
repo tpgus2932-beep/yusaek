@@ -850,7 +850,7 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         return {"ok": True, "holds": sorted(holds)}
 
     @router.get("/seller-fault-pending")
-    async def exchange_seller_fault_pending(user=Depends(get_current_user)):
+    async def exchange_seller_fault_pending(include_processed: bool = False, user=Depends(get_current_user)):
         """판매자 부담(reason_code=2, 상품 하자)으로 교환회수 자동처리에서 제외된
         건을 에이블리에서 실시간으로 다시 조회해 반환한다.
 
@@ -858,6 +858,9 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         따로 두지 않는다. status[]=2(교환요청)로만 필터링하므로, 개별처리
         (process-exchange-pickup-single)로 승인하면 status가 바뀌어 다음
         조회부터 자연히 목록에서 빠진다.
+
+        include_processed=true(CS 판매자 탭 전용)면 반품 화면과 같은 범위(status 2·3·4, 최근 1년)로
+        이미 승인·수거 단계로 간 건도 함께 돌려준다. 개별처리·체크리스트는 기본값(2, 30일)을 그대로 쓴다.
         """
         try:
             token = await _ably_login()
@@ -865,7 +868,8 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
             raise HTTPException(status_code=502, detail=f"에이블리 로그인 실패: {e}")
 
         end_date = datetime.today().strftime("%Y-%m-%d")
-        start_date = (datetime.today() - timedelta(days=30)).strftime("%Y-%m-%d")
+        start_date = (datetime.today() - timedelta(days=365 if include_processed else 30)).strftime("%Y-%m-%d")
+        statuses = [2, 3, 4] if include_processed else [2]
 
         seller_fault_exchanges = []
         page = 1
@@ -879,7 +883,7 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                         "per_page": 30,
                         "requested_at_start": f"{start_date} 00:00:00",
                         "requested_at_end": f"{end_date} 23:59:59",
-                        "status[]": [2],
+                        "status[]": statuses,
                     },
                 )
                 res.raise_for_status()
@@ -897,6 +901,7 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                         "exchange_sno": ex.get("exchange_sno") or ex.get("sno"),
                         "order_sno": str(ex.get("order_sno") or order_item.get("order_sno") or "").strip(),
                         "reason_code": ex.get("reason_code"),
+                        "ex_status": ex.get("status"),
                         "detail_reason": ex.get("detail_reason") or "",
                         "images": ex.get("exchange_reason_image_urls") or [],
                         "order_item_sno": first.get("order_item_sno"),
@@ -941,6 +946,7 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                 "exchange_sno": ex["exchange_sno"],
                 "order_sno": ex["order_sno"],
                 "reason_code": ex["reason_code"],
+                "ex_status": ex.get("ex_status"),
                 "reason": "오배송" if ex["reason_code"] == 3 else "상품 하자",
                 "detail_reason": ex["detail_reason"],
                 "images": ex["images"],

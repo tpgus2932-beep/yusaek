@@ -808,13 +808,16 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
         }
 
     @router.get("/seller-fault-pending")
-    async def seller_fault_pending(user=Depends(get_current_user)):
+    async def seller_fault_pending(include_processed: bool = False, user=Depends(get_current_user)):
         """판매자 부담 사유(상품 하자/오배송, 셀러 변경)로 신규반품 자동처리에서
         제외된 건을 에이블리에서 실시간으로 다시 조회해 반환한다.
 
         스냅샷을 따로 저장하지 않는다 - sub_status=41(회수신청 전)로만
         필터링하므로, 개별처리(new-return-pickup-single)로 한 건 처리하면
         그 건의 sub_status가 바뀌어 다음 조회부터 자연히 목록에서 빠진다.
+
+        include_processed=true(CS 판매자 탭 전용)면 반품 화면과 같은 범위(sub_status 41·42, 최근 1년)로
+        이미 회수신청까지 간 건도 함께 돌려준다. 개별처리·체크리스트는 기본값(41, 30일)을 그대로 쓴다.
         """
         try:
             token = await _ably_login()
@@ -823,7 +826,8 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
 
         ably_headers = _ably_headers_for(token)
         end_date = datetime.now(_KST).strftime("%Y-%m-%d")
-        start_date = (datetime.now(_KST) - timedelta(days=30)).strftime("%Y-%m-%d")
+        start_date = (datetime.now(_KST) - timedelta(days=365 if include_processed else 30)).strftime("%Y-%m-%d")
+        sub_statuses = ["41", "42"] if include_processed else ["41"]
 
         items_out = []
         page = 1
@@ -834,7 +838,7 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                     headers=ably_headers,
                     params={
                         "cancel_type": "return",
-                        "processing_sub_status[]": ["41"],
+                        "processing_sub_status[]": sub_statuses,
                         "delivery_type[]": ["standard", "today", "combine", "reserved"],
                         "order": "cancel_received_at",
                         "date_type": "cancel_received_at",
@@ -877,6 +881,7 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                             "images_webp": item.get("cancel_images_webp") or cancel.get("cancel_images_webp") or [],
                             "buyer_tel": "".join(ch for ch in str(tel_raw) if ch.isdigit()),
                             "buyer_name": str(name_raw).strip(),
+                            "sub_status": str(cancel.get("processing_sub_status") or item.get("processing_sub_status") or ""),
                         })
                 if page >= data.get("max_page_number", 1):
                     break
