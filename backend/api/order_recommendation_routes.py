@@ -21,6 +21,7 @@ from services.order_recommendation_discover_snapshot import get_discover_snapsho
 from services.order_recommendation_calc import (
     ORDER_LEAD_DAYS,
     WEEKDAY_LOOKBACK_WEEKS,
+    calc_expected_sales_for_coverage,
     calc_expected_sales_today_for_date,
     compute_all,
 )
@@ -40,6 +41,7 @@ from sdk.ezadmin import EzAdminClient, EzAdminSessionExpired
 
 
 BACKTEST_TOP_N = 50
+BACKTEST_MAX_DAYS = 30
 
 
 def _row_to_dict(row) -> dict:
@@ -401,23 +403,22 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
             ).fetchone()
             earliest, collected_max_date = row["min_date"], row["max_date"]
 
-            # 백테스트 대상일(계산일)의 예측은 계산일+ORDER_LEAD_DAYS의 실제값과 비교하므로,
-            # 그 실제값까지 이미 수집돼 있어야 한다 — 그래서 선택 가능한 최대 날짜를 그만큼 당긴다.
-            max_date = None
-            if collected_max_date is not None:
-                max_date = (
-                    datetime.strptime(collected_max_date, "%Y-%m-%d") - timedelta(days=ORDER_LEAD_DAYS)
-                ).strftime("%Y-%m-%d")
+            # 백테스트에서 사용자가 고르는 날짜는 "실제판매 비교일"(예측 대상일)이다.
+            # 그 날의 예측은 하루 전(ORDER_LEAD_DAYS)에 계산하므로, 실제값이 수집된
+            # 마지막 날까지 선택할 수 있다.
+            max_date = collected_max_date
 
             min_date = None
             if earliest is not None:
                 # 같은요일평균 신호가 최대 3주(WEEKDAY_LOOKBACK_WEEKS) 전까지 조회하므로,
-                # 대상 날짜 기준 그만큼 과거 판매량이 먼저 수집돼 있어야 한다. 그 전 날짜는
+                # 계산일 기준 그만큼 과거 판매량이 먼저 수집돼 있어야 한다. 그 전 날짜는
                 # 이 신호가 통째로 비어 예측 신뢰도가 떨어지므로 선택 가능 범위에서 제외한다.
+                # 비교일은 계산일+ORDER_LEAD_DAYS이므로 그만큼 더 뒤로 민다.
                 candidate = (
-                    datetime.strptime(earliest, "%Y-%m-%d") + timedelta(weeks=WEEKDAY_LOOKBACK_WEEKS)
+                    datetime.strptime(earliest, "%Y-%m-%d")
+                    + timedelta(weeks=WEEKDAY_LOOKBACK_WEEKS, days=ORDER_LEAD_DAYS)
                 ).strftime("%Y-%m-%d")
-                if candidate <= max_date:
+                if max_date is not None and candidate <= max_date:
                     min_date = candidate
 
             return {"ok": True, "min_date": min_date, "max_date": max_date}
@@ -506,9 +507,14 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
         weight_avg_14d: float | None = None,
         weight_avg_3d: float | None = None,
         weight_avg_5d: float | None = None,
+        product: str | None = None,
+        chunk_days: int = 0,
         user: str = Depends(get_current_user),
     ):
-        days = max(1, min(days, 5))
+        days = max(1, min(days, BACKTEST_MAX_DAYS))
+        # chunk_days=0이면 기간 전체를 계산일 하나에서 한 번에 예측, 7이면 7일씩 끊어서
+        # 구간 시작 전날마다 다시 예측해 합산한다(마지막 구간은 남은 일수만큼).
+        chunk_days = days if chunk_days <= 0 else min(chunk_days, days)
         overrides = {
             "weight_weekday_average": weight_weekday_average,
             "weight_previous_day": weight_previous_day,
@@ -526,56 +532,128 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
             # (/collect, EZAdmin IO30)이 안 돌면 대상 자체가 비어버렸다. expected_sales_today/
             # 커버리지 시뮬레이션 둘 다 sales_qty 히스토리만으로 계산되니 재고 데이터와 무관하게
             # 판매량 기준으로 뽑아도 된다.)
-            codes = [
-                r["yusas_code"]
-                for r in conn.execute(
-                    "SELECT yusas_code FROM order_recommendation_daily "
-                    "WHERE sales_qty IS NOT NULL "
-                    "GROUP BY yusas_code ORDER BY SUM(sales_qty) DESC LIMIT ?",
-                    (BACKTEST_TOP_N,),
-                ).fetchall()
-            ]
             name_map = load_wonbe_product_name_map()
+            keyword = (product or "").strip().lower()
+            if keyword:
+                # 상품 검색 모드: 검색어에 걸리는 상품(상품명/옵션명/상품코드)의 모든 옵션을
+                # 상위 N 제한 없이 대상으로 한다. 검색된 상품만 계산하므로 느리지 않다.
+                pure_name_map = load_wonbe_pure_product_name_map()
+                all_codes = [
+                    r["yusas_code"]
+                    for r in conn.execute(
+                        "SELECT yusas_code FROM order_recommendation_daily "
+                        "WHERE sales_qty IS NOT NULL "
+                        "GROUP BY yusas_code ORDER BY SUM(sales_qty) DESC"
+                    ).fetchall()
+                ]
+
+                def _group(c):
+                    return pure_name_map.get(c) or name_map.get(c) or c
+
+                matched_groups = {
+                    _group(c)
+                    for c in all_codes
+                    if keyword in c.lower()
+                    or keyword in (name_map.get(c) or "").lower()
+                    or keyword in (pure_name_map.get(c) or "").lower()
+                }
+                codes = [c for c in all_codes if _group(c) in matched_groups]
+            else:
+                codes = [
+                    r["yusas_code"]
+                    for r in conn.execute(
+                        "SELECT yusas_code FROM order_recommendation_daily "
+                        "WHERE sales_qty IS NOT NULL "
+                        "GROUP BY yusas_code ORDER BY SUM(sales_qty) DESC LIMIT ?",
+                        (BACKTEST_TOP_N,),
+                    ).fetchall()
+                ]
             end_date = datetime.strptime(date, "%Y-%m-%d")
-            target_dates = [
-                (end_date - timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(days)
-            ]
+            # date는 "실제판매 비교일"(예측 대상일)의 마지막 날, days는 비교 기간 일수.
+            # 구간(기본은 기간 전체) 시작일의 ORDER_LEAD_DAYS 전날(계산일, 예: 10/1~10/30이면 9/30)에
+            # 그 날까지의 데이터만으로 구간 전체를 한 번에 예측한 값을 예상판매량으로,
+            # 그 구간의 실제 판매량 합을 실제판매량으로 쓴다. 구간이 여러 개면 구간별 합을 더한다.
+            start_target = end_date - timedelta(days=days - 1)
+            chunks = []  # (계산일, 구간 일수)
+            offset = 0
+            while offset < days:
+                length = min(chunk_days, days - offset)
+                chunk_start = start_target + timedelta(days=offset)
+                chunks.append(((chunk_start - timedelta(days=ORDER_LEAD_DAYS)).strftime("%Y-%m-%d"), length))
+                offset += length
+            calc_date = chunks[0][0]
 
             items = []
-            for calc_date in target_dates:
-                # expected_sales_today는 calc_date+ORDER_LEAD_DAYS(발주가 실제로 커버하는 날)의
-                # 예측이므로, 그 날의 실제 판매량과 비교해야 한다 — calc_date 자신이 아니다.
-                actual_date = (
-                    datetime.strptime(calc_date, "%Y-%m-%d") + timedelta(days=ORDER_LEAD_DAYS)
-                ).strftime("%Y-%m-%d")
-                for code in codes:
+            for code in codes:
+                expected_total = 0.0
+                actual_total = 0
+                complete = True
+                for chunk_calc_date, length in chunks:
                     signals = calc_expected_sales_today_for_date(
-                        conn, code, calc_date, get_setting, overrides or None
+                        conn, code, chunk_calc_date, get_setting, overrides or None
                     )
-                    expected = signals["expected_sales_today"]
-                    row = get_row(conn, actual_date, code)
-                    actual = row["sales_qty"] if row is not None else None
-                    forecast_error = calc_forecast_error(expected, actual)
-                    absolute_error = abs(forecast_error) if forecast_error is not None else None
-                    within_20_percent = calc_within_20_percent(absolute_error, actual)
+                    expected = calc_expected_sales_for_coverage(
+                        conn, code, chunk_calc_date, length,
+                        signals["previous_day_sales_qty"], signals["avg_sales_7d"], signals["avg_sales_14d"],
+                        signals["weight_weekday_average"], signals["weight_previous_day"],
+                        signals["weight_avg_7d"], signals["weight_avg_14d"],
+                        signals["avg_sales_3d"], signals["weight_avg_3d"],
+                        signals["avg_sales_5d"], signals["weight_avg_5d"],
+                        data_cutoff_date=chunk_calc_date,
+                    )
+                    actual = _actual_coverage_sales(conn, code, chunk_calc_date, length)
+                    if expected is None or actual is None:
+                        complete = False
+                        break
+                    expected_total += expected
+                    actual_total += actual
+                items.append({
+                    "yusas_code": code,
+                    "product_name": name_map.get(code, ""),
+                    "expected_sales_today": expected_total if complete else None,
+                    "actual_sales_qty": actual_total if complete else None,
+                })
 
-                    items.append({
-                        "date": calc_date,
-                        "actual_date": actual_date,
-                        "yusas_code": code,
-                        "product_name": name_map.get(code, ""),
-                        "expected_sales_today": expected,
-                        "actual_sales_qty": actual,
-                        "forecast_error": forecast_error,
-                        "within_20_percent": within_20_percent,
-                    })
+            # 상품 단위 집계: 순수 상품명이 같은 옵션(색상/사이즈)을 한 상품으로 묶고,
+            # 선택한 기간 전체의 예상/실제 판매량을 합산해서 상품 하나를 표본 1건으로 평가한다.
+            # 예상·실제가 둘 다 있는 (옵션,일) 쌍만 합산에 포함한다.
+            pure_name_map = load_wonbe_pure_product_name_map()
+            groups: dict[str, dict] = {}
+            for i in items:
+                if i["expected_sales_today"] is None or i["actual_sales_qty"] is None:
+                    continue
+                code = i["yusas_code"]
+                name = pure_name_map.get(code) or i["product_name"] or code
+                g = groups.setdefault(name, {"product_name": name, "expected": 0.0, "actual": 0, "options": {}})
+                g["expected"] += i["expected_sales_today"]
+                g["actual"] += i["actual_sales_qty"]
+                o = g["options"].setdefault(code, {
+                    "yusas_code": code, "option_name": i["product_name"] or code,
+                    "expected": 0.0, "actual": 0,
+                })
+                o["expected"] += i["expected_sales_today"]
+                o["actual"] += i["actual_sales_qty"]
 
-            signed_errors = [i["forecast_error"] for i in items if i["forecast_error"] is not None]
+            product_items = []
+            for g in groups.values():
+                err = calc_forecast_error(g["expected"], g["actual"])
+                within = calc_within_20_percent(abs(err), g["actual"])
+                product_items.append({
+                    "product_name": g["product_name"],
+                    "expected_sales": g["expected"],
+                    "actual_sales_qty": g["actual"],
+                    "forecast_error": err,
+                    "within_20_percent": within,
+                    "options": sorted(g["options"].values(), key=lambda o: o["actual"], reverse=True),
+                })
+            product_items.sort(key=lambda x: x["actual_sales_qty"], reverse=True)
+            items = product_items
+
+            signed_errors = [i["forecast_error"] for i in items]
             abs_errors = [abs(e) for e in signed_errors]
-            actuals = [i["actual_sales_qty"] for i in items if i["forecast_error"] is not None]
+            actual_sum = sum(i["actual_sales_qty"] for i in items)
             hit_flags = [i["within_20_percent"] for i in items if i["within_20_percent"] is not None]
             mae = sum(abs_errors) / len(abs_errors) if abs_errors else None
-            actual_sum = sum(actuals)
             wape = (sum(abs_errors) / actual_sum) if abs_errors and actual_sum > 0 else None
             # 부호 있는 오차 합 / 실제판매 합 — 양수면 실제보다 많이 예측(과다발주 경향),
             # 음수면 적게 예측(과소발주 경향). WAPE와 분모는 같고 부호만 살린 버전.
@@ -583,7 +661,8 @@ def build_order_recommendation_router(*, get_current_user, get_db, get_setting, 
             hit_rate_20pct = (sum(hit_flags) / len(hit_flags)) if hit_flags else None
 
             return {
-                "ok": True, "date": date,
+                "ok": True, "date": date, "days": days, "calc_date": calc_date,
+                "chunk_days": chunk_days, "chunk_count": len(chunks),
                 "sample_count": len(hit_flags), "mae": mae, "wape": wape, "bias": bias,
                 "hit_rate_20pct": hit_rate_20pct,
                 "items": items,

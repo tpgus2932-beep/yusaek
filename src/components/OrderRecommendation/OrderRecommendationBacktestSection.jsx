@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import styles from './OrderRecommendationDashboardPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders } from '../../lib/api';
 
@@ -19,6 +19,18 @@ function yesterdayDateStr() {
 function minBacktestDateStr() {
   const d = new Date();
   d.setDate(d.getDate() - 28);
+  return d.toISOString().slice(0, 10);
+}
+
+const MAX_DAYS = 30;
+
+function diffDays(from, to) {
+  return Math.round((new Date(to) - new Date(from)) / 86400000);
+}
+
+function shiftDateStr(dateStr, delta) {
+  const d = new Date(dateStr);
+  d.setDate(d.getDate() + delta);
   return d.toISOString().slice(0, 10);
 }
 
@@ -52,11 +64,20 @@ function initialWeightsFromDaily(daily) {
 
 export default function OrderRecommendationBacktestSection({ daily }) {
   const [date, setDate] = useState(yesterdayDateStr());
-  const [days, setDays] = useState(1);
+  const [startDate, setStartDate] = useState(yesterdayDateStr());
+  // date = 비교 종료일(예측 대상일 = 실제판매일). 하루 전 데이터까지로 예측한 값을 그 날 실제판매량과 비교한다.
+  // 시작일~종료일 사이 일수(최대 MAX_DAYS)를 서버의 days로 보낸다.
+  const days = Math.min(MAX_DAYS, Math.max(1, diffDays(startDate, date) + 1));
   const [weights, setWeights] = useState(() => initialWeightsFromDaily(daily));
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
+  const [search, setSearch] = useState('');
+  // 상품검색어로 전체 옵션을 서버에서 불러온 상태면 그 검색어(아니면 null)
+  const [fullProduct, setFullProduct] = useState(null);
+  // 예측 단위: 0 = 기간 전체를 한 번에, 7 = 7일씩 끊어서 구간마다 다시 예측해 합산
+  const [chunkDays, setChunkDays] = useState(0);
+  const [expanded, setExpanded] = useState(() => new Set());
   const [dateRange, setDateRange] = useState(null); // {min_date, max_date} | null(로딩 전) — 실제 판매량이 수집된 날짜 범위
 
   useEffect(() => {
@@ -70,11 +91,13 @@ export default function OrderRecommendationBacktestSection({ daily }) {
         if (cancelled || !res.ok || !data.ok) return;
         setDateRange({ min_date: data.min_date, max_date: data.max_date });
         // 초기값(어제)이 실제 수집 범위 밖이면(백필 미완료/최근 수집 지연 등) 범위 안으로 당겨온다.
-        setDate((prev) => {
+        const clamp = (prev) => {
           if (data.min_date && prev < data.min_date) return data.min_date;
           if (data.max_date && prev > data.max_date) return data.max_date;
           return prev;
-        });
+        };
+        setDate(clamp);
+        setStartDate(clamp);
       } catch {
         // 조회 실패 시 날짜 제한 없이(기존 정적 범위로) 진행
       }
@@ -90,6 +113,8 @@ export default function OrderRecommendationBacktestSection({ daily }) {
     const timer = setTimeout(async () => {
       try {
         const params = new URLSearchParams({ date, days, ...weights });
+        if (fullProduct) params.set('product', fullProduct);
+        if (chunkDays) params.set('chunk_days', chunkDays);
         const res = await fetch(`${API}/order-recommendation/backtest?${params}`, {
           headers: getAuthHeaders(),
         });
@@ -105,7 +130,43 @@ export default function OrderRecommendationBacktestSection({ daily }) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [date, days, weights]);
+  }, [date, days, weights, fullProduct, chunkDays]);
+
+  const keyword = search.trim().toLowerCase();
+  const allItems = result?.items || [];
+  const filteredItems = keyword
+    ? allItems.filter(
+        (item) =>
+          (item.product_name || '').toLowerCase().includes(keyword) ||
+          (item.options || []).some(
+            (o) =>
+              String(o.yusas_code || '').toLowerCase().includes(keyword) ||
+              (o.option_name || '').toLowerCase().includes(keyword),
+          ),
+      )
+    : allItems;
+
+  const changeStart = (value) => {
+    if (!value) return;
+    setStartDate(value);
+    if (value > date) setDate(value);
+    else if (diffDays(value, date) + 1 > MAX_DAYS) setDate(shiftDateStr(value, MAX_DAYS - 1));
+  };
+
+  const changeEnd = (value) => {
+    if (!value) return;
+    setDate(value);
+    if (value < startDate) setStartDate(value);
+    else if (diffDays(startDate, value) + 1 > MAX_DAYS) setStartDate(shiftDateStr(value, -(MAX_DAYS - 1)));
+  };
+
+  const toggleExpanded = (name) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
 
   const resetWeights = () => {
     setWeights({ ...DEFAULT_WEIGHTS });
@@ -132,7 +193,19 @@ export default function OrderRecommendationBacktestSection({ daily }) {
     <div>
       <div className={styles.backtestControls}>
         <div className={styles.backtestField}>
-          <label>날짜</label>
+          <label>비교 시작일 (실제판매일)</label>
+          <input
+            type="date"
+            className={styles.backtestDateInput}
+            value={startDate}
+            min={dateRange?.min_date || minBacktestDateStr()}
+            max={dateRange?.max_date || yesterdayDateStr()}
+            disabled={dateRange != null && !dateRange.min_date}
+            onChange={(e) => changeStart(e.target.value)}
+          />
+        </div>
+        <div className={styles.backtestField}>
+          <label>비교 종료일 (최대 {MAX_DAYS}일, 현재 {days}일)</label>
           <input
             type="date"
             className={styles.backtestDateInput}
@@ -140,7 +213,7 @@ export default function OrderRecommendationBacktestSection({ daily }) {
             min={dateRange?.min_date || minBacktestDateStr()}
             max={dateRange?.max_date || yesterdayDateStr()}
             disabled={dateRange != null && !dateRange.min_date}
-            onChange={(e) => setDate(e.target.value)}
+            onChange={(e) => changeEnd(e.target.value)}
           />
           {dateRange != null && !dateRange.min_date && (
             <span className={styles.backtestSaveMsg}>
@@ -149,16 +222,17 @@ export default function OrderRecommendationBacktestSection({ daily }) {
           )}
         </div>
         <div className={styles.backtestField}>
-          <label>기간(일수, 최대 5일)</label>
-          <input
-            type="number"
-            min="1"
-            max="5"
-            step="1"
-            className={styles.backtestWeightInput}
-            value={days}
-            onChange={(e) => setDays(Math.min(5, Math.max(1, Number(e.target.value) || 1)))}
-          />
+          <label>예측 단위</label>
+          <select
+            className={styles.backtestDateInput}
+            value={chunkDays}
+            onChange={(e) => setChunkDays(Number(e.target.value))}
+          >
+            <option value={0}>기간 전체 한 번에</option>
+            <option value={3}>3일씩 (구간마다 다시 예측)</option>
+            <option value={7}>7일씩 (구간마다 다시 예측)</option>
+            <option value={14}>14일씩 (2주, 구간마다 다시 예측)</option>
+          </select>
         </div>
         {WEIGHT_FIELDS.map((f) => (
           <div key={f.key} className={styles.backtestField}>
@@ -186,8 +260,8 @@ export default function OrderRecommendationBacktestSection({ daily }) {
 
       <div className={styles.statGrid}>
         <div className={styles.statCard}>
-          <div className={styles.statLabel}>표본 수</div>
-          <div className={styles.statValue}>{result ? `${result.sample_count}건` : loading ? '계산 중...' : '-'}</div>
+          <div className={styles.statLabel}>표본 수 (상품)</div>
+          <div className={styles.statValue}>{result ? `${result.sample_count}개` : loading ? '계산 중...' : '-'}</div>
         </div>
         <div className={styles.statCard}>
           <div className={styles.statLabel}>MAE</div>
@@ -211,13 +285,54 @@ export default function OrderRecommendationBacktestSection({ daily }) {
         </div>
       </div>
 
+      <div className={styles.backtestControls}>
+        <div className={styles.backtestField}>
+          <label>상품검색</label>
+          <input
+            type="text"
+            className={styles.backtestDateInput}
+            placeholder="상품명 또는 코드"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <button
+          type="button"
+          className={styles.backtestSaveBtn}
+          disabled={!keyword || loading}
+          onClick={() => setFullProduct(search.trim())}
+        >
+          모든 옵션 불러오기
+        </button>
+        {fullProduct && (
+          <>
+            <span className={styles.backtestSaveMsg}>
+              '{fullProduct}' 검색 상품의 모든 옵션 기준으로 계산 중 (통계 카드도 이 상품들 기준)
+            </span>
+            <button type="button" className={styles.backtestSaveBtn} onClick={() => setFullProduct(null)}>
+              상위 50개 보기로 되돌리기
+            </button>
+          </>
+        )}
+        {keyword && !fullProduct && (
+          <span className={styles.backtestSaveMsg}>
+            {filteredItems.length} / {allItems.length}건 (기본은 판매량 상위 옵션만 포함 — 모든 옵션이 필요하면 버튼)
+          </span>
+        )}
+      </div>
+
+      {result?.calc_date && (
+        <div className={styles.backtestSaveMsg} style={{ margin: '8px 0' }}>
+          {result.chunk_count > 1
+            ? `${result.chunk_count}개 구간(${result.chunk_days}일씩), 첫 구간 계산일 ${result.calc_date} — 구간 시작 전날까지의 데이터로 각각 예측해 합산`
+            : `계산일 ${result.calc_date}까지의 데이터로 ${result.days}일치를 한 번에 예측`}
+        </div>
+      )}
       <div className={styles.dailyTableScroll}>
         <table className={styles.dailyTable}>
           <thead>
             <tr>
-              <th>발주일</th>
-              <th>비교일(실제판매)</th>
-              <th>상품명</th>
+              <th>상품명 (기간 합계)</th>
               <th>예상판매량</th>
               <th>실제판매량</th>
               <th>오차</th>
@@ -225,17 +340,32 @@ export default function OrderRecommendationBacktestSection({ daily }) {
             </tr>
           </thead>
           <tbody>
-            {(result?.items || []).map((item) => (
-              <tr key={`${item.date}-${item.yusas_code}`}>
-                <td>{item.date}</td>
-                <td>{item.actual_date || '-'}</td>
-                <td>{item.product_name || '-'}</td>
-                <td>{item.expected_sales_today != null ? item.expected_sales_today.toFixed(1) : '-'}</td>
-                <td>{item.actual_sales_qty ?? '-'}</td>
-                <td>{item.forecast_error != null ? item.forecast_error.toFixed(1) : '-'}</td>
-                <td>{item.within_20_percent == null ? '-' : item.within_20_percent ? '✓' : '✗'}</td>
-              </tr>
-            ))}
+            {filteredItems.map((item) => {
+              const isOpen = expanded.has(item.product_name);
+              return (
+                <Fragment key={item.product_name}>
+                  <tr style={{ cursor: 'pointer' }} onClick={() => toggleExpanded(item.product_name)}>
+                    <td>
+                      {isOpen ? '▼' : '▶'} {item.product_name || '-'} ({(item.options || []).length}옵션)
+                    </td>
+                    <td>{item.expected_sales != null ? item.expected_sales.toFixed(1) : '-'}</td>
+                    <td>{item.actual_sales_qty ?? '-'}</td>
+                    <td>{item.forecast_error != null ? item.forecast_error.toFixed(1) : '-'}</td>
+                    <td>{item.within_20_percent == null ? '-' : item.within_20_percent ? '✓' : '✗'}</td>
+                  </tr>
+                  {isOpen &&
+                    (item.options || []).map((o) => (
+                      <tr key={`${item.product_name}-${o.yusas_code}`} style={{ opacity: 0.75 }}>
+                        <td style={{ paddingLeft: 28 }}>{o.option_name || o.yusas_code}</td>
+                        <td>{o.expected.toFixed(1)}</td>
+                        <td>{o.actual}</td>
+                        <td>{(o.expected - o.actual).toFixed(1)}</td>
+                        <td></td>
+                      </tr>
+                    ))}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>

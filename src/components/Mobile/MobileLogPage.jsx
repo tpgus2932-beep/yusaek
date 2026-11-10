@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import BarcodePage from "../Barcode/BarcodePage";
@@ -9,7 +9,7 @@ import styles from "./MobileLogPage.module.css";
 
 const TABS = [
   { key: "barcode", label: "바코드" },
-  { key: "log", label: "로그 확인" },
+  { key: "stock-count", label: "재고 개수" },
   { key: "invoice-delete", label: "송장삭제" },
   { key: "receipt", label: "입고확인" },
   { key: "stock-check", label: "재고체크" },
@@ -38,15 +38,13 @@ const weekAgo = () => {
 const KO_KEY = "ㅂq ㅈw ㄷe ㄱr ㅅt ㅛy ㅕu ㅑi ㅐo ㅔp ㅁa ㄴs ㅇd ㄹf ㅎg ㅗh ㅓj ㅏk ㅣl ㅋz ㅌx ㅊc ㅍv ㅠb ㅜn ㅡm".split(" ").reduce((m, p) => { m[p[0]] = p[1]; return m; }, {});
 const fixCode = (v) => v.replace(/([ㄱ-ㅣ])(?=\d)/g, (c) => (KO_KEY[c] ? KO_KEY[c].toUpperCase() : c));
 
-function StockLog() {
+function StockLog({ code, onAdjusted }) {
   const { openModal } = useEzadminSession();
-  const [code, setCode] = useState("");
   const [start, setStart] = useState(weekAgo);
   const [end, setEnd] = useState(today);
   const [type, setType] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [candidates, setCandidates] = useState([]);
   const [result, setResult] = useState(null);
   const [qty, setQty] = useState("1");
   const [adjusting, setAdjusting] = useState("");
@@ -68,6 +66,7 @@ function StockLog() {
       if (!res.ok || data.ok === false) throw new Error(data?.detail || `${label} 처리 실패`);
       setNotice(`${data.product_code} ${n}개 ${label} 처리 완료`);
       await search(result.product_code);
+      onAdjusted?.();
     } catch (e) {
       setError(e.message || "처리 실패");
     } finally {
@@ -77,22 +76,13 @@ function StockLog() {
 
   const search = async (override) => {
     const q = (typeof override === "string" ? override : code).trim();
-    if (!q) { setError("상품코드 또는 상품명을 입력하세요."); return; }
+    if (!q) { setError("상품코드가 없습니다."); return; }
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      if (!/^[A-Za-z]?\d+$/.test(q)) {
-        const { res, data } = await request(`/wonbe/search?${new URLSearchParams({ q, limit: "50" })}`);
-        if (!res.ok || data.ok === false) throw new Error(data?.detail || "상품 검색 실패");
-        setResult(null);
-        setCandidates(data.rows || []);
-        if (!(data.rows || []).length) setError("검색된 상품이 없습니다.");
-        return;
-      }
-      setCandidates([]);
       const { res, data } = await request("/barcode/stock-log", { product_code: q, start_date: start, end_date: end });
-      if (data?.need_session) { openModal(search); return; }
+      if (data?.need_session) { openModal(() => search(q)); return; }
       if (!res.ok) throw new Error(data?.detail || "로그 조회 실패");
       setResult(data);
     } catch (e) {
@@ -103,34 +93,24 @@ function StockLog() {
     }
   };
 
+  // 재고 개수 카드에서 "로그 확인"을 눌러 열리는 순간 바로 조회한다.
+  useEffect(() => { search(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const logs = (result?.logs || []).filter((l) => !type || l.구분 === type);
   const types = [...new Set((result?.logs || []).map((l) => l.구분).filter(Boolean))];
 
   return (
     <>
       <div className={styles.form}>
-        <input
-          className={styles.input}
-          value={code}
-          placeholder="상품코드 또는 상품명 (S09888)"
-          onChange={(e) => setCode(fixCode(e.target.value))}
-          onKeyDown={(e) => e.key === "Enter" && !busy && search()}
-        />
         <div className={styles.row}>
           <input type="date" className={styles.input} value={start} max={end} onChange={(e) => setStart(e.target.value)} />
           <span>~</span>
           <input type="date" className={styles.input} value={end} min={start} onChange={(e) => setEnd(e.target.value)} />
         </div>
-        <button type="button" className={styles.primary} disabled={busy} onClick={() => search()}>{busy ? "조회 중..." : "조회"}</button>
+        <button type="button" className={styles.primary} disabled={busy} onClick={() => search()}>{busy ? "조회 중..." : "로그 조회"}</button>
       </div>
       {error && <div className={styles.error}>{error}</div>}
       {notice && <div className={styles.notice}>{notice}</div>}
-      {candidates.map((c) => (
-        <button type="button" key={c["상품코드"]} className={styles.card} onClick={() => { setCode(c["상품코드"]); setCandidates([]); search(c["상품코드"]); }}>
-          <strong>{c["상품코드"]}</strong> {c["상품명"]}
-          <div className={styles.muted}>{[c["색상"], c["사이즈"], c["거래처"]].filter(Boolean).join(" · ")}</div>
-        </button>
-      ))}
       {result && (
         <>
           <div className={styles.summary}>
@@ -161,6 +141,121 @@ function StockLog() {
           ))}
         </>
       )}
+    </>
+  );
+}
+
+// 상품코드로 이지어드민 현재고(I100)를 조회해 재고 개수를 보여준다. 엔터 조회 후 입력칸을 비우고 포커스를 되돌려 연속 조회할 수 있다.
+function StockCount() {
+  const { openModal } = useEzadminSession();
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [results, setResults] = useState([]); // 최근 조회 결과 (최신이 위)
+  const [logCode, setLogCode] = useState(""); // 로그를 펼쳐 둔 상품코드
+  const [candidates, setCandidates] = useState([]); // 상품명/공급처 검색 후보
+  const inputRef = useRef(null);
+
+  const lookup = async (q) => {
+    const productCode = q.trim();
+    if (!productCode) { setError("상품코드를 입력하세요."); return; }
+    setBusy(true);
+    setError("");
+    try {
+      const { res, data } = await request("/barcode/stock-count", { product_code: productCode });
+      if (data?.need_session) { openModal(() => lookup(productCode)); return; }
+      if (!res.ok || data.ok === false) throw new Error(data?.detail || "재고 조회 실패");
+      setResults((prev) => [data, ...prev.filter((r) => r.product_code !== data.product_code)].slice(0, 20));
+    } catch (e) {
+      setError(e.message || "재고 조회 실패");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // 상품코드 형태(영문+숫자)면 바로 재고 조회, 아니면 원가베이스유에서 상품명/공급처/옵션으로 검색해 후보를 고르게 한다.
+  const searchProducts = async (q) => {
+    setBusy(true);
+    setError("");
+    try {
+      const { res, data } = await request(`/wonbe/search?${new URLSearchParams({ q, limit: "30" })}`);
+      if (!res.ok) throw new Error(data?.detail || "상품 검색 실패");
+      const rows = data.rows || [];
+      setCandidates(rows);
+      if (rows.length === 0) setError("검색 결과가 없습니다.");
+    } catch (e) {
+      setError(e.message || "상품 검색 실패");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submit = () => {
+    const q = code.trim();
+    if (!q) { setError("상품코드 또는 검색어를 입력하세요."); return; }
+    setCode("");
+    if (/^[A-Za-z]{1,3}\d+$/.test(q.replace(/\s+/g, ""))) {
+      setCandidates([]);
+      lookup(q.replace(/\s+/g, ""));
+    } else {
+      searchProducts(q);
+    }
+    inputRef.current?.focus();
+  };
+
+  const pickCandidate = (productCode) => {
+    setCandidates([]);
+    lookup(productCode);
+  };
+
+  return (
+    <>
+      <div className={styles.form}>
+        <input
+          ref={inputRef}
+          className={styles.input}
+          value={code}
+          placeholder="상품코드 (S09888) 또는 상품명/공급처/옵션 검색"
+          onChange={(e) => setCode(fixCode(e.target.value))}
+          onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && !busy && submit()}
+        />
+        <button type="button" className={styles.primary} disabled={busy} onClick={submit}>{busy ? "조회 중..." : "재고 조회"}</button>
+      </div>
+      {error && <div className={styles.error}>{error}</div>}
+      {candidates.length > 0 && (
+        <>
+          <div className={styles.muted}>검색 결과 {candidates.length}건 — 상품을 선택하면 재고를 조회합니다.</div>
+          {candidates.map((p) => (
+            <button key={p["상품코드"]} type="button" className={styles.card} onClick={() => pickCandidate(p["상품코드"])}>
+              <div className={styles.cardTop}>
+                <strong>{p["상품명"] || p["상품코드"]}</strong>
+                <span className={styles.tag}>{p["상품코드"]}</span>
+              </div>
+              <div className={styles.muted}>
+                {[p["거래처"], p["거래처상품명"], p["색상"], p["사이즈"]].filter(Boolean).join(" · ")}
+              </div>
+            </button>
+          ))}
+        </>
+      )}
+      {results.map((r) => (
+        <div key={r.product_code} className={styles.card}>
+          <div className={styles.cardTop}>
+            <strong>{r.product_name || r.product_code}</strong>
+            <span className={styles.tag}>재고 {r.stock}</span>
+          </div>
+          {r.option_name && <div>{r.option_name}</div>}
+          <div className={styles.muted}>접수(출고 전 대기) {r.pending}</div>
+          <button
+            type="button"
+            className={styles.primary}
+            onClick={() => setLogCode((cur) => (cur === r.product_code ? "" : r.product_code))}
+          >
+            {logCode === r.product_code ? "로그 닫기" : "로그 확인"}
+          </button>
+          {logCode === r.product_code && <StockLog key={r.product_code} code={r.product_code} onAdjusted={() => lookup(r.product_code)} />}
+        </div>
+      ))}
     </>
   );
 }
@@ -263,7 +358,7 @@ export default function MobileLogPage() {
         </nav>
       </header>
       {tab === "barcode" && <BarcodePage title="Barcode" mobileLite />}
-      {tab === "log" && <main className={styles.main}><StockLog /></main>}
+      {tab === "stock-count" && <main className={styles.main}><StockCount /></main>}
       {tab === "stock-check" && <StockCheckPage />}
       {tab === "invoice-delete" && <main className={styles.main}><MobileInvoiceDelete /></main>}
       {tab === "hapbae" && <HapbaePreMatch />}

@@ -163,3 +163,10 @@
 .serSet .ser { border-color: transparent; background: transparent; }
 .serSet .ser:not(.serOn):hover { background: rgba(255, 255, 255, 0.7); }
 .serSet .serOn { background: #fff; border-color: transparent; box-shadow: 0 1px 4px rgba(30, 42, 68, 0.12); }
+
+/* 악성 거래처: 표시 개수 + 거래처 검색/복수 선택 */
+.cTools { display: flex; align-items: center; gap: 0.25rem; flex-wrap: wrap; margin: 0.3rem 0 0.1rem; }
+.cLimit, .cSearch { height: 24px; border-radius: 999px; border: 1px solid var(--line); background: #f2f6fd; color: var(--sub); font-size: 0.7rem; font-weight: 700; font-family: inherit; padding: 0 0.6rem; }
+.cLimit { padding: 0 0.3rem; }
+.cSearch { width: 7.5rem; }
+.cSearch:focus, .cLimit:focus { outline: none; border-color: #8fb0f3; }

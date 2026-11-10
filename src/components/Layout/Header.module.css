@@ -44,6 +44,37 @@
     color: var(--text-primary);
 }
 
+.devMenu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 50;
+    min-width: 160px;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-primary, #fff);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+    padding: 4px;
+}
+
+.devMenuItem {
+    padding: 0.45rem 0.7rem;
+    background: transparent;
+    color: var(--text-primary);
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 0.82rem;
+    text-align: left;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.devMenuItem:hover {
+    background: var(--bg-secondary);
+}
+
 .topNavItemActive {
     background: var(--bg-secondary);
     color: var(--text-primary);

@@ -21,3 +21,4 @@ if exist "%ROOT%\.env.collab" (
 start "Yusaek Collab Backend" cmd /k "cd /d ""%ROOT%\backend"" && python -m uvicorn collab_app:app --host 0.0.0.0 --port 8100"
 
 exit /b 0
+ d

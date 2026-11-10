@@ -4,6 +4,7 @@ import styles from "./NoyeKimPage.module.css";
 import { getDownloadFilename } from "../../lib/download";
 import PurchaseManager from "./PurchaseManager";
 import DefectPurchaseManager from "./DefectPurchaseManager";
+import SuppliesManager from "./SuppliesManager";
 import {
   AlertTriangle, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, Clock, Clipboard, FileSpreadsheet,
   MessageSquare, Package, Pencil, Plus, Printer, RefreshCw, Search, Shuffle, Table2, Trash2, X, Zap,
@@ -425,6 +426,9 @@ export default function NoyeKimPage() {
   const [kdgText, setKdgText] = useState("");
   const [kdgRows, setKdgRows] = useState([]);
   const [kdgMissing, setKdgMissing] = useState(0);
+  const [kdgMatchModal, setKdgMatchModal] = useState(null); // { index, query } — 수동매칭 모달
+  const [kdgMatchResults, setKdgMatchResults] = useState([]);
+  const [kdgMatchSearching, setKdgMatchSearching] = useState(false);
   const [kdgEzadminLoading, setKdgEzadminLoading] = useState(false);
   const [kdgBarcodePrintLoading, setKdgBarcodePrintLoading] = useState(false);
   const [kdgSelected, setKdgSelected] = useState(() => new Set()); // 결과 표에서 체크한 행 인덱스 (결과는 이어붙기만 하므로 인덱스가 유지된다)
@@ -778,6 +782,80 @@ export default function NoyeKimPage() {
       );
     } catch (err) {
       setMessage(err.message || "원베 매칭 실패");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 미매칭 행을 원가베이스유 상품코드로 직접 매칭 — 서버에 저장되어 다음 변환부터 자동 적용된다.
+  const openKdgMatchModal = (index) => {
+    const r = kdgRows[index] || {};
+    const initial = [r["모델번호"], r["색상"]].filter(Boolean).join(" ");
+    setKdgMatchResults([]);
+    setKdgMatchModal({ index, query: initial });
+  };
+
+  // 모달 검색어 변경 시 원가베이스유(/wonbe/search) 디바운스 검색 — 상품명/거래처상품명/색상/사이즈 등 단어별 AND
+  useEffect(() => {
+    if (!kdgMatchModal) return undefined;
+    const q = kdgMatchModal.query.trim();
+    if (!q) {
+      setKdgMatchResults([]);
+      return undefined;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setKdgMatchSearching(true);
+      try {
+        const res = await fetch(`${API}/wonbe/search?${new URLSearchParams({ q, limit: "50" })}`, {
+          headers: getAuthHeaders(),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled) setKdgMatchResults(res.ok ? data.rows || [] : []);
+      } catch {
+        if (!cancelled) setKdgMatchResults([]);
+      } finally {
+        if (!cancelled) setKdgMatchSearching(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [kdgMatchModal?.query]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const saveKdgManualMatch = async (index, productCode) => {
+    const code = (productCode || "").trim();
+    if (!code) {
+      setMessage("상품을 선택하세요.");
+      return;
+    }
+    const target = kdgRows[index];
+    setLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch(`${API}/noye-kimsungil/kdg/manual-match`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ row: target, product_code: code }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "직접 매칭 실패");
+      const sameKey = (r) =>
+        !r["원베_B"] &&
+        ["모델번호", "색상", "사이즈", "기장"].every((k) => (r[k] ?? "") === (target[k] ?? ""));
+      const fixed = kdgRows.filter(sameKey).length;
+      setKdgRows((prev) =>
+        prev.map((r) => {
+          if (!sameKey(r)) return r;
+          return { ...r, ...data.row, ...{ "A(변환품명)": r["A(변환품명)"], "B(옵션번호)": r["B(옵션번호)"], "원본품명": r["원본품명"], "수량": r["수량"], "금액": r["금액"] } };
+        })
+      );
+      setKdgMatchModal(null);
+      setKdgMissing((prev) => Math.max(0, prev - Math.max(fixed, 1)));
+      setMessage(`직접 매칭 저장: ${data.product_code} (다음부터 자동 적용)`);
+    } catch (err) {
+      setMessage(err.message || "직접 매칭 실패");
     } finally {
       setLoading(false);
     }
@@ -2038,10 +2116,11 @@ export default function NoyeKimPage() {
           { key: "misong",        label: "미송관리",                icon: <Package size={13} />,       badge: misongItems.length > 0 ? misongItems.length : null },
           { key: "purchase",      label: "매입관리",                icon: <Clipboard size={13} />,     badge: null },
           { key: "defect-purchase", label: "거래처 불량 매입 관리",   icon: <Clipboard size={13} />,     badge: null },
-          { key: "kdg",           label: "케이디지가공2",           icon: <Shuffle size={13} />,       badge: null },
+          { key: "kdg",           label: "케이디지가공2",          icon: <Shuffle size={13} />,       badge: null },
           { key: "today",         label: "오늘출발",                icon: <Zap size={13} />,           badge: null },
           { key: "receipt-excel", label: "입고전표 엑셀전환",        icon: <FileSpreadsheet size={13} />, badge: null },
           { key: "bulyang",       label: "불량출력",                icon: <Printer size={13} />,       badge: null },
+          { key: "supplies",      label: "비품관리",                icon: <Package size={13} />,       badge: null },
         ].map(({ key, label, icon, badge }) => (
           <button
             key={key}
@@ -2769,6 +2848,10 @@ export default function NoyeKimPage() {
         <DefectPurchaseManager />
       )}
 
+      {activeTab === "supplies" && (
+        <SuppliesManager />
+      )}
+
       {activeTab === "kdg" && (
         <>
           <section className={styles.card}>
@@ -2871,7 +2954,13 @@ export default function NoyeKimPage() {
                       </td>
                       <td>{r["A(변환품명)"] || ""}</td>
                       <td>{r["B(옵션번호)"] || ""}</td>
-                      <td>{r["원베_B"] || ""}</td>
+                      <td>
+                        {r["원베_B"] || (
+                          <button className={styles.secondaryBtn} onClick={() => openKdgMatchModal(i)} disabled={loading}>
+                            <Search size={13} />수동매칭
+                          </button>
+                        )}
+                      </td>
                       <td>{r["원본품명"] || ""}</td>
                     </tr>
                   ))}
@@ -2880,6 +2969,72 @@ export default function NoyeKimPage() {
               {kdgRows.length === 0 && <div className={styles.empty}>변환 결과가 없습니다.</div>}
             </div>
           </section>
+
+          {kdgMatchModal && (
+            <div className={styles.modalOverlay} onClick={() => setKdgMatchModal(null)}>
+              <div className={styles.modal} onClick={(e) => e.stopPropagation()} style={{ maxWidth: "100rem", width: "96vw" }}>
+                <div className={styles.modalHeader}>
+                  <span className={styles.modalTitle}>원가베이스유 수동매칭</span>
+                  <button className={styles.secondaryBtn} onClick={() => setKdgMatchModal(null)}>
+                    <X size={13} />닫기
+                  </button>
+                </div>
+                <div style={{ padding: "0 1.4rem" }}>
+                  <div className={styles.statusMsg} style={{ marginBottom: "0.5rem" }}>
+                    대상: {kdgRows[kdgMatchModal.index]?.["원본품명"] || ""}
+                  </div>
+                  <input
+                    className={styles.scanInput}
+                    type="text"
+                    autoFocus
+                    value={kdgMatchModal.query}
+                    onChange={(e) => setKdgMatchModal((prev) => ({ ...prev, query: e.target.value }))}
+                    placeholder="상품명 / 공급처상품명 / 옵션(색상·사이즈) / 상품코드 — 띄어쓰기로 여러 단어 검색"
+                  />
+                </div>
+                <div className={styles.tableWrap} style={{ maxHeight: "50vh", overflow: "auto", margin: "0.75rem 1.4rem 1.25rem" }}>
+                  <table className={styles.table}>
+                    <thead>
+                      <tr>
+                        <th>상품코드</th>
+                        <th>상품명</th>
+                        <th>공급처상품명</th>
+                        <th>색상</th>
+                        <th>사이즈</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {kdgMatchResults.map((p) => (
+                        <tr key={p["상품코드"]}>
+                          <td>{p["상품코드"]}</td>
+                          <td>{p["상품명"]}</td>
+                          <td>{p["거래처상품명"]}</td>
+                          <td>{p["색상"]}</td>
+                          <td>{p["사이즈"]}</td>
+                          <td>
+                            <button
+                              className={styles.primaryBtn}
+                              onClick={() => saveKdgManualMatch(kdgMatchModal.index, p["상품코드"])}
+                              disabled={loading}
+                            >
+                              선택
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {kdgMatchSearching && <div className={styles.empty}>검색 중...</div>}
+                  {!kdgMatchSearching && kdgMatchResults.length === 0 && (
+                    <div className={styles.empty}>
+                      {kdgMatchModal.query.trim() ? "검색 결과가 없습니다." : "검색어를 입력하세요."}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
 

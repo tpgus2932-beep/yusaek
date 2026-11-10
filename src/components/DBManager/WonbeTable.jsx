@@ -811,6 +811,15 @@ export default function WonbeTable() {
       if (Array.isArray(data.groups) && data.groups.length) {
         setTagGroups(data.groups.map((g) => ({ ...g, checked: false, number: 1 })));
       }
+      // 동기화가 끝난 뒤 이어서 배포앱(Turso)으로 자동 전송 (동기화 실패 시에는 여기까지 오지 않는다)
+      const syncMsg = `동기화 완료: ${data.fetched}개 조회 → ${data.inserted}개 신규 등록` +
+        (data.backfilled ? ` · 기존 상품 아이디 ${data.backfilled}건 채움` : "");
+      setMessage(`${syncMsg} · 배포앱 전송 중...`);
+      try {
+        setMessage(`${syncMsg} · ${await runPushToDeploy()}`);
+      } catch (pushErr) {
+        setMessage(`${syncMsg} · 배포앱전송 실패: ${pushErr.message} (배포앱전송 버튼으로 다시 시도하세요)`);
+      }
     } catch (err) {
       setMessage(err.message);
     } finally {
@@ -818,9 +827,10 @@ export default function WonbeTable() {
     }
   };
 
-  const handleApplyTagGroups = async () => {
+  // 체크한 상품을 이지어드민에 반영. 전부 성공하면 true (fromComplete: 완료 버튼에서 호출 시 목록을 닫지 않고 결과만 반환)
+  const handleApplyTagGroups = async (fromComplete = false) => {
     const items = (tagGroups || []).filter((g) => g.checked).map((g) => ({ name: g.name, codes: g.codes, ids: g.ids, number: g.number }));
-    if (!items.length) { setMessage("적용할 상품을 선택해주세요."); return; }
+    if (!items.length) { setMessage("적용할 상품을 선택해주세요."); return false; }
     setTagApplying(true);
     try {
       const res = await fetch(`${API}/wonbe/ezadmin-apply`, {
@@ -829,7 +839,7 @@ export default function WonbeTable() {
         body: JSON.stringify({ items }),
       });
       const data = await res.json().catch(() => ({}));
-      if (data?.need_session) { setMessage("이지어드민 세션이 없습니다."); return; }
+      if (data?.need_session) { setMessage("이지어드민 세션이 없습니다."); return false; }
       if (!res.ok) throw new Error(data?.detail || "적용 실패");
       setMessage(
         `이지어드민 상품명 변경 ${data.uploaded}건 (오류 ${data.err_cnt ?? 0})` +
@@ -837,18 +847,24 @@ export default function WonbeTable() {
         (data.unresolved ? ` · 아이디 못 찾은 코드 ${data.unresolved}건` : "")
       );
       if (data.err_preview) setRawUnexpected({ 보낸값: data.sent_sample, 이지어드민응답: data.err_preview });
-      if (data.ok) setTagGroups(null);
+      if (data.ok && !fromComplete) setTagGroups(null);
+      return !!data.ok;
     } catch (err) {
       setMessage(err.message);
+      return false;
     } finally {
       setTagApplying(false);
     }
   };
 
-  // 목록에 남은 상품을 전부 처리 완료로 기록 → 다음 동기화부터 목록에 뜨지 않음
+  // 완료 = 체크한 상품 선택 적용 + 목록 전체 처리 완료 기록 → 다음 동기화부터 목록에 뜨지 않음
   const handleCompleteTagGroups = async () => {
     const codes = (tagGroups || []).flatMap((g) => g.codes || []);
     if (!codes.length) { setTagGroups(null); return; }
+    if ((tagGroups || []).some((g) => g.checked)) {
+      const applied = await handleApplyTagGroups(true);
+      if (!applied) return; // 반영 실패 시 완료 처리하지 않고 목록 유지 (메시지는 위에서 표시됨)
+    }
     setTagApplying(true);
     try {
       const res = await fetch(`${API}/wonbe/tag-done`, {
@@ -858,7 +874,7 @@ export default function WonbeTable() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "완료 처리 실패");
-      setMessage(`완료 처리: ${data.marked}개 상품코드 — 다음 동기화부터 목록에 나타나지 않습니다.`);
+      setMessage(`완료 처리: ${data.marked}개 상품코드 (선택 상품은 이지어드민 반영 포함) — 다음 동기화부터 목록에 나타나지 않습니다.`);
       setTagGroups(null);
     } catch (err) {
       setMessage(err.message);
@@ -1184,10 +1200,9 @@ export default function WonbeTable() {
 
   const [deploySyncing, setDeploySyncing] = useState(false);
 
-  const handlePushToDeploy = async () => {
-    if (!window.confirm(`로컬 원가베이스유(${total.toLocaleString()}행)를 Turso로 전송해 배포앱에서 읽을 수 있게 합니다.\n진행하시겠습니까?`)) return;
+  // 로컬 원가베이스유를 Turso로 전송. 성공 시 결과 문구, 실패 시 예외를 던진다.
+  const runPushToDeploy = async () => {
     setDeploySyncing(true);
-    setMessage("");
     try {
       const res = await fetch(`${API}/wonbe/push-to-deploy`, {
         method: "POST",
@@ -1195,11 +1210,20 @@ export default function WonbeTable() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "배포앱전송 실패");
-      setMessage(`배포앱전송 완료: ${data.pushed}/${data.total_local}건`);
-    } catch (err) {
-      setMessage(err.message);
+      return `배포앱전송 완료: ${data.pushed}/${data.total_local}건`;
     } finally {
       setDeploySyncing(false);
+    }
+  };
+
+  const handlePushToDeploy = async () => {
+    if (!window.confirm(`로컬 원가베이스유(${total.toLocaleString()}행)를 Turso로 전송해 배포앱에서 읽을 수 있게 합니다.
+진행하시겠습니까?`)) return;
+    setMessage("");
+    try {
+      setMessage(await runPushToDeploy());
+    } catch (err) {
+      setMessage(err.message);
     }
   };
 
@@ -1638,8 +1662,8 @@ export default function WonbeTable() {
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
             <strong>이지어드민 대형태그 / 상품명 번호 ({tagGroups.length}개 상품)</strong>
             <span>
-              <button onClick={handleApplyTagGroups} disabled={tagApplying}>{tagApplying ? "적용 중..." : "선택 적용"}</button>{" "}
-              <button onClick={handleCompleteTagGroups} disabled={tagApplying} title="남은 목록을 모두 처리 완료로 기록 — 다음 동기화부터 안 뜸">완료</button>{" "}
+              <button onClick={() => handleApplyTagGroups()} disabled={tagApplying}>{tagApplying ? "적용 중..." : "선택 적용"}</button>{" "}
+              <button onClick={handleCompleteTagGroups} disabled={tagApplying} title="체크한 상품은 이지어드민에 반영한 뒤, 목록 전체를 처리 완료로 기록 — 다음 동기화부터 안 뜸">완료</button>{" "}
               <button onClick={() => setTagGroups(null)} disabled={tagApplying}>닫기</button>
             </span>
           </div>

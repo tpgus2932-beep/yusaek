@@ -402,8 +402,8 @@ def test_backtest_date_range_min_is_pushed_3_weeks_after_earliest_collected_date
     res = client.get("/order-recommendation/backtest/date-range")
     assert res.status_code == 200
     body = res.json()
-    assert body["min_date"] == "2026-07-22"  # 2026-07-01 + 21일
-    assert body["max_date"] == "2026-07-28"  # 수집 최신일(2026-07-29) - ORDER_LEAD_DAYS(1일)
+    assert body["min_date"] == "2026-07-23"  # 2026-07-01 + 21일 + ORDER_LEAD_DAYS(1일): 비교일 기준
+    assert body["max_date"] == "2026-07-29"  # 비교일은 실제값이 수집된 마지막 날까지
 
 
 def test_backtest_date_range_min_date_null_when_not_enough_runway_yet():
@@ -424,7 +424,7 @@ def test_backtest_date_range_min_date_null_when_not_enough_runway_yet():
     assert res.status_code == 200
     body = res.json()
     assert body["min_date"] is None
-    assert body["max_date"] == "2026-07-09"  # 수집 최신일(2026-07-10) - ORDER_LEAD_DAYS(1일)
+    assert body["max_date"] == "2026-07-10"  # 수집 최신일
 
 
 def test_backtest_returns_items_only_for_products_with_collected_sales_qty():
@@ -438,17 +438,33 @@ def test_backtest_returns_items_only_for_products_with_collected_sales_qty():
         "UPDATE order_recommendation_daily SET sales_qty = 10 WHERE date = ? AND yusas_code = ?",
         ("2026-07-30", "YUSAS00001"),
     )
+    ensure_row(conn, "2026-07-28", "YUSAS00001")
+    conn.execute(
+        "UPDATE order_recommendation_daily SET sales_qty = 10 WHERE date = ? AND yusas_code = ?",
+        ("2026-07-28", "YUSAS00001"),
+    )
     # 판매량이 전혀 수집 안 된 상품 -> 백테스트 대상 아님
     ensure_row(conn, "2026-07-29", "YUSAS00002")
     conn.commit()
     conn.close()
 
-    res = client.get("/order-recommendation/backtest", params={"date": "2026-07-29"})
+    res = client.get(
+        "/order-recommendation/backtest",
+        params={
+            "date": "2026-07-30",
+            "weight_weekday_average": 0,
+            "weight_previous_day": 1,
+            "weight_avg_7d": 0,
+            "weight_avg_14d": 0,
+            "weight_avg_3d": 0,
+        },
+    )
     assert res.status_code == 200
     body = res.json()
-    assert body["date"] == "2026-07-29"
+    assert body["date"] == "2026-07-30"
+    # 상품 단위로 집계되므로 상품 1건, 그 아래 옵션(상품코드) 1건
     assert len(body["items"]) == 1
-    assert body["items"][0]["yusas_code"] == "YUSAS00001"
+    assert body["items"][0]["options"][0]["yusas_code"] == "YUSAS00001"
     assert body["items"][0]["actual_sales_qty"] == 10
 
 
@@ -457,17 +473,28 @@ def test_backtest_limits_to_top_n_products_by_total_sales_qty():
     conn = get_db()
     for i in range(BACKTEST_TOP_N + 1):
         code = f"YUSAS{i:05d}"
-        ensure_row(conn, "2026-07-29", code)
-        conn.execute(
-            "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
-            (i + 1, "2026-07-29", code),  # 판매량 1~(N+1), YUSAS00000이 최소
-        )
+        for d in ("2026-07-28", "2026-07-30"):  # 전날값(예측용) + 실제값
+            ensure_row(conn, d, code)
+            conn.execute(
+                "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
+                (i + 1, d, code),  # 판매량 1~(N+1), YUSAS00000이 최소
+            )
     conn.commit()
     conn.close()
 
-    res = client.get("/order-recommendation/backtest", params={"date": "2026-07-29"})
+    res = client.get(
+        "/order-recommendation/backtest",
+        params={
+            "date": "2026-07-30",
+            "weight_weekday_average": 0,
+            "weight_previous_day": 1,
+            "weight_avg_7d": 0,
+            "weight_avg_14d": 0,
+            "weight_avg_3d": 0,
+        },
+    )
     assert res.status_code == 200
-    codes = {item["yusas_code"] for item in res.json()["items"]}
+    codes = {o["yusas_code"] for item in res.json()["items"] for o in item["options"]}
     assert len(codes) == BACKTEST_TOP_N
     assert "YUSAS00000" not in codes  # 판매량이 가장 적은 상품은 상위 N 밖
     assert f"YUSAS{BACKTEST_TOP_N:05d}" in codes  # 판매량이 가장 많은 상품은 포함
@@ -495,7 +522,7 @@ def test_backtest_applies_weight_overrides_and_computes_aggregate():
     res = client.get(
         "/order-recommendation/backtest",
         params={
-            "date": "2026-07-29",
+            "date": "2026-07-30",
             "weight_weekday_average": 0,
             "weight_previous_day": 1,
             "weight_avg_7d": 0,
@@ -505,7 +532,7 @@ def test_backtest_applies_weight_overrides_and_computes_aggregate():
     )
     assert res.status_code == 200
     body = res.json()
-    assert body["items"][0]["expected_sales_today"] == pytest.approx(10.0)
+    assert body["items"][0]["expected_sales"] == pytest.approx(10.0)
     assert body["items"][0]["forecast_error"] == pytest.approx(0.0)
     assert body["items"][0]["within_20_percent"] == 1
     assert body["sample_count"] == 1
@@ -534,7 +561,7 @@ def test_backtest_days_param_aggregates_multiple_dates_into_one_result():
     res = client.get(
         "/order-recommendation/backtest",
         params={
-            "date": "2026-07-29",
+            "date": "2026-07-30",
             "days": 3,
             "weight_weekday_average": 0,
             "weight_previous_day": 1,
@@ -545,33 +572,83 @@ def test_backtest_days_param_aggregates_multiple_dates_into_one_result():
     )
     assert res.status_code == 200
     body = res.json()
-    assert body["sample_count"] == 3  # 3개 날짜 x 1개 상품
-    assert body["mae"] == pytest.approx(20.0)
-    assert body["wape"] == pytest.approx(60 / 120)
-    assert body["bias"] == pytest.approx(-60 / 120)
+    # 계산일 07-27(비교 시작일 07-28의 전날) 한 번에 3일치를 예측: 전날값(07-26=10)이 3일 모두 고정
+    # -> 예상 30, 실제 30+40+50=120, 오차 -90
+    assert body["calc_date"] == "2026-07-27"
+    assert body["sample_count"] == 1
+    assert body["items"][0]["expected_sales"] == pytest.approx(30.0)
+    assert body["items"][0]["actual_sales_qty"] == 120
+    assert body["mae"] == pytest.approx(90.0)
+    assert body["wape"] == pytest.approx(90 / 120)
+    assert body["bias"] == pytest.approx(-90 / 120)
     assert body["hit_rate_20pct"] == pytest.approx(0.0)
-    assert {item["date"] for item in body["items"]} == {"2026-07-27", "2026-07-28", "2026-07-29"}
 
 
-def test_backtest_days_param_clamped_to_max_5():
+def test_backtest_chunk_days_recomputes_forecast_per_chunk_and_sums():
     client, get_db, _keep_alive, _store = _make_client()
     conn = get_db()
-    ensure_row(conn, "2026-07-29", "YUSAS00001")
-    conn.execute(
-        "UPDATE order_recommendation_daily SET sales_qty = 5 WHERE date = ? AND yusas_code = ?",
-        ("2026-07-29", "YUSAS00001"),
+    for date, qty in [("2026-07-26", 10), ("2026-07-27", 20), ("2026-07-28", 30), ("2026-07-29", 40), ("2026-07-30", 50)]:
+        ensure_row(conn, date, "YUSAS00001")
+        conn.execute(
+            "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
+            (qty, date, "YUSAS00001"),
+        )
+    conn.commit()
+    conn.close()
+
+    # 1일씩 끊으면 매일 전날값으로 다음날을 예측: 10 + 20 + 30 = 60, 실제 120
+    res = client.get(
+        "/order-recommendation/backtest",
+        params={
+            "date": "2026-07-30",
+            "days": 3,
+            "chunk_days": 1,
+            "weight_weekday_average": 0,
+            "weight_previous_day": 1,
+            "weight_avg_7d": 0,
+            "weight_avg_14d": 0,
+            "weight_avg_3d": 0,
+        },
     )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["chunk_count"] == 3
+    assert body["items"][0]["expected_sales"] == pytest.approx(60.0)
+    assert body["items"][0]["actual_sales_qty"] == 120
+
+
+def test_backtest_days_param_clamped_to_max_30():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    # 06-29(첫 계산일의 전날) ~ 07-30(마지막 계산일의 실제값)까지 매일 5개씩 판매
+    d = datetime.strptime("2026-06-29", "%Y-%m-%d")
+    while d <= datetime.strptime("2026-07-30", "%Y-%m-%d"):
+        ds = d.strftime("%Y-%m-%d")
+        ensure_row(conn, ds, "YUSAS00001")
+        conn.execute(
+            "UPDATE order_recommendation_daily SET sales_qty = 5 WHERE date = ? AND yusas_code = ?",
+            (ds, "YUSAS00001"),
+        )
+        d += timedelta(days=1)
     conn.commit()
     conn.close()
 
     res = client.get(
         "/order-recommendation/backtest",
-        params={"date": "2026-07-29", "days": 30},
+        params={
+            "date": "2026-07-30",
+            "days": 100,
+            "weight_weekday_average": 0,
+            "weight_previous_day": 1,
+            "weight_avg_7d": 0,
+            "weight_avg_14d": 0,
+            "weight_avg_3d": 0,
+        },
     )
     assert res.status_code == 200
-    body = res.json()
-    dates = {item["date"] for item in body["items"]}
-    assert len(dates) == 5
+    item = res.json()["items"][0]
+    assert item["actual_sales_qty"] == 5 * 30  # 30일만 계산됨
+    assert item["expected_sales"] == pytest.approx(5 * 30)
 
 
 def test_backtest_bias_is_positive_when_overforecasting():
@@ -596,7 +673,7 @@ def test_backtest_bias_is_positive_when_overforecasting():
     res = client.get(
         "/order-recommendation/backtest",
         params={
-            "date": "2026-07-29",
+            "date": "2026-07-30",
             "weight_weekday_average": 0,
             "weight_previous_day": 1,
             "weight_avg_7d": 0,
@@ -609,6 +686,38 @@ def test_backtest_bias_is_positive_when_overforecasting():
     assert body["items"][0]["forecast_error"] == pytest.approx(10.0)
     # bias = 부호있는오차합(10) / 실제합(10) = 1.0 (실제보다 평균 100% 많이 예측 = 과다발주 경향)
     assert body["bias"] == pytest.approx(1.0)
+
+
+def test_backtest_product_search_ignores_top_n_and_includes_all_matching_options():
+    client, get_db, _keep_alive, _store = _make_client()
+    conn = get_db()
+    # 판매량이 가장 적은 코드(상위 N 밖)도 검색어(상품코드)에 걸리면 포함돼야 한다.
+    for i in range(BACKTEST_TOP_N + 1):
+        code = f"YUSAS{i:05d}"
+        for d in ("2026-07-28", "2026-07-30"):
+            ensure_row(conn, d, code)
+            conn.execute(
+                "UPDATE order_recommendation_daily SET sales_qty = ? WHERE date = ? AND yusas_code = ?",
+                (i + 1, d, code),
+            )
+    conn.commit()
+    conn.close()
+
+    res = client.get(
+        "/order-recommendation/backtest",
+        params={
+            "date": "2026-07-30",
+            "product": "YUSAS00000",
+            "weight_weekday_average": 0,
+            "weight_previous_day": 1,
+            "weight_avg_7d": 0,
+            "weight_avg_14d": 0,
+            "weight_avg_3d": 0,
+        },
+    )
+    assert res.status_code == 200
+    codes = {o["yusas_code"] for item in res.json()["items"] for o in item["options"]}
+    assert codes == {"YUSAS00000"}
 
 
 def test_compute_endpoint_fills_recommended_qty_for_existing_rows():

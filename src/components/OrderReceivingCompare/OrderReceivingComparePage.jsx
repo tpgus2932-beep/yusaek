@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, MessageCircle, PackageCheck, PackageMinus, Pencil, Trash2, Wallet } from "lucide-react";
+import { CalendarDays, ChevronDown, ChevronRight, MessageCircle, PackageCheck, PackageMinus, Pencil, Trash2, Wallet } from "lucide-react";
 import styles from "./OrderReceivingCompare.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 import { clientDeduction } from "../../lib/soDeduct";
 import { DatePicker, DateRangePicker } from "./DatePicker";
 import SoCsModal from "./SoCsModal";
 import SoDashboard from "./SoDashboard";
+import ClientHistoryModal from "./ClientHistoryModal";
 import { loadInquiryStats, getMalignantSnapshot, onMalignantSnapshot, normCode } from "../../lib/csFollow";
 
 const csTime = (iso) => {
@@ -76,8 +77,54 @@ function pickupTone(i) {
   return TONES.red;
 }
 
+// 세부목록 표시용 줄 나누기 (데이터는 상품코드당 한 줄 그대로, 화면에서만 나눈다)
+//  - main:   일반입고·미송 (발주 / 입고 / 미송, 금액)
+//  - pickup: 미송픽업 (같은 상품코드라도 별도 줄, 0원)
+//  - deduct: 예전 매칭처럼 상품 줄에 붙어 있던 매입차감을 별도 '매입차감' 줄로 (새 매칭은 서버에서 DEDUCT- 줄로 따로 만든다)
+const isExtraRow = (i) => /^(DEDUCT|FEE)-/.test(String(i.code));
+function splitRows(items) {
+  const rows = [];
+  items.forEach((i) => {
+    if (isExtraRow(i)) { rows.push({ ...i, _part: "extra", _src: i }); return; }
+    const hasMain = (i.ordered || 0) + (i.received || 0) + (i.misong || 0) + (i.exchange || 0) > 0;
+    const hasPickup = (i.ordered_pickup || 0) + (i.pickup || 0) > 0;
+    if (hasMain || !hasPickup) {
+      const r = { ...i, ordered_pickup: 0, pickup: 0, deduct: 0, _part: "main", _src: i, _solo: !hasPickup };
+      rows.push({ ...r, _rank: RANK_INDEX[rankOf(r)] });
+    }
+    if (hasPickup) {
+      const r = { ...i, ordered: 0, received: 0, misong: 0, amount: 0, ordered_amount: 0, deduct: 0, _part: "pickup", _src: i, _solo: !hasMain };
+      rows.push({ ...r, _rank: RANK_INDEX.pickup });
+    }
+    if ((Number(i.deduct) || 0) < 0) {
+      rows.push({
+        code: `${i.code}#deduct`, name: "매입차감", option: "", client: i.client,
+        ordered: 0, ordered_pickup: 0, received: 0, misong: 0, pickup: 0, amount: 0, ordered_amount: 0, cost: 0,
+        deduct: i.deduct, _part: "legacy_deduct", _src: i, _rank: RANK_INDEX.other,
+      });
+    }
+  });
+  return rows;
+}
+
 // 핵심 표시: 입고 N / 발주 M + 진행 막대 + 모자란 개수(빨강) / 초과(보라)
 function Count({ item }) {
+  if (item._part === "pickup") {
+    // 미송픽업 줄: 미송픽업 입고 / 미송픽업 발주
+    const tone = pickupTone(item);
+    const pct = item.ordered_pickup > 0 ? Math.min(100, Math.round((item.pickup / item.ordered_pickup) * 100)) : 100;
+    const lack = item.ordered_pickup - item.pickup;
+    return (
+      <span className={styles.count}>
+        <span className={styles.big} style={{ color: tone.fg }}>{item.pickup}</span>
+        <span className={styles.of}>/ {item.ordered_pickup}</span>
+        <span className={styles.bar}><span style={{ width: `${pct}%`, background: tone.dot }} /></span>
+        {lack > 0 && <span className={styles.lack}>{lack}개 안 옴</span>}
+        {lack === 0 && item.ordered_pickup > 0 && <span className={styles.done}>완료</span>}
+        {lack < 0 && <span className={styles.extra}>+{-lack} 초과</span>}
+      </span>
+    );
+  }
   const { ordered, received } = item;
   if (!ordered && !received) return <span className={styles.muted}>-</span>;
   const tone = RANKS[item._rank].tone;
@@ -186,11 +233,12 @@ function CsChip({ item, onOpen }) {
   );
 }
 
-function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onEditItem, onDeleteItem, onAddProduct, onAddDeduct, onAddFee, onJanggiCheck }) {
+function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onEditItem, onDeleteItem, onAddProduct, onAddDeduct, onAddFee, onEditVat, onJanggiCheck, noHist }) {
   const [picked, setPicked] = useState(new Set()); // 비어 있으면 전체
+  const [histClient, setHistClient] = useState(null); // 거래처 옆 달력 뱃지로 연 일자별 매칭
   const [expanded, setExpanded] = useState(new Set()); // 기본: 전부 닫힘
   const [search, setSearch] = useState("");
-  const [sortKey, setSortKey] = useState("missing"); // 기본: 미입고가 상단
+  const [sortKey, setSortKey] = useState(noHist ? "name" : "missing"); // 기본: 미입고가 상단 (거래처별 일자 창은 날짜순)
 
   // 각 상품 줄에 C/S 정보 붙이기 (원가베이스 상품코드 기준)
   const result = useMemo(() => {
@@ -250,7 +298,7 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
         orderedAmt: items.reduce((s, i) => s + orderedAmountOf(i), 0),
         receivedAmt: items.reduce((s, i) => s + amountOf(i), 0),
       };
-      totals.vatAmt = c.vat ? Math.round(totals.receivedAmt * VAT_RATE) : 0;
+      totals.vatAmt = c.vat_override != null ? c.vat_override : c.vat ? Math.round(totals.receivedAmt * VAT_RATE) : 0;
       // 매입차감: 요청메모의 음수 금액. 상품금액(+부가세)을 넘으면 넘는 만큼은 "남음"으로 따로 표시
       const dd = clientDeduction(items, totals.receivedAmt, c.vat);
       totals.deductRaw = dd.raw;
@@ -261,9 +309,9 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
       return { ...c, items, score, totals };
     }).filter((c) => c.items.length);
     return out.sort((a, b) => (sortKey === "name"
-      ? a.client.localeCompare(b.client, "ko")
+      ? (noHist ? b.client.localeCompare(a.client, "ko") : a.client.localeCompare(b.client, "ko"))
       : b.score - a.score || a.client.localeCompare(b.client, "ko")));
-  }, [result, picked, tokens, sortKey]);
+  }, [result, picked, tokens, sortKey, noHist]);
 
   const toggleClient = (name) => setExpanded((prev) => {
     const next = new Set(prev);
@@ -287,7 +335,7 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
     (result?.clients || []).forEach((c) => {
       const supplyRecv = c.items.reduce((s, i) => s + amountOf(i), 0);
       const supplyOrd = c.items.reduce((s, i) => s + orderedAmountOf(i), 0);
-      o.receivedAmt += withVat(supplyRecv, c.vat) - supplyRecv - clientDeduction(c.items, supplyRecv, c.vat).applied;
+      o.receivedAmt += (c.vat_override != null ? c.vat_override : withVat(supplyRecv, c.vat) - supplyRecv) - clientDeduction(c.items, supplyRecv, c.vat).applied;
       o.orderedAmt += withVat(supplyOrd, c.vat) - supplyOrd;
     });
     cnt.all = o.products;
@@ -400,6 +448,14 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
             <button className={styles.clientHead} onClick={() => toggleClient(c.client)}>
               {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               <b>{c.client}</b>
+              {!noHist && <span
+                role="button"
+                tabIndex={0}
+                className={styles.histBadge}
+                title="과거 일자별 매칭 보기"
+                onClick={(e) => { e.stopPropagation(); setHistClient(String(c.client).split(" · ")[0]); }}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); setHistClient(String(c.client).split(" · ")[0]); } }}
+              ><CalendarDays size={13} /></span>}
               <span className={styles.sumRow}>
                 <Ratio label="입고" got={t.received} total={t.ordered} tone={ratioTone(t.received, t.ordered)} title="입고 / 발주" />
                 <Ratio label="미송" got={t.misong} tone={t.misong > 0 ? TONES.blue : TONES.grey} title="전표에 미송으로 잡힌 수량" noBar />
@@ -411,59 +467,77 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
             {open && (
               <table className={styles.table}>
                 <colgroup>
-                  <col style={{ width: 26 }} /><col style={{ width: 300 }} /><col style={{ width: 220 }} /><col style={{ width: 270 }} /><col style={{ width: 90 }} /><col style={{ width: 120 }} /><col style={{ width: 76 }} />
+                  <col style={{ width: 30 }} /><col style={{ width: "24%" }} /><col style={{ width: "15%" }} /><col style={{ width: "13%" }} /><col style={{ width: "21%" }} /><col style={{ width: 100 }} /><col style={{ width: 140 }} /><col style={{ width: 86 }} />
                 </colgroup>
                 <thead>
                   <tr>
-                    <th style={{ width: 28 }}></th><th>상품명</th><th>옵션</th><th>입고 / 발주</th><th>C/S</th><th className={styles.numR}>금액</th><th></th>
+                    <th style={{ width: 28 }}></th><th>상품명</th><th>거래처상품명</th><th>옵션</th><th>입고 / 발주</th><th>C/S</th><th className={styles.numR}>금액</th><th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {c.items.map((i) => (
-                    <tr key={i.code}>
-                      <td><Dot item={i} /></td>
+                  {splitRows(c.items).map((i) => {
+                    const src = i._src;
+                    const isDeduct = i._part === "legacy_deduct" || (i._part === "extra" && String(i.code).startsWith("DEDUCT-"));
+                    return (
+                    <tr key={`${i.code}#${i._part}`} style={isDeduct ? { background: TONES.red.bg } : undefined}>
+                      <td>{isDeduct ? <span className={styles.dot} style={{ background: TONES.red.dot }} title="매입차감" aria-label="매입차감" /> : <Dot item={i} />}</td>
                       <td>
-                        {i.name}
-                        {i.misong > 0 && (
+                        {isDeduct ? <b style={{ color: TONES.red.fg }}>매입차감</b> : i.name}
+                        {i._part === "main" && i.misong > 0 && (
                           <span className={styles.tag} style={{ background: TONES.blue.bg, color: TONES.blue.fg }} title="이 전표에 미송으로 잡힌 수량">미송 {i.misong}</span>
                         )}
-                        {(i.pickup > 0 || i.ordered_pickup > 0) && (
-                          <span className={styles.tag} style={{ background: pickupTone(i).bg, color: pickupTone(i).fg }} title="미송픽업 입고/발주">
+                        {i._part === "pickup" && (
+                          <span className={styles.tag} style={{ background: pickupTone(i).bg, color: pickupTone(i).fg }} title="미송픽업 입고/발주 (같은 상품코드의 미송픽업분)">
                             미송픽업 {i.pickup}/{i.ordered_pickup}
                           </span>
                         )}
                         {String(i.code).startsWith("FEE-") && (
                           <span className={styles.tag} style={{ background: TONES.orange.bg, color: TONES.orange.fg }} title="상품 외 추가 금액 (부가세 대상)">추가금액</span>
                         )}
-                        {i.deduct < 0 && (
-                          <span className={styles.tag} style={{ background: TONES.red.bg, color: TONES.red.fg }} title="입고요청전표 요청메모의 음수 금액">매입차감 {i.deduct.toLocaleString("ko-KR")}원</span>
-                        )}
-                        {i.edited && <span className={styles.tag} style={{ background: TONES.grey.bg, color: TONES.grey.fg }} title="직접 수정한 줄">수정됨</span>}
+                        {!isDeduct && i.edited && <span className={styles.tag} style={{ background: TONES.grey.bg, color: TONES.grey.fg }} title="직접 수정한 줄">수정됨</span>}
                         {i.from_janggi && <span className={styles.tag} style={{ background: TONES.grey.bg, color: TONES.grey.fg }} title="장끼정리 DB 점검에서 반영한 줄">장끼반영</span>}
                       </td>
-                      <td>{i.option}</td>
-                      <td className={styles.num}><Count item={i} /></td>
-                      <td><CsChip item={i} onOpen={() => onOpenCs?.(i)} /></td>
-                      <td className={styles.numR} title={costOf(i) ? `원가 ${won(costOf(i))} × (입고 ${i.received} + 미송 ${i.misong}) · 미송픽업 제외` : "원가 없음"}>
-                        {i.deduct < 0 && !amountQty(i) ? <span style={{ color: TONES.red.fg }}>{i.deduct.toLocaleString("ko-KR")}원</span>
+                      <td className={styles.supName} title={isDeduct ? "" : i.supplier_name || ""}>{!isDeduct && i.supplier_name ? i.supplier_name : <span className={styles.muted}>-</span>}</td>
+                      <td>{isDeduct ? "" : i.option}</td>
+                      <td className={styles.num}>{isDeduct ? <span className={styles.muted}>-</span> : <Count item={i} />}</td>
+                      <td>{!isDeduct && <CsChip item={i} onOpen={() => onOpenCs?.(i)} />}</td>
+                      <td
+                        className={styles.numR}
+                        title={isDeduct ? "입고요청전표 요청메모의 음수 금액 / 직접 추가한 매입차감"
+                          : i._part === "pickup" ? "미송픽업은 금액 0원"
+                          : costOf(i) ? `원가 ${won(costOf(i))} × (입고 ${i.received} + 미송 ${i.misong}) · 미송픽업 제외` : "원가 없음"}
+                      >
+                        {isDeduct ? <span style={{ color: TONES.red.fg }}>{Number(i.deduct || 0).toLocaleString("ko-KR")}원</span>
+                          : i._part === "pickup" ? <span className={styles.muted}>0원</span>
                           : String(i.code).startsWith("FEE-") ? won(amountOf(i))
                           : costOf(i) ? won(amountOf(i)) : <span className={styles.muted}>원가없음</span>}
                       </td>
                       <td className={styles.rowActions}>
-                        {editable && (
+                        {editable && i._part !== "legacy_deduct" && (
                           <>
-                            <button className={styles.rowBtn} title="수정 (수량 변경 · 상품 변경)" onClick={() => onEditItem(c.client, i)}><Pencil size={14} /></button>
-                            <button className={`${styles.rowBtn} ${styles.rowBtnDel}`} title="삭제" onClick={() => onDeleteItem(c.client, i)}><Trash2 size={14} /></button>
+                            <button className={styles.rowBtn} title="수정 (수량 변경 · 상품 변경)" onClick={() => onEditItem(c.client, src)}><Pencil size={14} /></button>
+                            {/* 일반/미송 줄과 미송픽업 줄은 같은 상품 데이터라, 둘 다 있을 땐 일반 줄 삭제 = 상품 전체 삭제 */}
+                            {(i._part !== "pickup" || i._solo) && (
+                              <button
+                                className={`${styles.rowBtn} ${styles.rowBtnDel}`}
+                                title={i._part === "main" && !i._solo ? "삭제 (미송픽업 줄까지 상품 전체 삭제)" : "삭제"}
+                                onClick={() => onDeleteItem(c.client, src)}
+                              ><Trash2 size={14} /></button>
+                            )}
                           </>
+                        )}
+                        {editable && i._part === "legacy_deduct" && (
+                          <span className={styles.muted} style={{ fontSize: "0.72rem" }} title="예전 매칭 데이터라 상품 줄에 붙어 있는 차감입니다. 상품 수정 창에서 고치거나, 재매칭하면 별도 매입차감 줄로 저장됩니다.">상품연동</span>
                         )}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
                 <tfoot>
                   <tr className={styles.totalRow}>
                     <td></td>
-                    <td colSpan={2}>{c.vat ? `${c.client} 공급가 합계` : `${c.client} 합계`}</td>
+                    <td colSpan={3}>{c.vat ? `${c.client} 공급가 합계` : `${c.client} 합계`}</td>
                     <td className={styles.num}>
                       <span className={styles.count}>
                         <span className={styles.big}>{t.received}</span>
@@ -478,15 +552,17 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
                   {c.vat && (
                     <tr className={styles.vatRow}>
                       <td></td>
-                      <td colSpan={4}>부가세 10%</td>
+                      <td colSpan={5}>{c.vat_override != null ? "부가세 (직접 수정)" : "부가세 10%"}</td>
                       <td className={styles.numR}>+ {won(t.vatAmt)}</td>
-                      <td></td>
+                      <td className={styles.rowActions}>
+                        {editable && <button className={styles.rowBtn} title="부가세 금액 수정 (비우면 자동 10%)" onClick={() => onEditVat(c.client, t.vatAmt, c.vat_override != null)}><Pencil size={14} /></button>}
+                      </td>
                     </tr>
                   )}
                   {t.deductRaw > 0 && (
                     <tr className={styles.vatRow}>
                       <td></td>
-                      <td colSpan={4}>
+                      <td colSpan={5}>
                         매입차감
                         {t.deductLeft > 0 && <span style={{ marginLeft: "0.5rem", color: TONES.orange.fg }}>(매입금액 {won(t.deductLeft)} 남음 · 상품금액 초과분은 차감 제외)</span>}
                       </td>
@@ -497,7 +573,7 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
                   {(c.vat || t.deductRaw > 0) && (
                     <tr className={styles.totalRow}>
                       <td></td>
-                      <td colSpan={4}>{c.client} 합계{c.vat ? " (부가세 포함)" : ""}{t.deductRaw > 0 ? " · 매입차감 반영" : ""}</td>
+                      <td colSpan={5}>{c.client} 합계{c.vat ? " (부가세 포함)" : ""}{t.deductRaw > 0 ? " · 매입차감 반영" : ""}</td>
                       <td className={styles.numR}><b>{won(t.receivedTotal)}</b></td>
                       <td></td>
                     </tr>
@@ -511,6 +587,13 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
       {!clients.length && <div className={styles.muted}>조건에 맞는 상품이 없습니다.</div>}
       </div>
       </section>
+      {histClient && (
+        <ClientHistoryModal
+          client={histClient}
+          onClose={() => setHistClient(null)}
+          render={(res) => <ResultView result={res} cs={cs} onOpenCs={onOpenCs} editable={false} noHist />}
+        />
+      )}
     </>
   );
 }
@@ -537,6 +620,7 @@ export default function OrderReceivingComparePage() {
   const [prodQuery, setProdQuery] = useState("");
   // 세부목록 추가: { type: "product", product, form } | { type: "deduct", client, amount, memo }
   const [addModal, setAddModal] = useState(null);
+  const [jVat, setJVat] = useState({}); // 장끼 점검 창에서 고치는 부가세 입력값 {거래처: 문자열}
   const [jCheck, setJCheck] = useState(null); // 장끼 점검 결과 { recordId, ...api result }
   const [jBusy, setJBusy] = useState(false);
   const [prodResults, setProdResults] = useState([]);
@@ -764,32 +848,79 @@ export default function OrderReceivingComparePage() {
   };
 
   // 날짜별장끼정리 DB를 한 번 돌아 매입차감/누락 상품을 확인. silent: 매칭 직후 자동 실행(비었거나 일치하면 조용히 넘어감)
+  // 반영/삭제/PASS/부가세 수정으로 처리한 항목은 서버에 '처리 완료'로 기록되어 다음 점검부터 목록에 나오지 않는다.
+  const diffCount = (d) => (d.deductions?.length || 0) + (d.products?.length || 0) + (d.so_only?.length || 0) + (d.qty_diffs?.length || 0) + (d.fees?.length || 0) + (d.vats?.length || 0);
   const runJanggiCheck = async (recordId, silent) => {
     if (!recordId) return;
     try {
       const data = await api(`/records/${recordId}/janggi-check`);
       if (data.empty) { if (!silent) setMessage("날짜별장끼정리 DB에 해당 날짜 내역이 없어 점검을 건너뜁니다."); return; }
-      const diffs = (data.deductions?.length || 0) + (data.products?.length || 0) + (data.so_only?.length || 0) + (data.qty_diffs?.length || 0) + (data.fees?.length || 0) + (data.vats?.length || 0);
-      if (!diffs) { if (!silent) setMessage("장끼 DB와 비교했을 때 상이한 부분이 없습니다."); return; }
+      // 처리 완료한 항목이 있으면, 남은 게 없어도 창을 열어 '처리 기록 초기화'를 할 수 있게 한다 (자동 실행 때는 제외)
+      if (!diffCount(data) && (silent || !data.resolved_count)) { if (!silent) setMessage("장끼 DB와 비교했을 때 상이한 부분이 없습니다."); return; }
       setJCheck({ recordId, ...data });
     } catch (err) {
       if (!silent) setMessage(err.message);
     }
   };
 
-  // 사용자가 고른 항목만 반영 (deductions: 거래처 이름들, products: 상품코드들). 나머지는 그대로 두거나 PASS.
-  const applyJanggi = async ({ deductions = [], products = [], qtyDiffs = [], fees = [] }) => {
-    if (!jCheck || (!deductions.length && !products.length && !qtyDiffs.length && !fees.length)) return;
+  // 처리 후 서버가 돌려준 남은 차이로 점검 창을 갱신한다 (남은 항목이 없으면 닫음)
+  const showJanggiLeft = (recordId, d) => {
+    setJCheck(!d || d.empty || !diffCount(d) ? null : { recordId, ...d });
+  };
+
+  // 장끼 점검 처리 공통: 요청 → 기록 갱신 → 남은 점검 목록 표시
+  const janggiAction = async (path, body, doneMsg) => {
+    if (!jCheck) return;
+    const recordId = jCheck.recordId;
     setJBusy(true);
     setMessage("");
     try {
-      const data = await api(`/records/${jCheck.recordId}/janggi-apply`, { method: "POST", body: JSON.stringify({ deductions, products, qty_diffs: qtyDiffs, fees }) });
-      setViewRecord(data.record);
-      setMessage(`장끼 DB 기준으로 ${data.applied.length}건을 반영했습니다.`);
+      const data = await api(`/records/${recordId}/${path}`, { method: "POST", body: JSON.stringify(body) });
+      if (data.record) setViewRecord(data.record);
+      setMessage(typeof doneMsg === "function" ? doneMsg(data) : doneMsg);
       await loadRecords();
-      const d = data.diff || {};
-      const left = (d.deductions?.length || 0) + (d.products?.length || 0) + (d.so_only?.length || 0) + (d.qty_diffs?.length || 0) + (d.fees?.length || 0) + (d.vats?.length || 0);
-      setJCheck(d.empty || !left ? null : { recordId: jCheck.recordId, ...d, passed: jCheck.passed });
+      showJanggiLeft(recordId, data.diff);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setJBusy(false);
+    }
+  };
+
+  // 사용자가 고른 항목만 반영 (deductions: 거래처 이름들, products: 상품코드들). 반영한 항목은 점검 목록에서 빠진다.
+  const applyJanggi = ({ deductions = [], products = [], qtyDiffs = [], fees = [] }) => {
+    if (!deductions.length && !products.length && !qtyDiffs.length && !fees.length) return;
+    return janggiAction("janggi-apply", { deductions, products, qty_diffs: qtyDiffs, fees }, (data) => `장끼 DB 기준으로 ${data.applied?.length || 0}건을 반영했습니다.`);
+  };
+
+  // [삭제]: SO+ 세부목록에서 실제로 지우고, 점검 목록에서도 뺀다.
+  const removeFromSo = (body, label) => {
+    if (!window.confirm(`SO+ 세부목록에서 실제로 삭제합니다.\n${label}\n진행하시겠습니까?`)) return;
+    return janggiAction("janggi-remove", body, "SO+ 세부목록에서 삭제했습니다.");
+  };
+
+  // [PASS]: SO+는 그대로 두고 '처리 완료'로 기록해 점검 목록에서 뺀다.
+  const passJanggi = (key) => janggiAction("janggi-resolve", { keys: [key] }, "PASS 처리했습니다.");
+
+  // 처리 완료 기록을 모두 지워 점검 목록을 처음 상태로 되돌린다 (SO+ 세부목록은 그대로).
+  const resetJanggiResolved = () => {
+    if (!window.confirm("처리(반영·삭제·PASS)한 점검 항목을 다시 목록에 표시합니다.\nSO+ 세부목록은 바뀌지 않습니다. 진행하시겠습니까?")) return;
+    return janggiAction("janggi-resolve", { reset: true }, "처리 기록을 초기화했습니다.");
+  };
+
+  // 장끼 점검 창에서 바로 부가세 금액을 고친다 (고친 거래처는 처리 완료로 점검 목록에서 빠진다)
+  const applyVat = async (client, amount) => {
+    if (!jCheck) return;
+    const recordId = jCheck.recordId;
+    setJBusy(true);
+    setMessage("");
+    try {
+      await api(`/records/${recordId}/vat`, { method: "POST", body: JSON.stringify({ client, amount }) });
+      const data = await api(`/records/${recordId}/janggi-resolve`, { method: "POST", body: JSON.stringify({ keys: [`v:${client}`] }) });
+      setViewRecord(data.record);
+      await loadRecords();
+      showJanggiLeft(recordId, data.diff);
+      setMessage(`${client} 부가세를 수정했습니다.`);
     } catch (err) {
       setMessage(err.message);
     } finally {
@@ -843,6 +974,23 @@ export default function OrderReceivingComparePage() {
     }
   };
 
+  const editVat = async (client, current, fixed) => {
+    if (!viewRecord?.id) return;
+    const input = window.prompt(`${client} 부가세 금액을 입력하세요.${fixed ? "\n(비우고 확인하면 자동 10%로 되돌아갑니다)" : ""}`, String(current));
+    if (input === null) return;
+    setLoading(true);
+    setMessage("");
+    try {
+      const data = await api(`/records/${viewRecord.id}/vat`, { method: "POST", body: JSON.stringify({ client, amount: input }) });
+      setViewRecord(data.record);
+      await loadRecords();
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const deleteItem = async (client, item) => {
     if (!viewRecord?.id) return;
     if (!window.confirm(`세부목록에서 삭제합니다.\n${client} · ${item.name} ${item.option}\n진행하시겠습니까?`)) return;
@@ -861,7 +1009,6 @@ export default function OrderReceivingComparePage() {
     }
   };
 
-  const shiftLookup = (days) => pickLookupDate(shiftDay(lookupDate || todayStr(), days));
 
   const resetForm = () => { setSelecting(false); setEditingId(null); setTitle(""); setMemo(""); setVoucherList([]); setPicked({}); };
 
@@ -983,6 +1130,10 @@ export default function OrderReceivingComparePage() {
     }
   };
 
+  // 일자별 조회: 저장된 매칭 날짜를 최근순 리스트로 (조회 중인 날짜는 항상 포함)
+  const dayListDates = [...new Set([...dayChips.map(([d]) => d), ...(lookupDate ? [lookupDate] : [])])].sort().reverse();
+  const dayLabel = (d) => `${d} (${["일", "월", "화", "수", "목", "금", "토"][new Date(`${d}T00:00:00`).getDay()]})`;
+
   const lookupPanel = (
       <section className={styles.panel}>
         <div className={styles.row}>
@@ -991,16 +1142,7 @@ export default function OrderReceivingComparePage() {
             <button className={`${styles.chip} ${lookupMode === "range" ? styles.chipOn : ""}`} onClick={() => switchLookupMode("range")}>기간별</button>
           </span>
           {lookupMode === "day" ? (
-            <>
-              <button className={styles.btn} onClick={() => shiftLookup(-1)} title="전날">◀</button>
-              <DatePicker
-                value={lookupDate}
-                marks={markDates}
-                onChange={(v) => { setLookupDate(v); setLookupTo(v); runLookup(v, v, clientQuery.trim(), "day"); }}
-                title="조회할 날짜 (선택하면 바로 조회)"
-              />
-              <button className={styles.btn} onClick={() => shiftLookup(1)} title="다음날">▶</button>
-            </>
+            null
           ) : (
             <>
               <DateRangePicker
@@ -1029,7 +1171,30 @@ export default function OrderReceivingComparePage() {
           </datalist>
           <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={() => runLookup()} disabled={loading}>조회</button>
         </div>
-        <div className={styles.chips}>
+        {lookupMode === "day" && (
+          <div className={styles.dayList}>
+            {dayListDates.map((d) => (
+              <button
+                key={d}
+                className={`${styles.dayItem} ${d === lookupDate ? styles.dayItemOn : ""}`}
+                onClick={() => { setLookupDate(d); setLookupTo(d); runLookup(d, d, clientQuery.trim(), "day"); }}
+              >
+                {dayLabel(d)}
+              </button>
+            ))}
+            <div className={styles.dayCal}>
+              <DatePicker
+                iconOnly
+                popRight
+                value={lookupDate}
+                marks={markDates}
+                onChange={(v) => { setLookupDate(v); setLookupTo(v); runLookup(v, v, clientQuery.trim(), "day"); }}
+                title="달력에서 날짜 선택 (선택하면 바로 조회)"
+              />
+            </div>
+          </div>
+        )}
+        {lookupMode !== "day" && <div className={styles.chips}>
           <button className={styles.chip} onClick={() => setPreset("today")}>오늘</button>
           <button className={styles.chip} onClick={() => setPreset("yesterday")}>어제</button>
           <button className={styles.chip} onClick={() => setPreset("month")}>이번달</button>
@@ -1045,7 +1210,7 @@ export default function OrderReceivingComparePage() {
               {d.slice(5)}
             </button>
           ))}
-        </div>
+        </div>}
         {!dayMode && <div className={styles.muted} style={{ marginTop: "0.5rem" }}>
           {`${lookupMode === "day" ? lookupDate : `${lookupDate} ~ ${lookupTo}`} 일자별 조회${clientQuery.trim() ? ` · ${clientQuery.trim()}` : " · 전체 거래처"}`}
         </div>}
@@ -1129,7 +1294,7 @@ export default function OrderReceivingComparePage() {
       )}
       {viewRecord ? (
           <ResultView
-            key={`${viewRecord.id}-${viewRecord.updated_at}`}
+            key={viewRecord.id ?? viewRecord.updated_at /* 같은 매칭을 수정/삭제해도 다시 마운트하지 않아 펼침·검색·정렬·스크롤이 유지됨 */}
             result={viewRecord.result}
             cs={cs}
             onOpenCs={(i) => setCsModal({ code: normCode(i.code), name: i.name, option: i.option })}
@@ -1139,16 +1304,23 @@ export default function OrderReceivingComparePage() {
             onAddProduct={openAddProduct}
             onAddDeduct={openAddDeduct}
             onAddFee={openAddFee}
+            onEditVat={editVat}
             onJanggiCheck={() => runJanggiCheck(viewRecord.id, false)}
             lookupSlot={lookupPanel}
           />
       ) : lookupPanel}
       {jCheck && (() => {
-        const passed = jCheck.passed || {};
-        const togglePass = (k) => setJCheck((j) => ({ ...j, passed: { ...(j.passed || {}), [k]: !(j.passed || {})[k] } }));
-        const rowStyle = (k) => ({ padding: "0.35rem 0", borderBottom: "1px solid rgba(0,0,0,0.06)", opacity: passed[k] ? 0.4 : 1 });
-        const PassBtn = ({ k }) => (
-          <button className={styles.btn} disabled={jBusy} onClick={() => togglePass(k)}>{passed[k] ? "PASS 취소" : "PASS"}</button>
+        // 처리(반영·삭제·PASS·부가세 수정)한 항목은 서버가 점검 목록에서 빼고 돌려준다.
+        const passed = {};
+        const rowStyle = () => ({ padding: "0.35rem 0", borderBottom: "1px solid rgba(0,0,0,0.06)" });
+        // real: SO+ 세부목록에서 실제로 지울 때의 {body, label}. 없으면(장끼에만 있는 상품·부가세) SO+에 지울 게 없어 삭제 버튼을 두지 않는다.
+        const PassBtn = ({ k, real }) => (
+          <>
+            <button className={styles.btn} disabled={jBusy} onClick={() => passJanggi(k)} title="SO+는 그대로 두고 처리 완료로 표시해 목록에서 뺍니다">PASS</button>
+            {real && (
+              <button className={styles.btn} disabled={jBusy} onClick={() => removeFromSo(real.body, real.label)} title="SO+ 세부목록에서 실제로 삭제하고 목록에서 뺍니다">삭제</button>
+            )}
+          </>
         );
         const Reason = ({ children }) => <div className={styles.muted} style={{ fontSize: "0.78rem", marginTop: 2 }}>사유 · {children}</div>;
         const kinds = (x) => [x.received && `입고 ${x.received}`, x.misong && `미송 ${x.misong}`, x.pickup && `미송픽업 ${x.pickup}`].filter(Boolean).join(" · ");
@@ -1161,7 +1333,14 @@ export default function OrderReceivingComparePage() {
           <div className={styles.modalBack} onClick={() => !jBusy && setJCheck(null)}>
             <div className={styles.modal} style={{ maxWidth: 820, width: "95vw", maxHeight: "86vh", overflow: "auto" }} onClick={(e) => e.stopPropagation()}>
               <h3>장끼 DB 점검 <span className={styles.muted} style={{ fontSize: "0.8rem" }}>{jCheck.dates?.join(", ")} · 장끼 {jCheck.janggi_rows}행 기준</span></h3>
-              <div className={styles.muted}>날짜별장끼정리 DB와 이 매칭을 비교해 다른 부분을 모두 보여줍니다. 항목마다 [반영] 또는 [PASS]를 고르세요. 아무것도 누르지 않으면 SO+ 매칭은 그대로입니다.</div>
+              <div className={styles.muted}>날짜별장끼정리 DB와 이 매칭을 비교해 다른 부분을 보여줍니다. 항목마다 [반영]·[삭제]·[PASS] 중 하나로 처리하면 목록에서 빠집니다. 아무것도 누르지 않으면 SO+ 매칭은 그대로입니다.</div>
+              {jCheck.resolved_count > 0 && (
+                <div className={styles.row} style={{ alignItems: "center", gap: "0.5rem", marginTop: "0.4rem" }}>
+                  <span className={styles.muted}>처리 완료되어 숨긴 항목 {jCheck.resolved_count}개</span>
+                  <button className={styles.btn} disabled={jBusy} onClick={resetJanggiResolved}>다시 보기 (처리 기록 초기화)</button>
+                </div>
+              )}
+              {diffCount(jCheck) === 0 && <div className={styles.muted} style={{ marginTop: "0.6rem" }}>남은 점검 항목이 없습니다.</div>}
 
               {jCheck.deductions?.length > 0 && (
                 <div className={styles.modalSec}>
@@ -1173,7 +1352,7 @@ export default function OrderReceivingComparePage() {
                         <span className={styles.muted}>장끼 -{won(d.janggi)} · SO+ -{won(d.so)}</span>
                         <span style={{ flex: 1 }} />
                         {d.diff > 0 && <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={jBusy || passed[`d:${d.client}`]} onClick={() => applyJanggi({ deductions: [d.client] })}>반영 (-{won(d.diff)})</button>}
-                        <PassBtn k={`d:${d.client}`} />
+                        <PassBtn k={`d:${d.client}`} real={d.so > 0 ? { body: { kind: "deduct", client: d.client }, label: `${d.client} 매입차감 (-${won(d.so)})` } : null} />
                       </div>
                       <Reason>{d.reason}</Reason>
                     </div>
@@ -1194,7 +1373,7 @@ export default function OrderReceivingComparePage() {
                           <span className={styles.muted}>장끼 {won(f.janggi)} · SO+ {won(f.so)}</span>
                           <span style={{ flex: 1 }} />
                           {f.diff > 0 && <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={jBusy || passed[k]} onClick={() => applyJanggi({ fees: [{ client: f.client, label: f.label }] })}>{f.label} +{won(f.diff)} 추가</button>}
-                          <PassBtn k={k} />
+                          <PassBtn k={k} real={f.so ? { body: { kind: "fee", client: f.client, label: f.label }, label: `${f.client} ${f.label} (${won(f.so)})` } : null} />
                         </div>
                         <Reason>{f.reason}</Reason>
                       </div>
@@ -1212,6 +1391,16 @@ export default function OrderReceivingComparePage() {
                         <b style={{ minWidth: 120 }}>{v.client}</b>
                         <span className={styles.muted}>장끼 {won(v.janggi)} · SO+ {won(v.so)}</span>
                         <span style={{ flex: 1 }} />
+                        <input
+                          className={styles.numInput}
+                          style={{ width: 96, textAlign: "right" }}
+                          inputMode="numeric"
+                          value={jVat[v.client] ?? String(v.janggi)}
+                          onChange={(e) => setJVat((m) => ({ ...m, [v.client]: e.target.value }))}
+                          disabled={jBusy}
+                          aria-label={`${v.client} 부가세 금액`}
+                        />
+                        <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={jBusy || passed[`v:${v.client}`]} onClick={() => applyVat(v.client, jVat[v.client] ?? String(v.janggi))}>부가세 수정</button>
                         <PassBtn k={`v:${v.client}`} />
                       </div>
                       <Reason>{v.reason}</Reason>
@@ -1251,7 +1440,7 @@ export default function OrderReceivingComparePage() {
                         <span>{x.name} <span className={styles.muted}>{x.option} · {x.code}</span></span>
                         <b style={{ color: TONES.purple?.fg || TONES.orange.fg }}>{kinds(x)}</b>
                         <span style={{ flex: 1 }} />
-                        <PassBtn k={`s:${x.code}`} />
+                        <PassBtn k={`s:${x.code}`} real={{ body: { kind: "item", client: x.client, code: x.code }, label: `${x.client} · ${x.name} ${x.option}` }} />
                       </div>
                       <Reason>{x.reason}</Reason>
                     </div>
@@ -1274,7 +1463,7 @@ export default function OrderReceivingComparePage() {
                             {kinds(q.add)} 추가
                           </button>
                         )}
-                        <PassBtn k={`q:${q.code}`} />
+                        <PassBtn k={`q:${q.code}`} real={{ body: { kind: "item", client: q.client, code: q.code }, label: `${q.client} · ${q.name} ${q.option}` }} />
                       </div>
                       <Reason>{q.reason}</Reason>
                     </div>

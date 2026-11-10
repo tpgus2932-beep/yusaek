@@ -803,6 +803,23 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     return { isToday, text: `${when} ${last.user || ""} · ${last.kinds ?? 0}종 ${last.total ?? 0}개 차감`.replace(/\s+/g, " ") };
   };
 
+  // 출고상품삭제 실행 이력 모달
+  const [showDeductHistory, setShowDeductHistory] = useState(false);
+  const [deductHistory, setDeductHistory] = useState([]);
+  const [deductHistoryOpenIdx, setDeductHistoryOpenIdx] = useState(null);
+  const openDeductHistory = async () => {
+    setShowDeductHistory(true);
+    setDeductHistoryOpenIdx(null);
+    try {
+      const res = await fetch(`${API}/barcode/bad-stock/deduct-history`, { headers: tabHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      setDeductHistory(Array.isArray(data.history) ? data.history : []);
+    } catch {
+      setDeductHistory([]);
+    }
+  };
+
   // 확장주문검색에 올라온 주문에 악성재고 상품이 있으면 주문 수량만큼 악성재고에서 차감/삭제한다.
   const deductShippedBadStock = async () => {
     setBadStockMessage("");
@@ -2663,6 +2680,41 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
           </div>
         );
       })()}
+      {showDeductHistory && (
+        <div className={styles.modalOverlay} onClick={() => setShowDeductHistory(false)}>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()} style={{ maxHeight: "80vh", overflowY: "auto" }}>
+            <div className={styles.modalHeader}>
+              <h4 className={styles.modalTitle}>출고상품삭제 이력</h4>
+              <div className={styles.modalActions}>
+                <button className={styles.secondaryBtn} onClick={() => setShowDeductHistory(false)}>닫기</button>
+              </div>
+            </div>
+            {deductHistory.length === 0 ? (
+              <p>저장된 이력이 없습니다. (이 기능 추가 이후 실행분부터 기록됩니다)</p>
+            ) : (
+              deductHistory.map((h, idx) => {
+                const d = describeLastDeduct(h);
+                const open = deductHistoryOpenIdx === idx;
+                return (
+                  <div key={`${h.at}-${idx}`} style={{ borderBottom: "1px solid #e5e7eb", padding: "0.4rem 0" }}>
+                    <div style={{ cursor: "pointer" }} onClick={() => setDeductHistoryOpenIdx(open ? null : idx)}>
+                      {open ? "▼" : "▶"} {String(h.at || "").replace("T", " ")} · {h.user || ""} · {h.kinds ?? 0}종 {h.total ?? 0}개{d?.isToday ? " (오늘)" : ""}
+                    </div>
+                    {open && (
+                      <ul style={{ margin: "0.3rem 0 0 1.2rem", fontSize: "0.9em" }}>
+                        {(h.items || []).map((it, i) => (
+                          <li key={`${it.code}-${i}`}>{it.product_name || it.code} : -{it.deducted}</li>
+                        ))}
+                        {!(h.items || []).length && <li>상세 내역 없음</li>}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
       {showBadStockModal && (
         <div className={styles.modalOverlay} onClick={() => setShowBadStockModal(false)}>
           <div className={`${styles.modal} ${styles.modalWide}`} onClick={(e) => e.stopPropagation()}>
@@ -2679,13 +2731,15 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                 {(() => {
                   const last = describeLastDeduct(badStockLastDeduct);
                   return (
-                    <span
+                    <button
+                      type="button"
                       className={styles.pill}
-                      style={last?.isToday ? { background: "#16a34a", color: "#fff" } : undefined}
-                      title={last ? "출고상품삭제 마지막 실행" : "출고상품삭제를 실행한 기록이 없습니다"}
+                      style={{ cursor: "pointer", border: "none", ...(last?.isToday ? { background: "#16a34a", color: "#fff" } : {}) }}
+                      onClick={openDeductHistory}
+                      title="클릭하면 출고상품삭제 이력을 볼 수 있습니다"
                     >
                       {last ? `${last.isToday ? "✔ " : ""}${last.text}` : "출고상품삭제 기록 없음"}
-                    </span>
+                    </button>
                   );
                 })()}
                 <button className={styles.secondaryBtn} onClick={() => renameBadStockProducts(false)} disabled={badStockRenaming}>

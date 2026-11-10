@@ -851,8 +851,8 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                     break
                 for cancel in cancels:
                     for item in cancel.get("order_items", []):
-                        # 자동처리(new-return-pickup)에서 제외되는 기준과 동일해야 한다.
-                        if item.get("cancel_reason") not in _SELLER_FAULT_CANCEL_REASONS:
+                        # 반품 화면의 판매자/고객 구분과 같은 기준(반품배송비가 음수=고객 부담이면 제외).
+                        if not is_seller_return_item(item):
                             continue
                         images = item.get("cancel_images") or cancel.get("cancel_images") or []
                         tel_raw = (

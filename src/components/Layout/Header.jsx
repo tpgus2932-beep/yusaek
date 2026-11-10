@@ -1,11 +1,13 @@
-import { Bell, CalendarDays, CircleDollarSign, ClipboardList, DatabaseZap, Headset, Key, NotebookPen, PackageCheck, Timer, Warehouse } from 'lucide-react';
+import { Bell, CalendarDays, CircleDollarSign, ClipboardList, DatabaseZap, Headset, Key, NotebookPen, PackageCheck, RotateCw, Timer, Warehouse } from 'lucide-react';
 import { useState } from 'react';
 import styles from './Header.module.css';
 import { COLLAB_API_BASE, LOCAL_API_BASE, getAuthHeaders } from '../../lib/api';
 import EventCalendarModal from '../EventCalendar/EventCalendarModal';
 import { requestEzadminSessionFromExtension } from '../../lib/ezadminAuto';
 
-const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode }) => {
+const DEV_SERVER_USERS = ['tmddlfnan']; // 5175 서버 재시작 버튼 노출 계정(김승일)
+
+const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode, currentUser }) => {
     const initials = displayName ? displayName.slice(0, 2) : 'JD';
     const [showProfile, setShowProfile] = useState(false);
     const [nameInput, setNameInput] = useState(displayName || '');
@@ -20,6 +22,31 @@ const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode })
     const [ezadminMsgType, setEzadminMsgType] = useState('');
     const [ezadminNeedExt, setEzadminNeedExt] = useState(false); // 확장 미설치로 자동 가져오기에 실패한 경우
     const [showEventCalendar, setShowEventCalendar] = useState(false);
+    const [showDevMenu, setShowDevMenu] = useState(false);
+    const [devRestarting, setDevRestarting] = useState(false);
+
+    const restartDevServer = async (withBackend) => {
+        const label = withBackend ? '5175 프론트 + 백엔드' : '5175 프론트';
+        if (!window.confirm(`${label}를 시작(재시작)할까요?${withBackend ? ' (백엔드가 잠시 끊기고 스캔 상태가 초기화됩니다)' : ''}`)) return;
+        setShowDevMenu(false);
+        setDevRestarting(true);
+        try {
+            const res = await fetch(`${LOCAL_API_BASE}/dev-server/restart`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ withBackend }),
+            });
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(data.detail || `요청 실패 (${res.status})`);
+            }
+            window.alert('시작/재시작을 요청했습니다. 잠시 후 새로고침하세요.');
+        } catch (e) {
+            window.alert(e.message || '시작/재시작 요청에 실패했습니다.');
+        } finally {
+            setDevRestarting(false);
+        }
+    };
 
     const saveProfile = async () => {
         setError('');
@@ -199,6 +226,30 @@ const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode })
                         <Headset size={14} />
                         CS
                     </button>
+                    {DEV_SERVER_USERS.includes(currentUser) && (
+                        <div style={{ position: 'relative' }}>
+                            <button
+                                type="button"
+                                className={styles.topNavItem}
+                                disabled={devRestarting}
+                                onClick={() => setShowDevMenu((v) => !v)}
+                                title="5175 서버 시작/재시작"
+                            >
+                                <RotateCw size={14} />
+                                5175
+                            </button>
+                            {showDevMenu && (
+                                <div className={styles.devMenu}>
+                                    <button type="button" className={styles.devMenuItem} onClick={() => restartDevServer(false)}>
+                                        프론트만 시작/재시작
+                                    </button>
+                                    <button type="button" className={styles.devMenuItem} onClick={() => restartDevServer(true)}>
+                                        프론트 + 백엔드 시작/재시작
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
 

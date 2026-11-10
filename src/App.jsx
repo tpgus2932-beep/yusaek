@@ -45,6 +45,8 @@ const KNOWN_TABS = [
 // 상단 메뉴 모드. 새로고침해도 보던 메뉴가 유지되도록 localStorage에 저장한다.
 const TOP_MODES = ['home', 'db-manager', 'inventory-dashboard', 'order-dashboard', 'timebox', 'worklog', 'order-receiving', 'cs'];
 
+const STATS_USERS = ['ksh2932', 'tmddlfnan']; // 통계 메뉴 허용 계정(김세현, 김승일)
+
 const App = () => {
   const pathname = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
   const isMobileKimsungilRequestRoute = pathname === '/request-kimsungil';
@@ -80,7 +82,7 @@ const App = () => {
     if (!KNOWN_TABS.includes(tab)) return false;
     if (userRole === 'viewer') return tab === 'dashboard';
     if (tab === 'settings') return true;
-    if (tab === 'cs-stats') return username === 'ksh2932';
+    if (tab === 'cs-stats') return STATS_USERS.includes(username);
     if (tab === 'order' || tab === 'admin') {
       return adminFlag && !hidden.includes(tab);
     }
@@ -305,7 +307,7 @@ const App = () => {
           isDarkMode={isDarkMode}
           toggleTheme={toggleTheme}
           isAdmin={isAdmin}
-          showCsStats={username === 'ksh2932'}
+          showCsStats={STATS_USERS.includes(username)}
           hiddenTabs={effectiveHiddenTabs}
           menuLabels={menuLabels}
           onLogout={handleLogout}
@@ -318,6 +320,7 @@ const App = () => {
           displayName={displayName}
           topMode={topMode}
           setTopMode={setTopMode}
+          currentUser={username}
           onProfileUpdate={(name) => {
             setDisplayName(name);
             localStorage.setItem('displayName', name);
@@ -352,7 +355,7 @@ const App = () => {
               <HapbaeManagementTabs transferredAmoodFile={amoodHapbaeTransfer} />
             )}
             {visibleActiveTab === 'test' && !effectiveHiddenTabs.includes('test') && <TestTabs />}
-            {visibleActiveTab === 'cs-stats' && username === 'ksh2932' && <CSStatsPage />}
+            {visibleActiveTab === 'cs-stats' && STATS_USERS.includes(username) && <CSStatsPage />}
             {visibleActiveTab === 'ai' && !effectiveHiddenTabs.includes('ai') && <AIChatPage />}
             {visibleActiveTab === 'order' && isAdmin && !effectiveHiddenTabs.includes('order') && <OrderPage />}
             {visibleActiveTab === 'admin' && isAdmin && !effectiveHiddenTabs.includes('admin') && <AdminUsers currentUser={username} />}

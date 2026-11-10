@@ -569,6 +569,7 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
         # 오늘출발 재고 차감 - 철회·출력·배송확인이 끝난 뒤에 하고, 실패해도 위 처리는 되돌리지 않는다.
         stock_minus: list[dict] = []
         stock_minus_error = ""
+        stock_skipped: list[dict] = []
         if stock_items:
             try:
                 changed = await ably.decrease_today_delivery_stock({i["code"]: int(i["ea"]) for i in stock_items})
@@ -578,12 +579,22 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
                 ]
                 if changed:
                     steps.append("오늘출발 재고 차감")
+                done = {u["stock_sync_code"] for u in changed}
+                for i in stock_items:
+                    if i["code"] not in done:
+                        stock_skipped.append({"code": i["code"], "ea": int(i["ea"]), "reason": "오늘출발 옵션 목록에 없음 (오늘출발 상품이 아니거나 재고연동코드 불일치)"})
+                for u in changed:
+                    if u["_prev_stock"] <= 0:
+                        stock_skipped.append({"code": u["stock_sync_code"], "ea": u["_ea_minus"], "reason": "오늘출발 재고가 이미 0 (더 내릴 재고 없음)"})
             except Exception as exc:
                 stock_minus_error = str(exc)
+        else:
+            stock_skipped.append({"code": "", "ea": 0, "reason": "주문상품에 재고연동코드(옵션코드)가 없어 차감 대상을 찾지 못함"})
         return {
             "ok": True, "cancel_sno": cancel_sno, "pack": pack, "steps": steps, "html": html,
             "trans_corp": printed["trans_corp"], "trans_no": printed["trans_no"],
             "stock_minus": stock_minus, "stock_minus_error": stock_minus_error,
+            "stock_skipped": stock_skipped,
         }
 
     @router.post("/reply")

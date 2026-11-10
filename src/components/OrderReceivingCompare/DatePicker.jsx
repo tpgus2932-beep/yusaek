@@ -94,7 +94,7 @@ const viewOf = (s) => {
 };
 
 // 날짜 하나 선택. marks: 점으로 표시할 날짜(Set)
-export function DatePicker({ value, onChange, disabled, marks, title }) {
+export function DatePicker({ value, onChange, disabled, marks, title, iconOnly, popRight }) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState(() => viewOf(value));
   const ref = useRef(null);
@@ -107,12 +107,12 @@ export function DatePicker({ value, onChange, disabled, marks, title }) {
   const choose = (s) => { onChange(s); setOpen(false); };
   return (
     <span className={styles.wrap} ref={ref}>
-      <button type="button" className={styles.trigger} onClick={toggle} disabled={disabled} title={title}>
+      <button type="button" className={`${styles.trigger} ${iconOnly ? styles.iconTrigger : ""}`} onClick={toggle} disabled={disabled} title={title}>
         <CalendarDays size={15} />
-        <span>{label(value)}</span>
+        {!iconOnly && <span>{label(value)}</span>}
       </button>
       {open && (
-        <div className={styles.pop}>
+        <div className={`${styles.pop} ${popRight ? styles.popRight : ""}`}>
           <Calendar view={view} setView={setView} marks={marks} getState={(s) => ({ selected: s === value })} onPick={choose} />
           <div className={styles.foot}>
             <button type="button" className={styles.quick} onClick={() => choose(fmt(new Date()))}>오늘</button>

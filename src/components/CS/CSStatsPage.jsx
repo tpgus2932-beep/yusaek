@@ -3,6 +3,7 @@ import { RefreshCw } from 'lucide-react';
 import styles from './CSStatsPage.module.css';
 import ReturnScanStats from './ReturnScanStats';
 import NormalizationStats from './NormalizationStats';
+import CancelStats from './CancelStats';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
 const PERIODS = [7, 14, 30, 90];
@@ -253,8 +254,11 @@ const CSStatsPage = () => {
                 <button type="button" className={`${styles.chip} ${tab === 'normalization' ? styles.chipActive : ''}`} onClick={() => setTab('normalization')}>
                     정상화 통계
                 </button>
+                <button type="button" className={`${styles.chip} ${tab === 'cancel' ? styles.chipActive : ''}`} onClick={() => setTab('cancel')}>
+                    취소통계
+                </button>
             </div>
-            {tab === 'cs' ? <CSStatsTab /> : tab === 'returns' ? <ReturnScanStats /> : <NormalizationStats />}
+            {tab === 'cs' ? <CSStatsTab /> : tab === 'returns' ? <ReturnScanStats /> : tab === 'cancel' ? <CancelStats /> : <NormalizationStats />}
         </div>
     );
 };

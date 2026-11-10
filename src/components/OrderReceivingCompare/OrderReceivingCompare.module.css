@@ -273,3 +273,37 @@ select { border-radius: 999px; }
 button.csBadge { border: 0; font-family: inherit; cursor: pointer; transition: background 0.12s, transform 0.1s; box-shadow: inset 0 0 0 1px rgba(12, 116, 135, 0.18); }
 button.csBadge:hover { background: #c6ecf2; transform: translateY(-1px); }
 .table { width: 1102px; }
+
+.histBadge { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; margin-left: 0.35rem; border-radius: 50%; background: #dbe7ff; color: #1d4ed8; cursor: pointer; flex: none; }
+.histBadge:hover { background: #c3d6fb; }
+
+/* 일자별 조회: 날짜 리스트 + 우측 하단 달력 뱃지 */
+.dayList { position: relative; display: flex; flex-direction: column; gap: 0.25rem; margin-top: 0.6rem; padding-bottom: 2rem; max-width: 22rem; }
+.dayItem { text-align: left; padding: 0.4rem 0.8rem; border-radius: 10px; border: 1px solid var(--so-line); background: #f5f8fe; color: var(--so-ink); font-size: 0.85rem; font-weight: 600; cursor: pointer; font-family: inherit; }
+.dayItem:hover { border-color: #8fb0f3; }
+.dayItemOn, .dayItemOn:hover { background: #dbe7ff; border-color: #8fb0f3; color: #1d4ed8; font-weight: 800; }
+.dayCal { position: absolute; right: 0; bottom: 0; }
+
+
+/* 매칭 리스트 글꼴 키우기: 기존 간격 비율은 유지하고, 글자가 커진 만큼(약 1.15배)만 간격을 비례해서 넓힌다 */
+.clientHead { padding: 0.8rem 1.15rem; font-size: 1.08rem; gap: 0.92rem; }
+.clientHead > b { font-size: 1.12rem; }
+.sumRow { gap: 0.58rem; }
+.ratio { font-size: 0.9rem; padding: 0.32rem 0.92rem 0.32rem 0.69rem; gap: 0.46rem; }
+.ratioDot { width: 9px; height: 9px; }
+.ratioNum { font-size: 1.05rem; }
+.ratioBar { width: 39px; height: 6px; }
+.amount { font-size: 1.1rem; }
+.table { width: 100%; min-width: 0; font-size: 0.96rem; }
+.table th { font-size: 0.84rem; }
+.table th, .table td { padding: 0.18rem 0.86rem 0.18rem 0.58rem; line-height: 1.2; }
+.tag { font-size: 0.8rem; padding: 0.02rem 0.58rem; }
+.big { font-size: 1.2rem; }
+.of { font-size: 0.92rem; }
+.lack { font-size: 0.84rem; padding: 0 0.46rem; }
+.dot { width: 13px; height: 13px; }
+.actions .text, .actions .sortSel, .actions .btn { font-size: 0.9rem; }
+.fbtn { font-size: 0.9rem; }
+.muted { font-size: 0.9rem; }
+
+.supName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7c3aed; font-weight: 600; }

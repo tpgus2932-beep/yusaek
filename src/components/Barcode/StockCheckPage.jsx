@@ -42,12 +42,16 @@ function compareZone(scanned, systemItems, isBad) {
   return rows;
 }
 
-// 정상화로 맞출 수 있는 행: 많음(스캔 > 재고)은 부족분만큼 입고, 없음(스캔 0, 재고 있음)은 재고만큼 출고.
-// 적음, 악성재고는 대상이 아니다.
+// 정상화로 맞출 수 있는 행: 많음(스캔 > 재고)은 부족분만큼 입고, 적음(0 < 스캔 < 재고)은 모자란 만큼 출고(마이너스),
+// 없음(스캔 0, 재고 있음)은 재고만큼 출고. 악성재고는 대상이 아니다.
 function normalizeAction(r) {
   if (r.status === "more") {
     const qty = r.scanQty - (r.stock_qty || 0);
     return qty > 0 ? { type: "in", qty, scan_qty: r.scanQty, system_qty: r.stock_qty || 0 } : null;
+  }
+  if (r.status === "less") {
+    const qty = (r.stock_qty || 0) - r.scanQty;
+    return qty > 0 ? { type: "out", qty, scan_qty: r.scanQty, system_qty: r.stock_qty || 0 } : null;
   }
   if (r.status === "none" && r.stock_qty > 0) return { type: "out", qty: r.stock_qty, scan_qty: r.scanQty, system_qty: r.stock_qty };
   return null;
@@ -413,7 +417,7 @@ export default function StockCheckPage({ headerExtra = null }) {
                 className={pageStyles.primaryBtn}
                 onClick={normalize}
                 disabled={normBusy || busy || Object.keys(normSel).length === 0}
-                title="선택한 많음(부족분 입고) / 없음(재고 출고)을 이지어드민에 반영합니다"
+                title="선택한 많음(부족분 입고) / 적음(모자란 만큼 출고) / 없음(재고 출고)을 이지어드민에 반영합니다"
               >
                 {normBusy ? "정상화 중..." : `정상화 (${Object.keys(normSel).length})`}
               </button>

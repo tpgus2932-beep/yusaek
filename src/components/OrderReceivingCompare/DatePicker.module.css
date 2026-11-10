@@ -73,3 +73,6 @@
   color: var(--dp-ink); font-size: 0.74rem; font-weight: 600; cursor: pointer; transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
 .quick:hover { background: var(--dp-blue-l); color: var(--dp-blue-d); border-color: var(--dp-blue); }
+
+.iconTrigger { padding: 0.35rem; width: 30px; height: 30px; justify-content: center; border-radius: 50%; }
+.popRight { left: auto; right: 0; }

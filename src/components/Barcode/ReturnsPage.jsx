@@ -1779,6 +1779,7 @@ body { background: #fff; font-family: sans-serif; }
     const [snapshotSaveMode, setSnapshotSaveMode] = useState(false);
     const [snapshotList, setSnapshotList] = useState([]);
     const [snapshotListLoading, setSnapshotListLoading] = useState(false);
+    const [snapshotPage, setSnapshotPage] = useState(1);
     const [editingSnapshotId, setEditingSnapshotId] = useState(null);
     const [snapshotNameDraft, setSnapshotNameDraft] = useState('');
     const autoSaveCountRef = useRef(0);
@@ -1801,6 +1802,7 @@ body { background: #fff; font-family: sans-serif; }
 
     const selectSnapshotTab = (tabId) => {
         setActiveSnapshotTab(tabId);
+        setSnapshotPage(1);
         try { localStorage.setItem('returnsSnapshotTab', String(tabId)); } catch { /* ignore */ }
         fetchSnapshotList(tabId);
     };
@@ -1960,14 +1962,19 @@ body { background: #fff; font-family: sans-serif; }
         }
     };
 
-    const renderSnapshotList = (onPick) => (
+    const SNAPSHOT_PAGE_SIZE = 10;
+    const renderSnapshotList = (onPick) => {
+        const pageCount = Math.max(1, Math.ceil(snapshotList.length / SNAPSHOT_PAGE_SIZE));
+        const page = Math.min(snapshotPage, pageCount);
+        const pageItems = snapshotList.slice((page - 1) * SNAPSHOT_PAGE_SIZE, page * SNAPSHOT_PAGE_SIZE);
+        return (
         <>
             {snapshotListLoading ? (
                 <div>목록 불러오는 중...</div>
             ) : snapshotList.length === 0 ? (
                 <div>임시저장된 기록이 없습니다.</div>
             ) : (
-                snapshotList.map((item) => (
+                pageItems.map((item) => (
                     <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         {editingSnapshotId === item.id ? (
                             <>
@@ -2034,8 +2041,16 @@ body { background: #fff; font-family: sans-serif; }
                     </div>
                 ))
             )}
+            {snapshotList.length > SNAPSHOT_PAGE_SIZE && (
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, paddingTop: 4 }}>
+                    <button type="button" className={pageStyles.secondaryBtn} onClick={() => setSnapshotPage(page - 1)} disabled={page <= 1}>이전</button>
+                    <span style={{ fontSize: '0.8rem' }}>{page} / {pageCount}</span>
+                    <button type="button" className={pageStyles.secondaryBtn} onClick={() => setSnapshotPage(page + 1)} disabled={page >= pageCount}>다음</button>
+                </div>
+            )}
         </>
-    );
+        );
+    };
 
     const handleDownloadSnapshot = (item) => {
         const label = item.name || formatSnapshotTime(item.updated_at);

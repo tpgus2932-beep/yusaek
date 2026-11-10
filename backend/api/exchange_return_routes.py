@@ -885,8 +885,8 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                 res.raise_for_status()
                 data = res.json()
                 for ex in data.get("exchanges", []):
-                    # 자동처리(process_exchange_pickup)에서 제외되는 기준과 동일: 상품 하자(2)
-                    if ex.get("reason_code") != 2:
+                    # 반품 화면의 교환판매자 구분과 같은 기준: 상품 하자(2)·오배송(3)
+                    if not is_seller_exchange(ex):
                         continue
                     items_list = ex.get("exchange_items") or []
                     if not items_list:
@@ -941,7 +941,7 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                 "exchange_sno": ex["exchange_sno"],
                 "order_sno": ex["order_sno"],
                 "reason_code": ex["reason_code"],
-                "reason": "상품 하자/오배송",
+                "reason": "오배송" if ex["reason_code"] == 3 else "상품 하자",
                 "detail_reason": ex["detail_reason"],
                 "images": ex["images"],
                 "goods_name": ex["goods_name"],

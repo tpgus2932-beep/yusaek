@@ -71,6 +71,7 @@ def build_barcode_router(
     get_all_tabs_defect_summon_counts=None,
     get_all_tabs_defect_counts=None,
     get_normalization_db=None,
+    on_ezadmin_orders_loaded=None,
 ):
     router = APIRouter(dependencies=[Depends(bind_defect_tab)])
     _DEFECT_BASE_HEADERS = ["상품코드", "상품명", "공급처", "공급처상품명", "색상 사이즈", "주소", "표시형 상품명"]
@@ -1037,6 +1038,13 @@ def build_barcode_router(
             "_invoice_lookup": None,
         })
         _clear_hapbae_checked_rows()
+        supplies_result = None
+        if on_ezadmin_orders_loaded is not None:
+            # 비품관리(겉포장지) 자동 차감. 실패해도 바코드 불러오기는 그대로 성공시킨다.
+            try:
+                supplies_result = on_ezadmin_orders_loaded(ez_rows, today)
+            except Exception:
+                traceback.print_exc()
         processing_finished = perf_counter()
         return {
             "ok": True,
@@ -1044,6 +1052,7 @@ def build_barcode_router(
             "codes_total": sum(len(v) for v in mapping.values()),
             "total_rows": len(ez_rows),
             "date": today,
+            "supplies": supplies_result,
             "timings": {
                 "api_ms": round((response_received - request_started) * 1000),
                 "processing_ms": round((processing_finished - processing_started) * 1000),
@@ -3003,6 +3012,7 @@ def build_barcode_router(
     )
     _bad_stock_migrated = [False]
     _BAD_STOCK_LAST_DEDUCT_KEY = "bad_stock_last_deduct"
+    _BAD_STOCK_DEDUCT_HISTORY_KEY = "bad_stock_deduct_history"
 
     def _migrate_bad_stock_zones(conn):
         """기존 단일 문자 구역(A/B/C/D/E)을 상의/하의 구역으로 옮긴다. C는 하의C, 나머지는 상의로 보낸다.
@@ -3087,6 +3097,17 @@ def build_barcode_router(
         except ValueError:
             return None
         return data if isinstance(data, dict) else None
+
+    def _load_deduct_history():
+        try:
+            data = json.loads(get_setting(_BAD_STOCK_DEDUCT_HISTORY_KEY) or "[]")
+        except ValueError:
+            return []
+        return data if isinstance(data, list) else []
+
+    @router.get("/barcode/bad-stock/deduct-history")
+    def bad_stock_deduct_history(user: str = Depends(get_current_user)):
+        return {"ok": True, "history": _load_deduct_history()}
 
     def _resolve_bad_stock_zone(conn, raw_zone) -> str:
         """기본 구역(상의A 등) 또는 직접 추가한 탭 이름이면 정규화한 구역명을, 아니면 400을 낸다."""
@@ -3453,12 +3474,23 @@ def build_barcode_router(
         items = sorted(changes.values(), key=lambda c: c["code"])
         if not dry_run:
             # 같은 주문으로 또 누르면 이중 차감되므로, 실행했다는 기록을 남겨 화면에 보여준다.
-            set_setting(_BAD_STOCK_LAST_DEDUCT_KEY, json.dumps({
+            record = {
                 "at": datetime.now(_KST).isoformat(timespec="seconds"),
                 "user": user,
                 "kinds": len(items),
                 "total": sum(c["deducted"] for c in items),
-            }, ensure_ascii=False))
+            }
+            set_setting(_BAD_STOCK_LAST_DEDUCT_KEY, json.dumps(record, ensure_ascii=False))
+            # 이전 실행 이력도 최근 100건까지 보관한다(상세 상품은 건당 200종까지).
+            history = _load_deduct_history()
+            history.insert(0, {
+                **record,
+                "items": [
+                    {"code": c["code"], "product_name": c["product_name"], "deducted": c["deducted"]}
+                    for c in items[:200]
+                ],
+            })
+            set_setting(_BAD_STOCK_DEDUCT_HISTORY_KEY, json.dumps(history[:100], ensure_ascii=False))
 
         # 차감 결과 악성재고에 하나도 안 남은 상품은 상품명을 원복한다(원복 실패가 차감을 막지는 않는다).
         to_restore = [
@@ -4459,6 +4491,36 @@ def build_barcode_router(
             return {"ok": False, "need_session": True}
         return {"ok": True, "product_code": product_id, "start_date": start_date, "end_date": end_date, "count": len(logs), "logs": logs}
 
+    @router.post("/barcode/stock-count")
+    async def barcode_stock_count(
+        payload: dict = Body(default={}),
+        user: str = Depends(get_current_user),
+    ):
+        """상품코드 1건의 EZAdmin 현재고(I100)를 조회한다 — 재고(stock_normal)와 접수(출고 전 대기) 수량."""
+        product_id = str(payload.get("product_code") or "").strip().upper()
+        if not product_id:
+            raise HTTPException(status_code=400, detail="상품코드를 입력하세요.")
+        if not (get_setting(_EZADMIN_SESSION_KEY) or "").strip():
+            return {"ok": False, "need_session": True}
+        ez = EzAdminClient(get_setting)
+        try:
+            info = await ez.get_stock_and_pending(product_id)
+        except EzAdminSessionExpired:
+            return {"ok": False, "need_session": True}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"EZAdmin 요청 실패: {exc}")
+        # 화면에는 상품코드 대신 상품명/옵션명(색상·사이즈)을 보여준다. 원가베이스유에 없으면 이름은 비워 둔다.
+        from api.wonbe_routes import load_wonbe_pure_product_name_map, load_wonbe_product_name_map
+        pure = load_wonbe_pure_product_name_map().get(product_id) or ""
+        full = load_wonbe_product_name_map().get(product_id) or ""
+        option = full[len(pure):].strip() if pure and full.startswith(pure) else ("" if pure else full)
+        return {
+            "ok": True, "product_code": product_id, "product_name": pure or full, "option_name": option,
+            "stock": info["stock"], "pending": info["pending"],
+        }
+
     @router.post("/barcode/stock-adjust")
     async def barcode_stock_adjust(
         payload: dict = Body(default={}),
@@ -5206,20 +5268,25 @@ def build_barcode_router(
         now = datetime.now(_KST)
         start = (now - timedelta(days=_SHIP_CANCEL_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
         end = now.strftime("%Y-%m-%d")
-        in_cancel = in_shipping = False
+        in_cancel = in_shipping = in_refund = False
         cancel_snos: list[str] = []
         for oid in order_ids:
             cancels, shipping = await asyncio.gather(
                 ably.search_cancels_by_order_sno(oid, start_date=start, end_date=end),
                 ably.search_shipping_items_by_order_sno(oid),
             )
+            if not cancels and not shipping:
+                # 1차(취소목록/배송중)에서 못 찾으면 취소 환불 요청 내역에서 한 번 더 찾는다.
+                cancels = await ably.search_refund_requests_by_order_sno(oid, start_date=start, end_date=end)
+                if cancels:
+                    in_refund = True
             if cancels:
                 in_cancel = True
                 cancel_snos += [str(c.get("sno")) for c in cancels if c.get("sno")]
             if shipping:
                 in_shipping = True
         return {
-            "ok": True, "order_ids": order_ids, "in_cancel": in_cancel,
+            "ok": True, "order_ids": order_ids, "in_cancel": in_cancel, "in_refund": in_refund,
             "in_shipping": in_shipping, "cancel_snos": cancel_snos,
         }
 

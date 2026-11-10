@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import math
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -666,6 +666,132 @@ def build_collab_router(
         conn.execute(f"DELETE FROM shopping_events WHERE id IN ({placeholders})", ids)
         conn.commit()
         conn.close()
+        return {"ok": True}
+
+    # ---- 개발요청: 모든 계정이 등록, 관리자가 완료 -> 요청자에게 요청(알림)으로 완료 통보 ----
+    def _ensure_dev_requests_table(conn):
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dev_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                requester_username TEXT NOT NULL,
+                requester_display TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                completed_by_username TEXT,
+                completed_by_display TEXT,
+                completed_at TEXT
+            )
+            """
+        )
+        conn.commit()
+
+    def _dev_request_item(row, user: str, admin_flag: bool):
+        return {
+            "id": row["id"],
+            "text": row["text"],
+            "status": row["status"],
+            "requester_username": row["requester_username"],
+            "requester_display": row["requester_display"],
+            "created_at": row["created_at"],
+            "completed_by_display": row["completed_by_display"],
+            "completed_at": row["completed_at"],
+            "can_complete": row["status"] == "open" and admin_flag,
+            "can_delete": row["status"] == "open" and (admin_flag or row["requester_username"] == user),
+        }
+
+    @router.get("/dev-requests")
+    def list_dev_requests(user: str = Depends(get_current_user)):
+        admin_flag = bool(is_admin(user))
+        conn = get_db()
+        try:
+            _ensure_dev_requests_table(conn)
+            rows = conn.execute(
+                """
+                SELECT * FROM dev_requests
+                WHERE status = 'open' OR completed_at >= ?
+                ORDER BY (status = 'open') DESC, id DESC
+                LIMIT 200
+                """,
+                ((datetime.now(timezone.utc) - timedelta(days=3)).isoformat(),),
+            ).fetchall()
+            return {"ok": True, "requests": [_dev_request_item(r, user, admin_flag) for r in rows]}
+        finally:
+            conn.close()
+
+    @router.post("/dev-requests")
+    def create_dev_request(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="요청 내용을 입력하세요.")
+        if len(text) > 1000:
+            raise HTTPException(status_code=400, detail="요청 내용은 1000자 이내로 입력하세요.")
+        conn = get_db()
+        try:
+            _ensure_dev_requests_table(conn)
+            conn.execute(
+                "INSERT INTO dev_requests (text, status, requester_username, requester_display, created_at) VALUES (?, 'open', ?, ?, ?)",
+                (text, user, get_user_display(user), datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True}
+
+    @router.post("/dev-requests/{dev_request_id}/complete")
+    def complete_dev_request(dev_request_id: int, user: str = Depends(get_current_user)):
+        if not is_admin(user):
+            raise HTTPException(status_code=403, detail="개발요청 완료는 관리자만 할 수 있습니다.")
+        conn = get_db()
+        try:
+            _ensure_dev_requests_table(conn)
+            row = conn.execute("SELECT * FROM dev_requests WHERE id = ?", (dev_request_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="개발요청을 찾을 수 없습니다.")
+            if row["status"] != "open":
+                raise HTTPException(status_code=400, detail="이미 완료된 요청입니다.")
+            conn.execute(
+                "UPDATE dev_requests SET status = 'completed', completed_by_username = ?, completed_by_display = ?, completed_at = ? WHERE id = ?",
+                (user, get_user_display(user), datetime.now(timezone.utc).isoformat(), dev_request_id),
+            )
+            conn.commit()
+            requester = row["requester_username"]
+            original = row["text"]
+        finally:
+            conn.close()
+
+        # 요청자에게 '요청 보내기'로 완료 통보 (본인이 완료한 경우는 생략)
+        notified = False
+        if requester and requester != user:
+            snippet = original if len(original) <= 80 else original[:80] + "..."
+            _create_request_row(
+                requester_username=user,
+                requester_display=get_user_display(user),
+                assignee=requester,
+                assignee_display=get_user_display(requester),
+                text=f"[개발요청 완료] {snippet}",
+                files=[],
+            )
+            notified = True
+        return {"ok": True, "notified": notified}
+
+    @router.delete("/dev-requests/{dev_request_id}")
+    def delete_dev_request(dev_request_id: int, user: str = Depends(get_current_user)):
+        conn = get_db()
+        try:
+            _ensure_dev_requests_table(conn)
+            row = conn.execute("SELECT * FROM dev_requests WHERE id = ?", (dev_request_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="개발요청을 찾을 수 없습니다.")
+            if row["status"] != "open":
+                raise HTTPException(status_code=400, detail="완료된 요청은 삭제할 수 없습니다.")
+            if not (is_admin(user) or row["requester_username"] == user):
+                raise HTTPException(status_code=403, detail="본인이 올린 요청만 삭제할 수 있습니다.")
+            conn.execute("DELETE FROM dev_requests WHERE id = ?", (dev_request_id,))
+            conn.commit()
+        finally:
+            conn.close()
         return {"ok": True}
 
     @router.get("/shared-todos")

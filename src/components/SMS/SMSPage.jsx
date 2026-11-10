@@ -92,6 +92,7 @@ export default function SMSPage() {
   const [remain, setRemain] = useState(null);
   const [remainLoading, setRemainLoading] = useState(false);
   const [remainUpdated, setRemainUpdated] = useState('');
+  const [remainError, setRemainError] = useState('');
 
   // ─── 전송내역 상태 ───
   const [historyList, setHistoryList] = useState([]);
@@ -420,6 +421,7 @@ export default function SMSPage() {
   // ─── 잔여건수 조회 ───
   const fetchRemain = useCallback(async () => {
     setRemainLoading(true);
+    setRemainError('');
     try {
       const res = await fetch(`${API}/sms/remain`, {
         method: 'POST',
@@ -431,9 +433,14 @@ export default function SMSPage() {
       if (data.result_code > 0) {
         setRemain(data);
         setRemainUpdated(new Date().toLocaleTimeString('ko-KR'));
+      } else {
+        // 알리고 인증오류(-IP: 허용 IP 미등록 등)나 서버 오류를 조용히 삼키지 않고 화면에 보여준다.
+        setRemain(null);
+        setRemainError(data.message || data.detail || `잔여건수 조회 실패 (코드 ${data.result_code ?? res.status})`);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      setRemain(null);
+      setRemainError(err?.message || '잔여건수 조회 중 오류가 발생했습니다.');
     } finally {
       setRemainLoading(false);
     }
@@ -927,6 +934,17 @@ export default function SMSPage() {
               새로고침
             </button>
           </div>
+
+          {remainError && (
+            <div style={{ color: '#c0392b', margin: '12px 0', lineHeight: 1.6 }}>
+              잔여건수를 불러오지 못했습니다: {remainError}
+              {remainError.includes('IP') && (
+                <div style={{ color: '#7f8c8d', fontSize: 13 }}>
+                  알리고 사이트(발송서버 IP 등록)에 이 서버의 공인 IP를 등록해야 조회·발송이 됩니다.
+                </div>
+              )}
+            </div>
+          )}
 
           {remainLoading && !remain && (
             <div className={styles.loadingSpinner}><div className={styles.spinner} /> 조회 중...</div>

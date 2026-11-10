@@ -591,7 +591,55 @@ def load_wonbe_kdg_match_index() -> dict[tuple[str, str, str, str], str]:
             size = fm.group(1) if fm else tok
         key = kdg_match_key(m.group(), r["색상"], size, length)
         found.setdefault(key, []).append(str(r["상품코드"]).strip())
-    return {k: v[0] for k, v in found.items() if len(set(v)) == 1}
+    index = {k: v[0] for k, v in found.items() if len(set(v)) == 1}
+    # 사용자가 직접 매칭해 둔 상품은 자동 매칭보다 우선한다.
+    index.update(load_kdg_manual_matches())
+    return index
+
+
+def _init_kdg_manual_match_table(conn: sqlite3.Connection):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kdg_manual_match (
+            모델번호 TEXT NOT NULL,
+            색상     TEXT NOT NULL,
+            사이즈   TEXT NOT NULL,
+            기장     TEXT NOT NULL,
+            상품코드 TEXT NOT NULL,
+            PRIMARY KEY (모델번호, 색상, 사이즈, 기장)
+        )
+        """
+    )
+
+
+def load_kdg_manual_matches() -> dict[tuple[str, str, str, str], str]:
+    """케이디지가공2에서 직접 매칭해 저장한 (모델번호, 색상, 사이즈, 기장) → 상품코드."""
+    conn = _get_wonbe_db()
+    try:
+        _init_kdg_manual_match_table(conn)
+        rows = conn.execute("SELECT 모델번호, 색상, 사이즈, 기장, 상품코드 FROM kdg_manual_match").fetchall()
+    finally:
+        conn.close()
+    return {(r["모델번호"], r["색상"], r["사이즈"], r["기장"]): r["상품코드"] for r in rows}
+
+
+def save_kdg_manual_match(model_no, color, size, length, product_code: str) -> str:
+    """직접 매칭 저장. 원가베이스유에 없는 상품코드면 ValueError. 저장된 원본 표기의 상품코드를 반환."""
+    code = load_wonbe_product_codes().get(str(product_code or "").strip().upper())
+    if not code:
+        raise ValueError(f"원가베이스유에 없는 상품코드입니다: {product_code}")
+    key = kdg_match_key(model_no, color, size, length)
+    conn = _get_wonbe_db()
+    try:
+        _init_kdg_manual_match_table(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO kdg_manual_match (모델번호, 색상, 사이즈, 기장, 상품코드) VALUES (?, ?, ?, ?, ?)",
+            (*key, code),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return code
 
 
 def load_wonbe_rename_prefix_map() -> dict[str, str]:
@@ -4145,6 +4193,25 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         finally:
             conn.close()
 
+    @router.get("/janggi/client-rows")
+    def janggi_client_rows(client: str, date: str, user: str = Depends(get_current_user)):
+        """해당 날짜의 한 거래처 날짜별장끼정리 행 전체(읽기 전용 조회)."""
+        client = client.strip()
+        date = date.strip()
+        if not client or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            raise HTTPException(status_code=400, detail="거래처와 날짜(YYYY-MM-DD)가 필요합니다.")
+        conn = _get_janggi_db()
+        try:
+            _init_janggi_table(conn)
+            rows = conn.execute(
+                "SELECT id, 거래처, 거래처상품명, 가격, 옵션, 사이즈, 개수, 날짜, 미송체크, 상품코드, 메모, 거래처합산 "
+                "FROM 날짜별장끼정리 WHERE 거래처 = ? AND 날짜 = ? ORDER BY id",
+                (client, date),
+            ).fetchall()
+            return {"ok": True, "rows": [dict(r) for r in rows]}
+        finally:
+            conn.close()
+
     @router.get("/janggi/aliases")
     def janggi_get_aliases(user: str = Depends(get_current_user)):
         conn = _get_janggi_db()
@@ -4172,6 +4239,53 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 )
             conn.commit()
             return {"ok": True, "count": len(aliases)}
+        finally:
+            conn.close()
+
+    # TOP비교 "확인완료" 표시 - PC마다 따로 쌓이지 않도록 서버(장끼 DB)에 공유 저장한다.
+    def _ensure_top_checked(conn):
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS janggi_top_checked (name TEXT PRIMARY KEY, checked_by TEXT NOT NULL DEFAULT '', checked_at TEXT NOT NULL DEFAULT '')"
+        )
+
+    @router.get("/janggi/top-checked")
+    def janggi_get_top_checked(user: str = Depends(get_current_user)):
+        conn = _get_janggi_db()
+        try:
+            _ensure_top_checked(conn)
+            rows = conn.execute("SELECT name FROM janggi_top_checked").fetchall()
+            return {"ok": True, "names": [r["name"] for r in rows]}
+        finally:
+            conn.close()
+
+    @router.put("/janggi/top-checked")
+    def janggi_set_top_checked(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name 필요")
+        conn = _get_janggi_db()
+        try:
+            _ensure_top_checked(conn)
+            if payload.get("checked"):
+                conn.execute(
+                    "INSERT OR REPLACE INTO janggi_top_checked (name, checked_by, checked_at) VALUES (?, ?, ?)",
+                    (name, user, datetime.now().isoformat(timespec="seconds")),
+                )
+            else:
+                conn.execute("DELETE FROM janggi_top_checked WHERE name = ?", (name,))
+            conn.commit()
+            return {"ok": True}
+        finally:
+            conn.close()
+
+    @router.delete("/janggi/top-checked")
+    def janggi_reset_top_checked(user: str = Depends(get_current_user)):
+        conn = _get_janggi_db()
+        try:
+            _ensure_top_checked(conn)
+            conn.execute("DELETE FROM janggi_top_checked")
+            conn.commit()
+            return {"ok": True}
         finally:
             conn.close()
 

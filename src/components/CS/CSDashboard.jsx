@@ -2,10 +2,9 @@ import { useEffect, useState } from 'react';
 import { CalendarPlus, Hourglass, MessageCircleMore, Inbox } from 'lucide-react';
 import styles from './CSDashboard.module.css';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
+import CSDelaySchedule from './CSDelaySchedule';
 
-const fmtHours = (h) => (h >= 24 ? `${Math.floor(h / 24)}일 ${Math.floor(h % 24)}시간` : `${Math.floor(h)}시간`);
-
-const CSDashboard = ({ refreshKey, onOpenRoom, onOpenInbox, onOpenProduct }) => {
+const CSDashboard = ({ refreshKey, onOpenInbox, onOpenProduct }) => {
     const [data, setData] = useState(null);
     const [error, setError] = useState('');
 
@@ -126,20 +125,7 @@ const CSDashboard = ({ refreshKey, onOpenRoom, onOpenInbox, onOpenProduct }) => 
                     </div>
                 </section>
 
-                <section className={`${styles.card} ${styles.wide}`}>
-                    <h3>오래 기다린 문의 TOP 10</h3>
-                    {data.oldest_waiting.length === 0 && <div className={styles.empty}>기다리는 문의가 없어요 🎉</div>}
-                    {data.oldest_waiting.map((r) => (
-                        <button type="button" key={r.sno} className={styles.waitRow} onClick={() => onOpenRoom(r)}>
-                            <strong>{r.member?.name || '-'}</strong>
-                            <span className={styles.waitCat}>{r.parent_category_display} &gt; {r.child_category_display}</span>
-                            <span className={styles.ellipsis}>{r.latest_message?.content || '[이미지]'}</span>
-                            <span className={`${styles.waitAge} ${r.waiting_hours >= 24 ? styles.waitOld : ''}`}>
-                                {fmtHours(r.waiting_hours)} 경과
-                            </span>
-                        </button>
-                    ))}
-                </section>
+                <CSDelaySchedule />
             </div>
         </div>
     );

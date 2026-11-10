@@ -164,6 +164,8 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
                 conn.execute(f"ALTER TABLE order_receiving_items ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
         if "receive_date" not in item_cols:
             conn.execute("ALTER TABLE order_receiving_items ADD COLUMN receive_date TEXT NOT NULL DEFAULT ''")
+        if "vat_override" not in item_cols:  # 부가세를 직접 고친 거래처의 부가세 금액 (NULL = 자동 10%)
+            conn.execute("ALTER TABLE order_receiving_items ADD COLUMN vat_override INTEGER")
         for rr in conn.execute("SELECT id, order_date, vouchers_json FROM order_receiving_records WHERE receive_date = ''").fetchall():
             try:
                 vs = json.loads(rr["vouchers_json"] or "[]")
@@ -218,13 +220,14 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
                 conn.execute(
                     "INSERT INTO order_receiving_items (record_id, order_date, receive_date, client, product_code, product_name, "
                     "option_name, ordered, received, misong, ordered_pickup, pickup, exchange, "
-                    "cost, amount, ordered_amount, vat, deduct) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "cost, amount, ordered_amount, vat, deduct, vat_override) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (record_id, order_date, receive_date, c.get("client", ""), i.get("code", ""), i.get("name", ""),
                      i.get("option", ""), int(i.get("ordered") or 0), int(i.get("received") or 0),
                      int(i.get("misong") or 0), int(i.get("ordered_pickup") or 0), int(i.get("pickup") or 0),
                      int(i.get("exchange") or 0), int(i.get("cost") or 0), int(i.get("amount") or 0),
-                     int(i.get("ordered_amount") or 0), 1 if c.get("vat") else 0, int(i.get("deduct") or 0)),
+                     int(i.get("ordered_amount") or 0), 1 if c.get("vat") else 0, int(i.get("deduct") or 0),
+                     (int(c["vat_override"]) if c.get("vat_override") is not None else None)),
                 )
 
     @router.get("/clients")
@@ -256,7 +259,7 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
             _init_records(conn)
             rows = conn.execute(
                 "SELECT i.receive_date, i.client, i.product_code, i.product_name, i.option_name, i.ordered, i.received, "
-                "i.misong, i.ordered_pickup, i.pickup, i.exchange, i.cost, i.amount, i.ordered_amount, i.vat, i.deduct "
+                "i.misong, i.ordered_pickup, i.pickup, i.exchange, i.cost, i.amount, i.ordered_amount, i.vat, i.deduct, i.vat_override "
                 "FROM order_receiving_items i "
                 "JOIN (SELECT receive_date, MAX(id) AS mid FROM order_receiving_records GROUP BY receive_date) l "
                 "  ON i.record_id = l.mid "
@@ -269,6 +272,7 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
         keys = ("ordered", "received", "misong", "ordered_pickup", "pickup", "exchange")
         by_client: dict[str, dict[str, dict]] = {}
         vat_of: dict[str, bool] = {}
+        vat_fix: dict[str, int] = {}
         days = set()
         for r in rows:
             days.add(r["receive_date"])
@@ -286,6 +290,8 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
             p_["ordered_amount"] += int(r["ordered_amount"] or 0)
             p_["deduct"] += int(r["deduct"] or 0)
             p_["cost"] = int(r["cost"] or 0)
+            if r["vat_override"] is not None:
+                vat_fix[name] = int(r["vat_override"])
             vat_of[name] = bool(r["vat"])  # 날짜순이라 마지막(가장 최근 입고요청일) 값이 남는다
         clients = []
         for name in sorted(by_client):
@@ -295,7 +301,7 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
                 it["pickup_missing"] = it["ordered_pickup"] - it["pickup"]
                 it["status"] = _status(it["ordered"], it["received"], it["misong"])
                 it["pickup_status"] = _status(it["ordered_pickup"], it["pickup"], 0)
-            clients.append({"client": name, "vat": vat_of.get(name, False),
+            clients.append({"client": name, "vat": vat_of.get(name, False), **({"vat_override": vat_fix[name]} if name in vat_fix else {}),
                             "totals": {k: sum(i[k] for i in items) for k in keys}, "items": items})
         result = _attach_costs({"clients": clients})
         return {"ok": True, "client": client, "date_from": date_from, "date_to": date_to,
@@ -313,21 +319,23 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
         if not ids:
             return out
         rows = conn.execute(
-            "SELECT record_id, client, amount, ordered_amount, vat, deduct FROM order_receiving_items "
+            "SELECT record_id, client, amount, ordered_amount, vat, deduct, vat_override FROM order_receiving_items "
             f"WHERE record_id IN ({','.join('?' * len(ids))}) "
             "AND (? = '' OR instr(LOWER(REPLACE(client, ' ', '')), ?) > 0)", [*ids, token, token],
         ).fetchall()
         per: dict = defaultdict(dict)
         for r in rows:
-            g = per[r["record_id"]].setdefault(r["client"], {"supply": 0, "ordered": 0, "vat": False, "deduct": 0})
+            g = per[r["record_id"]].setdefault(r["client"], {"supply": 0, "ordered": 0, "vat": False, "deduct": 0, "fix": None})
             g["supply"] += int(r["amount"] or 0)
             g["ordered"] += int(r["ordered_amount"] or 0)
             g["vat"] = g["vat"] or bool(r["vat"])
+            if r["vat_override"] is not None:
+                g["fix"] = int(r["vat_override"])
             g["deduct"] += -int(r["deduct"] or 0)
         for rid, clients in per.items():
             total = ordered_total = 0
             for g in clients.values():
-                vat = int(g["supply"] * 0.1 + 0.5) if g["vat"] else 0
+                vat = g["fix"] if g["fix"] is not None else (int(g["supply"] * 0.1 + 0.5) if g["vat"] else 0)
                 applied = min(max(g["deduct"], 0), max(0, g["supply"] + vat))
                 total += g["supply"] + vat - applied
                 ordered_total += g["ordered"] + (int(g["ordered"] * 0.1 + 0.5) if g["vat"] else 0)
@@ -425,11 +433,13 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
 
     @router.get("/client-ranking")
     def client_ranking(date_from: str = "", date_to: str = "", client: str = "", limit: int = 5, sort: str = "ordered,lack",
-                       admin: str = Depends(require_admin)):
+                       names: str = "", admin: str = Depends(require_admin)):
         """악성 거래처 순위. 발주가 있고 덜 들어온(미입고>0) 거래처를 sort 기준으로 줄 세우고, 결과 지표로 입고율을 함께 돌려준다.
         sort: 쉼표로 여러 개 — ordered(발주 많은 순) / received(입고량 많은 순) / lack(미입고 많은 순).
           하나면 그 기준 순, 둘 이상이면 각 기준에서의 순위를 더한 값이 작은(= 여러 기준에 두루 부합하는) 거래처가 앞에 온다.
-        같은 입고요청일에 매칭이 여러 번이면 가장 최근 것만 쓴다. client를 주면 이름에 그 글자가 들어간 거래처만."""
+        같은 입고요청일에 매칭이 여러 번이면 가장 최근 것만 쓴다. client를 주면 이름에 그 글자가 들어간 거래처만.
+        names("|"로 구분)를 주면 그 거래처들만 골라 보여준다(다 들어온 거래처도 포함, 개수 제한 없음).."""
+        picked = {x.strip() for x in str(names or "").split("|") if x.strip()}
         keys = [k for k in dict.fromkeys(str(sort or "").split(",")) if k in ("ordered", "received", "lack")] or ["ordered", "lack"]
         today = datetime.now(_KST)
         date_to = _check_date(date_to) if date_to else today.strftime("%Y-%m-%d")
@@ -455,7 +465,10 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
         items = []
         for r in rows:
             ordered, received = int(r["ordered"] or 0), int(r["received"] or 0)
-            if ordered <= 0 or ordered - received <= 0:
+            if picked:
+                if (r["client"] or "(거래처 미확인)") not in picked or ordered <= 0:
+                    continue
+            elif ordered <= 0 or ordered - received <= 0:
                 continue  # 발주가 없거나 발주만큼 다 들어온 거래처는 악성 거래처가 아니다
             items.append({"client": r["client"] or "(거래처 미확인)", "ordered": ordered, "received": received,
                           "lack": ordered - received, "rate": round(received / ordered * 100, 1)})
@@ -464,7 +477,7 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
             for pos, x in enumerate(sorted(items, key=lambda v: (-v[k], v["rate"]))):
                 score[x["client"]] += pos
         items.sort(key=lambda x: (score[x["client"]], *[-x[k] for k in keys], x["rate"]))
-        return {"ok": True, "date_from": date_from, "date_to": date_to, "sort": keys, "total": len(items), "items": items[:limit]}
+        return {"ok": True, "date_from": date_from, "date_to": date_to, "sort": keys, "total": len(items), "items": items if picked else items[:limit]}
 
     @router.get("/order-dates")
     def order_dates(date_from: str = "", date_to: str = "", admin: str = Depends(require_admin)):
@@ -671,6 +684,24 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
             p["pickup_status"] = _status(p["ordered_pickup"], p["pickup"], 0)
             groups[client].append(p)
 
+        # 요청메모 매입차감은 상품 줄에 붙이지 않고 거래처에 '매입차감' 줄을 따로 만든다 (매입차감 + 금액만, 상품 정보 없음)
+        for client, items in groups.items():
+            seq = 0
+            for p in list(items):
+                amount = int(p.get("deduct") or 0)
+                if amount >= 0:
+                    continue
+                p["deduct"] = 0
+                if not (p["ordered"] or p["ordered_pickup"] or p["received"] or p["misong"] or p["pickup"] or p["exchange"]):
+                    items.remove(p)  # 수량 없이 차감만 있던 줄은 차감 줄로 대체
+                seq += 1
+                items.append({
+                    "code": f"DEDUCT-{seq}", "name": "매입차감", "option": "", "client": client,
+                    "ordered": 0, "ordered_pickup": 0, "received": 0, "misong": 0, "pickup": 0, "exchange": 0,
+                    "cost": 0, "deduct": amount, "missing": 0, "pickup_missing": 0,
+                    "status": _status(0, 0, 0), "pickup_status": _status(0, 0, 0),
+                })
+
         result = []
         for client in sorted(groups):
             items = sorted(groups[client], key=lambda x: x["code"])
@@ -720,11 +751,31 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
             conn.close()
         return out
 
+    def _supplier_names_for(codes: list[str]) -> dict[str, str]:
+        """원가베이스유(wonbe.거래처상품명) 상품코드 → 거래처상품명. 항상 최신 값을 읽는다(DB관리에서 고치면 바로 반영)."""
+        out: dict[str, str] = {}
+        codes = [c for c in dict.fromkeys(codes) if c]
+        if not codes:
+            return out
+        conn = get_wonbe_db()
+        try:
+            for i in range(0, len(codes), 500):
+                chunk = codes[i:i + 500]
+                ph = ",".join("?" * len(chunk))
+                for w in conn.execute(f"SELECT 상품코드, 거래처상품명 FROM wonbe WHERE 상품코드 IN ({ph})", chunk).fetchall():
+                    out[w["상품코드"]] = str(w["거래처상품명"] or "").strip()
+        except Exception:
+            pass
+        finally:
+            conn.close()
+        return out
+
     def _attach_costs(result: dict) -> dict:
         """원가/부가세 대상 여부/금액을 결과에 붙인다. 이미 붙어 있는 값(매칭 시점 스냅샷)은 그대로 둔다."""
         clients = result.get("clients", []) or []
         need = [i.get("code", "") for c in clients for i in c.get("items", []) or [] if "cost" not in i]
         costs = _costs_for(need) if need else {}
+        sup_names = _supplier_names_for([i.get("code", "") for c in clients for i in c.get("items", []) or []])
         # 노예김승일 > 입고전표엑셀전환의 "부가세 거래처" 목록에 있는 거래처는 vat=True (금액에 10% 추가)
         try:
             vat_set = {str(v).strip() for v in json.loads(get_setting("noye_kimsungil_vat_vendors") or "[]")}
@@ -734,6 +785,7 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
             if "vat" not in c:
                 c["vat"] = str(c.get("client", "")).strip() in vat_set
             for i in c.get("items", []) or []:
+                i["supplier_name"] = sup_names.get(i.get("code", ""), "")
                 if "cost" not in i:
                     i["cost"] = costs.get(i.get("code", ""), 0)
                 if "amount" not in i:  # 금액 대상은 일반입고 + 미송 (미송픽업 0원)
@@ -1140,6 +1192,28 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
         finally:
             conn.close()
 
+    @router.post("/records/{record_id}/vat")
+    def set_record_vat(record_id: int, payload: dict = Body(...), admin: str = Depends(require_admin)):
+        """부가세 거래처의 부가세 금액을 직접 고친다. body: {client, amount}. amount를 비우면 자동(공급가 10%)으로 되돌린다."""
+        client = str(payload.get("client") or "").strip()
+        raw = str(payload.get("amount") if payload.get("amount") is not None else "").replace(",", "").replace("원", "").strip()
+        conn = get_db()
+        try:
+            row, result = _load_for_edit(conn, record_id)
+            target = next((c for c in result.get("clients", []) or [] if c.get("client") == client), None)
+            if not target:
+                raise HTTPException(status_code=404, detail="거래처를 찾을 수 없습니다.")
+            if raw == "":
+                target.pop("vat_override", None)
+            else:
+                try:
+                    target["vat_override"] = int(round(float(raw)))
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="부가세를 숫자로 입력하세요.")
+            return {"ok": True, "record": _persist_edit(conn, row, result)}
+        finally:
+            conn.close()
+
     def _num(v) -> int:
         try:
             return int(round(float(str(v or "0").replace(",", "").replace("원", "").strip() or 0)))
@@ -1181,6 +1255,7 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
         so_supply: dict[str, int] = defaultdict(int)  # 거래처 -> 공급가(상품금액 + 택배비 등)
         so_fee: dict[str, dict] = defaultdict(lambda: defaultdict(int))  # 거래처 -> 이름 -> 택배비 등
         so_vat_flag = {c.get("client", ""): bool(c.get("vat")) for c in result.get("clients", []) or []}
+        so_vat_fix = {c.get("client", ""): int(c["vat_override"]) for c in result.get("clients", []) or [] if c.get("vat_override") is not None}
         so_items: dict[str, dict] = {}
         for c in result.get("clients", []) or []:
             for i in c.get("items", []) or []:
@@ -1235,6 +1310,8 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
         # SO+ 매입차감은 전표 요청메모의 전체 금액(raw)이지만 합계에는 상품금액(+부가세)을 넘지 않게 잘라서(applied) 반영된다.
         # 장끼정리에는 잘라낸 값이 적히므로(남은 금액은 메모에 "-5000남음"), applied 와 비교해야 한다.
         def _so_vat(client: str) -> int:
+            if client in so_vat_fix:
+                return so_vat_fix[client]
             return int(so_supply.get(client, 0) * 0.1 + 0.5) if so_vat_flag.get(client) else 0
 
         so_applied: dict[str, int] = {}
@@ -1345,15 +1422,66 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
                 "deductions": deductions, "products": products, "so_only": so_only, "qty_diffs": qty_diffs,
                 "fees": fees, "vats": vats}
 
+    # ── 장끼 점검 '처리 완료' 기록 ──
+    # 반영/삭제/PASS로 처리한 점검 항목 키를 result["janggi_resolved"]에 저장해 두고,
+    # 다음 점검부터는 목록에서 뺀다. 키 형식은 프론트와 같다:
+    #   d:거래처 / f:거래처:항목명 / v:거래처 / p:코드 / s:코드 / q:코드
+    # (재매칭하면 result가 새로 만들어지므로 처리 기록도 초기화된다)
+    _DIFF_KEYS = {
+        "deductions": lambda x: f"d:{x['client']}",
+        "fees": lambda x: f"f:{x['client']}:{x['label']}",
+        "vats": lambda x: f"v:{x['client']}",
+        "products": lambda x: f"p:{x['code']}",
+        "so_only": lambda x: f"s:{x['code']}",
+        "qty_diffs": lambda x: f"q:{x['code']}",
+    }
+
+    def _mark_resolved(result: dict, keys) -> None:
+        cur = list(result.get("janggi_resolved") or [])
+        for k in keys:
+            if k and k not in cur:
+                cur.append(k)
+        result["janggi_resolved"] = cur
+
+    def _janggi_diff_open(row, result: dict) -> dict:
+        """_janggi_diff에서 이미 처리한 항목을 뺀 결과 (resolved_count = 숨긴 개수)."""
+        diff = _janggi_diff(row, result)
+        if diff.get("empty"):
+            return diff
+        resolved = set(result.get("janggi_resolved") or [])
+        hidden = 0
+        for name, keyf in _DIFF_KEYS.items():
+            rows = diff.get(name) or []
+            keep = [x for x in rows if keyf(x) not in resolved]
+            hidden += len(rows) - len(keep)
+            diff[name] = keep
+        diff["resolved_count"] = hidden
+        return diff
+
     @router.get("/records/{record_id}/janggi-check")
     def janggi_check(record_id: int, admin: str = Depends(require_admin)):
-        """장끼 DB 대조 결과만 돌려준다 (저장된 매칭은 바꾸지 않는다)."""
+        """장끼 DB 대조 결과만 돌려준다 (저장된 매칭은 바꾸지 않는다). 처리 완료한 항목은 빠진다."""
         conn = get_db()
         try:
             row, result = _load_for_edit(conn, record_id)
         finally:
             conn.close()
-        return _janggi_diff(row, result)
+        return _janggi_diff_open(row, result)
+
+    @router.post("/records/{record_id}/janggi-resolve")
+    def janggi_resolve(record_id: int, payload: dict = Body(...), admin: str = Depends(require_admin)):
+        """PASS 등으로 처리한 점검 항목을 기록한다. body: {keys: [...]} / {reset: true}면 처리 기록을 모두 지운다."""
+        conn = get_db()
+        try:
+            row, result = _load_for_edit(conn, record_id)
+            if payload.get("reset"):
+                result.pop("janggi_resolved", None)
+            else:
+                _mark_resolved(result, [str(k) for k in (payload.get("keys") or [])])
+            record = _persist_edit(conn, row, result)
+            return {"ok": True, "diff": _janggi_diff_open(row, result), "record": record}
+        finally:
+            conn.close()
 
     @router.post("/records/{record_id}/janggi-apply")
     def janggi_apply(record_id: int, payload: dict = Body(...), admin: str = Depends(require_admin)):
@@ -1407,8 +1535,65 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
                     applied.append({"kind": "qty", "client": c.get("client", ""), "code": q["code"], "name": q["name"], "option": q["option"],
                                     "label": _kinds_text(q["add"]), "reason": "장끼정리 수량이 SO+보다 많아 부족분 추가"})
                     break
+            if applied:
+                # 반영한 항목은 처리 완료로 기록 (반영 후에도 차이가 조금 남아도 목록에서 빠진다)
+                keys = []
+                for a in applied:
+                    if a["kind"] == "deduction":
+                        keys.append(f"d:{a['client']}")
+                    elif a["kind"] == "fee":
+                        keys += [f"f:{f['client']}:{f['label']}" for f in diff["fees"] if (f["client"], f["label"]) in pick_fees and f["client"] == a["client"]]
+                    elif a["kind"] in ("product", "qty"):
+                        keys += [f"p:{a['code']}", f"q:{a['code']}"]
+                _mark_resolved(result, keys)
             record = _persist_edit(conn, row, result) if applied else _row_to_record(row, True)
-            return {"ok": True, "empty": False, "applied": applied, "diff": _janggi_diff(row, result), "record": record}
+            return {"ok": True, "empty": False, "applied": applied, "diff": _janggi_diff_open(row, result), "record": record}
+        finally:
+            conn.close()
+
+    @router.post("/records/{record_id}/janggi-remove")
+    def janggi_remove(record_id: int, payload: dict = Body(...), admin: str = Depends(require_admin)):
+        """장끼 점검 창의 [삭제]: SO+ 세부목록에서 실제로 지운다.
+        body: {kind: item|deduct|fee, client, code?, label?}
+        - item: 거래처의 해당 상품코드 줄 삭제 (SO+에만 있는 상품 / 수량 상이 상품)
+        - deduct: 그 거래처의 매입차감(DEDUCT-*) 줄 전부 삭제
+        - fee: 그 거래처의 label 이름 추가금액(FEE-*) 줄 삭제"""
+        kind = str(payload.get("kind") or "")
+        client = str(payload.get("client") or "").strip()
+        conn = get_db()
+        try:
+            row, result = _load_for_edit(conn, record_id)
+            if kind == "item":
+                c, i = _find_item(result, client, str(payload.get("code") or ""))
+                c["items"].remove(i)
+                removed = 1
+            elif kind in ("deduct", "fee"):
+                c = next((x for x in result.get("clients", []) or [] if x.get("client") == client), None)
+                if not c:
+                    raise HTTPException(status_code=404, detail="거래처를 찾을 수 없습니다.")
+                label = str(payload.get("label") or "")
+
+                def hit(x) -> bool:
+                    code = str(x.get("code", ""))
+                    if kind == "deduct":
+                        return code.startswith("DEDUCT-")
+                    return code.startswith("FEE-") and x.get("name") == label
+
+                removed = sum(1 for x in c["items"] if hit(x))
+                if not removed:
+                    raise HTTPException(status_code=404, detail="삭제할 항목이 SO+ 세부목록에 없습니다.")
+                c["items"] = [x for x in c["items"] if not hit(x)]
+            else:
+                raise HTTPException(status_code=400, detail="잘못된 삭제 종류입니다.")
+            # 삭제한 항목은 처리 완료로 기록 (상품은 장끼에만 있는 상품으로 바뀌어 다시 뜨지 않도록 s/q/p 모두)
+            code = str(payload.get("code") or "")
+            _mark_resolved(result, {
+                "item": [f"s:{code}", f"q:{code}", f"p:{code}"],
+                "deduct": [f"d:{client}"],
+                "fee": [f"f:{client}:{payload.get('label') or ''}"],
+            }[kind])
+            record = _persist_edit(conn, row, result)
+            return {"ok": True, "removed": removed, "diff": _janggi_diff_open(row, result), "record": record}
         finally:
             conn.close()
 

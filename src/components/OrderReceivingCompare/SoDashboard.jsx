@@ -192,6 +192,12 @@ export default function SoDashboard({ refreshSig, client = "", onClearClient }) 
     if (next.has(k)) next.delete(k); else next.add(k);
     return next;
   });
+  const [cLimit, setCLimit] = useState(10); // 악성 거래처 표시 개수 (5~20)
+  const [cPick, setCPick] = useState([]); // 검색해서 고른 거래처 (비면 악성 순위)
+  const [cQuery, setCQuery] = useState("");
+  const [allClients, setAllClients] = useState([]);
+  const togglePick = (name) => setCPick((prev) => (prev.includes(name) ? prev.filter((x) => x !== name) : [...prev, name]));
+  const cPickKey = cPick.join("|");
   const cSortKey = CSORTS.filter((c) => cSort.has(c.key)).map((c) => c.key).join(",");
   const n = count[mode];
   const reqKey = `${mode}|${n}|${refreshSig}|${client}`;
@@ -269,12 +275,22 @@ export default function SoDashboard({ refreshSig, client = "", onClearClient }) 
     if (!cliWanted || !cKey) return undefined;
     let cancelled = false;
     const [from, to] = bucketRange(mode, cKey);
-    fetch(`${LOCAL_API_BASE}/order-receiving/client-ranking?${new URLSearchParams({ date_from: from, date_to: to, limit: "10", client, sort: cSortKey })}`, { headers: getAuthHeaders() })
+    fetch(`${LOCAL_API_BASE}/order-receiving/client-ranking?${new URLSearchParams({ date_from: from, date_to: to, limit: String(cLimit), client, sort: cSortKey, names: cPickKey })}`, { headers: getAuthHeaders() })
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
       .then((d) => { if (!cancelled) setCRank({ items: d.items || [], total: d.total || 0, failed: false }); })
       .catch(() => { if (!cancelled) setCRank({ items: [], total: 0, failed: true }); });
     return () => { cancelled = true; };
-  }, [mode, cKey, refreshSig, client, cliWanted, cSortKey]);
+  }, [mode, cKey, refreshSig, client, cliWanted, cSortKey, cLimit, cPickKey]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${LOCAL_API_BASE}/order-receiving/clients`, { headers: getAuthHeaders() })
+      .then((res) => (res.ok ? res.json() : { clients: [] }))
+      .then((d) => { if (!cancelled) setAllClients((d.clients || []).map((x) => x.client)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [refreshSig]);
+  const qTok = cQuery.replace(/\s+/g, "").toLowerCase();
+  const cCands = qTok ? allClients.filter((x) => x.replace(/\s+/g, "").toLowerCase().includes(qTok)).slice(0, 12) : [];
 
   const cPoints = (cKey ? cRank.items : []).map((it) => ({ label: it.client, ordered: it.ordered, received: it.received, lack: Math.max(it.ordered - it.received, 0), rate: it.rate }));
   const cRates = Object.fromEntries(cPoints.map((c) => [c.label, c.rate]));
@@ -449,6 +465,18 @@ export default function SoDashboard({ refreshSig, client = "", onClearClient }) 
                     <button key={c.key} type="button" className={`${styles.cat} ${cSort.has(c.key) ? styles.catOn : ""}`} aria-pressed={cSort.has(c.key)} onClick={() => toggleCSort(c.key)}>{c.label}</button>
                   ))}
                 </span>
+              </div>
+              <div className={styles.cTools}>
+                <select className={styles.cLimit} value={cLimit} onChange={(e) => setCLimit(Number(e.target.value))} disabled={cPick.length > 0} aria-label="표시 개수">
+                  {Array.from({ length: 16 }, (_, i) => i + 5).map((v) => <option key={v} value={v}>{v}개</option>)}
+                </select>
+                <input className={styles.cSearch} value={cQuery} onChange={(e) => setCQuery(e.target.value)} placeholder="거래처 검색" />
+                {cPick.map((name) => (
+                  <button key={name} type="button" className={`${styles.cat} ${styles.catOn}`} onClick={() => togglePick(name)}>{name} ✕</button>
+                ))}
+                {cCands.filter((x) => !cPick.includes(x)).map((name) => (
+                  <button key={name} type="button" className={styles.cat} onClick={() => togglePick(name)}>{name}</button>
+                ))}
               </div>
               {cRank.failed && <div className={styles.error}>거래처 순위를 불러오지 못했어요. 서버가 최신 버전인지(재시작) 확인해 주세요.</div>}
               {!cRank.failed && cPoints.length === 0 && <div className={styles.empty}>악성 거래처가 없어요</div>}

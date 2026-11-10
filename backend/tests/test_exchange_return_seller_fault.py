@@ -27,7 +27,7 @@ def _make_client(*, settings=None, enqueue_sms=None, get_db=None, set_setting=No
 
 
 @respx.mock
-def test_seller_fault_pending_returns_only_reason_code_2():
+def test_seller_fault_pending_returns_only_seller_reason_codes():
     respx.post("https://api.a-bly.com/seller/login/").mock(
         return_value=httpx.Response(200, json={"token": "tok"})
     )
@@ -78,7 +78,7 @@ def test_seller_fault_pending_returns_only_reason_code_2():
     assert len(data["items"]) == 1
     item = data["items"][0]
     assert item["exchange_sno"] == 10
-    assert item["reason"] == "상품 하자/오배송"
+    assert item["reason"] == "상품 하자"
     assert item["detail_reason"] == "박음질이 뜯어져 있어요"
     assert item["images"] == ["http://img/1.jpg"]
     assert item["invoice"] == "111"

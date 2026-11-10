@@ -70,6 +70,7 @@ from api.sms_routes import build_sms_router
 from api.return_shipping_routes import build_return_shipping_router
 from api.return_automation_routes import build_return_automation_router
 from api.seller_stats_routes import build_seller_stats_router
+from api.cancel_stats_routes import build_cancel_stats_router
 from api.exchange_return_routes import build_exchange_return_router
 from api.pastelco_routes import build_pastelco_router
 from api.ably_minus_routes import build_ably_minus_router
@@ -86,12 +87,15 @@ from api.post_shipment_cancel_stock_sms_routes import build_post_shipment_cancel
 from api.amood_unpack_routes import build_amood_unpack_router
 from api.shipping_eta_routes import build_shipping_eta_router, init_shipping_eta_table
 from api.lead_time_routes import build_lead_time_router, init_lead_time_tables
+from api.supplies_routes import build_supplies_router
+from services.supplies import init_supplies_tables, deduct_from_ez_rows as deduct_supplies_from_ez_rows
 from api.invoice_print_routes import build_invoice_print_router, init_invoice_print_tables
 from api.exchange_return_anomaly_routes import build_exchange_return_anomaly_router
 from api.return_anomaly_routes import build_return_anomaly_router
 from api.daily_checklist_routes import build_daily_checklist_router
 from api.timebox_routes import build_timebox_router
 from api.worklog_routes import build_worklog_router
+from api.dev_server_routes import build_dev_server_router
 from api.kakao_routes import build_kakao_router
 from api.equipment_routes import build_equipment_router
 from services.equipment_store import init_equipment_tables
@@ -1762,6 +1766,7 @@ app.include_router(
         get_shared_db=_get_shared_db,
         get_db=_get_db,
         get_normalization_db=_get_automation_db,
+        on_ezadmin_orders_loaded=lambda rows, work_date: deduct_supplies_from_ez_rows(_get_shared_db, rows, work_date),
     )
 )
 app.include_router(
@@ -1844,6 +1849,12 @@ app.include_router(
         get_db=_get_automation_db,  # 판매자 통계는 Turso 설정과 무관하게 항상 로컬 SQLite
     )
 )
+
+_cancel_stats_router = build_cancel_stats_router(
+    get_current_user=_get_current_user,
+    get_db=_get_automation_db,  # 취소통계는 대량 upsert 라 항상 로컬 SQLite
+)
+app.include_router(_cancel_stats_router)
 
 app.include_router(
     build_pastelco_router(
@@ -1986,6 +1997,14 @@ app.include_router(
     build_shipping_eta_router(
         get_current_user=_get_current_user,
         get_setting=_get_setting,
+        get_db=_get_shared_db,
+    )
+)
+
+init_supplies_tables(_get_shared_db)
+app.include_router(
+    build_supplies_router(
+        get_current_user=_get_current_user,
         get_db=_get_shared_db,
     )
 )
@@ -2388,6 +2407,8 @@ app.include_router(
     )
 )
 
+app.include_router(build_dev_server_router(get_current_user=_get_current_user))
+
 init_worklog_tables(_get_shared_db)
 
 app.include_router(
@@ -2410,6 +2431,7 @@ _ANOMALY_SCHEDULER_JOBS = [
     ("delivery_anomaly", _delivery_anomaly_router.run_scheduled),
     ("return_anomaly", _return_anomaly_router.run_scheduled),
     ("exchange_return_anomaly", _exchange_return_anomaly_router.run_scheduled),
+    ("cancel_stats", _cancel_stats_router.run_scheduled),
 ]
 
 

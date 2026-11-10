@@ -646,6 +646,43 @@ class EzAdminClient:
                 result[code] = 0
         return result
 
+    async def get_stock_and_pending_for_codes(self, product_ids: list[str]) -> dict[str, dict]:
+        """I100(현재고조회)에서 여러 상품코드를 한 번에 검색해 코드별 재고(stock_normal)와
+        접수(before_trans, 출고 전 대기 주문) 수량을 {코드: {"stock", "pending"}}로 돌려준다.
+        결과에 없는 코드는 이지어드민에서 찾지 못한 것이다."""
+        codes = [str(c).strip() for c in product_ids if str(c).strip()]
+        if not codes:
+            return {}
+        today = datetime.now().strftime("%Y-%m-%d")
+        par = (
+            "auto_search=&search_all_product=&multi_supply_group=&multi_supply=&str_supply_code=0"
+            "&tags_string=&product_tag_include_type=1"
+            f"&query_type=product_id&query_str={', '.join(codes)}"
+            "&stock_type=0&stock_start=&stock_end=&notrans_day=&notrans_cnt=&notrans_status=0&stock_status=0"
+            f"&start_date={today}&start_hour=00:00:00&end_date={today}&end_hour=23:59:59"
+            "&date_period_sel=1&work_type=stockin&work_start=&work_end=&inout_type=0&product_date="
+            f"&start_date2={today}&end_date2={today}&date_period_sel2=1"
+            "&products_sort=1&category=0&except_soldout=0&temp_soldout=0&location=0"
+        )
+        data = await self.post(
+            "I100", "search",
+            data={"_search": "false", "rows": str(max(200, len(codes) * 2)), "page": "1", "sidx": "", "sord": "asc", "page_code": "I100"},
+            par=par, time_flag=None,
+        )
+        result: dict[str, dict] = {}
+        for row in data.get("rows") or []:
+            cell = (row or {}).get("cell") or {}
+            code = str(cell.get("key") or "").strip()
+            if not code:
+                continue
+            try:
+                stock = int(float(cell.get("stock_normal") or 0))
+            except (TypeError, ValueError):
+                stock = 0
+            match = re.search(r">(\d+)</a>", str(cell.get("before_trans") or ""))
+            result[code] = {"stock": stock, "pending": int(match.group(1)) if match else 0}
+        return result
+
     async def get_in_stock_map(self) -> dict[str, int]:
         """I100(현재고조회)에서 재고 1개 이상인 상품 전체를 한 번에 조회해
         {상품코드: 재고수량}으로 반환한다. get_stock_for_codes처럼 코드를 몇백~몇천개

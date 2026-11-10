@@ -799,6 +799,12 @@ export default function LeadTimePage({ headerExtra = null }) {
                 <div className={styles.uncheckedBox}>
                   <p className={styles.muted}>미검수 거래처 상품은 검수·포장을 하지 않아 포장 수량에서 제외됩니다. (시간 계산은 추후)</p>
                   <ul className={styles.list}>
+                    {(pack.unchecked?.vouchers || []).map((v) => (
+                        <li key={`u-${v.sheet}`} className={styles.listRow}>
+                          <span>{v.name}</span>
+                          <span>{v.total.toLocaleString()}개</span>
+                        </li>
+                      ))}
                     {suppliers.map((name) => (
                       <li key={name} className={styles.listRow}>
                         <span>{name}</span>

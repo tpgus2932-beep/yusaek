@@ -38,9 +38,16 @@ def calc_sales_window(conn, yusas_code: str, date: str, days: int):
     return sum(values), len(values)
 
 
-def calc_weekday_average_sales(conn, yusas_code: str, as_of_date: str):
+def calc_weekday_average_sales(conn, yusas_code: str, as_of_date: str, data_cutoff_date: str | None = None):
+    """data_cutoff_date가 있으면 그 날짜(포함) 이후 데이터는 쓰지 않는다 — 몇 주 앞을
+    한 번에 예측하는 백테스트에서 아직 모르는 미래 실제값이 섞이지 않게 하기 위함.
+    이 경우 같은 요일의 가장 최근 cutoff 이내 날짜부터 거슬러 올라간다."""
+    skip_weeks = 0
+    if data_cutoff_date is not None:
+        while _date_minus(as_of_date, (skip_weeks + 1) * 7) > data_cutoff_date:
+            skip_weeks += 1
     candidates = []
-    for week in range(1, WEEKDAY_LOOKBACK_WEEKS + 1):
+    for week in range(skip_weeks + 1, skip_weeks + WEEKDAY_LOOKBACK_WEEKS + 1):
         candidate_date = _date_minus(as_of_date, week * 7)
         row = conn.execute(
             """
@@ -55,13 +62,16 @@ def calc_weekday_average_sales(conn, yusas_code: str, as_of_date: str):
     if len(candidates) >= WEEKDAY_MIN_WEEKS:
         return sum(candidates) / len(candidates)
 
-    start = _date_minus(as_of_date, FALLBACK_WINDOW_DAYS)
+    window_end = as_of_date
+    if data_cutoff_date is not None and _date_plus(data_cutoff_date, 1) < window_end:
+        window_end = _date_plus(data_cutoff_date, 1)
+    start = _date_minus(window_end, FALLBACK_WINDOW_DAYS)
     rows = conn.execute(
         """
         SELECT sales_qty FROM order_recommendation_daily
         WHERE yusas_code = ? AND date >= ? AND date < ? AND excluded_from_avg = 0 AND sales_qty IS NOT NULL
         """,
-        (yusas_code, start, as_of_date),
+        (yusas_code, start, window_end),
     ).fetchall()
     values = [r["sales_qty"] for r in rows]
     if not values:
@@ -127,6 +137,7 @@ def calc_expected_sales_for_coverage(
     weight_avg_3d: float = 0.0,
     avg_sales_5d=None,
     weight_avg_5d: float = 0.0,
+    data_cutoff_date: str | None = None,
 ):
     """date+ORDER_LEAD_DAYS부터 coverage_days일치(포함, round()로 정수화) 각 날짜를
     따로 예측해서 합산한다 — date에 발주해도 실제로 커버되는 건 리드타임 이후부터라서
@@ -143,7 +154,7 @@ def calc_expected_sales_for_coverage(
     any_value = False
     for offset in range(num_days):
         target_date = _date_plus(date, offset + ORDER_LEAD_DAYS)
-        weekday_average_sales = calc_weekday_average_sales(conn, yusas_code, target_date)
+        weekday_average_sales = calc_weekday_average_sales(conn, yusas_code, target_date, data_cutoff_date)
         daily_expected = calc_expected_sales_today(
             weekday_average_sales, previous_day_sales_qty, avg_sales_7d, avg_sales_14d,
             weight_weekday_average, weight_previous_day, weight_avg_7d, weight_avg_14d,

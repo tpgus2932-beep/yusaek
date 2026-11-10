@@ -10,7 +10,7 @@ from typing import Optional
 import httpx
 from urllib.parse import quote
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from api.exchange_return_routes import ABLY_EMAIL, ABLY_PASSWORD
 from api.inventory_dashboard_routes import (
@@ -32,7 +32,7 @@ from services.ezadmin_waiting_orders import DEFAULT_SELLER, parse_waiting_orders
 ABLY_BASE = "https://api.a-bly.com"
 _TOKEN_TTL_SEC = 50 * 60
 _KST = timezone(timedelta(hours=9))
-_STATS_USER = "ksh2932"
+_STATS_USERS = ("ksh2932", "tmddlfnan")  # 통계 메뉴 허용 계정(김세현, 김승일)
 _CS_IDLE_SECONDS = 5 * 60  # 마지막 완료 후 이 시간 안에 다음 완료가 없으면 CS 중이 아닌 것으로 본다
 _INITIAL_SYNC_DAYS = 30
 _MAX_PAGES = 100
@@ -481,7 +481,7 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
     @router.get("/stats")
     def stats(days: int = 14, current_user=Depends(get_current_user)):
         """완료 처리 개수 / 새로 들어온 문의 개수 (ksh2932 전용)."""
-        if current_user != _STATS_USER:
+        if current_user not in _STATS_USERS:
             raise HTTPException(status_code=403, detail="권한이 없습니다.")
         days = max(1, min(days, 365))
         today = datetime.now(_KST).date()
@@ -586,7 +586,7 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
     @router.get("/stats/sessions")
     def stats_sessions(days: int = 7, current_user=Depends(get_current_user)):
         """CS 세션 목록. 완료 간격이 5분을 넘으면 세션이 끊기고, 끊기기 전 마지막 CS를 함께 돌려준다."""
-        if current_user != _STATS_USER:
+        if current_user not in _STATS_USERS:
             raise HTTPException(status_code=403, detail="권한이 없습니다.")
         days = max(1, min(days, 90))
         since = (datetime.now(_KST).date() - timedelta(days=days - 1)).isoformat()
@@ -643,7 +643,7 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
     @router.get("/stats/search")
     def stats_search(q: str = "", days: int = 90, current_user=Depends(get_current_user)):
         """완료한 CS를 주문자명 / 수령인명 / 상품명 / 담당자로 검색한다 (공백으로 나눈 단어 모두 포함)."""
-        if current_user != _STATS_USER:
+        if current_user not in _STATS_USERS:
             raise HTTPException(status_code=403, detail="권한이 없습니다.")
         tokens = q.lower().split()
         if not tokens:
@@ -683,7 +683,7 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
     @router.get("/stats/completed")
     def stats_completed(days: int = 7, user: Optional[str] = None, current_user=Depends(get_current_user)):
         """완료한 CS를 상품별로 묶어서 돌려준다."""
-        if current_user != _STATS_USER:
+        if current_user not in _STATS_USERS:
             raise HTTPException(status_code=403, detail="권한이 없습니다.")
         days = max(1, min(days, 365))
         since = (datetime.now(_KST).date() - timedelta(days=days - 1)).isoformat()
@@ -944,8 +944,26 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
         }
         return found, (rows[0]["fetched_at"] if rows else "")
 
+    _purge_state = {"date": ""}
+
+    def _purge_past_inbound() -> None:
+        """입고 예정일이 오늘보다 이전인 일정을 지운다 (날짜 없이 메모만 있는 일정은 그대로 둔다).
+        CS 재고/상품별 탭/배송지연 일정이 같은 저장소를 쓰므로 어디서 읽든 한 번만 정리하면 모두 반영된다.
+        같은 날에는 다시 지우지 않는다."""
+        today = datetime.now(_KST).strftime("%Y-%m-%d")
+        if _purge_state["date"] == today:
+            return
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM cs_inbound_schedules WHERE expected_date != '' AND expected_date < ?", (today,))
+            conn.commit()
+        finally:
+            conn.close()
+        _purge_state["date"] = today
+
     def _attach_inbound(result: dict) -> dict:
         """재고 결과의 각 옵션에 입고 일정(+업데이트 시각)을 붙인다. 캐시에는 저장하지 않고 항상 최신으로 읽는다."""
+        _purge_past_inbound()
         codes = [o["code"] for o in result.get("options", []) if o.get("code")]
         found: dict = {}
         if codes:
@@ -1643,6 +1661,291 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
                 for o in result["options"]
             ],
         }
+
+    _delay_orders_cache: dict = {"at": 0.0, "items": []}
+    _DELAY_ORDERS_TTL_SEC = 120
+    _DELAY_DEFAULT_LIMIT = 10
+    _DELAY_SEARCH_LIMIT = 50
+
+    async def _fetch_delayed_orders() -> list[dict]:
+        """에이블리 '상품준비중' 주문 전체. 대시보드를 열 때마다 수천 건을 다시 받지 않도록 잠깐 캐시한다."""
+        if time.time() - _delay_orders_cache["at"] < _DELAY_ORDERS_TTL_SEC:
+            return _delay_orders_cache["items"]
+        params = {
+            "order": "-checked_at",
+            "delivery_type[]": ["standard", "today", "combine", "reserved"],
+            "processing_status[]": 2,
+            "processing_sub_status[]": 0,
+            "per_page": 100,
+        }
+        raw: list[dict] = []
+        total = None
+        for page in range(1, 41):
+            if page == 1:
+                total = (await _ably_get(http, "/seller/order_items/total-count/", {k: v for k, v in params.items() if k not in ("order", "per_page")})).get("total_count")
+            data = await _ably_get(http, "/seller/order_items/", {**params, "page": page})
+            chunk = data.get("order_items") or []
+            raw.extend(chunk)
+            if not chunk or (total is not None and len(raw) >= total):
+                break
+        _delay_orders_cache["items"] = raw
+        _delay_orders_cache["at"] = time.time()
+        return raw
+
+    @router.get("/delay-schedules")
+    async def delay_schedules(q: str = "", show_all: bool = Query(False, alias="all"), current_user=Depends(get_current_user)):
+        """배송지연 일정 카드 목록.
+        이지어드민 IO30(에이블리 샵)의 '재고부족요청' 상품코드와, 에이블리 상품준비중 주문의
+        option_stock_sync_code(없으면 원가베이스 상품명+옵션 매칭)를 상품코드로 맞춰서,
+        재고부족요청이 걸린 상품만 상품(goods_sno) 단위로 묶는다.
+        검색어가 없으면 '가장 오래된 주문'이 오래된 상품부터 10개만, 있으면 상품명/옵션/거래처상품명/상품코드에
+        검색어가 모두 들어간 상품을 같은 순서로 최대 50개 돌려준다. all=true면 개수 제한 없이 전부 돌려준다
+        (화면의 '불러오기'가 한 번에 받아 두고 검색은 화면에서 거른다)."""
+        from services.order_recommendation_ezadmin_collectors import _fetch_ably_io30_snapshot
+
+        if get_setting is None:
+            raise HTTPException(status_code=500, detail="이지어드민 설정을 읽을 수 없어요.")
+        _purge_past_inbound()
+        try:
+            snapshot = await _fetch_ably_io30_snapshot(get_setting, datetime.now(_KST).strftime("%Y-%m-%d"))
+        except EzAdminSessionExpired:
+            return {"ok": False, "need_session": True}
+        # 재고부족요청: 요청수량(request_qty) 또는 부족수량(lack_qty)이 있는 상품코드
+        shortage = {
+            code: v for code, v in snapshot.items()
+            if (v.get("ezadmin_lack_qty") or 0) > 0 or (v.get("ezadmin_real_lack_qty") or 0) > 0
+        }
+        raw = await _fetch_delayed_orders()
+
+        base = _cost_base()
+        conn = get_db()
+        try:
+            product_links = {r["goods_sno"]: r["base_name"] for r in conn.execute("SELECT goods_sno, base_name FROM cs_product_links").fetchall()}
+            option_links = {
+                (r["goods_sno"], r["option_key"]): r["base_code"]
+                for r in conn.execute("SELECT goods_sno, option_key, base_code FROM cs_option_links").fetchall()
+            }
+            # 입고 일정은 CS 재고/상품별 탭과 같은 cs_inbound_schedules 를 쓴다 (메모는 note 열).
+            schedules = {
+                r["code"]: {"schedule": r["note"], "expected_date": r["expected_date"], "updated_by": r["updated_by"], "updated_at": r["updated_at"]}
+                for r in conn.execute("SELECT code, expected_date, note, updated_by, updated_at FROM cs_inbound_schedules").fetchall()
+            }
+        finally:
+            conn.close()
+
+        rows_cache: dict = {}
+        groups: dict = {}
+        matched_orders = 0
+        for it in raw:
+            goods_sno = it.get("goods_sno")
+            if goods_sno is None:
+                continue
+            name = it.get("goods_name") or ""
+            option = it.get("option_info") or ""
+            opts = [option]
+            # 상품코드 찾기: 에이블리가 내려주는 option_stock_sync_code 우선, 없으면 원가베이스 상품명+옵션 매칭
+            sync_code = str(it.get("option_stock_sync_code") or "").strip()
+            code, label, supplier, supplier_product = sync_code, option, "", ""
+            if base is not None:
+                if goods_sno not in rows_cache:
+                    rows_cache[goods_sno] = base.product_rows(goods_sno, name, product_links.get(goods_sno, ""))[1]
+                rows = rows_cache[goods_sno]
+                if rows:
+                    _, row = base.match_option(rows, opts, sync_code, option_links.get((goods_sno, option_key(opts)), ""))
+                    if row:
+                        info = base.option_info(row)
+                        code = sync_code if sync_code in shortage else info["code"]
+                        label = info["label"] or option
+                        supplier, supplier_product = info["supplier"], info["supplier_product"]
+                    else:
+                        first = base.option_info(rows[0])
+                        supplier, supplier_product = first["supplier"], first["supplier_product"]
+            if code not in shortage:
+                continue
+            matched_orders += 1
+            g = groups.setdefault(goods_sno, {
+                "goods_sno": goods_sno, "goods_name": name, "supplier": "", "supplier_product": "",
+                "options": {}, "order_count": 0, "oldest_ordered_at": "", "max_delay_days": 0,
+            })
+            if supplier_product and not g["supplier_product"]:
+                g["supplier_product"] = supplier_product
+            if supplier and not g["supplier"]:
+                g["supplier"] = supplier
+            g["order_count"] += 1
+            try:
+                g["max_delay_days"] = max(g["max_delay_days"], int(it.get("delay_days") or 0))
+            except (TypeError, ValueError):
+                pass
+            ordered_at = it.get("ordered_at") or ""
+            if ordered_at and (not g["oldest_ordered_at"] or ordered_at < g["oldest_ordered_at"]):
+                g["oldest_ordered_at"] = ordered_at
+            sh = shortage[code]
+            o = g["options"].setdefault(code, {
+                "code": code, "label": label, "orders": 0,
+                "request_qty": sh.get("ezadmin_lack_qty") or 0, "lack_qty": sh.get("ezadmin_real_lack_qty") or 0,
+                "stock_qty": sh.get("stock_qty") or 0, "incoming_qty": sh.get("incoming_qty") or 0,
+            })
+            o["orders"] += int(it.get("ea") or 1)
+
+        terms = [t for t in re.split(r"\s+", q.strip().lower()) if t]
+        cards = []
+        for g in groups.values():
+            g["options"] = sorted(g["options"].values(), key=lambda o: (-o["request_qty"], o["label"]))
+            if terms:
+                hay = " ".join([g["goods_name"], g["supplier"], g["supplier_product"], *[f"{o['label']} {o['code']}" for o in g["options"]]]).lower()
+                if not all(t in hay for t in terms):
+                    continue
+            cards.append(g)
+
+        # 가장 오래된 주문이 오래된 상품부터 (주문일을 모르는 상품은 맨 뒤)
+        cards.sort(key=lambda c: (c["oldest_ordered_at"] == "", c["oldest_ordered_at"]))
+        limit = None if show_all else (_DELAY_SEARCH_LIMIT if terms else _DELAY_DEFAULT_LIMIT)
+        matched = len(cards)
+        cards = cards if limit is None else cards[:limit]
+        for c in cards:
+            for o in c["options"]:
+                sch = schedules.get(o["code"])
+                o["schedule"] = sch["schedule"] if sch else ""
+                o["expected_date"] = sch["expected_date"] if sch else ""
+                o["updated_by"] = sch["updated_by"] if sch else ""
+                o["updated_at"] = sch["updated_at"] if sch else ""
+        return {
+            "ok": True, "searched": bool(terms), "matched": matched, "total_products": len(groups),
+            "shortage_codes": len(shortage), "matched_orders": matched_orders, "items": cards,
+        }
+
+    @router.put("/delay-schedules")
+    def set_delay_schedule(body: dict = Body(...), current_user=Depends(get_current_user)):
+        """옵션(상품코드) 하나의 입고 예정일 + 메모를 저장한다. 저장소는 CS 재고/상품별 탭의 입고 일정
+        (cs_inbound_schedules)과 같아서, 여기서 적으면 그 화면에도 그대로 보이고 반대도 마찬가지다.
+        날짜와 메모가 모두 비어 있으면 삭제."""
+        code = str(body.get("code") or "").strip()
+        if not code:
+            raise HTTPException(status_code=400, detail="옵션 상품코드가 필요합니다.")
+        expected = str(body.get("expected_date") or "").strip()
+        note = str(body.get("schedule") or "").strip()
+        if expected:
+            try:
+                datetime.strptime(expected, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="입고 예정일은 YYYY-MM-DD 형식이어야 해요.")
+            if expected < datetime.now(_KST).strftime("%Y-%m-%d"):
+                raise HTTPException(status_code=400, detail="이미 지난 날짜는 입력할 수 없어요. 오늘 이후 날짜를 골라 주세요.")
+        if len(note) > 200:
+            raise HTTPException(status_code=400, detail="메모는 200자 이내로 적어 주세요.")
+        now = datetime.now(_KST).isoformat()
+        conn = get_db()
+        try:
+            if expected or note:
+                conn.execute(
+                    "INSERT INTO cs_inbound_schedules (code, expected_date, note, updated_by, updated_at) VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(code) DO UPDATE SET expected_date = excluded.expected_date, note = excluded.note, "
+                    "updated_by = excluded.updated_by, updated_at = excluded.updated_at",
+                    (code, expected, note, _username(current_user), now),
+                )
+            else:
+                conn.execute("DELETE FROM cs_inbound_schedules WHERE code = ?", (code,))
+            conn.commit()
+        finally:
+            conn.close()
+        saved = bool(expected or note)
+        return {
+            "ok": True, "code": code, "schedule": note, "expected_date": expected,
+            "updated_by": _username(current_user) if saved else "", "updated_at": now if saved else "",
+        }
+
+    @router.get("/delay-schedules/calendar")
+    def delay_schedule_calendar(month: str = "", current_user=Depends(get_current_user)):
+        """달력용: 해당 월(YYYY-MM)에 입고 예정일이 잡힌 옵션들 (CS 재고/상품별 탭에서 적은 일정 포함).
+        상품명/옵션/거래처는 원가베이스 상품코드로 찾는다. 재고부족요청을 불러오지 않아도 만들 수 있다."""
+        month = month.strip() or datetime.now(_KST).strftime("%Y-%m")
+        if not re.fullmatch(r"\d{4}-\d{2}", month):
+            raise HTTPException(status_code=400, detail="month는 YYYY-MM 형식이어야 해요.")
+        _purge_past_inbound()
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT code, expected_date, note, updated_by, updated_at FROM cs_inbound_schedules "
+                "WHERE expected_date LIKE ? ORDER BY expected_date, code",
+                (month + "-%",),
+            ).fetchall()
+        finally:
+            conn.close()
+        base = _cost_base()
+        items = []
+        for r in rows:
+            row = base.by_code.get(r["code"]) if base is not None else None
+            info = base.option_info(row) if row else {}
+            items.append({
+                "code": r["code"],
+                "expected_date": r["expected_date"],
+                "schedule": r["note"],
+                "goods_name": str(row.get("상품명") or "").strip() if row else "",
+                "option_label": info.get("label", ""),
+                "supplier": info.get("supplier", ""),
+                "supplier_product": info.get("supplier_product", ""),
+                "updated_by": r["updated_by"],
+                "updated_at": r["updated_at"],
+            })
+        items.sort(key=lambda i: (i["expected_date"], i["goods_name"], i["option_label"]))
+        return {"ok": True, "month": month, "items": items}
+
+    @router.get("/delay-schedules/pending")
+    async def delay_schedule_pending(month: str = "", current_user=Depends(get_current_user)):
+        """달력에 등록된(해당 월) 옵션들의 이지어드민 접수(출고 전 대기 주문) 수량과 재고를 조회한다.
+        반환: {"counts": {상품코드: {"pending", "stock"}}, "missing": [이지어드민에서 못 찾은 코드]}"""
+        if get_setting is None:
+            raise HTTPException(status_code=500, detail="이지어드민 설정을 읽을 수 없어요.")
+        month = month.strip() or datetime.now(_KST).strftime("%Y-%m")
+        if not re.fullmatch(r"\d{4}-\d{2}", month):
+            raise HTTPException(status_code=400, detail="month는 YYYY-MM 형식이어야 해요.")
+        _purge_past_inbound()
+        conn = get_db()
+        try:
+            codes = [
+                r["code"] for r in conn.execute(
+                    "SELECT DISTINCT code FROM cs_inbound_schedules WHERE expected_date LIKE ?", (month + "-%",)
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+        if not codes:
+            return {"ok": True, "counts": {}, "missing": [], "fetched_at": datetime.now(_KST).isoformat()}
+        client = EzAdminClient(get_setting)
+        counts: dict = {}
+        try:
+            for i in range(0, len(codes), 40):
+                chunk = codes[i:i + 40]
+                found = await client.get_stock_and_pending_for_codes(chunk)
+                by_norm = {(normalize_to_s5(k) or k): v for k, v in found.items()}
+                for c in chunk:
+                    v = found.get(c) or by_norm.get(normalize_to_s5(c) or c)
+                    if v is not None:
+                        counts[c] = {"pending": v["pending"], "stock": v["stock"]}
+        except EzAdminSessionExpired:
+            return {"ok": False, "need_session": True}
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"이지어드민 접수 조회에 실패했어요. ({e})")
+        return {
+            "ok": True, "counts": counts, "missing": [c for c in codes if c not in counts],
+            "fetched_at": datetime.now(_KST).isoformat(),
+        }
+
+    @router.delete("/delay-schedules/by-date")
+    def delete_delay_schedules_by_date(date: str, current_user=Depends(get_current_user)):
+        """입고 예정일이 해당 날짜(YYYY-MM-DD)인 일정을 모두 지운다 (CS 재고/상품별 탭의 입고 일정 포함)."""
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="date는 YYYY-MM-DD 형식이어야 해요.")
+        conn = get_db()
+        try:
+            cur = conn.execute("DELETE FROM cs_inbound_schedules WHERE expected_date = ?", (date,))
+            deleted = cur.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "date": date, "deleted": deleted}
 
     @router.get("/cost-base/search")
     def cost_base_search(q: str = "", current_user=Depends(get_current_user)):

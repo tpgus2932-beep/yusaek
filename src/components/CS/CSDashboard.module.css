@@ -262,43 +262,519 @@ button.kpi:hover {
     white-space: nowrap;
 }
 
-/* 오래 기다린 문의 */
-.waitRow {
+/* 배송지연 일정 — 왼쪽: 재고부족 상품 목록 / 오른쪽: 입고 예정 달력 */
+.delayWrap {
+    grid-column: 1 / -1;
     display: grid;
-    grid-template-columns: 90px 170px 1fr 110px;
+    grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr);
+    gap: 12px;
+    align-items: start;
+}
+
+@media (max-width: 1100px) {
+    .delayWrap {
+        grid-template-columns: 1fr;
+    }
+}
+
+.delayBar {
+    display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 10px;
-    width: 100%;
-    padding: 10px 12px;
+    gap: 8px 12px;
+    margin-bottom: 12px;
+}
+
+.delayLoad {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 9px 16px;
     border: none;
-    border-radius: 12px;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    text-align: left;
+    border-radius: 999px;
+    background: var(--cs-accent);
+    color: #fff;
+    font-size: 0.84rem;
+    font-weight: 700;
     cursor: pointer;
 }
 
-.waitRow:hover {
-    background: var(--cs-bg);
+.delayLoad:disabled {
+    opacity: 0.6;
+    cursor: default;
 }
 
-.waitCat {
+.delayLoaded {
     color: var(--cs-sub);
     font-size: 0.78rem;
 }
 
-.waitAge {
-    justify-self: end;
-    padding: 3px 10px;
+.delayEmpty {
+    padding: 28px 12px;
+    border-radius: 14px;
+    background: var(--cs-bg);
+    color: var(--cs-sub);
+    font-size: 0.84rem;
+    line-height: 1.7;
+    text-align: center;
+}
+
+.delayEmpty b {
+    color: var(--cs-accent);
+}
+
+.delaySearch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    padding: 0 14px;
+    border: 1px solid var(--cs-line);
     border-radius: 999px;
     background: var(--cs-bg);
     color: var(--cs-sub);
-    font-size: 0.74rem;
 }
 
-.waitOld {
+.delaySearch:focus-within {
+    border-color: var(--cs-accent);
+    color: var(--cs-accent);
+}
+
+.delaySearch input {
+    flex: 1;
+    min-width: 0;
+    padding: 10px 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--cs-text);
+    font: inherit;
+    font-size: 0.86rem;
+}
+
+.delaySearch em {
+    flex: none;
+    font-size: 0.74rem;
+    font-style: normal;
+}
+
+/* 목록: 카드 대신 구분선 있는 행 — 상품 한 블록 안에 옵션별 일정 입력 줄 */
+.delayRows {
+    display: flex;
+    flex-direction: column;
+}
+
+.delayRow {
+    padding: 16px 4px 12px;
+    border-top: 1px solid var(--cs-line);
+}
+
+.delayHead {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) 68px;
+    gap: 12px;
+    align-items: start;
+}
+
+.delayRank {
+    color: var(--cs-sub);
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-align: center;
+    padding-top: 2px;
+}
+
+.delayInfo {
+    min-width: 0;
+}
+
+.delayName {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    font-size: 0.95rem;
+    font-weight: 700;
+    line-height: 1.35;
+}
+
+.delaySupplier {
+    margin-top: 3px;
+    font-size: 0.8rem;
+}
+
+.delaySupplier span {
+    margin-right: 6px;
+    color: var(--cs-sub);
+    font-size: 0.7rem;
+}
+
+.delaySupplier b {
+    font-weight: 700;
+}
+
+.delaySupplier .delaySupplierGap {
+    margin-left: 12px;
+}
+
+.delayNeed {
+    color: #d6402f;
+    font-style: normal;
+    font-weight: 700;
+}
+
+.delayAge {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 6px 4px;
+    border-radius: 12px;
+    line-height: 1.25;
+}
+
+.delayAge b {
+    font-size: 1rem;
+}
+
+.delayAge span {
+    font-size: 0.66rem;
+}
+
+.ageHot {
+    background: #ffe9e6;
+    color: #d6402f;
+}
+
+.ageWarm {
     background: var(--cs-warn-soft);
     color: var(--cs-warn);
+}
+
+.ageCool {
+    background: var(--cs-bg);
+    color: var(--cs-sub);
+}
+
+/* 옵션별 일정 */
+.delayOptRows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 10px 0 0 36px;
+}
+
+.delayOptRow {
+    display: grid;
+    grid-template-columns: minmax(150px, 1.1fr) 140px minmax(120px, 1.4fr) 56px;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 10px;
+    border-radius: 12px;
+    background: var(--cs-bg);
+}
+
+.delayOptSaved {
+    background: var(--cs-ok-soft);
+}
+
+@media (max-width: 1500px) {
+    .delayOptRow {
+        grid-template-columns: minmax(0, 1fr) 140px 56px;
+    }
+
+    .delayOptRow .delayMemo {
+        grid-column: 1 / 3;
+        grid-row: 2;
+    }
+}
+
+.delayOptName {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.delayOptName b {
+    font-size: 0.84rem;
+    overflow-wrap: anywhere;
+}
+
+.delayOptName span {
+    color: var(--cs-sub);
+    font-size: 0.72rem;
+}
+
+.delayOptName span i {
+    font-style: normal;
+}
+
+.delayOptRow input {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 7px 9px;
+    border: 1px solid var(--cs-line);
+    border-radius: 9px;
+    background: var(--cs-card);
+    color: var(--cs-text);
+    font: inherit;
+    font-size: 0.8rem;
+}
+
+.delayOptRow input:focus {
+    border-color: var(--cs-accent);
+    outline: none;
+}
+
+.delaySaveBtn {
+    padding: 7px 0;
+    border: none;
+    border-radius: 9px;
+    background: var(--cs-accent);
+    color: #fff;
+    font-size: 0.78rem;
     font-weight: 700;
+    cursor: pointer;
+}
+
+.delaySaveBtn:disabled {
+    background: var(--cs-card);
+    color: var(--cs-sub);
+    cursor: default;
+}
+
+.delayStamp {
+    grid-column: 1 / -1;
+    color: var(--cs-sub);
+    font-size: 0.68rem;
+}
+
+.delayMore {
+    align-self: flex-start;
+    padding: 2px 4px;
+    border: none;
+    background: transparent;
+    color: var(--cs-accent);
+    font-size: 0.76rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+/* 달력 */
+.calHead {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.calHead strong {
+    flex: 1;
+    text-align: center;
+    font-size: 0.95rem;
+}
+
+.calHead button {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border: none;
+    border-radius: 50%;
+    background: var(--cs-bg);
+    color: var(--cs-text);
+    cursor: pointer;
+}
+
+.calHead .calToday {
+    width: auto;
+    padding: 0 12px;
+    border-radius: 999px;
+    background: var(--cs-accent-soft);
+    color: var(--cs-accent);
+    font-size: 0.76rem;
+    font-weight: 700;
+}
+
+.calGrid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+}
+
+.calWeek {
+    padding: 4px 0;
+    color: var(--cs-sub);
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-align: center;
+}
+
+.calSun {
+    color: #d6402f;
+}
+
+.calSat {
+    color: #3f7be0;
+}
+
+.calEmpty {
+    min-height: 44px;
+}
+
+.calDay {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    min-height: 44px;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--cs-text);
+    font: inherit;
+    font-size: 0.84rem;
+    cursor: pointer;
+}
+
+.calDay:hover {
+    background: var(--cs-bg);
+}
+
+.calDay em {
+    min-width: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--cs-accent);
+    color: #fff;
+    font-size: 0.66rem;
+    font-style: normal;
+    font-weight: 700;
+    line-height: 16px;
+}
+
+.calIsToday {
+    border-color: var(--cs-accent);
+}
+
+.calSelected {
+    background: var(--cs-accent-soft);
+    color: var(--cs-accent);
+    font-weight: 700;
+}
+
+.calDetail {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--cs-line);
+}
+
+.calDetailHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-size: 0.84rem;
+}
+
+.calClearDate {
+    flex: none;
+    padding: 4px 11px;
+    border: none;
+    border-radius: 999px;
+    background: #ffe9e6;
+    color: #d6402f;
+    font-size: 0.72rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.calNone {
+    padding: 16px 8px;
+    color: var(--cs-sub);
+    font-size: 0.8rem;
+    text-align: center;
+}
+
+.calItem {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 0;
+    border-top: 1px solid var(--cs-line);
+}
+
+.calItemMain {
+    flex: 1;
+    min-width: 0;
+}
+
+.calItemName {
+    font-size: 0.86rem;
+    font-weight: 700;
+    line-height: 1.35;
+}
+
+.calItemOpt {
+    margin-top: 2px;
+    color: var(--cs-accent);
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.calItemSub {
+    margin-top: 2px;
+    color: var(--cs-sub);
+    font-size: 0.76rem;
+}
+
+.calItemMemo {
+    margin-top: 5px;
+    padding: 5px 9px;
+    border-radius: 8px;
+    background: var(--cs-ok-soft);
+    color: var(--cs-ok);
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.calItemDel {
+    flex: none;
+    padding: 3px 9px;
+    border: none;
+    border-radius: 999px;
+    background: var(--cs-bg);
+    color: var(--cs-sub);
+    font-size: 0.7rem;
+    cursor: pointer;
+}
+
+.calHead .calPendingBtn {
+    width: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 12px;
+    border-radius: 999px;
+    background: var(--cs-accent);
+    color: #fff;
+    font-size: 0.76rem;
+    font-weight: 700;
+    margin-left: auto;
+}
+.calHead .calPendingBtn:disabled { opacity: 0.55; cursor: default; }
+.calPendingAt { font-size: 0.72rem; color: var(--cs-muted, #888); margin-left: 6px; }
+.spin { animation: calSpin 0.9s linear infinite; }
+@keyframes calSpin { to { transform: rotate(360deg); } }
+.calItemPending {
+    margin-top: 5px;
+    padding: 5px 9px;
+    border-radius: 8px;
+    background: var(--cs-accent-soft);
+    color: var(--cs-accent);
+    font-size: 0.78rem;
 }

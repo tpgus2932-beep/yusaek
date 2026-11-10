@@ -52,6 +52,7 @@ LLOGIS_CREDENTIAL = "1q2w3e4r5t"
 LLOGIS_EMP_NO = "348867"
 
 _LAST_RUN_SETTING_KEY = "delivery_anomaly_last_run_date"
+_ABLY_MAX_PAGES = 100  # 무한 루프 방지용 안전 상한 (per_page 100 기준 1만 건)
 
 
 def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_setting):
@@ -84,22 +85,30 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
             "Referer": "https://my.a-bly.com/",
         }
         items: list[dict] = []
+        page = 1
         async with httpx.AsyncClient(timeout=30.0) as client:
-            res = await client.get(
-                f"{ABLY_BASE}/seller/order_items/",
-                headers=headers,
-                params={
-                    "processing_status[]": 3,
-                    "processing_sub_status[]": 0,
-                    "order": "goods_sent_at",
-                    "delivery_type[]": ["standard", "today", "combine", "reserved"],
-                    "per_page": 100,
-                    "sponsorship_type": -1,
-                    "page": 1,
-                },
-            )
-            if res.status_code == 200:
-                for item in res.json().get("order_items", []):
+            while True:
+                res = await client.get(
+                    f"{ABLY_BASE}/seller/order_items/",
+                    headers=headers,
+                    params={
+                        "processing_status[]": 3,
+                        "processing_sub_status[]": 0,
+                        "order": "goods_sent_at",
+                        "delivery_type[]": ["standard", "today", "combine", "reserved"],
+                        "per_page": 100,
+                        "sponsorship_type": -1,
+                        "page": page,
+                    },
+                )
+                if res.status_code != 200:
+                    # 일부만 읽은 채로 진행하면 sync_anomalies가 못 읽은 건의 기존 이상현상을 지워버리므로 중단한다.
+                    raise HTTPException(status_code=502, detail=f"에이블리 배송중 주문 조회 실패 (page {page}, HTTP {res.status_code})")
+                data = res.json()
+                page_items = data.get("order_items", [])
+                if not page_items:
+                    break
+                for item in page_items:
                     items.append({
                         "product_name": item.get("goods_name") or "",
                         "option_info": item.get("option_info") or "",
@@ -108,6 +117,9 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
                         "phone": item.get("receiver_tel") or "",
                         "sent_date": item.get("goods_sent_at") or "",
                     })
+                if page >= int(data.get("max_page_number") or 1) or page >= _ABLY_MAX_PAGES:
+                    break
+                page += 1
         return items
 
     async def _llogis_login() -> str:
@@ -443,7 +455,21 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
             sent_date = parse_ably_sent_date(item["sent_date"])
             try:
                 llogis_raw = await _llogis_query(inv_no, llogis_token)
-            except Exception:
+            except Exception as exc:
+                # 조회 실패 건도 이상현상 목록에 띄운다 (조용히 건너뛰면 확인할 방법이 없다).
+                # 이미 목록에 있던 송장은 sync_anomalies가 건드리지 않아 문자 발송 기록이 유지된다.
+                detail = (str(exc) or exc.__class__.__name__).replace(chr(10), " ")[:80]
+                computed[inv_no] = {
+                    "order_no": item["order_no"],
+                    "product_name": item["product_name"],
+                    "option_info": item["option_info"],
+                    "phone": item["phone"],
+                    "sent_date": item["sent_date"],
+                    "status": "-",
+                    "location": "-",
+                    "scan_date": "-",
+                    "reason": f"llogis 조회 실패 ({detail})",
+                }
                 continue
             reason = evaluate_anomaly(
                 sent_date,

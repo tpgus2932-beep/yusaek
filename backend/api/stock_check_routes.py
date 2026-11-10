@@ -608,7 +608,8 @@ def build_stock_check_router(*, get_current_user, get_setting, normalize_code, g
     @router.post("/normalize")
     async def normalize_stock(payload: dict = Body(...), user: str = Depends(get_current_user)):
         """재고체크 정상화: items=[{code, type: in|out, qty}]를 이지어드민 I200 일괄 입고/출고로 처리한다.
-        많음(스캔 > 재고)은 부족분만큼 입고, 없음(스캔 0, 재고 있음)은 재고만큼 출고."""
+        많음(스캔 > 재고)은 부족분만큼 입고, 적음(0 < 스캔 < 재고)은 모자란 만큼 출고,
+        없음(스캔 0, 재고 있음)은 재고만큼 출고."""
         raw_items = payload.get("items") or []
         if not isinstance(raw_items, list) or not raw_items:
             raise HTTPException(status_code=400, detail="정상화할 상품을 선택하세요.")

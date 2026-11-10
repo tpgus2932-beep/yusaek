@@ -15,13 +15,13 @@ function _parsePrice(v) { const n = parseFloat(String(v ?? "").replace(/[^\d.+-]
 const COLS = ["거래처", "거래처상품명", "가격", "옵션", "사이즈", "개수", "날짜", "미송체크", "상품코드", "메모", "거래처합산"];
 
 /* ── 목록 탭 ─────────────────────────────────────────────────── */
-function JanggiListView() {
+function JanggiListView({ initialQuery = "", initialDate = "" } = {}) {
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
-  const [query, setQuery] = useState("");
-  const [inputQuery, setInputQuery] = useState("");
-  const [dateFilter, setDateFilter] = useState(_todayLocal);
+  const [query, setQuery] = useState(initialQuery);
+  const [inputQuery, setInputQuery] = useState(initialQuery);
+  const [dateFilter, setDateFilter] = useState(initialDate || _todayLocal);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [misongFilter, setMisongFilter] = useState("");
@@ -44,6 +44,8 @@ function JanggiListView() {
   const [purchaseMoveLoading, setPurchaseMoveLoading] = useState(false);
   const [ilgwalOnly, setIlgwalOnly] = useState(false);
   const [showProductModal, setShowProductModal] = useState(false);
+  const [deductModal, setDeductModal] = useState(null); // { client, amount } | null
+  const [deductSaving, setDeductSaving] = useState(false);
   const [productSearch, setProductSearch] = useState("");
   const [productResults, setProductResults] = useState([]);
   const [productSearchLoading, setProductSearchLoading] = useState(false);
@@ -361,6 +363,38 @@ function JanggiListView() {
       setTotal((t) => t + 1);
     } catch (err) {
       setMessage(err.message);
+    }
+  };
+
+  // 매입차감 행 추가: 금액은 부호와 상관없이 음수로 저장 (1000 -> -1000), 나머지는 거래처상품명/미송체크만 "매입차감"
+  const saveDeduct = async () => {
+    if (!deductModal) return;
+    const client = deductModal.client.trim();
+    const n = Math.abs(parseFloat(String(deductModal.amount).replace(/[,원\s-]/g, "")));
+    if (!client || !Number.isFinite(n) || n <= 0) { setMessage("거래처와 금액을 확인하세요."); return; }
+    setDeductSaving(true);
+    try {
+      const res = await fetch(`${API}/wonbe/janggi/row`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({
+          거래처: client,
+          거래처상품명: "매입차감",
+          가격: String(-n),
+          날짜: dateFilter || _todayLocal(),
+          미송체크: "매입차감",
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "매입차감 추가 실패");
+      setRows((prev) => applyGroupRecalc([data.row, ...prev], data.recalc_rows));
+      setTotal((t) => t + 1);
+      setDeductModal(null);
+      setMessage("");
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setDeductSaving(false);
     }
   };
 
@@ -740,6 +774,9 @@ function JanggiListView() {
         <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => { setProductSearch(""); setProductResults([]); setShowProductModal(true); }} disabled={loading} style={{ borderColor: "#7c3aed", color: "#7c3aed" }}>
           <PackagePlus size={13} />상품으로 추가
         </button>
+        <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setDeductModal({ client: initialQuery || "", amount: "" })} disabled={loading} style={{ borderColor: "#dc2626", color: "#dc2626" }}>
+          <Plus size={13} />매입차감 추가
+        </button>
         <button className={`${styles.btn} ${styles.btnDanger}`} onClick={handleDeleteByDate} disabled={loading}>
           <Trash2 size={13} />날짜별 삭제
         </button>
@@ -944,6 +981,40 @@ function JanggiListView() {
         </button>
       )}
 
+      {deductModal && (
+        <div
+          onClick={() => !deductSaving && setDeductModal(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center" }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: "var(--surface, #fff)", color: "var(--text-primary)", borderRadius: 10, boxShadow: "0 8px 32px rgba(0,0,0,0.22)", width: "min(380px, 94vw)", padding: "1rem" }}
+          >
+            <div style={{ fontWeight: 700, marginBottom: "0.7rem" }}>매입차감 추가 <span style={{ fontWeight: 400, fontSize: "0.8rem", color: "var(--text-muted)" }}>· {dateFilter || _todayLocal()}</span></div>
+            <label style={{ display: "block", fontSize: "0.8rem", marginBottom: "0.2rem" }}>거래처</label>
+            <input
+              autoFocus={!deductModal.client}
+              value={deductModal.client}
+              onChange={(e) => setDeductModal((m) => ({ ...m, client: e.target.value }))}
+              style={{ width: "100%", boxSizing: "border-box", padding: "0.4rem 0.5rem", border: "1px solid var(--border, #d1d5db)", borderRadius: 6, background: "var(--input-bg, #f9fafb)", color: "inherit", marginBottom: "0.6rem" }}
+            />
+            <label style={{ display: "block", fontSize: "0.8rem", marginBottom: "0.2rem" }}>금액 <span style={{ color: "var(--text-muted)" }}>(1000 입력 → -1000으로 저장)</span></label>
+            <input
+              autoFocus={!!deductModal.client}
+              inputMode="numeric"
+              value={deductModal.amount}
+              onChange={(e) => setDeductModal((m) => ({ ...m, amount: e.target.value }))}
+              onKeyDown={(e) => { if (e.key === "Enter") saveDeduct(); }}
+              style={{ width: "100%", boxSizing: "border-box", padding: "0.4rem 0.5rem", border: "1px solid var(--border, #d1d5db)", borderRadius: 6, background: "var(--input-bg, #f9fafb)", color: "inherit" }}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginTop: "0.9rem" }}>
+              <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setDeductModal(null)} disabled={deductSaving}>취소</button>
+              <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={saveDeduct} disabled={deductSaving || !deductModal.client.trim() || !String(deductModal.amount).trim()}>{deductSaving ? "저장 중..." : "확인"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showProductModal && (
         <div
           onClick={() => setShowProductModal(false)}
@@ -1030,9 +1101,9 @@ function JanggiTopComparison() {
   const [topLoaded, setTopLoaded] = useState(false);
   const [selDate, setSelDate] = useState(""); // 조회/비교 기준 날짜 (빈 값 = DB 최근날짜 / 오늘)
   const selDateRef = useRef("");
-  const [checkedRows, setCheckedRows] = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem("janggi_top_checked") || "[]")); } catch { return new Set(); }
-  });
+  const [clientView, setClientView] = useState(null); // { client, date, rows, loading, error } - 거래처 클릭 시 그날의 장끼 DB 행
+  // 확인완료 표시는 서버에 공유 저장 (다른 PC에서 누른 것도 조회/창 복귀 시 반영)
+  const [checkedRows, setCheckedRows] = useState(() => new Set());
   const [dismissed, setDismissed] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem("janggi_top_dismissed") || "[]")); } catch { return new Set(); }
   });
@@ -1230,20 +1301,33 @@ function JanggiTopComparison() {
     saveAliases(next);
   };
 
+  const loadChecked = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/wonbe/janggi/top-checked`, { headers: getAuthHeaders(), cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) setCheckedRows(new Set(data.names || []));
+    } catch { /* 조용히 무시 */ }
+  }, []);
+
   const toggleCheck = (name) => {
+    const willCheck = !checkedRows.has(name);
     setCheckedRows((prev) => {
       const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      localStorage.setItem("janggi_top_checked", JSON.stringify([...next]));
+      if (willCheck) next.add(name);
+      else next.delete(name);
       return next;
     });
+    fetch(`${API}/wonbe/janggi/top-checked`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      body: JSON.stringify({ name, checked: willCheck }),
+    }).catch(() => loadChecked());
   };
 
   const resetChecked = () => {
-    if (!window.confirm("모든 거래처의 확인완료 표시를 초기화하시겠습니까?")) return;
+    if (!window.confirm("모든 거래처의 확인완료 표시를 초기화하시겠습니까? (모든 PC에 적용됩니다)")) return;
     setCheckedRows(new Set());
-    localStorage.removeItem("janggi_top_checked");
+    fetch(`${API}/wonbe/janggi/top-checked`, { method: "DELETE", headers: getAuthHeaders() }).catch(() => loadChecked());
   };
 
   const handleSearchKeyDown = (e) => {
@@ -1286,6 +1370,7 @@ function JanggiTopComparison() {
       setDbRows(data.rows || []);
       setDbLoaded(true);
       setMessage("");
+      loadChecked();
       fetchAccountSet();
       try { localStorage.removeItem("janggi_top_cache"); } catch { /* ignore */ }
     } catch (err) {
@@ -1306,7 +1391,8 @@ function JanggiTopComparison() {
         setDbLoaded(true);
       }
     } catch { /* 조용히 무시 */ }
-  }, []);
+    loadChecked();
+  }, [loadChecked]);
 
   useEffect(() => {
     refreshDbQuiet();
@@ -1318,6 +1404,29 @@ function JanggiTopComparison() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [refreshDbQuiet]);
+
+  const openClientView = (client) => {
+    const date = dbDate || selDate;
+    if (!date) return;
+    setClientView({ client, date });
+  };
+  const closeClientView = useCallback(() => {
+    setClientView(null);
+    refreshDbQuiet(); // 팝업에서 수정/추가/삭제한 내용을 TOP비교 합산금액에 반영
+  }, [refreshDbQuiet]);
+
+  // Esc로 팝업 닫기 (셀 수정 중이거나 입력칸/선택박스에 포커스가 있을 때의 Esc는 그쪽 취소 동작에 맡긴다)
+  useEffect(() => {
+    if (!clientView) return undefined;
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      const tag = document.activeElement?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      closeClientView();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [clientView, closeClientView]);
 
   const loadTop = async () => {
     setLoading(true);
@@ -1537,9 +1646,10 @@ function JanggiTopComparison() {
                             textDecoration: checked ? "line-through" : undefined,
                             opacity: checked ? 0.6 : 1,
                           })}
-                          title={r.거래처}
+                          title={`${r.거래처} - 클릭하면 ${dbDate || ""} 장끼 DB 내역 보기`}
+                          onClick={() => openClientView(r.거래처)}
                         >
-                          {r.거래처}
+                          <span style={{ cursor: "pointer" }}>{r.거래처}</span>
                         </td>
                         <td
                           style={resizedTdStyle("합산금액", { textAlign: "right", fontWeight: 600 })}
@@ -1711,6 +1821,24 @@ function JanggiTopComparison() {
               </div>
             </div>
           )}
+        </div>
+      )}
+      {clientView && (
+        <div
+          onClick={closeClientView}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: "var(--bg-primary, var(--bg-secondary, #fff))", color: "var(--text-primary)", borderRadius: 10, padding: "0.7rem 0.8rem", width: "min(1150px, 92vw)", maxHeight: "78vh", overflow: "auto", fontSize: "0.85rem", boxShadow: "0 10px 40px rgba(0,0,0,0.3)" }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.6rem" }}>
+              <b style={{ fontSize: "1rem" }}>{clientView.client}</b>
+              <span style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>{clientView.date} · 날짜별장끼정리 목록과 동일 (수정은 DB에 바로 저장)</span>
+              <button className={styles.btn} style={{ marginLeft: "auto" }} onClick={closeClientView}>닫기</button>
+            </div>
+            <JanggiListView initialQuery={clientView.client} initialDate={clientView.date} />
+          </div>
         </div>
       )}
     </div>

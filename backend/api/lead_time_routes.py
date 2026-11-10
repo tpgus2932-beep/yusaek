@@ -610,12 +610,21 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
                 unchecked_by: dict[str, int] = {}
                 if suppliers and total > 0 and v["sheet"] in check_sheets:
                     for item in await fetch_im00_line_items(get_setting, sheet=v["sheet"], date=work_date):
-                        hit = next((s for s in suppliers if s in item["name"]), None)
+                        # 대소문자·공백 차이("KDG" vs "kdg ", "케이 디지")로 놓치지 않게 정규화해서 비교
+                        norm_name = "".join(item["name"].split()).lower()
+                        hit = next((s for s in suppliers if "".join(s.split()).lower() in norm_name), None)
                         if hit:
                             unchecked_by[hit] = unchecked_by.get(hit, 0) + item["qty"]
+                # '미검수 확인'을 체크한 전표는 통째로 미검수로 본다 (대량/개별에는 포함하지 않음).
+                is_checked = v["sheet"] in check_sheets
+                if is_checked:
+                    rest = total - sum(unchecked_by.values())
+                    if rest > 0:
+                        unchecked_by["기타"] = rest
                 rows.append({
                     "sheet": v["sheet"], "name": name, "total": total,
                     "kind": "bulk" if v["sheet"] in bulk_sheets else "single",
+                    "checked": is_checked,
                     "unchecked": sum(unchecked_by.values()), "unchecked_by": unchecked_by,
                 })
         except EzAdminSessionExpired:
@@ -628,9 +637,12 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
             "unchecked": {"qty": 0, "by_supplier": {}},
         }
         for r in rows:
-            group = result[r["kind"]]
-            group["qty"] += max(r["total"] - r["unchecked"], 0)
-            group["vouchers"].append(r)
+            if r["checked"]:
+                result["unchecked"].setdefault("vouchers", []).append(r)
+            else:
+                group = result[r["kind"]]
+                group["qty"] += max(r["total"] - r["unchecked"], 0)
+                group["vouchers"].append(r)
             result["unchecked"]["qty"] += r["unchecked"]
             for s, q in r["unchecked_by"].items():
                 result["unchecked"]["by_supplier"][s] = result["unchecked"]["by_supplier"].get(s, 0) + q

@@ -552,6 +552,12 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
       win.document.write(data.html);
       win.document.close();
       setTimeout(() => win.print(), 1000);
+      // 오늘출발 재고 차감 결과 알림 (인쇄 창이 뜬 뒤 표시)
+      const okLines = (data.stock_minus || []).map((m) => `✅ ${m.code}: ${m.prev} → ${m.stock} (-${m.ea})`);
+      const failLines = (data.stock_skipped || []).map((s) => `❌ ${s.code ? `${s.code}: ` : ""}${s.reason}`);
+      if (data.stock_minus_error) failLines.push(`❌ 재고 차감 요청 실패: ${data.stock_minus_error}`);
+      const minusAlert = `오늘출발 재고 차감 - ${failLines.length ? (okLines.length ? "일부 실패" : "실패") : "성공"}\n${[...okLines, ...failLines].join("\n")}`;
+      setTimeout(() => window.alert(`취소철회 및 송장출력 완료\n\n${minusAlert}`), 1500);
     } catch (err) {
       win.close();
       const msg = err.message || "취소철회 실패";
@@ -957,6 +963,7 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                             {!done && r && r.ok && !r.in_cancel && !r.in_shipping && (
                               <span style={{ color: "#dc3545" }}>목록안뜸 확인필요</span>
                             )}
+                            {!done && r && r.ok && r.in_refund && <span className={pageStyles.pill}>취소환불요청</span>}
                             {!done && r && r.ok && r.in_cancel && (
                               <button className={pageStyles.primaryBtn} onClick={() => handleShipCancel([item.id])} disabled={busy}>
                                 취소진행

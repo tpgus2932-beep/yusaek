@@ -1782,7 +1782,7 @@ def build_returns_router(
 
     @router.get("/returns/stats")
     def returns_stats(days: int = 7, user: str = Depends(get_current_user)):
-        if user != "ksh2932":
+        if user not in ("ksh2932", "tmddlfnan"):
             raise HTTPException(status_code=403, detail="권한이 없습니다.")
         return scan_stats.get_stats(get_db, max(1, min(days, 90)))
 

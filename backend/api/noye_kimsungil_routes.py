@@ -30,6 +30,7 @@ from api.wonbe_routes import (
     load_wonbe_client_info_by_code,
     load_wonbe_kdg_match_index,
     load_wonbe_pure_product_name_map,
+    save_kdg_manual_match,
 )
 
 ABLY_BASE     = "https://api.a-bly.com"
@@ -628,6 +629,20 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
         rows = _parse_kdg_text(raw)
         matched, missing = _match_kdg_rows(rows)
         return {"ok": True, "count": len(matched), "missing": missing, "rows": matched}
+
+    @router.post("/kdg/manual-match")
+    def kdg_manual_match(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """미매칭 행을 원가베이스유 상품코드로 직접 매칭하고 저장 — 이후 변환부터 자동 적용된다."""
+        row = payload.get("row") or {}
+        try:
+            code = save_kdg_manual_match(
+                row.get("모델번호"), row.get("색상"), row.get("사이즈"), row.get("기장"),
+                _safe_str(payload.get("product_code")),
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        matched, _ = _match_kdg_rows([row])
+        return {"ok": True, "product_code": code, "row": matched[0]}
 
     @router.post("/kdg/export-xls")
     def kdg_export_xls(payload: dict = Body(...), user: str = Depends(get_current_user)):

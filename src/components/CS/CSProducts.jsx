@@ -258,6 +258,8 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
     const [bulkSel, setBulkSel] = useState(() => new Set());
     const [bulkMsg, setBulkMsg] = useState('');
     const [bulkRun, setBulkRun] = useState(null); // {total, done, failed:[{name, error}]} 발송 진행/결과
+    const [bulkDone, setBulkDone] = useState(() => new Set()); // 일괄발송이 성공한 문의 — 카드 버튼이 '일괄완료'로 바뀌고, 아래 버튼으로 한꺼번에 완료 처리한다
+    const [completeRun, setCompleteRun] = useState(null); // {total, done, failed:[{name, error}]} 일괄 완료 진행/결과
 
     const reload = useCallback(() => setReloadTick((t) => t + 1), []);
 
@@ -265,6 +267,7 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
         setBulkSel(new Set());
         setBulkMsg('');
         setBulkRun(null);
+        setCompleteRun(null);
     };
 
     useEffect(() => {
@@ -329,13 +332,21 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
         });
 
     const sending = Boolean(bulkRun && bulkRun.done < bulkRun.total);
+    const completing = Boolean(completeRun && completeRun.done < completeRun.total);
+    const busy = sending || completing;
     const allPicked = rooms.length > 0 && rooms.every((r) => bulkSel.has(r.sno));
     const picked = rooms.filter((r) => bulkSel.has(r.sno));
+    // 담은 문의가 전부 이미 일괄발송이 끝난 것이면 아래 버튼이 '일괄 발송'에서 '일괄 완료'로 바뀐다.
+    const pickedToSend = picked.filter((r) => !bulkDone.has(r.sno));
+    const pickedToComplete = picked.filter((r) => bulkDone.has(r.sno));
+    const completeMode = pickedToSend.length === 0 && pickedToComplete.length > 0;
 
-    // 카드의 '일괄발송' 버튼: 이 문의를 발송 대상에 담거나 뺀다 (카드를 열어 보는 동작과는 별개).
+    // 카드의 '일괄발송'/'일괄완료' 버튼: 이 문의를 일괄 처리 대상에 담거나 뺀다 (카드를 열어 보는 동작과는 별개).
+    // 일괄발송이 끝난 문의는 같은 버튼이 '일괄완료'로 바뀌고, 담으면 아래 버튼이 '일괄 완료'가 된다.
     const toggleBulk = (r) => {
-        if (sending) return;
+        if (busy) return;
         setBulkRun(null);
+        setCompleteRun(null);
         setBulkSel((prev) => {
             const next = new Set(prev);
             if (next.has(r.sno)) next.delete(r.sno);
@@ -344,26 +355,59 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
         });
     };
 
-    const toggleAll = () => setBulkSel(allPicked ? new Set() : new Set(rooms.map((r) => r.sno)));
+    const toggleAll = () => {
+        setCompleteRun(null);
+        setBulkSel(allPicked ? new Set() : new Set(rooms.map((r) => r.sno)));
+    };
 
     // 체크한 문의에 차례로 답변을 보낸다. 하나가 실패해도 나머지는 계속 보내고 결과를 모아 보여준다.
     const sendBulk = async () => {
         const text = bulkMsg.trim();
-        if (!text || picked.length === 0 || sending) return;
-        if (!window.confirm(`선택한 ${picked.length}건의 문의에 같은 답변을 보낼까요?\n보낸 답변은 되돌릴 수 없습니다.\n\n${text.slice(0, 200)}`)) return;
-        const targets = picked;
+        if (!text || pickedToSend.length === 0 || busy) return;
+        if (!window.confirm(`선택한 ${pickedToSend.length}건의 문의에 같은 답변을 보낼까요?\n보낸 답변은 되돌릴 수 없습니다.\n\n${text.slice(0, 200)}`)) return;
+        const targets = pickedToSend;
         const failed = [];
+        const sent = [];
         setBulkRun({ total: targets.length, done: 0, failed });
         for (let i = 0; i < targets.length; i += 1) {
             const r = targets[i];
             try {
                 await call(`/rooms/${r.sno}/reply`, { method: 'POST', body: { content: text.replaceAll('{이름}', r.member?.name || '') } });
+                sent.push(r.sno);
             } catch (e) {
                 failed.push({ name: r.member?.name || String(r.sno), error: e.message });
             }
             setBulkRun({ total: targets.length, done: i + 1, failed: [...failed] });
         }
-        setBulkSel(new Set());
+        // 보낸 문의는 그대로 담아 두어, 아래 버튼이 바로 '일괄 완료'가 되게 한다 (실패한 문의는 빠진다).
+        setBulkSel(new Set(sent));
+        setBulkDone((prev) => new Set([...prev, ...sent]));
+        setBulkMsg('');
+        reload();
+    };
+
+    // 일괄발송이 끝난 문의들을 한꺼번에 완료 처리한다. 하나가 실패해도 나머지는 계속 처리한다.
+    const completeBulk = async () => {
+        if (pickedToComplete.length === 0 || busy) return;
+        if (!window.confirm(`일괄발송을 마친 ${pickedToComplete.length}건의 문의를 완료 처리할까요?`)) return;
+        const targets = pickedToComplete;
+        const failed = [];
+        const finished = [];
+        setCompleteRun({ total: targets.length, done: 0, failed });
+        for (let i = 0; i < targets.length; i += 1) {
+            const r = targets[i];
+            try {
+                await call(`/rooms/${r.sno}/complete`, { method: 'POST' });
+                finished.push(r.sno);
+            } catch (e) {
+                failed.push({ name: r.member?.name || String(r.sno), error: e.message });
+            }
+            setCompleteRun({ total: targets.length, done: i + 1, failed: [...failed] });
+        }
+        // 완료된 문의는 담은 목록/완료 대기 표시에서 뺀다 (실패한 문의는 남아서 다시 시도할 수 있다).
+        setBulkSel((prev) => new Set([...prev].filter((sno) => !finished.includes(sno))));
+        setBulkDone((prev) => new Set([...prev].filter((sno) => !finished.includes(sno))));
+        setBulkRun(null);
         reload();
     };
 
@@ -480,31 +524,48 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
                             </label>
                         </div>
 
-                        {(bulkSel.size > 0 || bulkRun) && (
+                        {(bulkSel.size > 0 || bulkRun || completeRun) && (
                             <div className={styles.bulkBar}>
                                 <div className={styles.bulkHead}>
                                     <label className={styles.check}>
-                                        <input type="checkbox" checked={allPicked} disabled={sending} onChange={toggleAll} />
+                                        <input type="checkbox" checked={allPicked} disabled={busy} onChange={toggleAll} />
                                         전체 선택 ({rooms.length}건)
                                     </label>
                                     <span className={styles.bulkCount}>{picked.length}건 담음</span>
-                                    <button type="button" className={styles.miniBtn} disabled={sending} onClick={exitBulk}>비우기</button>
+                                    <button type="button" className={styles.miniBtn} disabled={busy} onClick={exitBulk}>비우기</button>
                                 </div>
-                                <textarea
-                                    rows={3}
-                                    value={bulkMsg}
-                                    disabled={sending}
-                                    placeholder="선택한 문의에 보낼 답변 ({이름}은 고객 이름으로 바뀝니다)"
-                                    onChange={(e) => setBulkMsg(e.target.value)}
-                                />
-                                <button type="button" className={styles.bulkSend} disabled={sending || !bulkMsg.trim() || picked.length === 0} onClick={sendBulk}>
-                                    {sending ? `발송 중 ${bulkRun.done} / ${bulkRun.total}` : `${picked.length}건 일괄 발송`}
-                                </button>
+                                {!completeMode && (
+                                    <textarea
+                                        rows={3}
+                                        value={bulkMsg}
+                                        disabled={busy}
+                                        placeholder="선택한 문의에 보낼 답변 ({이름}은 고객 이름으로 바뀝니다)"
+                                        onChange={(e) => setBulkMsg(e.target.value)}
+                                    />
+                                )}
+                                {completeMode ? (
+                                    <button type="button" className={styles.bulkSend} disabled={busy} onClick={completeBulk}>
+                                        {completing ? `완료 처리 중 ${completeRun.done} / ${completeRun.total}` : `${pickedToComplete.length}건 일괄 완료`}
+                                    </button>
+                                ) : (
+                                    <button type="button" className={styles.bulkSend} disabled={busy || !bulkMsg.trim() || pickedToSend.length === 0} onClick={sendBulk}>
+                                        {sending ? `발송 중 ${bulkRun.done} / ${bulkRun.total}` : `${pickedToSend.length}건 일괄 발송`}
+                                    </button>
+                                )}
                                 {bulkRun && !sending && (
                                     <div className={bulkRun.failed.length ? styles.matchWarn : styles.matchOk}>
                                         {bulkRun.total - bulkRun.failed.length}건 발송 완료{bulkRun.failed.length > 0 && `, ${bulkRun.failed.length}건 실패`}
+                                        {bulkRun.total - bulkRun.failed.length > 0 && ' — 아래 버튼으로 바로 일괄 완료할 수 있어요'}
                                     </div>
                                 )}
+                                {completeRun && !completing && (
+                                    <div className={completeRun.failed.length ? styles.matchWarn : styles.matchOk}>
+                                        {completeRun.total - completeRun.failed.length}건 완료 처리{completeRun.failed.length > 0 && `, ${completeRun.failed.length}건 실패`}
+                                    </div>
+                                )}
+                                {completeRun && !completing && completeRun.failed.map((f) => (
+                                    <div key={`c:${f.name}:${f.error}`} className={styles.matchMuted}>{f.name}: {f.error}</div>
+                                ))}
                                 {bulkRun && !sending && bulkRun.failed.map((f) => (
                                     <div key={`${f.name}:${f.error}`} className={styles.matchMuted}>{f.name}: {f.error}</div>
                                 ))}
@@ -542,11 +603,13 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
                                         <div className={styles.cardActions}>
                                             <button
                                                 type="button"
-                                                className={`${styles.miniBtn} ${bulkSel.has(r.sno) ? styles.miniBtnOn : ''}`}
-                                                disabled={sending}
+                                                className={`${styles.miniBtn} ${bulkSel.has(r.sno) || bulkDone.has(r.sno) ? styles.miniBtnOn : ''}`}
+                                                disabled={busy}
                                                 onClick={() => toggleBulk(r)}
                                             >
-                                                {bulkSel.has(r.sno) ? '✓ 일괄발송 대상' : '일괄발송'}
+                                                {bulkDone.has(r.sno)
+                                                    ? (bulkSel.has(r.sno) ? '✓ 일괄완료 대상' : '일괄완료')
+                                                    : (bulkSel.has(r.sno) ? '✓ 일괄발송 대상' : '일괄발송')}
                                             </button>
                                         </div>
                                     </div>

@@ -143,7 +143,7 @@ const SellerPage = () => {
                 <div>
                     <h1 className={styles.title}>판매자 사유 (에이블리)</h1>
                     <p className={styles.subtitle}>
-                        반품·교환 중 판매자 사유(상품 하자/오배송, 셀러 변경)로 접수된 미처리 건 · 최근 30일
+                        반품 화면에서 판매자로 분류되는 반품·교환 중 미처리 건 · 최근 30일
                     </p>
                 </div>
                 <div className={styles.segment}>

@@ -39,6 +39,10 @@ export default function DefectPurchaseManager() {
   const [searchVendor, setSearchVendor] = useState("");
   const [logVendors, setLogVendors] = useState([]); // 로그가 남은 모든 거래처 (현재 목록에 없어도 포함)
   const [listQuery, setListQuery] = useState(""); // 현재 목록 검색
+  const [dailyOpen, setDailyOpen] = useState(false); // 일자별 추가 로그
+  const [dailyLogs, setDailyLogs] = useState([]);
+  const [dailyLoading, setDailyLoading] = useState(false);
+  const [openDay, setOpenDay] = useState({});
   // 항목추가 (상품추가 / 직접입력)
   const [addOpen, setAddOpen] = useState(false);
   const [addTab, setAddTab] = useState("product");
@@ -76,6 +80,21 @@ export default function DefectPurchaseManager() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.detail || "로그 조회 실패");
     setLogsByVendor((prev) => ({ ...prev, [vendor]: data.logs || [] }));
+  }, []);
+
+  const loadDailyLogs = useCallback(async () => {
+    setDailyLoading(true);
+    try {
+      const res = await fetch(`${API}/noye-kimsungil/defect-purchase/logs?limit=2000`, { headers: getAuthHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "로그 조회 실패");
+      setDailyLogs((data.logs || []).filter((l) => l.kind === "add" || l.kind === "manual"));
+    } catch (err) {
+      setError(err.message || "로그 조회 실패");
+    } finally {
+      setDailyLoading(false);
+    }
   }, []);
 
   const refresh = useCallback(async (keepError = false) => {
@@ -309,7 +328,18 @@ export default function DefectPurchaseManager() {
     .filter((v) => !listKeyword
       || v.vendor.toLowerCase().includes(listKeyword)
       || v.items.some((i) => [i.product_name, i.own_name, i.memo, i.code].some((t) => String(t || "").toLowerCase().includes(listKeyword))));
+  const dailyGroups = (() => {
+    const map = {};
+    dailyLogs.forEach((l) => { (map[String(l.created_at || "").slice(0, 10) || "날짜 없음"] ||= []).push(l); });
+    return Object.keys(map).sort().reverse().map((date) => ({ date, logs: map[date], total: map[date].reduce((sum, l) => sum + (Number(l.delta) || 0), 0) }));
+  })();
   const totalHeld = vendors.reduce((sum, v) => sum + v.held_amount, 0);
+  // 금일(KST) 추가된 항목 알림 리스트
+  const today = todayStr();
+  const todayAdded = vendors
+    .flatMap((v) => v.items.map((i) => ({ ...i, vendor: v.vendor })))
+    .filter((i) => String(i.created_at || "").slice(0, 10) === today)
+    .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
   const keyword = searchText.trim();
   const candidates = keyword ? logVendors.filter((v) => v.vendor.includes(keyword)).slice(0, 12) : [];
 
@@ -410,8 +440,73 @@ export default function DefectPurchaseManager() {
           <button type="button" className={`${styles.btn} ${searchOpen ? styles.btnPrimary : ""}`} onClick={() => { const next = !searchOpen; setSearchOpen(next); if (next) loadLogVendors().catch(() => {}); }}>
             📜 거래처별 로그 확인
           </button>
+          <button type="button" className={`${styles.btn} ${dailyOpen ? styles.btnPrimary : ""}`} onClick={() => { const next = !dailyOpen; setDailyOpen(next); if (next) loadDailyLogs(); }}>
+            📅 일자별 추가 로그
+          </button>
         </div>
       </div>
+
+      {todayAdded.length > 0 && (
+        <div className={styles.todayBox}>
+          <div className={styles.todayHead}>
+            <span className={styles.todayDot} />
+            <span className={styles.todayTitle}>오늘 추가된 항목</span>
+            <span className={styles.todayCount}>{todayAdded.length}건</span>
+          </div>
+          <ul className={styles.todayList}>
+            {todayAdded.map((i) => (
+              <li key={i.id} className={styles.todayItem}>
+                <span className={styles.todayTime}>{String(i.created_at).slice(11, 16)}</span>
+                <span className={styles.todayVendor}>{i.vendor}</span>
+                <span className={styles.todayName}>
+                  {i.source === "manual" ? (i.memo || "직접입력") : [i.product_name || i.code, optionOf(i)].filter(Boolean).join(" ")}
+                  {i.source !== "manual" && i.qty ? ` × ${i.qty}` : ""}
+                </span>
+                <span className={styles.todayAmount}>{won(i.amount)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {dailyOpen && (
+        <div className={styles.searchPanel}>
+          {dailyLoading && <div className={styles.hintText}>불러오는 중…</div>}
+          {!dailyLoading && dailyGroups.length === 0 && <div className={styles.empty}>추가 로그가 없습니다.</div>}
+          {dailyGroups.map((g) => (
+            <div key={g.date} className={`${styles.dayCard} ${openDay[g.date] ? styles.dayCardOpen : ""}`}>
+              <button type="button" className={styles.dayHead} onClick={() => setOpenDay((p) => ({ ...p, [g.date]: !p[g.date] }))}>
+                <span className={styles.dayDate}>{g.date}{g.date === today ? <span className={styles.dayToday}>오늘</span> : null}</span>
+                <span className={styles.dayCount}>{g.logs.length}건</span>
+                <span className={`${styles.dayTotal} ${g.total < 0 ? styles.minus : styles.plus}`}>{signed(g.total)}</span>
+                <span className={`${styles.chevron} ${openDay[g.date] ? styles.chevronOpen : ""}`}>▾</span>
+              </button>
+              {openDay[g.date] && (
+                <div className={styles.tableWrap}>
+                  <table className={styles.table}>
+                    <thead>
+                      <tr><th>시간</th><th>거래처</th><th>상품명</th><th>옵션</th><th className={styles.right}>수량</th><th className={styles.right}>금액</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                      {g.logs.map((l) => (
+                        <tr key={l.id}>
+                          <td className={styles.time}>{String(l.created_at || "").slice(11, 16)}</td>
+                          <td>{l.vendor}</td>
+                          <td>{productCell(l)}</td>
+                          <td>{optionOf(l)}</td>
+                          <td className={styles.right}>{l.source === "manual" ? "" : (l.qty ?? "")}</td>
+                          <td className={`${styles.right} ${styles.nowrap} ${l.delta < 0 ? styles.minus : styles.plus}`}>{signed(l.delta)}</td>
+                          <td className={styles.right}>{cameraBtn(`${l.product_name} ${optionOf(l)}`, l.records)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {searchOpen && (
         <div className={styles.searchPanel}>

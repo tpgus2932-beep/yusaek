@@ -72,6 +72,7 @@ def test_lookup_states_and_hold_persistence():
 
     with patch.object(ezo, "pack_rows", fake_pack_rows), \
          patch("api.barcode_routes.AblyClient.login", AsyncMock(return_value="t")), \
+         patch("api.barcode_routes.AblyClient.search_refund_requests_by_order_sno", AsyncMock(return_value=[])), \
          patch("api.barcode_routes.AblyClient.search_cancels_by_order_sno", fake_cancels), \
          patch("api.barcode_routes.AblyClient.search_shipping_items_by_order_sno", fake_ship):
         res = client.post("/barcode/post-shipment-cancel/ably-lookup", json={"ids": ids}).json()
@@ -106,6 +107,7 @@ def test_ship_cancel_refuses_when_not_in_cancel_list_and_runs_steps_when_it_is()
 
     with patch.object(ezo, "pack_rows", fake_pack_rows), patch.object(ezo, "cancel_shipped_pack", run), \
          patch("api.barcode_routes.AblyClient.login", AsyncMock(return_value="t")), \
+         patch("api.barcode_routes.AblyClient.search_refund_requests_by_order_sno", AsyncMock(return_value=[])), \
          patch("api.barcode_routes.AblyClient.search_shipping_items_by_order_sno", no_ship):
         with patch("api.barcode_routes.AblyClient.search_cancels_by_order_sno", ship_only):
             r = client.post("/barcode/post-shipment-cancel/ship-cancel", json={"id": rid})
@@ -144,3 +146,21 @@ async def _cancel_shipped_pack_scenario():
          patch.object(ezo, "delete_trans_no", rec("delete_trans_no", {"error": 1})):
         with pytest.raises(RuntimeError, match="완료된 단계: 배송취소"):
             await ezo.cancel_shipped_pack("S", "1")
+
+
+def test_refund_request_fallback_enables_cancel_when_first_pass_misses():
+    client, keep = _client()
+    rid = keep.execute("SELECT id FROM post_shipment_cancel WHERE seq='718115'").fetchone()["id"]
+
+    async def fake_pack_rows(sess, seq):
+        return _pack("O1")
+
+    refund = AsyncMock(return_value=[{"sno": 9, "order_items": [{"order_sno": "O1"}]}])
+    with patch.object(ezo, "pack_rows", fake_pack_rows), \
+         patch("api.barcode_routes.AblyClient.login", AsyncMock(return_value="t")), \
+         patch("api.barcode_routes.AblyClient.search_cancels_by_order_sno", AsyncMock(return_value=[])), \
+         patch("api.barcode_routes.AblyClient.search_shipping_items_by_order_sno", AsyncMock(return_value=[])), \
+         patch("api.barcode_routes.AblyClient.search_refund_requests_by_order_sno", refund):
+        r = client.post("/barcode/post-shipment-cancel/ably-lookup", json={"ids": [rid]}).json()["results"][0]
+    assert r["in_cancel"] and r["in_refund"] and not r["in_shipping"]
+    refund.assert_awaited_once()

@@ -180,6 +180,33 @@ class AblyClient:
             if any(str(it.get("order_sno")) == target for it in (c.get("order_items") or []))
         ]
 
+    async def search_refund_requests_by_order_sno(self, order_sno: str | int, *, start_date: str, end_date: str) -> list[dict]:
+        """취소 환불 요청 내역(processing_sub_status=43)에서 주문번호로 검색 (에이블리 배송중2 har 캡처)."""
+        target = str(order_sno).strip()
+        response = await self.request(
+            "GET", "/seller/order_cancels/",
+            params={
+                "cancel_type": "cancel",
+                "processing_sub_status[]": "43",
+                "order": "-confirm_requested_at",
+                "date_type": "confirm_requested_at",
+                "page": 1,
+                "per_page": 30,
+                "delivery_type[]": ["standard", "today", "combine", "reserved"],
+                "start_date": start_date,
+                "end_date": end_date,
+                "keyword_type": "order_sno",
+                "keyword": target,
+            },
+            origin="my.a-bly.com",
+        )
+        response.raise_for_status()
+        cancels = response.json().get("order_cancels") or []
+        return [
+            c for c in cancels
+            if any(str(it.get("order_sno")) == target for it in (c.get("order_items") or []))
+        ]
+
     async def search_shipping_items_by_order_sno(self, order_sno: str | int) -> list[dict]:
         """배송중(processing_status=3) 주문상품 목록에서 주문번호로 검색 (에이블리 배송중 har 캡처)."""
         target = str(order_sno).strip()
