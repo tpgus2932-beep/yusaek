@@ -262,6 +262,21 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
 
   useEffect(() => { refreshStatus(); setTimeout(() => scanRef.current?.focus(), 50); }, [refreshStatus]);
 
+  // 불량 목록은 서버에 공유되는데 화면은 열 때 한 번만 읽어서, 모바일(/bacode)과 웹 바코드 화면이 서로 바뀐 걸 못 봤다.
+  // 화면이 보이는 동안 주기적으로, 그리고 다시 보이는 순간 서버 목록으로 맞춘다.
+  useEffect(() => {
+    const sync = () => { if (document.visibilityState === "visible") fetchDefectList(); };
+    const timer = setInterval(sync, 4000);
+    document.addEventListener("visibilitychange", sync);
+    window.addEventListener("focus", sync);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", sync);
+      window.removeEventListener("focus", sync);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const switchDefectTab = (tab) => {
     if (tab === defectTabRef.current) return;
     defectTabRef.current = tab;

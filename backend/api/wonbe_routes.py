@@ -160,7 +160,7 @@ def _qcol(col: str) -> str:
 def _qcols(cols: list[str]) -> str:
     return ", ".join(_qcol(c) for c in cols)
 
-EDITABLE = {"상품명합", "거래처합", "거래처", "거래처상품명", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"}
+EDITABLE = {"색상", "상품명합", "거래처합", "거래처", "거래처상품명", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"}
 
 INGODAEGI_COLUMNS = ["상품코드", "입고수량"]
 ABLY_STOCK_COLUMNS = ["옵션번호", "수량"]

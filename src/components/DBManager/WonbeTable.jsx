@@ -5,7 +5,7 @@ import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
 const DEFAULT_PAGE_SIZE = 50;
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500];
-const EDITABLE_COLS = ["상품명합", "거래처합", "거래처", "거래처상품명", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"];
+const EDITABLE_COLS = ["색상", "상품명합", "거래처합", "거래처", "거래처상품명", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"];
 const ALL_COLS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "이벤트전 할인가", "이벤트 할인가", "판매가", "아이디", "대표상품코드", "카테고리"];
 const VISIBLE_COLS_STORAGE_KEY = "wonbe_visible_cols";
 const PAGE_SIZE_STORAGE_KEY = "wonbe_page_size";
