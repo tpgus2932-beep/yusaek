@@ -1484,7 +1484,29 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
                 PRIMARY KEY (tab, code, kind)
             )
         """)
+        # 예전 방식(숨김 + '삭제' 로그)으로 지운 항목도 완전히 정리한다.
+        stale = conn.execute(
+            "SELECT DISTINCT vendor FROM defect_purchase_logs WHERE kind = 'delete'"
+            " OR item_id IN (SELECT id FROM defect_purchase_items WHERE status = 'deleted')"
+        ).fetchall()
+        if stale:
+            conn.execute(
+                "DELETE FROM defect_purchase_logs WHERE kind = 'delete'"
+                " OR item_id IN (SELECT id FROM defect_purchase_items WHERE status = 'deleted')"
+            )
+            conn.execute("DELETE FROM defect_purchase_items WHERE status = 'deleted'")
+            for r in stale:
+                _dp_recalc_balances(conn, r["vendor"])
         conn.commit()
+
+    def _dp_recalc_balances(conn, vendor: str):
+        """로그의 '잔액' 칸을 남은 로그 증감 누계로 다시 계산한다 (삭제로 로그가 빠졌을 때)."""
+        running = 0.0
+        for log in conn.execute(
+            "SELECT id, delta FROM defect_purchase_logs WHERE vendor = ? ORDER BY id", (vendor,)
+        ).fetchall():
+            running += float(log["delta"] or 0)
+            conn.execute("UPDATE defect_purchase_logs SET vendor_balance_after = ? WHERE id = ?", (running, log["id"]))
 
     _DP_KINDS = ("normal", "summon")
 
@@ -1770,7 +1792,7 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
 
     @router.post("/defect-purchase/delete")
     def delete_defect_purchase_item(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        """항목 삭제: 목록에서 숨기고(기록은 로그용으로 보존), 잡혀 있던 금액이면 그만큼 되돌리는 로그를 남긴다.
+        """항목 삭제: 항목과 그 항목의 로그를 완전히 지운다 (차감처럼 '−금액' 로그를 남기지 않음).
         바코드에서 이동했던 항목이면 '이미 보낸 수량'도 되돌려 다시 보낼 수 있게 한다."""
         try:
             item_id = int(payload.get("item_id"))
@@ -1782,10 +1804,8 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
             row = conn.execute("SELECT * FROM defect_purchase_items WHERE id = ?", (item_id,)).fetchone()
             if not row or row["status"] == "deleted":
                 raise HTTPException(status_code=404, detail="항목을 찾을 수 없습니다")
-            was_held = row["status"] == "held"
-            conn.execute(
-                "UPDATE defect_purchase_items SET status = 'deleted', updated_at = ? WHERE id = ?", (_dp_now(), item_id)
-            )
+            conn.execute("DELETE FROM defect_purchase_logs WHERE item_id = ?", (item_id,))
+            conn.execute("DELETE FROM defect_purchase_items WHERE id = ?", (item_id,))
             for kind, qty in (("normal", row["normal_qty"]), ("summon", row["summon_qty"])):
                 if row["source"] == "product" and row["code"] and (qty or 0) > 0:
                     conn.execute(
@@ -1793,7 +1813,7 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
                         (qty, _dp_now(), row["tab"], row["code"], kind),
                     )
             conn.execute("DELETE FROM defect_purchase_sent WHERE sent_qty <= 0")
-            _dp_log(conn, row["vendor"], row, "delete", -row["amount"] if was_held else 0, user)
+            _dp_recalc_balances(conn, row["vendor"])
             conn.commit()
             return {"ok": True, "vendor_balance": _dp_vendor_balance(conn, row["vendor"])}
         finally:

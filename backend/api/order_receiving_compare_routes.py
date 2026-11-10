@@ -958,6 +958,8 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
                 i["status"] = _status(i["ordered"], i["received"], i["misong"])
                 i["pickup_status"] = _status(i["ordered_pickup"], i["pickup"], 0)
                 i["amount"] = (i["received"] + i["misong"]) * cost + int(i.get("fee") or 0)  # 일반입고 + 미송 (미송픽업 0원) + 택배비 등
+                if i.get("omitted"):
+                    i["amount"] = 0  # 누락 처리한 줄은 0원
                 i["ordered_amount"] = i["ordered"] * cost
             c["items"] = sorted(items, key=lambda x: x.get("code", ""))
             c["totals"] = {k: sum(i[k] for i in items) for k in _ALL_KEYS}
@@ -1627,7 +1629,22 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
                     if v < 0:
                         raise HTTPException(status_code=400, detail="수량은 0 이상이어야 합니다.")
                     item[k] = v
-            item["edited"] = True
+            # 누락 처리: 표시만 '누락'으로 하고 금액은 0원 (수량은 그대로 둔다)
+            if "omitted" in payload:
+                if payload.get("omitted"):
+                    item["omitted"] = True
+                else:
+                    item.pop("omitted", None)
+            # 메모: 세부목록 줄마다 자유 텍스트 (메모만 바꾸면 '수정됨'으로 치지 않는다)
+            memo_only = set(payload) <= {"client", "code", "memo"}
+            if "memo" in payload:
+                memo = str(payload.get("memo") or "").strip()[:500]
+                if memo:
+                    item["memo"] = memo
+                else:
+                    item.pop("memo", None)
+            if not memo_only:
+                item["edited"] = True
 
             new_code = to_s_code(str(payload.get("new_code") or "").strip().upper())
             if new_code and new_code != code:

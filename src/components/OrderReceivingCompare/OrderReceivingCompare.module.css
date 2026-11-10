@@ -307,3 +307,10 @@ button.csBadge:hover { background: #c6ecf2; transform: translateY(-1px); }
 .muted { font-size: 0.9rem; }
 
 .supName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7c3aed; font-weight: 600; }
+
+/* 세부목록 특이사항(메모) 칸 */
+.memoInput { width: 100%; min-width: 0; box-sizing: border-box; padding: 0.25rem 0.45rem; font-size: 0.78rem; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text-primary); }
+.memoInput:hover { border-color: var(--border-color); }
+.memoInput:focus { outline: none; border-color: var(--text-muted); background: var(--bg-primary, #fff); }
+.memoInput:not(:placeholder-shown) { background: #fff7d6; border-color: #f3d47a; color: #6b5310; }
+.memoText { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.78rem; padding: 0.1rem 0.4rem; border-radius: 5px; background: #fff7d6; color: #6b5310; }

@@ -165,13 +165,42 @@ const FILTERS = [
   { key: "misong", label: "미송", tone: TONES.blue, hint: "미송 많이 잡힌 순", test: (i) => i.misong > 0, metric: (i) => i.misong },
   { key: "pickup", label: "미송픽업", tone: TONES.orange, hint: "미송픽업 많이 온 순", test: (i) => i.ordered_pickup > 0 || i.pickup > 0, metric: (i) => i.pickup },
   { key: "other", label: "발주없는 입고", tone: TONES.purple, hint: "입고 많은 순", test: (i) => rankOf(i) === "other", metric: (i) => i.received },
+  { key: "memo", label: "특이사항", tone: TONES.grey, hint: "특이사항 있는 상품", test: (i) => !!i.memo, metric: (i) => (i.memo ? 1 : 0) },
 ];
+
+// 세부목록 특이사항(메모) 칸: 입력 후 Enter 또는 칸을 벗어나면 저장
+function MemoCell({ value, editable, onSave }) {
+  const [text, setText] = useState(value || "");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setText(value || ""); }, [value]);
+  if (!editable) return value ? <span className={styles.memoText} title={value}>{value}</span> : null;
+  const commit = async () => {
+    if (text.trim() === (value || "").trim()) return;
+    setSaving(true);
+    try { await onSave(text.trim()); } finally { setSaving(false); }
+  };
+  return (
+    <input
+      className={styles.memoInput}
+      value={text}
+      placeholder="특이사항"
+      title={text || "특이사항 입력 (Enter 또는 칸 밖을 누르면 저장)"}
+      disabled={saving}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") { setText(value || ""); e.currentTarget.blur(); }
+      }}
+    />
+  );
+}
 
 const won = (n) => `${Math.round(Number(n) || 0).toLocaleString("ko-KR")}원`;
 const costOf = (i) => Number(i.cost) || 0;
 // 금액 계산 대상은 일반입고 + 미송 두 가지뿐. 미송픽업은 0원으로 처리한다.
 const amountQty = (i) => (i.received || 0) + (i.misong || 0);
-const amountOf = (i) => (i.amount != null ? Number(i.amount) : amountQty(i) * costOf(i));
+const amountOf = (i) => (i.omitted ? 0 : i.amount != null ? Number(i.amount) : amountQty(i) * costOf(i)); // 누락 처리한 줄은 0원
 const orderedAmountOf = (i) => (i.ordered_amount != null ? Number(i.ordered_amount) : (i.ordered || 0) * costOf(i));
 const VAT_RATE = 0.1; // 부가세 거래처는 합산 금액에 10% 추가 (부가세 표시는 세부목록에서만)
 const withVat = (supply, vat) => supply + (vat ? Math.round(supply * VAT_RATE) : 0);
@@ -233,7 +262,7 @@ function CsChip({ item, onOpen }) {
   );
 }
 
-function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onEditItem, onDeleteItem, onAddProduct, onAddDeduct, onAddFee, onEditVat, onJanggiCheck, noHist }) {
+function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onEditItem, onDeleteItem, onSaveMemo, onAddProduct, onAddDeduct, onAddFee, onEditVat, onJanggiCheck, noHist }) {
   const [picked, setPicked] = useState(new Set()); // 비어 있으면 전체
   const [histClient, setHistClient] = useState(null); // 거래처 옆 달력 뱃지로 연 일자별 매칭
   const [expanded, setExpanded] = useState(new Set()); // 기본: 전부 닫힘
@@ -287,7 +316,8 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
         .filter((i) => !tokens.length || clientAll || tokens.every((t) => norm(`${c.client}${i.name}${i.option}`).includes(t)))
         .filter((i) => !active.length || active.some((f) => f.test(i)))
         .map((i) => ({ ...i, _rank: RANK_INDEX[rankOf(i)] }))
-        .sort((a, b) => (csFirst ? 0 : rankPos[a._rank] - rankPos[b._rank]) || itemMetric(b) - itemMetric(a) || b.received - a.received);
+        // 메모가 있는 상품은 거래처 안에서 맨 위로 따로 모은다
+        .sort((a, b) => (b.memo ? 1 : 0) - (a.memo ? 1 : 0) || (csFirst ? 0 : rankPos[a._rank] - rankPos[b._rank]) || itemMetric(b) - itemMetric(a) || b.received - a.received);
       const score = sortDef?.agg === "max"
         ? items.reduce((m, i) => Math.max(m, itemMetric(i)), 0)
         : items.reduce((sum, i) => sum + itemMetric(i), 0);
@@ -467,11 +497,11 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
             {open && (
               <table className={styles.table}>
                 <colgroup>
-                  <col style={{ width: 30 }} /><col style={{ width: "24%" }} /><col style={{ width: "15%" }} /><col style={{ width: "13%" }} /><col style={{ width: "21%" }} /><col style={{ width: 100 }} /><col style={{ width: 140 }} /><col style={{ width: 86 }} />
+                  <col style={{ width: 30 }} /><col style={{ width: "21%" }} /><col style={{ width: "13%" }} /><col style={{ width: "11%" }} /><col style={{ width: "18%" }} /><col style={{ width: "15%" }} /><col style={{ width: 70 }} /><col style={{ width: 130 }} /><col style={{ width: 86 }} />
                 </colgroup>
                 <thead>
                   <tr>
-                    <th style={{ width: 28 }}></th><th>상품명</th><th>거래처상품명</th><th>옵션</th><th>입고 / 발주</th><th>C/S</th><th className={styles.numR}>금액</th><th></th>
+                    <th style={{ width: 28 }}></th><th>상품명</th><th>거래처상품명</th><th>옵션</th><th>입고 / 발주</th><th>특이사항</th><th>C/S</th><th className={styles.numR}>금액</th><th></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -483,6 +513,9 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
                       <td>{isDeduct ? <span className={styles.dot} style={{ background: TONES.red.dot }} title="매입차감" aria-label="매입차감" /> : <Dot item={i} />}</td>
                       <td>
                         {isDeduct ? <b style={{ color: TONES.red.fg }}>매입차감</b> : i.name}
+                        {!isDeduct && i.omitted && (
+                          <span className={styles.tag} style={{ background: TONES.red.dot, color: "#fff", fontWeight: 700 }} title="누락 처리된 줄 (금액 0원)">누락</span>
+                        )}
                         {i._part === "main" && i.misong > 0 && (
                           <span className={styles.tag} style={{ background: TONES.blue.bg, color: TONES.blue.fg }} title="이 전표에 미송으로 잡힌 수량">미송 {i.misong}</span>
                         )}
@@ -500,14 +533,23 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
                       <td className={styles.supName} title={isDeduct ? "" : i.supplier_name || ""}>{!isDeduct && i.supplier_name ? i.supplier_name : <span className={styles.muted}>-</span>}</td>
                       <td>{isDeduct ? "" : i.option}</td>
                       <td className={styles.num}>{isDeduct ? <span className={styles.muted}>-</span> : <Count item={i} />}</td>
+                      <td>
+                        {/* 같은 상품의 미송픽업 줄은 일반 줄과 특이사항을 공유하므로 한 번만 입력칸을 둔다 */}
+                        {i._part !== "legacy_deduct" && (i._part !== "pickup" || i._solo) && (
+                          <MemoCell value={src.memo} editable={editable && !!onSaveMemo} onSave={(text) => onSaveMemo(c.client, src, text)} />
+                        )}
+                        {i._part === "pickup" && !i._solo && src.memo && <span className={styles.memoText} title={src.memo}>{src.memo}</span>}
+                      </td>
                       <td>{!isDeduct && <CsChip item={i} onOpen={() => onOpenCs?.(i)} />}</td>
                       <td
                         className={styles.numR}
                         title={isDeduct ? "입고요청전표 요청메모의 음수 금액 / 직접 추가한 매입차감"
+                          : i.omitted ? "누락 처리되어 0원"
                           : i._part === "pickup" ? "미송픽업은 금액 0원"
                           : costOf(i) ? `원가 ${won(costOf(i))} × (입고 ${i.received} + 미송 ${i.misong}) · 미송픽업 제외` : "원가 없음"}
                       >
                         {isDeduct ? <span style={{ color: TONES.red.fg }}>{Number(i.deduct || 0).toLocaleString("ko-KR")}원</span>
+                          : i.omitted ? <span style={{ color: TONES.red.fg, fontWeight: 700 }}>0원</span>
                           : i._part === "pickup" ? <span className={styles.muted}>0원</span>
                           : String(i.code).startsWith("FEE-") ? won(amountOf(i))
                           : costOf(i) ? won(amountOf(i)) : <span className={styles.muted}>원가없음</span>}
@@ -546,13 +588,14 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
                       </span>
                     </td>
                     <td></td>
+                    <td></td>
                     <td className={styles.numR}><b>{won(t.receivedAmt)}</b></td>
                     <td></td>
                   </tr>
                   {c.vat && (
                     <tr className={styles.vatRow}>
                       <td></td>
-                      <td colSpan={5}>{c.vat_override != null ? "부가세 (직접 수정)" : "부가세 10%"}</td>
+                      <td colSpan={6}>{c.vat_override != null ? "부가세 (직접 수정)" : "부가세 10%"}</td>
                       <td className={styles.numR}>+ {won(t.vatAmt)}</td>
                       <td className={styles.rowActions}>
                         {editable && <button className={styles.rowBtn} title="부가세 금액 수정 (비우면 자동 10%)" onClick={() => onEditVat(c.client, t.vatAmt, c.vat_override != null)}><Pencil size={14} /></button>}
@@ -562,7 +605,7 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
                   {t.deductRaw > 0 && (
                     <tr className={styles.vatRow}>
                       <td></td>
-                      <td colSpan={5}>
+                      <td colSpan={6}>
                         매입차감
                         {t.deductLeft > 0 && <span style={{ marginLeft: "0.5rem", color: TONES.orange.fg }}>(매입금액 {won(t.deductLeft)} 남음 · 상품금액 초과분은 차감 제외)</span>}
                       </td>
@@ -573,7 +616,7 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
                   {(c.vat || t.deductRaw > 0) && (
                     <tr className={styles.totalRow}>
                       <td></td>
-                      <td colSpan={5}>{c.client} 합계{c.vat ? " (부가세 포함)" : ""}{t.deductRaw > 0 ? " · 매입차감 반영" : ""}</td>
+                      <td colSpan={6}>{c.client} 합계{c.vat ? " (부가세 포함)" : ""}{t.deductRaw > 0 ? " · 매입차감 반영" : ""}</td>
                       <td className={styles.numR}><b>{won(t.receivedTotal)}</b></td>
                       <td></td>
                     </tr>
@@ -828,6 +871,28 @@ export default function OrderReceivingComparePage() {
     return () => clearTimeout(timer);
   }, [prodQuery, itemEdit, addModal?.type]);
 
+  // [누락] / [누락 해제]: 바로 저장. 누락 줄은 '누락' 표시 + 금액 0원 (수량은 그대로)
+  const toggleOmitted = async () => {
+    if (!viewRecord?.id || !itemEdit) return;
+    const next = !itemEdit.item.omitted;
+    setLoading(true);
+    setMessage("");
+    try {
+      const data = await api(`/records/${viewRecord.id}/items`, {
+        method: "PUT",
+        body: JSON.stringify({ client: itemEdit.client, code: itemEdit.item.code, omitted: next }),
+      });
+      setViewRecord(data.record);
+      setMessage(next ? `${itemEdit.item.name} 누락 처리했습니다. (0원)` : `${itemEdit.item.name} 누락을 해제했습니다.`);
+      closeItemEdit();
+      await loadRecords();
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const saveItemEdit = async () => {
     if (!viewRecord?.id || !itemEdit) return;
     setLoading(true);
@@ -988,6 +1053,17 @@ export default function OrderReceivingComparePage() {
       setMessage(err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // 세부목록 특이사항(메모) 저장 — 화면 전체 로딩 없이 조용히 저장 (빈칸이면 삭제)
+  const saveMemo = async (client, item, memo) => {
+    if (!viewRecord?.id) return;
+    try {
+      const data = await api(`/records/${viewRecord.id}/items`, { method: "PUT", body: JSON.stringify({ client, code: item.code, memo }) });
+      setViewRecord(data.record);
+    } catch (err) {
+      setMessage(err.message);
     }
   };
 
@@ -1301,6 +1377,7 @@ export default function OrderReceivingComparePage() {
             editable={!viewRecord.isClientReport && !!viewRecord.id}
             onEditItem={openItemEdit}
             onDeleteItem={deleteItem}
+            onSaveMemo={saveMemo}
             onAddProduct={openAddProduct}
             onAddDeduct={openAddDeduct}
             onAddFee={openAddFee}
@@ -1691,7 +1768,16 @@ export default function OrderReceivingComparePage() {
               </div>
             </div>
 
-            <div className={styles.row} style={{ justifyContent: "flex-end", marginTop: "0.9rem" }}>
+            <div className={styles.row} style={{ justifyContent: "flex-end", marginTop: "0.9rem", gap: "0.5rem" }}>
+              <button
+                className={styles.btn}
+                style={{ marginRight: "auto", ...(itemEdit.item.omitted ? {} : { color: TONES.red.fg, borderColor: TONES.red.dot }) }}
+                onClick={toggleOmitted}
+                disabled={loading}
+                title={itemEdit.item.omitted ? "누락 표시를 없애고 금액을 다시 계산합니다" : "이 줄을 '누락'으로 표시하고 금액을 0원으로 만듭니다 (수량은 그대로)"}
+              >
+                {itemEdit.item.omitted ? "누락 해제" : "누락"}
+              </button>
               <button className={styles.btn} onClick={closeItemEdit} disabled={loading}>취소</button>
               <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={saveItemEdit} disabled={loading}>
                 {loading ? "저장 중..." : itemEdit.newProduct ? "상품 변경 + 저장" : "저장"}

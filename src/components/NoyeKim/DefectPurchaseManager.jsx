@@ -276,8 +276,8 @@ export default function DefectPurchaseManager() {
   // 항목 삭제 — 항상 확인 팝업을 먼저 띄운다 (목록·로그 공통)
   const deleteItem = async (vendorName, item) => {
     const name = item.source === "manual" ? (item.memo || "직접입력") : (item.product_name || item.code || "항목");
-    const note = item.status === "held" ? `
-잡혀 있던 ${won(item.amount)}이 거래처 금액에서 빠집니다.` : "";
+    const note = `
+목록과 로그에서 완전히 사라집니다 (차감 기록이 남지 않음).`;
     if (!window.confirm(`"${name}" 항목을 삭제할까요?${note}
 
 삭제하면 되돌릴 수 없습니다.`)) return;
@@ -293,7 +293,7 @@ export default function DefectPurchaseManager() {
   const deleteVendor = async (vendor) => {
     const count = vendor.items.length;
     if (!window.confirm(`"${vendor.vendor}" 거래처의 항목 ${count}건을 모두 삭제할까요?
-잡혀 있던 ${won(vendor.held_amount)}이 모두 빠지고, 되돌릴 수 없습니다.`)) return;
+목록과 로그에서 완전히 사라지고, 되돌릴 수 없습니다.`)) return;
     try {
       for (const item of vendor.items) await callDelete(item.id);
       await Promise.all([loadList(), loadVendorLogs(vendor.vendor)]);
