@@ -430,7 +430,7 @@ def _peek_key(items) -> list:
     return [(i.get("side"), i.get("text")) for i in items or []]
 
 
-def send_images(config: dict, name: str, files: list, tail=None, keep_room: bool = False) -> dict:
+def send_images(config: dict, name: str, files: list, tail=None, keep_room: bool = False, group: bool = False) -> dict:
     """사진 1~10장을 카카오톡 '공유'로 1:1 친구에게 보낸다.
 
     files: [{id(uuid), name, mime, bytes, sha256, path}]. 순서:
@@ -453,6 +453,8 @@ def send_images(config: dict, name: str, files: list, tail=None, keep_room: bool
         if not device.accessibility_enabled():
             raise Blocked("accessibility_disabled")
         peek_payload = {"action": "room_peek", "name": name}
+        if group:
+            peek_payload["group"] = True  # 단톡방: 정확히 일치하는 단톡방 하나만 (앱 v2.3.0 이상)
         if tail is not None:
             peek_payload["tail"] = tail
         peek = device.fast_broadcast(peek_payload, timeout=60)
@@ -481,13 +483,19 @@ def send_images(config: dict, name: str, files: list, tail=None, keep_room: bool
         if "Error" in reply:
             raise Blocked("media_share_helper_required")
         time.sleep(0.6)
-        res = device.fast_broadcast({"action": "share_pick", "name": name}, timeout=80)
+        share_payload = {"action": "share_pick", "name": name}
+        if group:
+            share_payload["group"] = True
+        res = device.fast_broadcast(share_payload, timeout=80)
         if res.get("send_attempted"):
             device.send_attempted = True
         if res.get("state") != "verified":
             raise Blocked(res.get("error") or "send_result_unverified")
         # ④ 확인: 방을 다시 읽어 내 사진 말풍선이 새로 생겼는지
-        after = (device.fast_broadcast({"action": "room_peek", "name": name}, timeout=60).get("recent")) or []
+        after_payload = {"action": "room_peek", "name": name}
+        if group:
+            after_payload["group"] = True
+        after = (device.fast_broadcast(after_payload, timeout=60).get("recent")) or []
         newest = after[-1] if after else {}
         if not (newest.get("side") == "me" and newest.get("text") == "(사진)" and _peek_key(after) != _peek_key(before)):
             raise Blocked("send_result_unverified")
@@ -510,8 +518,8 @@ def send_images(config: dict, name: str, files: list, tail=None, keep_room: bool
                 pass
 
 
-def send(config: dict, name: str, text: str, dry_run: bool = False, tail=None, keep_room: bool = False) -> dict:
-    """친구 이름으로 1:1 채팅방에 텍스트를 보낸다. config: serial/hardware_id/account."""
+def send(config: dict, name: str, text: str, dry_run: bool = False, tail=None, keep_room: bool = False, group: bool = False) -> dict:
+    """친구 이름으로 1:1 채팅방(group=True면 같은 이름의 단톡방)에 텍스트를 보낸다. config: serial/hardware_id/account."""
     if not config.get("serial") or not config.get("hardware_id") or not config.get("account"):
         raise Blocked("device_not_bound")
     name = (name or "").strip()
@@ -522,7 +530,7 @@ def send(config: dict, name: str, text: str, dry_run: bool = False, tail=None, k
     try:
         _connect(device, config["serial"])  # 하드웨어 ID 확인(최근에 확인했으면 생략)
         # 채팅방 재진입/스크롤 없이 한 번에: 친구 → 1:1 채팅 → 입력 → 전송. 제목은 폰에서 확인한다.
-        room = {"name": name, "locator": {"kind": "friend"}}
+        room = {"name": name, "locator": {"kind": "group" if group else "friend"}}
         # hold=True: 화면은 잠그지 않는다. keep_room=True: 다음 메시지가 같은 사람이면 방도 나오지 않는다.
         result = device.send_fast(room, text, dry_run=dry_run, hold=True, tail=tail, keep_room=keep_room and not dry_run)
         done = result.get("state") == "verified"

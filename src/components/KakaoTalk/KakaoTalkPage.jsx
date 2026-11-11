@@ -77,7 +77,7 @@ const Avatar = ({ name, size = 44 }) => (
     </span>
 );
 
-const KakaoTalkPage = () => {
+const KakaoTalkPage = ({ openContactId = null, openNonce = 0 }) => {
     const [rail, setRail] = useState('friends'); // friends | chats | more
     const [contacts, setContacts] = useState([]);
     const [selectedId, setSelectedId] = useState(() => {
@@ -97,6 +97,13 @@ const KakaoTalkPage = () => {
     const [addMode, setAddMode] = useState('phone'); // phone | id | list
     const [notice, setNotice] = useState('');
     const [devices, setDevices] = useState(null);
+
+    // 다른 화면(CS 재고 탭의 "카카오톡 확인")에서 특정 대화방을 열어 달라고 요청한 경우
+    useEffect(() => {
+        if (!openContactId) return;
+        setSelectedId(openContactId);
+        setRail('chats');
+    }, [openContactId, openNonce]);
     const [serialInput, setSerialInput] = useState('');
     const [busy, setBusy] = useState(false);
     const [roomSyncOpen, setRoomSyncOpen] = useState(false);
@@ -141,9 +148,16 @@ const KakaoTalkPage = () => {
         }
     }, []);
 
+    const [queueItems, setQueueItems] = useState([]); // 모든 대화방의 대기·전송 중·확인 필요 메시지
     const loadStatus = useCallback(async () => {
         try {
-            setStatus(await call('/status'));
+            const s = await call('/status');
+            setStatus(s);
+            if ((s.queued || 0) + (s.sending || 0) + (s.needsCheck || 0) > 0) {
+                setQueueItems((await call('/queue/items')).items || []);
+            } else {
+                setQueueItems([]);
+            }
         } catch {
             setStatus(null);
         }
@@ -497,7 +511,7 @@ const KakaoTalkPage = () => {
             wasRoomSyncing.current = false;
             const { result, error } = status.roomSync;
             if (error) showNotice(`대화 동기화 실패: ${error}`);
-            else if (result) showNotice(`${result.since}부터 대화 ${result.read}개를 확인해 ${result.added}개를 가져왔습니다.`);
+            else if (result) showNotice(`${result.since}부터 대화 ${result.read}개를 확인해 ${result.added}개를 가져왔습니다.${result.removed ? ` 전송 실패·확인 필요·취소 기록 ${result.removed}건은 지웠습니다.` : ''}`);
             loadMessages(selectedId);
         }
         return undefined;
@@ -676,7 +690,12 @@ const KakaoTalkPage = () => {
                 <div className={styles.rowMine}>
                     <div className={styles.meta}>
                         {m.status === 'cancelled' && <span className={styles.pending}>취소됨</span>}
-                        {m.status === 'queued' && <span className={styles.pending}>{m.error || `대기 중${m.queuePosition ? ` (앞 ${m.queuePosition}건)` : ''}`}</span>}
+                        {m.status === 'queued' && (
+                            <span className={styles.pending}>
+                                {m.error || `대기 중${m.queuePosition ? ` (앞 ${m.queuePosition}건)` : ''}`}
+                                <button type="button" onClick={() => act(`/messages/${m.id}/cancel`, { method: 'POST' })}>취소</button>
+                            </span>
+                        )}
                         {m.status === 'sending' && <span className={styles.pending}><i className={styles.spinner} />전송 중</span>}
                         {m.status === 'failed' && (
                             <span className={styles.fail} title={m.error}>
@@ -767,6 +786,59 @@ const KakaoTalkPage = () => {
                             {status?.paused ? <><Play size={13} /> 큐 재개</> : <><Pause size={13} /> 큐 멈춤</>}
                         </button>
                         <p className={styles.hint}>동시에 여러 명이 보내면 요청 순서대로 한 건씩 처리합니다.</p>
+                        {queueItems.length > 0 && (
+                            <>
+                                <div className={styles.cardTitle} style={{ marginTop: 12 }}>
+                                    대기 목록 ({queueItems.length})
+                                    {queueItems.some((m) => m.status === 'queued') && (
+                                        <button
+                                            type="button"
+                                            className={styles.btn}
+                                            style={{ marginLeft: 'auto' }}
+                                            onClick={async () => {
+                                                if (!window.confirm('대기 중인 메시지를 모두 취소할까요? (전송 중·확인 필요는 그대로 둡니다)')) return;
+                                                try {
+                                                    const r = await call('/queue/cancel-all', { method: 'POST' });
+                                                    showNotice(`대기 ${r.cancelled}건을 취소했습니다.`);
+                                                } catch (err) { showNotice(err.message); }
+                                                loadStatus();
+                                            }}
+                                        >
+                                            대기 전체 취소
+                                        </button>
+                                    )}
+                                </div>
+                                {queueItems.map((m) => (
+                                    <div key={m.id} className={styles.kv} style={{ alignItems: 'flex-start', gap: 8 }}>
+                                        <span style={{ flex: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                                            <b>{m.contactName || `#${m.contactId}`}</b>{' '}
+                                            {m.kind === 'image' ? `(사진 ${m.mediaIds.length}장)` : m.text.length > 60 ? `${m.text.slice(0, 60)}…` : m.text}
+                                            <em style={{ marginLeft: 6 }}>
+                                                {{ queued: '대기', sending: '전송 중', needs_check: '확인 필요' }[m.status]}
+                                            </em>
+                                        </span>
+                                        {m.status === 'queued' && (
+                                            <button type="button" className={styles.btn} onClick={async () => {
+                                                try { await call(`/messages/${m.id}/cancel`, { method: 'POST' }); } catch (err) { showNotice(err.message); }
+                                                loadStatus();
+                                            }}>취소</button>
+                                        )}
+                                        {m.status === 'needs_check' && (
+                                            <>
+                                                <button type="button" className={styles.btn} onClick={async () => {
+                                                    try { await call(`/messages/${m.id}/resolve`, { method: 'POST', body: { status: 'sent' } }); } catch (err) { showNotice(err.message); }
+                                                    loadStatus();
+                                                }}>보냄</button>
+                                                <button type="button" className={styles.btn} onClick={async () => {
+                                                    try { await call(`/messages/${m.id}/resolve`, { method: 'POST', body: { status: 'failed' } }); } catch (err) { showNotice(err.message); }
+                                                    loadStatus();
+                                                }}>안 보냄</button>
+                                            </>
+                                        )}
+                                    </div>
+                                ))}
+                            </>
+                        )}
                     </div>
                 </div>
             );
@@ -985,7 +1057,7 @@ const KakaoTalkPage = () => {
                             <Avatar name={selected.name} size={38} />
                             <div className={styles.chatTitle}>
                                 <b>{selected.name}</b>
-                                <span>{isGroup ? '단톡방 · 대화 읽기만 가능' : (selected.memo || '나와의 1:1 채팅')}</span>
+                                <span>{isGroup ? '단톡방 · 답변 가능 (일괄 전송 불가)' : (selected.memo || '나와의 1:1 채팅')}</span>
                             </div>
                             <button
                                 type="button"
@@ -1081,11 +1153,11 @@ const KakaoTalkPage = () => {
                             {messages.map(renderMessage)}
                         </div>
 
-                        {isGroup ? (
+                        {isGroup && (
                             <footer className={styles.groupNote}>
-                                단톡방은 대화를 읽기만 할 수 있습니다. 새 대화는 상단의 “최신화”나 “대화 동기화”로 가져오세요.
+                                단톡방에도 답변할 수 있습니다. 이름이 정확히 같은 단톡방 한 곳을 폰에서 찾지 못하면 전송하지 않고 멈춥니다. 새 대화는 “최신화”나 “대화 동기화”로 가져오세요.
                             </footer>
-                        ) : (
+                        )}
                         <footer className={styles.composer}>
                             {attachments.length > 0 && (
                                 <div className={styles.attachRow}>
@@ -1125,7 +1197,6 @@ const KakaoTalkPage = () => {
                                 </button>
                             </div>
                         </footer>
-                        )}
                     </>
                 )}
             </section>

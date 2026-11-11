@@ -5,12 +5,13 @@ import styles from "./BarcodePage.module.css";
 
 const MAX_IMAGES = 10; // 카톡 한 번에 보낼 수 있는 사진 수
 
-// 거래처별 메시지: 상품마다 "상품명 색상 사이즈 [수량>1이면 수량]사유,사유2" 한 줄.
+// 거래처별 메시지: 상품마다 "상품명 색상 사이즈 [수량>1이면 수량]" 줄 + 다음 줄에 "사유, 사유2".
 const buildText = (items) => {
   const lines = items.map((it) => {
     const base = [it.productName || it.ownName || it.code, it.color, it.size].filter(Boolean).join(" ");
-    const reasons = (it.records || []).map((r) => String(r.reason || "").trim()).filter(Boolean).join(",");
-    return `${base} ${it.qty > 1 ? it.qty : ""}${reasons}`.trimEnd();
+    const head = it.qty > 1 ? `${base} ${it.qty}` : base;
+    const reasons = (it.records || []).map((r) => String(r.reason || "").trim()).filter(Boolean).join(", ");
+    return reasons ? `${head}\n${reasons}` : head;
   });
   return `안녕하세요 사장님!\n${lines.join("\n")}\n불량 올리겠습니다!`;
 };
@@ -54,7 +55,7 @@ export default function DefectKakaoModal({ open, onClose, counts, tabHeaders }) 
         if (cancelled) return;
         setRows(handoffData.rows || []);
         setVendorMap(mapData.map || {});
-        setContacts((kakao.contacts || []).filter((c) => c.kind !== "group"));
+        setContacts(kakao.contacts || []);
       } catch (e) {
         if (!cancelled) setError(e.message || "불러오기 실패");
       } finally {
@@ -93,10 +94,10 @@ export default function DefectKakaoModal({ open, onClose, counts, tabHeaders }) 
     } catch (e) { setSt(vendor, { msg: e.message || "매칭 저장 실패", ok: false }); }
   };
 
-  const send = async (g) => {
+  const send = async (g, skipConfirm = false) => {
     const contact = contactById.get(vendorMap[g.vendor]);
     if (!contact) return;
-    if (!window.confirm(`${g.vendor} → 카카오톡 "${contact.name}"에게 ${g.items.length}개 상품 불량을 보낼까요?`)) return;
+    if (!skipConfirm && !window.confirm(`${g.vendor} → 카카오톡 "${contact.name}"에게 ${g.items.length}개 상품 불량을 보낼까요?`)) return;
     setSt(g.vendor, { busy: true, msg: "사진 올리는 중...", ok: undefined });
     try {
       const photoIds = [...new Set(g.items.flatMap((it) => (it.records || []).flatMap((r) => r.photo_ids || [])))];
@@ -111,22 +112,34 @@ export default function DefectKakaoModal({ open, onClose, counts, tabHeaders }) 
       }
       const text = buildText(g.items);
       setSt(g.vendor, { msg: "전송 요청 중..." });
-      if (mediaIds.length === 0) {
-        await call("/send", { method: "POST", body: { contact_id: contact.id, text, request_id: newRequestId() } });
-      } else {
-        const chunks = [];
-        for (let i = 0; i < mediaIds.length; i += MAX_IMAGES) chunks.push(mediaIds.slice(i, i + MAX_IMAGES));
-        for (let i = 0; i < chunks.length; i += 1) {
-          // 문구는 마지막 사진 묶음 바로 뒤에 붙는다
-          await call("/send-images", {
-            method: "POST",
-            body: { contact_id: contact.id, media_ids: chunks[i], text: i === chunks.length - 1 ? text : "", request_id: newRequestId() },
-          });
-        }
+      // 문구를 먼저 큐에 넣는다. 사진 전송이 "확인 필요"로 끝나면 카톡 큐가 멈추는데, 그 뒤에 있던 문구는 못 나가기 때문이다.
+      await call("/send", { method: "POST", body: { contact_id: contact.id, text, request_id: newRequestId() } });
+      for (let i = 0; i < mediaIds.length; i += MAX_IMAGES) {
+        await call("/send-images", {
+          method: "POST",
+          body: { contact_id: contact.id, media_ids: mediaIds.slice(i, i + MAX_IMAGES), text: "", request_id: newRequestId() },
+        });
       }
       setSt(g.vendor, { busy: false, ok: true, msg: `전송 요청됨 (사진 ${mediaIds.length}장)` });
     } catch (e) {
       setSt(g.vendor, { busy: false, ok: false, msg: e.message || "전송 실패" });
+    }
+  };
+
+  // 전체 전송: 카톡 매칭이 끝났고 아직 이번에 보내지 않은 거래처만 차례로 보낸다 (중복 방지).
+  const sendable = groups.filter((g) => g.vendor && contactById.get(vendorMap[g.vendor]) && !editing[g.vendor] && !status[g.vendor]?.busy && !status[g.vendor]?.ok);
+  const unmatchedCount = groups.filter((g) => !g.vendor || !contactById.get(vendorMap[g.vendor])).length;
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const sendAll = async () => {
+    if (bulkBusy || sendable.length === 0) return;
+    const names = sendable.map((g) => `${g.vendor} → ${contactById.get(vendorMap[g.vendor]).name}`).join("\n");
+    const skipped = unmatchedCount > 0 ? `\n\n(카톡 매칭이 안 된 ${unmatchedCount}곳은 제외됩니다)` : "";
+    if (!window.confirm(`${sendable.length}개 거래처에 카톡으로 불량을 보낼까요?\n\n${names}${skipped}`)) return;
+    setBulkBusy(true);
+    try {
+      for (const g of sendable) await send(g, true);
+    } finally {
+      setBulkBusy(false);
     }
   };
 
@@ -137,6 +150,9 @@ export default function DefectKakaoModal({ open, onClose, counts, tabHeaders }) 
         <div className={styles.modalHeader}>
           <h4 className={styles.modalTitle}>거래처 카톡 불량 전송</h4>
           <div className={styles.modalActions}>
+            <button className={styles.primaryBtn} onClick={sendAll} disabled={bulkBusy || sendable.length === 0}>
+              {bulkBusy ? "전체 전송 중..." : `전체 전송 (${sendable.length})`}
+            </button>
             <button className={styles.secondaryBtn} onClick={onClose}>닫기</button>
           </div>
         </div>
@@ -191,7 +207,7 @@ export default function DefectKakaoModal({ open, onClose, counts, tabHeaders }) 
                       onChange={(e) => setPicks((p) => ({ ...p, [g.vendor]: e.target.value }))}
                     >
                       <option value="">친구 선택 ({options.length}명)</option>
-                      {options.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      {options.map((c) => <option key={c.id} value={c.id}>{c.kind === "group" ? `[단톡] ${c.name}` : c.name}</option>)}
                     </select>
                     <button className={styles.primaryBtn} onClick={() => saveMatch(g.vendor)}>매칭 저장</button>
                     {contact && <button className={styles.ghostBtn} onClick={() => setEditing((p) => ({ ...p, [g.vendor]: false }))}>취소</button>}

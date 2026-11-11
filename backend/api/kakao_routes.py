@@ -181,7 +181,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
     def _claim_next():
         conn = get_db()
         row = conn.execute(
-            "SELECT m.id, m.contact_id, m.created_at, m.text, m.dry_run, m.kind, m.media_ids, m.batch_id, b.interval_sec, c.name "
+            "SELECT m.id, m.contact_id, m.created_at, m.text, m.dry_run, m.kind, m.media_ids, m.batch_id, b.interval_sec, c.name, c.kind AS contact_kind "
             "FROM kakao_messages m JOIN kakao_contacts c ON c.id = m.contact_id LEFT JOIN kakao_batches b ON b.id = m.batch_id "
             "WHERE m.status = 'queued' ORDER BY CASE WHEN m.batch_id IS NULL THEN 0 ELSE 1 END, m.id ASC LIMIT 1"
         ).fetchone()
@@ -307,9 +307,9 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             with phone_lock:
                 if job.get("kind") == "image":
                     files = _load_media(job.get("media_ids") or "")
-                    result = kakao_phone.send_images(config, job["name"], files, tail=tail, keep_room=keep) or {}
+                    result = kakao_phone.send_images(config, job["name"], files, tail=tail, keep_room=keep, group=job.get("contact_kind") == "group") or {}
                 else:
-                    result = kakao_phone.send(config, job["name"], job["text"], dry_run=bool(job["dry_run"]), tail=tail, keep_room=keep) or {}
+                    result = kakao_phone.send(config, job["name"], job["text"], dry_run=bool(job["dry_run"]), tail=tail, keep_room=keep, group=job.get("contact_kind") == "group") or {}
             if result.get("state") == "sync_needed":
                 imported = 0
                 try:
@@ -458,6 +458,39 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             state["pause_reason"] = ""
             _ensure_worker()
         return {"ok": True, "paused": state["paused"]}
+
+    @router.get("/queue/items")
+    def queue_items(user: str = Depends(get_current_user)):
+        """전송 대기·전송 중·확인 필요 메시지를 모든 대화방에서 모아 보여 준다 (보내는 순서대로)."""
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT m.*, c.name AS contact_name FROM kakao_messages m LEFT JOIN kakao_contacts c ON c.id = m.contact_id "
+                "WHERE m.status IN ('queued','sending','needs_check') AND m.dry_run = 0 "
+                "ORDER BY CASE WHEN m.batch_id IS NULL THEN 0 ELSE 1 END, m.id"
+            ).fetchall()
+        finally:
+            conn.close()
+        items = []
+        for r in rows:
+            item = _row_to_message(r)
+            item["contactName"] = r["contact_name"] or ""
+            items.append(item)
+        return {"ok": True, "items": items}
+
+    @router.post("/queue/cancel-all")
+    def cancel_all_queued(user: str = Depends(get_current_user)):
+        """대기 중(queued)인 메시지를 모두 취소한다. 전송 중·확인 필요는 건드리지 않는다."""
+        conn = get_db()
+        try:
+            cur = conn.execute(
+                "UPDATE kakao_messages SET status = 'cancelled', error = '', updated_at = ? WHERE status = 'queued' AND dry_run = 0",
+                (now_iso(),),
+            )
+            conn.commit()
+            return {"ok": True, "cancelled": cur.rowcount}
+        finally:
+            conn.close()
 
     # ---- contacts ----------------------------------------------------
     @router.get("/contacts")
@@ -714,6 +747,23 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         finally:
             conn.close()
 
+    def _drop_unsent_leftovers(cid: int, since: str) -> int:
+        """대화 동기화 뒤 정리: 가져온 기간(since부터)의 전송 실패·확인 필요·취소·전송 테스트 기록을 지운다.
+        폰에서 가져온 대화만 남기려는 것이다. 대기 중·전송 중인 메시지는 실제로 나갈 것이므로 건드리지 않는다.
+        (폰에서 확인되어 이미 '보냄'으로 바뀐 것은 지우지 않는다.)"""
+        conn = get_db()
+        try:
+            floor = (datetime.strptime(since, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+            cur = conn.execute(
+                "DELETE FROM kakao_messages WHERE contact_id = ? AND substr(created_at, 1, 10) >= ? "
+                "AND (status IN ('failed', 'needs_check', 'cancelled', 'tested') OR dry_run = 1)",
+                (cid, floor),
+            )
+            conn.commit()
+            return cur.rowcount or 0
+        finally:
+            conn.close()
+
     def _run_room_sync(contact_id: int, name: str, since: str, group: bool = False) -> None:
         try:
             if not phone_lock.acquire(timeout=180):
@@ -723,6 +773,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             finally:
                 phone_lock.release()
             stats = _import_history(contact_id, messages, since)
+            stats["removed"] = _drop_unsent_leftovers(contact_id, since)
             room_sync["result"] = {**stats, "since": since, "pages": pages}
             room_sync["error"] = ""
         except RuntimeError:
@@ -919,7 +970,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             raise HTTPException(status_code=400, detail=f"메시지는 {_MAX_TEXT}자까지 보낼 수 있습니다.")
         conn = get_db()
         try:
-            _reject_group(_contact_or_404(conn, contact_id))
+            _contact_or_404(conn, contact_id)  # 사진도 단톡방에 보낼 수 있다 (일괄 전송만 1:1)
             for mid in ids:
                 if not conn.execute("SELECT 1 FROM kakao_media WHERE id = ?", (mid,)).fetchone():
                     raise HTTPException(status_code=400, detail="업로드되지 않은 사진이 있습니다. 다시 선택하세요.")
@@ -1573,7 +1624,7 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         dry_run = bool(payload.get("dry_run"))
         conn = get_db()
         try:
-            _reject_group(_contact_or_404(conn, contact_id))
+            _contact_or_404(conn, contact_id)  # 텍스트는 단톡방에도 보낼 수 있다 (사진·일괄 전송은 1:1만)
             if request_id:  # 같은 요청이 다시 오면(버튼 두 번 클릭 등) 새로 만들지 않는다
                 existing = conn.execute("SELECT * FROM kakao_messages WHERE request_id = ?", (request_id,)).fetchone()
                 if existing:
@@ -1607,6 +1658,22 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         finally:
             conn.close()
         _ensure_worker()
+        return {"ok": True}
+
+    @router.post("/messages/{message_id}/cancel")
+    def cancel_message(message_id: int, user: str = Depends(get_current_user)):
+        """아직 폰으로 나가지 않은(대기 중) 메시지를 취소한다. 전송 중이거나 이미 나간 것은 취소할 수 없다."""
+        conn = get_db()
+        try:
+            cur = conn.execute(
+                "UPDATE kakao_messages SET status = 'cancelled', error = '', updated_at = ? WHERE id = ? AND status = 'queued'",
+                (now_iso(), message_id),
+            )
+            conn.commit()
+            if not cur.rowcount:
+                raise HTTPException(status_code=409, detail="대기 중인 메시지만 취소할 수 있습니다.")
+        finally:
+            conn.close()
         return {"ok": True}
 
     @router.post("/messages/{message_id}/resolve")

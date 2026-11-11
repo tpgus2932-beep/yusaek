@@ -74,3 +74,12 @@ backend/uploads/
 
 # Git worktrees (superpowers:using-git-worktrees)
 .worktrees/
+
+# 안드로이드 브리지 앱: 서명키·빌드 산출물·APK 백업은 공개 저장소에 올리지 않는다
+android-bridge/keys/
+android-bridge/backup-apk/
+android-bridge/**/build/
+android-bridge/**/dist/
+*.jks
+*.keystore
+*.idsig

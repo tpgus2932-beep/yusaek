@@ -131,6 +131,7 @@
     gap: 6px;
 }
 
+.editor select,
 .editor input {
     padding: 5px 9px;
     border: 1px solid var(--cs-line);
@@ -144,6 +145,25 @@
 .noteInput {
     flex: 1;
     min-width: 160px;
+}
+
+/* 카카오톡 확인: 입력을 누르기 전에도 보이는 큰 버튼 (가로 전체 폭, 높이 고정) */
+.kakaoBtn {
+    flex: 1 1 100%;
+    width: 100%;
+    height: 44px;
+    border: none;
+    border-radius: 10px;
+    background: #fee500;
+    color: #3c1e1e;
+    font-size: 0.9rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.kakaoBtn:disabled {
+    opacity: 0.5;
+    cursor: default;
 }
 
 .btnSmall {

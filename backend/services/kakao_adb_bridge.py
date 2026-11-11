@@ -502,7 +502,8 @@ class Adb:
     def send_fast(self,room,text,dry_run=False,hold=False,tail=None,keep_room=False):
         if not self.accessibility_enabled():raise Blocked('accessibility_disabled')
         locator=room.get('locator') or {}
-        if locator.get('kind')!='friend':raise Blocked('locator_unsupported')
+        if locator.get('kind') not in ('friend','group'):raise Blocked('locator_unsupported')
+        group=locator.get('kind')=='group'
         # Pass a prior on-device fingerprint if we have one (the executor then
         # verifies it). If not, the first send is title-only and the executor
         # returns the on-device fingerprint it computed, which the worker stores
@@ -510,6 +511,7 @@ class Adb:
         fingerprint=locator.get('fingerprint','') if locator.get('source')=='on_device' else ''
         # store = HOLD key so the executor can reuse the room for same-store sends.
         payload={'action':'send','name':room['name'],'store':room.get('store',''),'fingerprint':fingerprint,'text':text,'dry_run':bool(dry_run),'hold':bool(hold)}
+        if group:payload['group']=True  # 단톡방: 앱이 정확히 일치하는 단톡방 하나만 찾아 들어간다 (v2.3.0 이상)
         if keep_room:payload['keep_room']=True  # 다음 메시지가 같은 사람이면 방을 나오지 않는다
         if tail is not None:payload['tail']=tail  # 웹 대화의 끝부분 — 폰 방과 어긋나면 입력 전에 멈춘다
         data=self.fast_broadcast(payload)

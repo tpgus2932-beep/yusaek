@@ -305,14 +305,15 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
         }
 
     @router.get("/rooms/{room_sno}")
-    async def room_detail(room_sno: int, current_user=Depends(get_current_user)):
+    async def room_detail(room_sno: int, refresh: bool = False, current_user=Depends(get_current_user)):
+        # 저장된 상세는 문의에 새 메시지가 올 때만 바뀌므로, 주문 상태(상품준비중→배송중 등)는 refresh=true로 다시 받아야 갱신된다.
         conn = get_db()
         try:
             row = conn.execute(
                 "SELECT updated_at, detail_json, detail_updated_at FROM cs_rooms WHERE sno = ?",
                 (room_sno,),
             ).fetchone()
-            if row and row["detail_json"] and row["detail_updated_at"] == row["updated_at"]:
+            if not refresh and row and row["detail_json"] and row["detail_updated_at"] == row["updated_at"]:
                 return json.loads(row["detail_json"])
             detail = await _fetch_detail(room_sno)
             if row:

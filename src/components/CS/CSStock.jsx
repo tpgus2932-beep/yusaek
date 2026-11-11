@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import styles from './CSStock.module.css';
+import CSKakaoCheck from './CSKakaoCheck';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
 const SOURCE = { live: '이지어드민 실시간', snapshot: '저장된 재고(재고대시보드)', none: '재고 데이터 없음' };
@@ -423,6 +424,7 @@ export default function CSStock({ goods, asked, orderNo, title = '', lookupSigna
                     </table>
                 </div>
             )}
+            {showStock && result && supplierNames.map((v) => <CSKakaoCheck key={v} vendor={v} />)}
         </section>
     );
 }

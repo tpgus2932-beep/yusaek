@@ -190,18 +190,31 @@ const CSPage = () => {
     const detailCache = useRef(new Map());
     const cacheKey = (r) => `${r.sno}:${r.updated_latest_message_at}`;
 
+    // 같은 문의를 이미 받는 중이면 그 요청을 같이 기다린다 (마우스 올림 미리받기 + 클릭이 요청을 두 번 만들지 않게).
+    const inflight = useRef(new Map());
     const fetchDetail = useCallback(async (r) => {
         const key = cacheKey(r);
         const cached = detailCache.current.get(key);
         if (cached) return cached;
-        const data = await apiGet(`/rooms/${r.sno}`);
-        detailCache.current.set(key, data);
-        return data;
+        const running = inflight.current.get(key);
+        if (running) return running;
+        const p = apiGet(`/rooms/${r.sno}`)
+            .then((data) => {
+                detailCache.current.set(key, data);
+                return data;
+            })
+            .finally(() => inflight.current.delete(key));
+        inflight.current.set(key, p);
+        return p;
     }, []);
 
+    // 목록을 훑을 때마다 요청이 쏟아지지 않게, 카드에 잠깐 머물렀을 때만 미리 받는다.
+    const prefetchTimer = useRef(null);
     const prefetchRoom = (r) => {
-        fetchDetail(r).catch(() => {});
+        clearTimeout(prefetchTimer.current);
+        prefetchTimer.current = setTimeout(() => fetchDetail(r).catch(() => {}), 250);
     };
+    const cancelPrefetch = () => clearTimeout(prefetchTimer.current);
 
     const selectedRef = useRef(null);
 
@@ -214,6 +227,15 @@ const CSPage = () => {
             setDetail(cached);
             setDetailLoading(false);
             return;
+            // 캐시는 새 메시지가 올 때만 바뀌므로, 아직 '준비중'으로 보이는 주문은 열 때마다 에이블리 최신 상태로 다시 받는다.
+            if ((cached.order_items || []).some((o) => /준비/.test(o.status || ''))) {
+                apiGet(`/rooms/${r.sno}`, { refresh: 'true' })
+                    .then((fresh) => {
+                        detailCache.current.set(cacheKey(r), fresh);
+                        if (selectedRef.current === r.sno) setDetail(fresh);
+                    })
+                    .catch(() => {});
+            }
         }
         setDetail(null);
         setDetailLoading(true);
@@ -441,13 +463,14 @@ const CSPage = () => {
                             type="button"
                             key={r.sno}
                             className={`${styles.roomItem} ${selected === r.sno ? styles.roomItemActive : ''} ${hitWords.get(r.sno)?.length > 0 ? styles.roomItemHit : ''}`}
-                            onClick={() => openRoom(r)}
+                            onClick={() => { cancelPrefetch(); openRoom(r); }}
                             onMouseEnter={() => prefetchRoom(r)}
                         >
                             {roomImage(r) ? (
                                 <img src={roomImage(r)} alt="" className={styles.roomThumb} loading="lazy" />
                             ) : (
                                 <span className={styles.roomThumb} />
+                            onMouseLeave={cancelPrefetch}
                             )}
                             <div className={styles.roomBody}>
                                 <div className={styles.roomHead}>
