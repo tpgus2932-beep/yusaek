@@ -5,6 +5,13 @@ import styles from "./DBManager.module.css";
 
 const POLL_MS = 10000;
 
+const isoDay = (offset = 0) => {
+  const d = new Date();
+  d.setDate(d.getDate() - offset);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+
 const fmtTime = (iso) => {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -29,6 +36,11 @@ export default function InvoiceKakaoModal({ vendor, onClose }) {
   const [filter, setFilter] = useState("");
   const [saving, setSaving] = useState(false);
   const scroller = useRef(null);
+  const [since, setSince] = useState(() => isoDay(0)); // 대화 동기화 시작일
+  const [syncOpen, setSyncOpen] = useState(false);
+  const [syncing, setSyncing] = useState(false); // 이 거래처 대화를 폰에서 읽는 중
+  const [syncMsg, setSyncMsg] = useState({ text: "", ok: true });
+  const wasSyncing = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -71,6 +83,43 @@ export default function InvoiceKakaoModal({ vendor, onClose }) {
     const timer = window.setInterval(loadMessages, POLL_MS);
     return () => window.clearInterval(timer);
   }, [contact, loadMessages]);
+
+  // 폰에서 대화를 읽는 동안 상태를 짧게 확인하고, 끝나면 결과를 보여준 뒤 대화를 다시 읽는다.
+  useEffect(() => {
+    if (!syncing || !contactId) return undefined;
+    wasSyncing.current = true;
+    const timer = window.setInterval(async () => {
+      try {
+        const st = await call("/status");
+        const rs = st.roomSync || {};
+        if (rs.running) return;
+        window.clearInterval(timer);
+        setSyncing(false);
+        if (rs.error) setSyncMsg({ text: `대화 동기화 실패: ${rs.error}`, ok: false });
+        else if (rs.result) {
+          const r = rs.result;
+          setSyncMsg({ text: `${r.since}부터 대화 ${r.read}개를 확인해 ${r.added}개를 가져왔습니다.`, ok: true });
+        } else setSyncMsg({ text: "대화 동기화가 끝났습니다.", ok: true });
+        loadMessages();
+      } catch {
+        /* 일시 오류는 다음 확인에서 복구 */
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [syncing, contactId, loadMessages]);
+
+  const startSync = async () => {
+    if (!contactId || !since || syncing) return;
+    setSyncMsg({ text: "", ok: true });
+    try {
+      await call(`/contacts/${contactId}/sync-room`, { method: "POST", body: { since } });
+      setSyncOpen(false);
+      setSyncing(true);
+      setSyncMsg({ text: `${since}부터 폰에서 대화를 읽는 중입니다. 끝날 때까지 폰을 만지지 마세요.`, ok: true });
+    } catch (e) {
+      setSyncMsg({ text: e.message || "동기화를 시작하지 못했습니다.", ok: false });
+    }
+  };
 
   // 새 메시지가 오면 맨 아래로
   useEffect(() => {
@@ -121,6 +170,15 @@ export default function InvoiceKakaoModal({ vendor, onClose }) {
               >
                 매칭 변경
               </button>{" "}
+              <button
+                type="button"
+                className={`${styles.btn} ${styles.btnSecondary}`}
+                disabled={syncing}
+                onClick={() => setSyncOpen((v) => !v)}
+                title="폰의 카카오톡 대화를 날짜부터 읽어와 웹에 없는 대화를 채웁니다"
+              >
+                {syncing ? "동기화 중..." : "대화 동기화"}
+              </button>{" "}
               <button type="button" className={`${styles.btn} ${styles.btnSecondary}`} onClick={loadMessages}>새로고침</button>
             </span>
           )}
@@ -162,6 +220,33 @@ export default function InvoiceKakaoModal({ vendor, onClose }) {
               )}
             </div>
           </div>
+        )}
+
+        {contact && !editing && syncOpen && (
+          <div style={{ padding: "12px 16px", borderBottom: "1px solid #e5e7eb" }}>
+            <div style={{ marginBottom: 8, color: "#374151" }}>
+              선택한 날짜부터 지금까지, 폰 대화방에 있고 웹에 없는 대화만 가져옵니다. 읽는 동안 폰을 만지지 마세요.
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              {[[0, "오늘"], [1, "어제"], [3, "3일"], [7, "7일"], [30, "30일"]].map(([d, label]) => (
+                <button
+                  key={label}
+                  type="button"
+                  className={`${styles.btn} ${since === isoDay(d) ? styles.btnPrimary : styles.btnSecondary}`}
+                  onClick={() => setSince(isoDay(d))}
+                >
+                  {label}
+                </button>
+              ))}
+              <input type="date" className={styles.inlineInput} value={since} max={isoDay(0)} onChange={(e) => setSince(e.target.value)} />
+              <button type="button" className={`${styles.btn} ${styles.btnPrimary}`} disabled={!since || syncing} onClick={startSync}>
+                {since ? `${since}부터 동기화` : "날짜를 선택하세요"}
+              </button>
+            </div>
+          </div>
+        )}
+        {syncMsg.text && (
+          <div style={{ padding: "8px 16px", color: syncMsg.ok ? "#15803d" : "#dc2626", borderBottom: "1px solid #e5e7eb" }}>{syncMsg.text}</div>
         )}
 
         {error && <div className={styles.catEmpty} style={{ color: "#dc2626" }}>{error}</div>}
