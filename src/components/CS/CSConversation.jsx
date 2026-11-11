@@ -89,10 +89,12 @@ const OrderStatus = ({ status }) => (
 
 const optionText = (o) => (o.options || []).join(' / ') || [o.option1, o.option2].filter(Boolean).join(' / ');
 
+const MAX_REPLY_PHOTOS = 10; // 답변에 한 번에 붙일 수 있는 사진 수
+
 // 문의 대화 패널 (문의함 / 상품별 탭 공용)
 // splitInfo: 주문·주소·재고 정보를 대화 오른쪽 별도 패널로 분리해서 그린다 (상품별·문의함 탭).
 // extraTabs: 오른쪽 패널 끝에 덧붙일 탭 [{key, label, content}] (문의함의 답변 템플릿 등).
-const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', setDraft, acting = false, onReply, onComplete, splitInfo = false, keywordHits = [], extraTabs = [] }) => {
+const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', setDraft, acting = false, onReply, onReplyImages, onComplete, splitInfo = false, keywordHits = [], extraTabs = [] }) => {
     const [returnOrder, setReturnOrder] = useState(''); // 구매확정 반품 모달에 띄울 주문번호
     const [cancelOrder, setCancelOrder] = useState(''); // 취소 승인 모달에 띄울 주문번호
     const [withdrawOrder, setWithdrawOrder] = useState(''); // 반품 철회 모달에 띄울 주문번호
@@ -115,6 +117,65 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
     const rightCtrl = useRef(false);
     const isRightCtrlKey = (e) => e.code === 'ControlRight' || e.code === 'Lang2' || e.key === 'Hanja' || e.key === 'HanjaMode';
     const hasReplyBox = Boolean(room && onReply);
+    // 사진 답변: 파일 선택 또는 Ctrl+V(복사한 이미지·스크린샷)로 담고, 전송 버튼/Enter로 글과 함께 보낸다.
+    const [photos, setPhotos] = useState([]); // [{key, file, preview}]
+    const [photoNote, setPhotoNote] = useState('');
+    const fileInput = useRef(null);
+    // 다른 문의로 옮기면 담아 둔 사진은 비운다 (엉뚱한 고객에게 가지 않게).
+    const [photoRoom, setPhotoRoom] = useState(selected);
+    if (photoRoom !== selected) {
+        setPhotoRoom(selected);
+        setPhotos([]);
+        setPhotoNote('');
+    }
+    const addPhotos = (fileList) => {
+        const files = Array.from(fileList || []).filter((f) => /^image\//.test(f.type) || /\.(jpe?g|png|gif|webp)$/i.test(f.name));
+        if (!files.length) { setPhotoNote('사진 파일(JPG, PNG, GIF, WEBP)만 첨부할 수 있습니다.'); return; }
+        const room = MAX_REPLY_PHOTOS - photos.length;
+        if (room <= 0) { setPhotoNote(`사진은 한 번에 ${MAX_REPLY_PHOTOS}장까지 보낼 수 있습니다.`); return; }
+        setPhotoNote(files.length > room ? `사진은 한 번에 ${MAX_REPLY_PHOTOS}장까지라서 ${room}장만 추가했습니다.` : '');
+        setPhotos((list) => [
+            ...list,
+            ...files.slice(0, room).map((file) => ({
+                key: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                file: file.name && file.name !== 'image.png' ? file : new File([file], `붙여넣은 사진-${Date.now()}.${(file.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: file.type }),
+                preview: URL.createObjectURL(file),
+            })),
+        ]);
+    };
+    const removePhoto = (key) => setPhotos((list) => {
+        const gone = list.find((p) => p.key === key);
+        if (gone) URL.revokeObjectURL(gone.preview);
+        return list.filter((p) => p.key !== key);
+    });
+    const onPasteReply = (e) => {
+        const data = e.clipboardData;
+        if (!data || !onReplyImages) return;
+        const found = new Map();
+        Array.from(data.files || []).forEach((f) => found.set(`${f.name}|${f.size}|${f.type}`, f));
+        Array.from(data.items || []).forEach((item) => {
+            if (item.kind !== 'file') return;
+            const f = item.getAsFile();
+            if (f) found.set(`${f.name}|${f.size}|${f.type}`, f);
+        });
+        const images = Array.from(found.values()).filter((f) => /^image\//.test(f.type));
+        if (!images.length) return; // 글자 붙여넣기는 그대로 둔다
+        e.preventDefault();
+        addPhotos(images);
+    };
+    // 글이 있으면 글을 먼저, 이어서 사진을 한 장씩 보낸다. 중간에 실패하면 남은 사진은 그대로 둔다.
+    const sendReply = async () => {
+        if (acting) return;
+        if (draft.trim() && !(await onReply(draft))) return;
+        if (photos.length && onReplyImages) {
+            const sent = await onReplyImages(photos.map((p) => p.file));
+            setPhotos((list) => {
+                list.slice(0, sent).forEach((p) => URL.revokeObjectURL(p.preview));
+                return list.slice(sent);
+            });
+        }
+    };
+    const canSendReply = Boolean(draft.trim()) || photos.length > 0;
     useEffect(() => {
         if (keepFocus.current && !acting && !detailLoading && replyRef.current) replyRef.current.focus();
     }, [acting, detailLoading, selected, hasReplyBox]);
@@ -185,6 +246,26 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
             </section>
             {onReply && (
                 <section className={styles.replyBox}>
+                    {photos.length > 0 && (
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6, alignItems: 'center' }}>
+                            {photos.map((p) => (
+                                <div key={p.key} style={{ position: 'relative' }} title={p.file.name}>
+                                    <img src={p.preview} alt="" style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 6, border: '1px solid #d1d5db' }} />
+                                    <button
+                                        type="button"
+                                        onClick={() => removePhoto(p.key)}
+                                        disabled={acting}
+                                        title="빼기"
+                                        style={{ position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: 9, border: 'none', background: '#374151', color: '#fff', cursor: 'pointer', lineHeight: '18px', padding: 0, fontSize: 12 }}
+                                    >
+                                        ×
+                                    </button>
+                                </div>
+                            ))}
+                            <span style={{ fontSize: 12, color: '#6b7280' }}>{photos.length}/{MAX_REPLY_PHOTOS}장 · 전송하면 글 다음에 사진이 한 장씩 갑니다</span>
+                        </div>
+                    )}
+                    {photoNote && <div style={{ fontSize: 12, color: '#b45309', marginBottom: 4 }}>{photoNote}</div>}
                     <textarea
                         ref={replyRef}
                         rows={4}
@@ -196,6 +277,7 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                         }}
                         placeholder="답변 내용을 입력하세요. (Enter 전송 · Shift+Enter 줄바꿈 · Ctrl+Enter 완료 처리)"
                         onChange={(e) => setDraft(e.target.value)}
+                        onPaste={onPasteReply}
                         onKeyUp={(e) => {
                             if (isRightCtrlKey(e)) rightCtrl.current = false;
                         }}
@@ -212,7 +294,7 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                                 if (!acting && [1, 2].includes(room.status)) onComplete({ next: true });
                                 return;
                             }
-                            if (!acting && draft.trim()) onReply(draft);
+                            if (!acting && canSendReply) sendReply();
                         }}
                         readOnly={acting}
                     />
@@ -221,11 +303,33 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                             type="button"
                             className={styles.btn}
                             onMouseDown={(e) => e.preventDefault()}
-                            disabled={acting || !draft.trim()}
-                            onClick={() => onReply(draft)}
+                            disabled={acting || !canSendReply}
+                            onClick={sendReply}
                         >
                             {acting ? '처리 중...' : '답변 전송'}
                         </button>
+                        {onReplyImages && (
+                            <>
+                                <button
+                                    type="button"
+                                    className={styles.btn}
+                                    onMouseDown={(e) => e.preventDefault()}
+                                    disabled={acting}
+                                    title={`사진 첨부 (최대 ${MAX_REPLY_PHOTOS}장) · 복사한 이미지는 입력창에서 Ctrl+V`}
+                                    onClick={() => fileInput.current?.click()}
+                                >
+                                    사진 첨부
+                                </button>
+                                <input
+                                    ref={fileInput}
+                                    type="file"
+                                    hidden
+                                    multiple
+                                    accept="image/jpeg,image/png,image/gif,image/webp"
+                                    onChange={(e) => { addPhotos(e.target.files); e.target.value = ''; }}
+                                />
+                            </>
+                        )}
                         <button
                             type="button"
                             className={styles.btn}

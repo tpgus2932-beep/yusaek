@@ -10,7 +10,7 @@ from typing import Optional
 import httpx
 from urllib.parse import quote
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from api.exchange_return_routes import ABLY_EMAIL, ABLY_PASSWORD
 from api.inventory_dashboard_routes import (
@@ -471,6 +471,37 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
             conn.commit()
         finally:
             conn.close()
+
+    _REPLY_IMAGE_MAX = 10 * 1024 * 1024
+
+    def _sniff_image(data: bytes):
+        """내용으로 사진 종류를 판별한다. (mime, 확장자) 또는 None."""
+        if data[:3] == b"\xff\xd8\xff":
+            return "image/jpeg", "jpg"
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return "image/png", "png"
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            return "image/gif", "gif"
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "image/webp", "webp"
+        return None
+
+    @router.post("/rooms/{room_sno}/reply-image")
+    async def reply_image(room_sno: int, request: Request, name: str = Query(""), current_user=Depends(get_current_user)):
+        """에이블리 문의에 사진 한 장을 답변으로 보낸다. 본문은 사진 원본 바이트."""
+        data = await request.body()
+        if not data:
+            raise HTTPException(status_code=400, detail="빈 파일입니다.")
+        if len(data) > _REPLY_IMAGE_MAX:
+            raise HTTPException(status_code=413, detail="사진은 한 장에 10MB까지 보낼 수 있습니다.")
+        kind = _sniff_image(data)
+        if not kind:
+            raise HTTPException(status_code=400, detail="JPG, PNG, GIF, WEBP 사진만 보낼 수 있습니다.")
+        mime, ext = kind
+        filename = f"reply-{int(time.time() * 1000)}.{ext}"
+        await _ably_post(http, f"/seller/contact_rooms/{room_sno}/send/", files={"image": (filename, data, mime)})
+        _record_stat(room_sno, current_user, "send")
+        return {"ok": True, "detail": await _refresh_room(room_sno)}
 
     @router.post("/rooms/{room_sno}/complete")
     async def complete(room_sno: int, current_user=Depends(get_current_user)):

@@ -275,6 +275,45 @@ const CSPage = () => {
         }
     };
 
+    // 사진 답변: 한 장씩 차례로 보낸다. 보낸 장수를 돌려줘서, 중간에 실패해도 이미 간 사진을 다시 보내지 않게 한다.
+    const replyImages = async (files) => {
+        if (!selected || acting) return 0;
+        setActing(true);
+        setError('');
+        let sent = 0;
+        let last = null;
+        try {
+            for (const file of files) {
+                const res = await fetch(`${LOCAL_API_BASE}/cs/rooms/${selected}/reply-image?name=${encodeURIComponent(file.name || 'image')}`, {
+                    method: 'POST',
+                    headers: { ...getAuthHeaders(), 'Content-Type': 'application/octet-stream' },
+                    body: file,
+                });
+                if (handleUnauthorized(res)) throw new Error('로그인이 만료되었습니다.');
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data?.detail || '사진 전송 실패');
+                last = data;
+                sent += 1;
+            }
+        } catch (err) {
+            setError(err.message || '사진 전송 실패');
+        }
+        try {
+            const room = last?.detail?.contact_room;
+            if (room) {
+                detailCache.current.set(`${selected}:${room.updated_latest_message_at}`, last.detail);
+                setDetail(last.detail);
+            }
+            if (sent > 0) {
+                await loadRooms(true);
+                setSyncTick((t) => t + 1);
+            }
+        } finally {
+            setActing(false);
+        }
+        return sent;
+    };
+
     const replyRoom = async (content) => {
         const ok = await runAction('/reply', { content });
         if (ok) setDraft('');
@@ -294,7 +333,7 @@ const CSPage = () => {
         if (ok && next) openRoom(next);
         return ok;
     };
-    const conversationProps = { selected, preview, detail, detailLoading, draft, setDraft, acting, onReply: replyRoom, onComplete: completeRoom };
+    const conversationProps = { selected, preview, detail, detailLoading, draft, setDraft, acting, onReply: replyRoom, onReplyImages: replyImages, onComplete: completeRoom };
 
     return (
         <div className={styles.page}>
