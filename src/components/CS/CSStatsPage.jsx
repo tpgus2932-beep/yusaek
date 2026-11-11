@@ -19,6 +19,9 @@ const fmtDuration = (sec) => {
 };
 
 const CSStatsTab = () => {
+// 분당 처리 개수 = 보내기 개수 ÷ CS 시간(분). CS 시간이 0이면(연속 완료 기록이 없으면) 계산할 수 없다.
+const perMinute = (count, sec) => (sec > 0 ? `${((count || 0) / (sec / 60)).toFixed(2)}개` : '-');
+
     const [days, setDays] = useState(14);
     const [data, setData] = useState(null);
     const [error, setError] = useState('');
@@ -167,12 +170,12 @@ const CSStatsTab = () => {
                         </table>
                         <table className={styles.table}>
                             <thead>
-                                <tr><th>담당자</th><th>보내기 ({days}일)</th><th>완료 처리</th><th>CS 시간</th></tr>
+                                <tr><th>담당자</th><th>보내기 ({days}일)</th><th>완료 처리</th><th>CS 시간</th><th title="보내기 개수 ÷ CS 시간(분)">분당 처리</th></tr>
                             </thead>
                             <tbody>
-                                {data.by_user.length === 0 && <tr><td colSpan={4}>기록 없음</td></tr>}
+                                {data.by_user.length === 0 && <tr><td colSpan={5}>기록 없음</td></tr>}
                                 {data.by_user.map((u) => (
-                                    <tr key={u.user}><td>{u.user || '-'}</td><td>{u.count}</td><td>{u.done ?? 0}</td><td>{fmtDuration(u.work_seconds)}</td></tr>
+                                    <tr key={u.user}><td>{u.user || '-'}</td><td>{u.count}</td><td>{u.done ?? 0}</td><td>{fmtDuration(u.work_seconds)}</td><td>{perMinute(u.count, u.work_seconds)}</td></tr>
                                 ))}
                             </tbody>
                         </table>
