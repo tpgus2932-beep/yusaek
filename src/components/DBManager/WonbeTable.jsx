@@ -46,6 +46,7 @@ export default function WonbeTable() {
   const [tagManual, setTagManual] = useState(false); // true = [대형 수정] 버튼으로 연 리스트 (완료 기록 없이 적용만)
   const [tagApplying, setTagApplying] = useState(false);
   const [bigLoading, setBigLoading] = useState(false);
+  const [tagOnlyUnnumbered, setTagOnlyUnnumbered] = useState(false); // [대형 수정] 목록에서 번호 없는 상품만 보기
   // 이지어드민 동기화 기간: 직접 입력 없이 최근 3일 / 7일 / 한달(30일) 중에서 고른다 (오늘 포함).
   const SYNC_PERIODS = [
     { days: 3, label: "3일" },
@@ -846,7 +847,8 @@ export default function WonbeTable() {
       if (!res.ok || !data.ok) throw new Error(data?.detail || "대형 수정 목록 조회 실패");
       if (!data.groups?.length) { setMessage("대상 상품이 없습니다."); return; }
       setTagManual(true);
-      setTagGroups(data.groups.map((g) => ({ ...g, checked: true, number: 1 })));
+      setTagOnlyUnnumbered(false);
+      setTagGroups(data.groups.map((g) => ({ ...g, checked: true, number: g.current_number || 1 })));
       setMessage(`대형 수정: ${codes.length ? `체크한 ${codes.length}개` : `"${query}" 검색 결과`} → ${data.groups.length}개 상품명. 번호 고른 뒤 [선택 적용]을 누르세요.`);
     } catch (err) {
       setMessage(err.message);
@@ -857,7 +859,9 @@ export default function WonbeTable() {
 
   // 체크한 상품을 이지어드민에 반영. 전부 성공하면 true (fromComplete: 완료 버튼에서 호출 시 목록을 닫지 않고 결과만 반환)
   const handleApplyTagGroups = async (fromComplete = false) => {
-    const items = (tagGroups || []).filter((g) => g.checked).map((g) => ({ name: g.name, codes: g.codes, ids: g.ids, number: g.number }));
+    const items = (tagGroups || [])
+      .filter((g) => g.checked && !(tagManual && tagOnlyUnnumbered && g.current_number)) // 필터로 숨긴 상품은 적용하지 않는다
+      .map((g) => ({ name: g.name, codes: g.codes, ids: g.ids, number: g.number }));
     if (!items.length) { setMessage("적용할 상품을 선택해주세요."); return false; }
     setTagApplying(true);
     try {
@@ -1703,7 +1707,18 @@ export default function WonbeTable() {
               <button onClick={() => setTagGroups(null)} disabled={tagApplying}>닫기</button>
             </span>
           </div>
-          {tagGroups.map((g, i) => (
+          {tagManual && (
+            <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 6, fontSize: 13 }}>
+              <label style={{ display: "flex", gap: 4, alignItems: "center", cursor: "pointer" }}>
+                <input type="checkbox" checked={tagOnlyUnnumbered} onChange={(e) => setTagOnlyUnnumbered(e.target.checked)} />
+                번호(1·2·3) 없는 상품만
+              </label>
+              <span style={{ color: "#888" }}>
+                번호 있음 {tagGroups.filter((g) => g.current_number).length} · 번호 없음 {tagGroups.filter((g) => !g.current_number).length}
+              </span>
+            </div>
+          )}
+          {tagGroups.map((g, i) => ({ g, i })).filter(({ g }) => !(tagManual && tagOnlyUnnumbered && g.current_number)).map(({ g, i }) => (
             <div key={g.name + i} style={{ display: "flex", gap: 8, alignItems: "center", padding: "2px 0" }}>
               <input
                 type="checkbox"
@@ -1718,6 +1733,9 @@ export default function WonbeTable() {
               </select>
               <span>{g.name}</span>
               <span style={{ color: "#888" }}>({g.count}코드)</span>
+              {tagManual && (g.current_number
+                ? <span style={{ color: "#2563eb", fontSize: 12 }}>현재 {g.current_number}번</span>
+                : <span style={{ color: "#d97706", fontSize: 12 }}>번호 없음</span>)}
             </div>
           ))}
         </div>

@@ -294,8 +294,20 @@ def _init_wonbe_table(conn: sqlite3.Connection):
             done_at  TEXT
         )
     """)
+    # 이지어드민 상품명 앞에 붙은 대형 번호(1~5) 기록. wonbe.상품명은 이지어드민 반영 후에도 바뀌지 않으므로
+    # [대형 수정]의 '번호 없는 상품만' 필터는 이 표(+ 상품명이 이미 숫자로 시작하는지)로 판단한다.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS wonbe_big_number (
+            상품코드   TEXT PRIMARY KEY,
+            number     INTEGER NOT NULL,
+            applied_at TEXT
+        )
+    """)
     conn.commit()
 
+
+# 대형 번호 상품명: "2 쿠로 하이넥"처럼 숫자+띄어쓰기로 시작 ("2way", "1+1"은 아님)
+_BIG_NUMBER_RE = re.compile(r"^(\d+)\s+")
 
 COST_BASE_CODE_COL = 0
 COST_BASE_MATCH_COL = 8
@@ -3317,6 +3329,14 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 (str(len(data_rows)),),
             )
             conn.commit()
+            # 이지어드민 상품명이 이미 "2 상품명"처럼 번호로 시작하면 대형 번호로 기록 ('번호 없는 상품만' 필터용)
+            numbered = [(code, int(m.group(1)), synced_at) for code, pname, *_r in data_rows
+                        if (m := _BIG_NUMBER_RE.match(str(pname or "").strip()))]
+            if numbered:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO wonbe_big_number (상품코드, number, applied_at) VALUES (?, ?, ?)", numbered
+                )
+                conn.commit()
             # 상품명(원래 이름) 기준 unique 그룹 - 프론트에서 대형태그/번호 지정용 리스트로 사용
             done_codes = {r[0] for r in conn.execute("SELECT 상품코드 FROM wonbe_tag_done").fetchall()}
             groups_map: dict = {}
@@ -3486,15 +3506,29 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                     f"SELECT 상품코드, 상품명, 대표상품코드, 아이디 FROM wonbe WHERE {' AND '.join(clauses)} ORDER BY 상품코드 LIMIT 5000",
                     params,
                 ).fetchall()
+            # 기록된 대형 번호
+            row_codes = list(dict.fromkeys(str(r["상품코드"]) for r in rows))
+            number_map: dict = {}
+            for i in range(0, len(row_codes), 500):
+                chunk = row_codes[i:i + 500]
+                ph = ",".join(["?"] * len(chunk))
+                for nr in conn.execute(
+                    f"SELECT 상품코드, number FROM wonbe_big_number WHERE 상품코드 IN ({ph})", chunk
+                ).fetchall():
+                    number_map[str(nr["상품코드"])] = int(nr["number"])
         finally:
             conn.close()
         groups_map: dict = {}
         for r in rows:
-            name = re.sub(r"^\d+\s+", "", str(r["상품명"] or "").strip())  # 이미 번호가 붙어 있으면 떼고 묶는다
+            raw_name = str(r["상품명"] or "").strip()
+            name = _BIG_NUMBER_RE.sub("", raw_name)  # 이미 번호가 붙어 있으면 떼고 묶는다
             if not name:
                 continue
-            g = groups_map.setdefault(name, {"codes": [], "ids": []})
+            g = groups_map.setdefault(name, {"codes": [], "ids": [], "number": None})
             code = str(r["상품코드"])
+            if g["number"] is None:
+                m = _BIG_NUMBER_RE.match(raw_name)
+                g["number"] = number_map.get(code) or (int(m.group(1)) if m else None)
             if code not in g["codes"]:
                 g["codes"].append(code)
             for v in (r["대표상품코드"], r["아이디"]):
@@ -3503,7 +3537,10 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                     if v not in g["ids"]:
                         g["ids"].append(v)
                     break
-        groups = [{"name": n, "codes": g["codes"], "ids": g["ids"], "count": len(g["codes"])} for n, g in groups_map.items()]
+        groups = [
+            {"name": n, "codes": g["codes"], "ids": g["ids"], "count": len(g["codes"]), "current_number": g["number"]}
+            for n, g in groups_map.items()
+        ]
         return {"ok": True, "groups": groups, "rows": len(rows)}
 
     @router.post("/tag-done")
@@ -3585,6 +3622,23 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             err_preview = plain[max(0, k - 300): k + 700] if k >= 0 else plain[:1000]
             print("[ezadmin-apply] C620 err_cnt=", err_cnt, "sent=", list(pid_to_name.items())[:5], "resp=", err_preview)
         tag = await _ezadmin_set_big_tag(list(pid_to_name.keys()), phpsessid)
+        if err_cnt == 0:
+            # 상품명 변경이 정상 반영된 상품의 번호 기록 ('번호 없는 상품만' 필터용)
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            num_rows = [
+                (str(c), int(it.get("number")), now)
+                for it in item_list for c in (it.get("codes") or []) if code_to_pid.get(str(c)) in pid_to_name
+            ]
+            if num_rows:
+                nconn = _get_wonbe_db()
+                try:
+                    _init_wonbe_table(nconn)
+                    nconn.executemany(
+                        "INSERT OR REPLACE INTO wonbe_big_number (상품코드, number, applied_at) VALUES (?, ?, ?)", num_rows
+                    )
+                    nconn.commit()
+                finally:
+                    nconn.close()
         if err_cnt == 0 and not tag["failed"]:
             # 정상 반영된 상품은 다음 동기화부터 목록에 뜨지 않도록 완료 처리
             pid_set = set(pid_to_name.keys())
