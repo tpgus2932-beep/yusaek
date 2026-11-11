@@ -685,6 +685,11 @@ def build_collab_router(
             )
             """
         )
+        for col in ("reject_reason TEXT", "rejected_at TEXT"):
+            try:
+                conn.execute(f"ALTER TABLE dev_requests ADD COLUMN {col}")
+            except Exception:
+                pass  # 이미 있는 칼럼
         conn.commit()
 
     def _dev_request_item(row, user: str, admin_flag: bool):
@@ -697,7 +702,10 @@ def build_collab_router(
             "created_at": row["created_at"],
             "completed_by_display": row["completed_by_display"],
             "completed_at": row["completed_at"],
+            "reject_reason": row["reject_reason"],
+            "rejected_at": row["rejected_at"],
             "can_complete": row["status"] == "open" and admin_flag,
+            "can_reject": row["status"] == "open" and admin_flag,
             "can_delete": admin_flag or row["requester_username"] == user,
         }
 
@@ -707,14 +715,15 @@ def build_collab_router(
         conn = get_db()
         try:
             _ensure_dev_requests_table(conn)
+            _cutoff = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
             rows = conn.execute(
                 """
                 SELECT * FROM dev_requests
-                WHERE status = 'open' OR completed_at >= ?
+                WHERE status = 'open' OR completed_at >= ? OR rejected_at >= ?
                 ORDER BY (status = 'open') DESC, id DESC
                 LIMIT 200
                 """,
-                ((datetime.now(timezone.utc) - timedelta(days=3)).isoformat(),),
+                (_cutoff, _cutoff),
             ).fetchall()
             return {"ok": True, "requests": [_dev_request_item(r, user, admin_flag) for r in rows]}
         finally:
@@ -771,6 +780,47 @@ def build_collab_router(
                 assignee=requester,
                 assignee_display=get_user_display(requester),
                 text=f"[개발요청 완료] {snippet}",
+                files=[],
+            )
+            notified = True
+        return {"ok": True, "notified": notified}
+
+    @router.post("/dev-requests/{dev_request_id}/reject")
+    def reject_dev_request(dev_request_id: int, payload: dict = Body(...), user: str = Depends(get_current_user)):
+        if not is_admin(user):
+            raise HTTPException(status_code=403, detail="개발요청 기각은 관리자만 할 수 있습니다.")
+        reason = str(payload.get("reason") or "").strip()
+        if not reason:
+            raise HTTPException(status_code=400, detail="기각 사유를 입력하세요.")
+        if len(reason) > 1000:
+            raise HTTPException(status_code=400, detail="기각 사유는 1000자 이내로 입력하세요.")
+        conn = get_db()
+        try:
+            _ensure_dev_requests_table(conn)
+            row = conn.execute("SELECT * FROM dev_requests WHERE id = ?", (dev_request_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="개발요청을 찾을 수 없습니다.")
+            if row["status"] != "open":
+                raise HTTPException(status_code=400, detail="이미 처리된 요청입니다.")
+            conn.execute(
+                "UPDATE dev_requests SET status = 'rejected', reject_reason = ?, rejected_at = ?, completed_by_username = ?, completed_by_display = ? WHERE id = ?",
+                (reason, datetime.now(timezone.utc).isoformat(), user, get_user_display(user), dev_request_id),
+            )
+            conn.commit()
+            requester = row["requester_username"]
+            original = row["text"]
+        finally:
+            conn.close()
+
+        notified = False
+        if requester:
+            snippet = original if len(original) <= 80 else original[:80] + "..."
+            _create_request_row(
+                requester_username=user,
+                requester_display=get_user_display(user),
+                assignee=requester,
+                assignee_display=get_user_display(requester),
+                text=f"[개발요청 기각] {snippet}\n사유: {reason}",
                 files=[],
             )
             notified = True

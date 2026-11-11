@@ -73,6 +73,24 @@ export default function DevRequestCard() {
         }
     };
 
+    const handleReject = async (item) => {
+        const reason = window.prompt(`"${item.text}"
+
+기각 사유를 입력하세요. 사유와 함께 ${item.requester_display || item.requester_username}님에게 알림이 갑니다.`);
+        if (reason === null) return;
+        if (!reason.trim()) {
+            setError('기각 사유를 입력해야 합니다.');
+            return;
+        }
+        try {
+            await call(`/dev-requests/${item.id}/reject`, { method: 'POST', body: JSON.stringify({ reason: reason.trim() }) }, '기각 처리 실패');
+            setError('');
+            await fetchItems();
+        } catch (err) {
+            setError(err.message || '기각 처리 실패');
+        }
+    };
+
     const handleDelete = async (item) => {
         if (!window.confirm('이 개발요청을 삭제할까요?')) return;
         try {
@@ -119,14 +137,16 @@ export default function DevRequestCard() {
                 {!loading && items.length === 0 && <div className={styles.mutedText}>등록된 개발요청이 없습니다.</div>}
                 {items.map((item) => {
                     const done = item.status === 'completed';
+                    const rejected = item.status === 'rejected';
                     return (
                         <div key={item.id} className={styles.todoItem}>
                             <div className={styles.todoLabel}>
-                                <span className={`${styles.todoText} ${done ? styles.todoTextDone : ''}`}>
+                                <span className={`${styles.todoText} ${done || rejected ? styles.todoTextDone : ''}`}>
                                     {item.text}
                                     <span className={styles.mutedText}>
                                         {' '}· {item.requester_display || item.requester_username} · {formatTime(item.created_at)}
                                         {done ? ` · 완료 ${formatTime(item.completed_at)}` : ''}
+                                        {rejected ? ` · 기각 ${formatTime(item.rejected_at)} · 사유: ${item.reject_reason || ''}` : ''}
                                     </span>
                                 </span>
                             </div>
@@ -134,10 +154,14 @@ export default function DevRequestCard() {
                                 {item.can_complete && (
                                     <button type="button" className={styles.todoDoneBtn} onClick={() => handleComplete(item)}>완료</button>
                                 )}
+                                {item.can_reject && (
+                                    <button type="button" className={styles.secondaryBtn} onClick={() => handleReject(item)}>기각</button>
+                                )}
                                 {item.can_delete && (
                                     <button type="button" className={styles.secondaryBtn} onClick={() => handleDelete(item)}>삭제</button>
                                 )}
                                 {done && <span className={styles.mutedText}>완료됨</span>}
+                                {rejected && <span className={styles.mutedText}>기각됨</span>}
                             </div>
                         </div>
                     );
