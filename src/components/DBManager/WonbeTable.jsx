@@ -85,8 +85,15 @@ export default function WonbeTable() {
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, [syncMenu]);
+  const fmtDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  // 동기화 '직접설정': 달력으로 시작일~종료일 지정
+  const [syncCustomOpen, setSyncCustomOpen] = useState(false);
+  const [syncCustomStart, setSyncCustomStart] = useState(() => fmtDate(new Date()));
+  const [syncCustomEnd, setSyncCustomEnd] = useState(() => fmtDate(new Date()));
+  // days: 숫자(최근 N일) 또는 { start, end } (직접설정)
   const syncRange = (days) => {
-    const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    if (days && typeof days === "object") return { start: days.start, end: days.end };
+    const fmt = fmtDate;
     const end = new Date();
     const start = new Date();
     start.setDate(end.getDate() - (days - 1));
@@ -1626,7 +1633,7 @@ export default function WonbeTable() {
               className={`${styles.btn} ${styles.btnPrimary}`}
               onClick={() => setSyncMenu((v) => (v === "sync" ? null : "sync"))}
               disabled={loading || syncing}
-              title="누르면 기간(3일 / 7일 / 한달)을 골라 바로 동기화합니다"
+              title="누르면 기간(3일 / 7일 / 한달 / 직접설정)을 골라 동기화합니다"
             >
               <RefreshCcw size={13} />{syncing ? "동기화 중..." : "이지어드민 동기화 ▾"}
             </button>
@@ -1637,6 +1644,31 @@ export default function WonbeTable() {
                     최근 {p.label}
                   </button>
                 ))}
+                <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "2px", paddingTop: "2px" }}>
+                  <button type="button" style={{ width: "100%", textAlign: "left", padding: "6px 10px", fontSize: "0.82rem", border: "none", background: "transparent", cursor: "pointer", borderRadius: "4px" }} onClick={() => setSyncCustomOpen((v) => !v)} title="달력으로 기간을 직접 골라 동기화합니다">
+                    직접설정 {syncCustomOpen ? "▴" : "▾"}
+                  </button>
+                  {syncCustomOpen && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "4px", padding: "4px 10px 6px", fontSize: "0.8rem" }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        시작
+                        <input type="date" value={syncCustomStart} max={syncCustomEnd} onChange={(e) => setSyncCustomStart(e.target.value)} />
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        종료
+                        <input type="date" value={syncCustomEnd} min={syncCustomStart} onChange={(e) => setSyncCustomEnd(e.target.value)} />
+                      </label>
+                      <button
+                        type="button"
+                        className={`${styles.btn} ${styles.btnPrimary}`}
+                        disabled={!syncCustomStart || !syncCustomEnd || syncCustomStart > syncCustomEnd}
+                        onClick={() => handleSyncEzadmin({ start: syncCustomStart, end: syncCustomEnd })}
+                      >
+                        이 기간으로 동기화
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
