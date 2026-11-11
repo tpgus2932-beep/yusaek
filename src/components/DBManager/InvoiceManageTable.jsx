@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Copy, Download, FileText, Filter, Link2, RefreshCw, Search, Trash2, Unlink } from "lucide-react";
 import styles from "./DBManager.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
+import InvoiceKakaoModal from "./InvoiceKakaoModal";
 
 const FLAG_COLS = [
   { key: "금액체크", label: "금액체크" },
@@ -231,6 +232,7 @@ export default function InvoiceManageTable() {
   const [groups, setGroups] = useState([]); // [[대표 거래처명, ...묶인 거래처명]] — 월별로 localStorage에 저장
   const [carryRows, setCarryRows] = useState([]); // 전월 이월발행 체크된 행
   const [historySortByAmount, setHistorySortByAmount] = useState(false); // true면 금액 내림차순
+  const [kakaoVendor, setKakaoVendor] = useState(""); // 카톡 대화를 보는 거래처 (빈 값이면 닫힘)
   const [history, setHistory] = useState(null); // { title, loading, error, rows: [{날짜, 거래처명, 금액, 건수}] }
   const [binding, setBinding] = useState(false);
   const [bindSearch, setBindSearch] = useState("");
@@ -1130,6 +1132,15 @@ export default function InvoiceManageTable() {
                   >
                     이체내역 조회
                   </button>
+                  <button
+                    type="button"
+                    className={`${styles.btn} ${styles.btnSecondary}`}
+                    style={{ marginLeft: "0.3rem" }}
+                    onClick={(e) => { e.stopPropagation(); setKakaoVendor(vendorName(row)); }}
+                    title="이 거래처와의 카카오톡 대화 보기 (처음에는 카톡 친구 매칭)"
+                  >
+                    카톡
+                  </button>
                 </td>
                 {editingMemo?.id === row.id ? (
                   <td onClick={(e) => e.stopPropagation()}>
@@ -1227,6 +1238,8 @@ export default function InvoiceManageTable() {
           </div>
         </div>
       )}
+
+      {kakaoVendor && <InvoiceKakaoModal vendor={kakaoVendor} onClose={() => setKakaoVendor("")} />}
 
       {renderCarryCard("bottom")}
     </>
