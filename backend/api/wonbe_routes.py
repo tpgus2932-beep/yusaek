@@ -18,6 +18,7 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response
 
 from sdk.ably import AblyClient
+from services import ezadmin_product_rename as ez_product_rename
 from sdk.pastelco import PastelcoClient
 from sdk.zigzag import ZigzagClient
 
@@ -3571,11 +3572,59 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         n = _mark_tag_done(payload.get("codes") or [])
         return {"ok": True, "marked": n}
 
+    async def _ez_rename_with_number(client, cookies: dict, pid: str, number: int) -> dict:
+        """이지어드민 상품수정 화면에서 지금 상품명을 읽어 앞 번호를 '{number} '로 바꿔 저장하고, 다시 읽어 확인한다.
+        (바코드 악성재고 접두어 변경과 같은 방식) -> {status: renamed|same|failed|session, before, after, message}"""
+        headers_xhr = {"User-Agent": "Mozilla/5.0", "X-Requested-With": "XMLHttpRequest",
+                       "Referer": f"{_EZADMIN_BASE}/popup35.htm?template=C208&id={pid}"}
+
+        async def read(ez_id: str):
+            resp = await client.get(f"{_EZADMIN_BASE}/popup35.htm?template=C208&id={urllib.parse.quote(ez_id, safe='')}",
+                                    cookies=cookies, headers={"User-Agent": "Mozilla/5.0"})
+            html = resp.content.decode("utf-8", errors="replace")
+            return ez_product_rename.parse_product_form(html), ("myform" in html)
+
+        parts, has_form = await read(pid)
+        if not parts:
+            return {"status": "failed" if has_form else "session",
+                    "message": "상품 정보를 읽지 못했습니다" if has_form else "이지어드민 세션 만료"}
+        before = ez_product_rename.get_form_value(parts, "name").strip()
+        new_name = f"{int(number)} {_BIG_NUMBER_RE.sub('', before).strip()}"
+        if before == new_name:
+            return {"status": "same", "before": before, "after": before}
+        dup = await client.post(f"{_EZADMIN_BASE}/function.htm", cookies=cookies, headers=headers_xhr,
+                                data={"template": "C200", "action": "check_all", "product_id": pid, "name": new_name})
+        try:
+            if dup.json().get("is_dup"):
+                return {"status": "failed", "before": before, "message": "이지어드민에 같은 상품명이 이미 있습니다"}
+        except ValueError:
+            return {"status": "session", "before": before, "message": "이지어드민 세션 만료"}
+        grid = await client.post(f"{_EZADMIN_BASE}/function.htm", cookies=cookies, headers=headers_xhr, data={
+            "_search": "false", "rows": "500", "page": "1", "sidx": "", "sord": "asc", "readonly": "T",
+            "template": "C200", "action": "get_option_list", "product_id": "", "options": "", "barcode": "", "id": pid,
+        })
+        option_rows = ez_product_rename.parse_option_rows(grid.json())
+        if not option_rows:
+            return {"status": "failed", "before": before, "message": "옵션 정보를 읽지 못했습니다"}
+        fields = ez_product_rename.build_modify_fields(parts, option_rows, new_name)
+        multipart = [(n, ("", b"", "application/octet-stream") if v is None else (None, v)) for n, v in fields]
+        save = await client.post(
+            f"{_EZADMIN_BASE}/popup35.htm?template=C208&is_reg_new=1&id={urllib.parse.quote(option_rows[0]['id'], safe='')}",
+            files=multipart, cookies=cookies,
+            headers={"User-Agent": "Mozilla/5.0", "Referer": f"{_EZADMIN_BASE}/popup35.htm?template=C208&id={pid}"},
+        )
+        check_parts, _ = await read(option_rows[0]["id"])
+        after = ez_product_rename.get_form_value(check_parts, "name").strip()
+        if save.status_code < 400 and after == new_name:
+            return {"status": "renamed", "before": before, "after": after}
+        return {"status": "failed", "before": before, "after": after,
+                "message": "저장 후 다시 읽었더니 상품명이 바뀌지 않았습니다"}
+
     @router.post("/ezadmin-apply")
     async def wonbe_ezadmin_apply(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
-        """동기화 리스트에서 선택한 상품(그룹)의 모든 상품에 번호 상품명 + 대형태그를 이지어드민에만 적용.
-        wonbe 테이블은 수정하지 않는다. body: {items: [{name, codes, number}]}
-        C620 A열과 태그는 상품 아이디(대표상품코드) 기준이라 옵션 코드를 아이디로 바꿔서 쓴다."""
+        """선택한 상품(그룹)의 이지어드민 상품명 앞에 번호를 붙이고(이미 있으면 교체) 대형태그를 건다.
+        상품마다 이지어드민 상품수정 화면을 읽어 저장한 뒤 다시 읽어 실제로 바뀌었는지 확인한다.
+        wonbe 상품명은 매칭 보호를 위해 바꾸지 않고, 번호 기록과 태그('대형')만 남긴다. body: {items: [{name, codes, number}]}"""
         if not get_setting:
             raise HTTPException(status_code=500, detail="get_setting 미설정")
         phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
@@ -3592,85 +3641,77 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             raise HTTPException(status_code=400, detail="적용할 상품이 없습니다.")
 
         code_to_pid = await _resolve_product_ids(list(dict.fromkeys(all_codes)), phpsessid)
-        pid_to_name: dict = {}
+        pid_to_number: dict = {}
+        pid_to_item: dict = {}
         unresolved = 0
-        for it in item_list:
-            new_name = _numbered_name(it.get("number"), it.get("name"))
+        for idx, it in enumerate(item_list):
             for c in it.get("codes") or []:
                 pid = code_to_pid.get(str(c))
                 if pid:
-                    pid_to_name[pid] = new_name
+                    pid_to_number[pid] = int(it.get("number"))
+                    pid_to_item[pid] = idx
                 else:
                     unresolved += 1
-        if not pid_to_name:
-            return {"ok": False, "uploaded": 0, "unresolved": unresolved, "detail": "상품 아이디를 찾지 못했습니다."}
+        if not pid_to_number:
+            return {"ok": False, "renamed": 0, "same": 0, "failed": [], "unresolved": unresolved,
+                    "detail": "이지어드민 상품 아이디를 찾지 못했습니다."}
 
-        book = xlwt.Workbook()
-        sheet = book.add_sheet("Sheet1")
-        sheet.write(0, 0, "상품코드")
-        sheet.write(0, 1, "상품명")
-        for ri, (pid, nm) in enumerate(pid_to_name.items(), start=1):
-            sheet.write(ri, 0, pid)
-            sheet.write(ri, 1, nm)
-        buf = io.BytesIO()
-        book.save(buf)
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Origin": _EZADMIN_BASE,
-            "Referer": f"{_EZADMIN_BASE}/template40.htm?template=C620",
-        }
-        try:
-            async with httpx.AsyncClient(timeout=300.0, verify=False, follow_redirects=True, cookies={"PHPSESSID": phpsessid}) as client:
-                await client.get(f"{_EZADMIN_BASE}/template40.htm", params={"template": "C620"}, headers=headers)
-                r = await client.post(
-                    f"{_EZADMIN_BASE}/template40.htm?template=C620",
-                    data={"page": "1", "action": "update2", "template": "C620", "total": "0", "status": "6"},
-                    files={"_file": ("name_rename.xls", buf.getvalue(), "application/vnd.ms-excel")},
-                    headers=headers,
-                )
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"EZAdmin 업로드 실패: {exc}")
-        body_text = r.content.decode("euc-kr", errors="replace")
-        m = re.search(r"err_cnt=(\d+)", body_text)
-        if not m:
-            return {"ok": False, "need_session": True}
-        err_cnt = int(m.group(1))
-        err_preview = ""
-        if err_cnt:
-            # 오류 원인 확인용: 태그 제거 후 err_cnt 주변 본문
-            plain = re.sub(r"<[^>]+>", " ", body_text)
-            plain = re.sub(r"\s+", " ", plain)
-            k = plain.find("err_cnt")
-            err_preview = plain[max(0, k - 300): k + 700] if k >= 0 else plain[:1000]
-            print("[ezadmin-apply] C620 err_cnt=", err_cnt, "sent=", list(pid_to_name.items())[:5], "resp=", err_preview)
-        tag = await _ezadmin_set_big_tag(list(pid_to_name.keys()), phpsessid)
-        if err_cnt == 0:
-            # 상품명 변경이 정상 반영된 상품의 번호 기록 ('번호 없는 상품만' 필터용)
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            num_rows = [
-                (str(c), int(it.get("number")), now)
-                for it in item_list for c in (it.get("codes") or []) if code_to_pid.get(str(c)) in pid_to_name
-            ]
-            if num_rows:
-                nconn = _get_wonbe_db()
+        cookies = {"PHPSESSID": phpsessid}
+        sem = asyncio.Semaphore(4)
+
+        async def one(client, pid):
+            async with sem:
                 try:
-                    _init_wonbe_table(nconn)
-                    nconn.executemany(
-                        "INSERT OR REPLACE INTO wonbe_big_number (상품코드, number, applied_at) VALUES (?, ?, ?)", num_rows
-                    )
-                    _add_wonbe_tag(nconn, [r[0] for r in num_rows])
-                    nconn.commit()
-                finally:
-                    nconn.close()
-        if err_cnt == 0 and not tag["failed"]:
-            # 정상 반영된 상품은 다음 동기화부터 목록에 뜨지 않도록 완료 처리
-            pid_set = set(pid_to_name.keys())
-            _mark_tag_done([str(c) for c in all_codes if code_to_pid.get(str(c)) in pid_set])
+                    return pid, await _ez_rename_with_number(client, cookies, pid, pid_to_number[pid])
+                except Exception as exc:
+                    return pid, {"status": "failed", "message": f"{type(exc).__name__} {exc}".strip()}
+
+        async with httpx.AsyncClient(timeout=60.0, verify=False, follow_redirects=True) as client:
+            results = dict(await asyncio.gather(*(one(client, pid) for pid in pid_to_number)))
+        if any(r["status"] == "session" for r in results.values()):
+            return {"ok": False, "need_session": True}
+
+        good_pids = [pid for pid, r in results.items() if r["status"] in ("renamed", "same")]
+        tag = await _ezadmin_set_big_tag(good_pids, phpsessid) if good_pids else {"ok": [], "failed": []}
+
+        # 성공한 상품: 번호 기록 + 태그 '대형' + 동기화 목록에서 완료 처리
+        good_set = set(good_pids)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        num_rows = [(str(c), pid_to_number[code_to_pid[str(c)]], now)
+                    for c in dict.fromkeys(all_codes) if code_to_pid.get(str(c)) in good_set]
+        if num_rows:
+            nconn = _get_wonbe_db()
+            try:
+                _init_wonbe_table(nconn)
+                nconn.executemany(
+                    "INSERT OR REPLACE INTO wonbe_big_number (상품코드, number, applied_at) VALUES (?, ?, ?)", num_rows
+                )
+                _add_wonbe_tag(nconn, [r[0] for r in num_rows])
+                nconn.commit()
+            finally:
+                nconn.close()
+            _mark_tag_done([r[0] for r in num_rows])
+
+        failed = [
+            {"상품": item_list[pid_to_item[pid]].get("name"), "아이디": pid,
+             "이유": r.get("message", ""), "현재이름": r.get("before", "")}
+            for pid, r in results.items() if r["status"] not in ("renamed", "same")
+        ]
+        item_results = []
+        for idx, it in enumerate(item_list):
+            rs = [results[p] for p, i in pid_to_item.items() if i == idx]
+            item_results.append({
+                "index": idx, "number": int(it.get("number")),
+                "ok": bool(rs) and all(r["status"] in ("renamed", "same") for r in rs),
+                "after": next((r.get("after") for r in rs if r.get("after")), ""),
+            })
         return {
-            "ok": err_cnt == 0 and not tag["failed"] and not unresolved,
-            "uploaded": len(pid_to_name), "err_cnt": err_cnt, "unresolved": unresolved, "err_preview": err_preview,
-            "sent_sample": [[k, v] for k, v in list(pid_to_name.items())[:3]],
+            "ok": not failed and not unresolved and not tag["failed"],
+            "renamed": sum(1 for r in results.values() if r["status"] == "renamed"),
+            "same": sum(1 for r in results.values() if r["status"] == "same"),
+            "failed": failed, "unresolved": unresolved,
             "tag_applied": len(tag["ok"]), "tag_failed": len(tag["failed"]),
+            "items": item_results,
         }
 
     @router.post("/lookup-prices")

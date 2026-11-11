@@ -49,6 +49,7 @@ export default function WonbeTable() {
   const [tagApplying, setTagApplying] = useState(false);
   const [bigLoading, setBigLoading] = useState(false);
   const [tagOnlyUnnumbered, setTagOnlyUnnumbered] = useState(false); // [대형 수정] 목록에서 번호 없는 상품만 보기
+  const [tagResult, setTagResult] = useState(""); // 대형 목록 패널 안에 보여줄 적용 결과
   // 이지어드민 동기화 기간: 직접 입력 없이 최근 3일 / 7일 / 한달(30일) 중에서 고른다 (오늘 포함).
   const SYNC_PERIODS = [
     { days: 3, label: "3일" },
@@ -861,6 +862,7 @@ export default function WonbeTable() {
       if (!data.groups?.length) { setMessage("대상 상품이 없습니다."); return; }
       setTagManual(true);
       setTagOnlyUnnumbered(false);
+      setTagResult("");
       setTagGroups(data.groups.map((g) => ({ ...g, checked: true, number: g.current_number || 1 })));
       setMessage(`대형 수정: ${codes.length ? `체크한 ${codes.length}개` : `"${query}" 검색 결과`} → ${data.groups.length}개 상품명. 번호 고른 뒤 [선택 적용]을 누르세요.`);
     } catch (err) {
@@ -872,11 +874,15 @@ export default function WonbeTable() {
 
   // 체크한 상품을 이지어드민에 반영. 전부 성공하면 true (fromComplete: 완료 버튼에서 호출 시 목록을 닫지 않고 결과만 반환)
   const handleApplyTagGroups = async (fromComplete = false) => {
-    const items = (tagGroups || [])
-      .filter((g) => g.checked && !(tagManual && tagOnlyUnnumbered && g.current_number)) // 필터로 숨긴 상품은 적용하지 않는다
-      .map((g) => ({ name: g.name, codes: g.codes, ids: g.ids, number: g.number }));
-    if (!items.length) { setMessage("적용할 상품을 선택해주세요."); return false; }
+    const sent = (tagGroups || [])
+      .map((g, gi) => ({ g, gi }))
+      .filter(({ g }) => g.checked && !(tagManual && tagOnlyUnnumbered && g.current_number)); // 필터로 숨긴 상품은 적용하지 않는다
+    const items = sent.map(({ g }) => ({ name: g.name, codes: g.codes, ids: g.ids, number: g.number }));
+    if (!items.length) { setTagResult("적용할 상품을 선택해주세요."); setMessage("적용할 상품을 선택해주세요."); return false; }
     setTagApplying(true);
+    setTagResult(`이지어드민에 반영 중... (${items.length}개 상품, 상품마다 저장 후 다시 확인하느라 시간이 걸립니다)`);
+    setRawUnexpected(null);
+    const report = (text) => { setTagResult(text); setMessage(text); };
     try {
       const res = await fetch(`${API}/wonbe/ezadmin-apply`, {
         method: "POST",
@@ -884,18 +890,26 @@ export default function WonbeTable() {
         body: JSON.stringify({ items }),
       });
       const data = await res.json().catch(() => ({}));
-      if (data?.need_session) { setMessage("이지어드민 세션이 없습니다."); return false; }
-      if (!res.ok) throw new Error(data?.detail || "적용 실패");
-      setMessage(
-        `이지어드민 상품명 변경 ${data.uploaded}건 (오류 ${data.err_cnt ?? 0})` +
-        (data.detail ? ` · ${data.detail}` : ` · 대형태그 ${data.tag_applied}건 적용` + (data.tag_failed ? ` (실패 ${data.tag_failed})` : "")) +
-        (data.unresolved ? ` · 아이디 못 찾은 코드 ${data.unresolved}건` : "")
+      if (data?.need_session) { report("이지어드민 세션이 없거나 만료되었습니다. EZAdmin 설정에서 PHPSESSID를 다시 등록해주세요."); return false; }
+      if (!res.ok) throw new Error(data?.detail || `적용 실패 (서버 응답 ${res.status})`);
+      const failed = data.failed || [];
+      report(
+        `결과: 상품명 변경 ${data.renamed ?? 0}건 · 이미 같은 번호 ${data.same ?? 0}건` +
+        (failed.length ? ` · 실패 ${failed.length}건` : "") +
+        (data.unresolved ? ` · 이지어드민 아이디 못 찾은 코드 ${data.unresolved}건` : "") +
+        (data.detail ? ` · ${data.detail}` : ` · 대형태그 ${data.tag_applied ?? 0}건` + (data.tag_failed ? ` (태그 실패 ${data.tag_failed})` : ""))
       );
-      if (data.err_preview) setRawUnexpected({ 보낸값: data.sent_sample, 이지어드민응답: data.err_preview });
-      if (data.ok && !fromComplete) setTagGroups(null);
+      if (failed.length) setRawUnexpected({ 실패목록: failed });
+      // 성공한 상품은 목록에서 '현재 N번'으로 바로 갱신
+      const okByGroup = new Map();
+      (data.items || []).forEach((r) => { if (r.ok && sent[r.index]) okByGroup.set(sent[r.index].gi, r.number); });
+      if (okByGroup.size) {
+        setTagGroups((p) => (p ? p.map((x, j) => (okByGroup.has(j) ? { ...x, current_number: okByGroup.get(j), checked: false } : x)) : p));
+      }
+      if (data.ok && !fromComplete && !tagManual) setTagGroups(null);
       return !!data.ok;
     } catch (err) {
-      setMessage(err.message);
+      report(err.message);
       return false;
     } finally {
       setTagApplying(false);
@@ -1742,9 +1756,14 @@ export default function WonbeTable() {
             <span>
               <button onClick={() => handleApplyTagGroups()} disabled={tagApplying}>{tagApplying ? "적용 중..." : "선택 적용"}</button>{" "}
               {!tagManual && <><button onClick={handleCompleteTagGroups} disabled={tagApplying} title="체크한 상품은 이지어드민에 반영한 뒤, 목록 전체를 처리 완료로 기록 — 다음 동기화부터 안 뜸">완료</button>{" "}</>}
-              <button onClick={() => setTagGroups(null)} disabled={tagApplying}>닫기</button>
+              <button onClick={() => { setTagGroups(null); setTagResult(""); }} disabled={tagApplying}>닫기</button>
             </span>
           </div>
+          {tagResult && (
+            <div style={{ padding: "6px 8px", marginBottom: 6, background: "#f3f4f6", borderRadius: 4, fontSize: 13, fontWeight: 600 }}>
+              {tagResult}
+            </div>
+          )}
           {(() => {
             // 지금 화면에 보이는 목록(필터 적용 후) 전체에 한 번에 적용
             const isVisible = (g) => !(tagManual && tagOnlyUnnumbered && g.current_number);
