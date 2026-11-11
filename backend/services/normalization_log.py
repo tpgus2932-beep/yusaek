@@ -25,8 +25,13 @@ def ensure_table(conn) -> None:
         """CREATE TABLE IF NOT EXISTS normalization_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, day TEXT NOT NULL, username TEXT DEFAULT '',
             source TEXT NOT NULL, type TEXT NOT NULL, code TEXT NOT NULL, name TEXT DEFAULT '', option TEXT DEFAULT '',
-            qty INTEGER NOT NULL, ref TEXT DEFAULT '')"""
+            qty INTEGER NOT NULL, ref TEXT DEFAULT '', memo TEXT DEFAULT '')"""
     )
+    try:  # 메모 칼럼이 없는 기존 테이블 보강 (이미 있으면 오류 → 무시)
+        conn.execute("ALTER TABLE normalization_log ADD COLUMN memo TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_norm_log_day ON normalization_log (day)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_norm_log_code ON normalization_log (code)")
 
@@ -75,10 +80,10 @@ def record(get_db, *, user: str, source: str, type_: str, entries: list[dict]) -
                 if not name:
                     name, option = names.get(code.upper(), ("", option))
                 conn.execute(
-                    "INSERT INTO normalization_log (ts, day, username, source, type, code, name, option, qty, ref) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO normalization_log (ts, day, username, source, type, code, name, option, qty, ref, memo) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (now.strftime("%Y-%m-%d %H:%M:%S"), now.strftime("%Y-%m-%d"), user, source, type_, code,
-                     name, option, int(e.get("qty") or 0), str(e.get("ref") or "")),
+                     name, option, int(e.get("qty") or 0), str(e.get("ref") or ""), str(e.get("memo") or "")),
                 )
             conn.commit()
         finally:

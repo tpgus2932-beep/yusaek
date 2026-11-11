@@ -47,6 +47,7 @@ function StockLog({ code, onAdjusted }) {
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
   const [qty, setQty] = useState("1");
+  const [memo, setMemo] = useState("");
   const [adjusting, setAdjusting] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -61,10 +62,11 @@ function StockLog({ code, onAdjusted }) {
     setError("");
     setNotice("");
     try {
-      const { res, data } = await request("/barcode/stock-adjust", { product_code: result.product_code, type, qty: n });
+      const { res, data } = await request("/barcode/stock-adjust", { product_code: result.product_code, type, qty: n, memo: memo.trim() });
       if (data?.need_session) { openModal(() => adjust(type)); return; }
       if (!res.ok || data.ok === false) throw new Error(data?.detail || `${label} 처리 실패`);
       setNotice(`${data.product_code} ${n}개 ${label} 처리 완료`);
+      setMemo("");
       await search(result.product_code);
       onAdjusted?.();
     } catch (e) {
@@ -127,6 +129,13 @@ function StockLog({ code, onAdjusted }) {
             <button type="button" className={styles.primary} disabled={!!adjusting || busy} onClick={() => adjust("in")}>{adjusting === "in" ? "처리 중..." : "입고"}</button>
             <button type="button" className={`${styles.primary} ${styles.danger}`} disabled={!!adjusting || busy} onClick={() => adjust("out")}>{adjusting === "out" ? "처리 중..." : "출고"}</button>
           </div>
+          <input
+            className={styles.input}
+            value={memo}
+            maxLength={100}
+            placeholder="메모 (선택) — 입고/출고 처리와 정상화 통계에 함께 기록됩니다"
+            onChange={(e) => setMemo(e.target.value)}
+          />
           {logs.length === 0 && <div className={styles.muted}>조회된 로그가 없습니다.</div>}
           {logs.map((l, i) => (
             <div key={i} className={styles.card}>

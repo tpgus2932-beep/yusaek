@@ -2846,6 +2846,51 @@ def build_barcode_router(
             raise HTTPException(status_code=404, detail="사진을 찾을 수 없습니다")
         return {"ok": True, "data_url": f"data:{row['mime']};base64,{row['data']}"}
 
+    # ── 불량 목록 카톡 전송: 거래처 ↔ 카카오톡 친구 매칭 (처음 한 번 수기로 잡으면 이후 계속 같은 친구로 보낸다) ──
+    def _kakao_vendor_map_conn():
+        conn = _defect_record_conn()
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS defect_kakao_vendor_map (
+                vendor TEXT PRIMARY KEY, contact_id INTEGER NOT NULL, updated_by TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')"""
+        )
+        conn.commit()
+        return conn
+
+    @router.get("/barcode/defect/kakao-vendor-map")
+    def get_defect_kakao_vendor_map(user: str = Depends(get_current_user)):
+        conn = _kakao_vendor_map_conn()
+        try:
+            rows = conn.execute("SELECT vendor, contact_id FROM defect_kakao_vendor_map").fetchall()
+        finally:
+            conn.close()
+        return {"ok": True, "map": {r["vendor"]: r["contact_id"] for r in rows}}
+
+    @router.post("/barcode/defect/kakao-vendor-map")
+    def set_defect_kakao_vendor_map(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """body: {vendor, contact_id}. contact_id가 비어 있으면 매칭을 해제한다."""
+        vendor = str(payload.get("vendor") or "").strip()
+        if not vendor:
+            raise HTTPException(status_code=400, detail="거래처가 없습니다.")
+        raw = payload.get("contact_id")
+        conn = _kakao_vendor_map_conn()
+        try:
+            if raw in (None, "", 0):
+                conn.execute("DELETE FROM defect_kakao_vendor_map WHERE vendor = ?", (vendor,))
+            else:
+                try:
+                    contact_id = int(raw)
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail="카카오톡 친구를 선택하세요.")
+                conn.execute(
+                    "INSERT INTO defect_kakao_vendor_map (vendor, contact_id, updated_by, updated_at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(vendor) DO UPDATE SET contact_id = excluded.contact_id, updated_by = excluded.updated_by, updated_at = excluded.updated_at",
+                    (vendor, contact_id, user, datetime.now(_KST).isoformat()),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True}
+
     @router.post("/barcode/defect/record/add")
     def add_defect_record(payload: dict = Body(...), user: str = Depends(get_current_user)):
         state = get_barcode_state(user)
@@ -4546,7 +4591,8 @@ def build_barcode_router(
         registered = load_wonbe_product_codes().get(product_id.upper())
         if not registered:
             raise HTTPException(status_code=400, detail=f"상품코드({product_id})를 원가베이스유에서 찾을 수 없습니다.")
-        memo = (str(payload.get("memo") or "").strip() or f"로그확인 {'입고' if type_ == 'in' else '출고'}({user})")[:100]
+        user_memo = str(payload.get("memo") or "").strip()[:100]
+        memo = user_memo or f"로그확인 {'입고' if type_ == 'in' else '출고'}({user})"
         ez = EzAdminClient(get_setting)
         items = [{"product_id": registered, "qty": qty, "memo": memo}]
         try:
@@ -4559,7 +4605,7 @@ def build_barcode_router(
             raise HTTPException(status_code=400, detail=res.get("msg") or "EZAdmin 처리 실패")
         normalization_log.record(
             get_normalization_db, user=user, source="log_check", type_=type_,
-            entries=[{"code": registered, "qty": qty}],
+            entries=[{"code": registered, "qty": qty, "memo": user_memo}],
         )
         return {"ok": True, "product_code": registered, "type": type_, "qty": qty}
 

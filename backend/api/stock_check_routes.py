@@ -521,15 +521,15 @@ def build_stock_check_router(*, get_current_user, get_setting, normalize_code, g
             if month not in months:
                 months.insert(0, month)
             rows: list[dict] = [
-                {"ts": r[0], "username": r[1], "source": "stock_check", "type": r[2], "code": r[3], "name": r[4], "option": r[5], "qty": r[6], "ref": ""}
+                {"ts": r[0], "username": r[1], "source": "stock_check", "type": r[2], "code": r[3], "name": r[4], "option": r[5], "qty": r[6], "ref": "", "memo": ""}
                 for r in conn.execute(
                     "SELECT ts, username, type, code, name, option, qty FROM stock_check_normalize_log WHERE day LIKE ? AND type IN ('in','out')",
                     (month + "-%",),
                 ).fetchall()
             ] + [
-                {"ts": r[0], "username": r[1], "source": r[2], "type": r[3], "code": r[4], "name": r[5], "option": r[6], "qty": r[7], "ref": r[8]}
+                {"ts": r[0], "username": r[1], "source": r[2], "type": r[3], "code": r[4], "name": r[5], "option": r[6], "qty": r[7], "ref": r[8], "memo": r[9] or ""}
                 for r in conn.execute(
-                    "SELECT ts, username, source, type, code, name, option, qty, ref FROM normalization_log WHERE day LIKE ?",
+                    "SELECT ts, username, source, type, code, name, option, qty, ref, memo FROM normalization_log WHERE day LIKE ?",
                     (month + "-%",),
                 ).fetchall()
             ]
@@ -549,7 +549,7 @@ def build_stock_check_router(*, get_current_user, get_setting, normalize_code, g
         # 검색어는 내역과 상품별 집계 모두에 적용한다 (월 합계 summary는 검색과 무관하게 그 달 전체).
         tokens = q.lower().split()
         if tokens:
-            rows = [r for r in rows if all(t in f"{r['code']} {r['name']} {r['option']} {r['username']} {r['source_label']} {r['ref']}".lower() for t in tokens)]
+            rows = [r for r in rows if all(t in f"{r['code']} {r['name']} {r['option']} {r['username']} {r['source_label']} {r['ref']} {r['memo']}".lower() for t in tokens)]
 
         by_product: dict[str, dict] = {}
         for r in rows:

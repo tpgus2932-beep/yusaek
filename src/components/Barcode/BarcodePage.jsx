@@ -6,6 +6,7 @@ import StockLogModal from "./StockLogModal";
 import DefectRecordSheet from "./DefectRecordSheet";
 import DefectRecordDetailModal from "./DefectRecordDetailModal";
 import DefectMatchModal from "./DefectMatchModal";
+import DefectKakaoModal from "./DefectKakaoModal";
 import { getDownloadFilename } from "../../lib/download";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
@@ -95,7 +96,10 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
   const [tabStats, setTabStats] = useState({});
   const tabHeaders = () => ({ ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(defectTabRef.current) });
   const [defectMode, setDefectMode] = useState(false);
+  const [productCheckMode, setProductCheckMode] = useState(false); // 제품확인 모드: 상품코드 스캔 → 에이블리 상품 페이지로 이동
+  const [productCheckResult, setProductCheckResult] = useState(null); // { code, name, url, error }
   const [showDefectList, setShowDefectList] = useState(false);
+  const [showDefectKakao, setShowDefectKakao] = useState(false); // 거래처 카톡 불량 전송 창
   const [defectList, setDefectList] = useState([]);
   const [defectSearchQuery, setDefectSearchQuery] = useState("");
   const [defectSearchRows, setDefectSearchRows] = useState([]);
@@ -1200,10 +1204,38 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     }
   };
 
+  // 제품확인 모드: 스캔한 상품코드를 원가베이스유에서 찾아 에이블리상품번호로 모바일 에이블리 상품 페이지를 연다.
+  const handleProductCheck = async (value) => {
+    const code = value.replace(/\s+/g, "").toUpperCase();
+    try {
+      const res = await fetch(`${API}/wonbe/search?${new URLSearchParams({ q: code, limit: "20" })}`, { headers: tabHeaders() });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "상품 조회 실패");
+      const rows = (data.rows || []).filter((r) => String(r["상품코드"] || "").trim().toUpperCase() === code);
+      if (rows.length === 0) { setProductCheckResult({ code, error: "원가베이스유에서 상품코드를 찾을 수 없습니다." }); playSound("bad"); return; }
+      const row = rows.find((r) => String(r["에이블리상품번호"] || "").trim()) || rows[0];
+      const goodsNo = String(row["에이블리상품번호"] || "").trim();
+      const name = [row["상품명"], row["색상"], row["사이즈"]].filter(Boolean).join(" ");
+      if (!goodsNo) { setProductCheckResult({ code, name, error: "에이블리 상품번호가 등록되어 있지 않습니다." }); playSound("bad"); return; }
+      const url = `https://mobile.a-bly.com/goods/${encodeURIComponent(goodsNo)}`;
+      setProductCheckResult({ code, name, url });
+      window.open(url, "_blank", "noopener");
+    } catch (err) {
+      setProductCheckResult({ code, error: err.message || "상품 조회 실패" });
+    }
+  };
+
   const handleScan = async () => {
     const raw = scanText.trim();
     const value = toEnglishKey(raw);
     if (!value) return;
+    if (productCheckMode) {
+      setScanText("");
+      await handleProductCheck(value);
+      setTimeout(() => scanRef.current?.focus(), 0);
+      return;
+    }
     if (defectMode) { await handleDefectAdd(); return; }
 
     const toInvoice = !currentInvoice || isProbablyInvoice(value);
@@ -2261,6 +2293,14 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                   <button className={styles.secondaryBtn} onClick={() => setShowLabelReprint(true)}>라벨 재출력</button>
                 </>
               )}
+              {mobileLite && (
+                <button
+                  className={`${styles.toggleBtn} ${productCheckMode ? styles.toggleOn : ""}`}
+                  onClick={() => { setProductCheckMode((v) => !v); setProductCheckResult(null); setTimeout(() => scanRef.current?.focus(), 0); }}
+                >
+                  {productCheckMode ? "🔍 제품확인 모드" : "제품확인 모드"}
+                </button>
+              )}
               <button
                 className={`${styles.toggleBtn} ${defectMode ? styles.toggleOn : ""}`}
                 onClick={() => setDefectMode((v) => !v)}
@@ -2303,7 +2343,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
               }}
               onCompositionEnd={(e) => setScanText(toEnglishKey(e.currentTarget.value))}
               onKeyDown={(e) => { if (e.key === "Enter") handleScan(); }}
-              placeholder={defectMode ? "불량 바코드 스캔 후 Enter" : "송장 또는 상품 바코드 스캔 후 Enter"}
+              placeholder={productCheckMode ? "상품코드 스캔 후 Enter (에이블리 상품 페이지로 이동)" : defectMode ? "불량 바코드 스캔 후 Enter" : "송장 또는 상품 바코드 스캔 후 Enter"}
               className={styles.scanInput}
               style={defectMode ? { borderColor: "rgba(220,53,69,0.6)", background: "rgba(220,53,69,0.04)" } : {}}
             />
@@ -2312,6 +2352,16 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
               {defectMode ? "불량 추가" : "스캔 처리"}
             </button>
           </div>
+          {productCheckMode && productCheckResult && (
+            <div style={{ marginTop: "0.6rem", fontSize: "0.95em" }}>
+              <strong>{productCheckResult.code}</strong>{productCheckResult.name ? ` · ${productCheckResult.name}` : ""}
+              {productCheckResult.error ? (
+                <div style={{ color: "#dc2626" }}>{productCheckResult.error}</div>
+              ) : (
+                <div><a href={productCheckResult.url} target="_blank" rel="noopener noreferrer">{productCheckResult.url}</a></div>
+              )}
+            </div>
+          )}
 
         </section>
 
@@ -2681,7 +2731,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
         );
       })()}
       {showDeductHistory && (
-        <div className={styles.modalOverlay} onClick={() => setShowDeductHistory(false)}>
+        <div className={styles.modalOverlay} style={{ zIndex: 70 }} onClick={() => setShowDeductHistory(false)}>
           <div className={styles.modal} onClick={(e) => e.stopPropagation()} style={{ maxHeight: "80vh", overflowY: "auto" }}>
             <div className={styles.modalHeader}>
               <h4 className={styles.modalTitle}>출고상품삭제 이력</h4>
@@ -3562,6 +3612,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                 <button className={styles.secondaryBtn} onClick={handleDefectExport}>내보내기</button>
                 <button className={styles.secondaryBtn} onClick={handleDefectPrint}>불량출력</button>
                 <button className={styles.secondaryBtn} onClick={openPurchasePicker} disabled={defectList.length === 0}>매입관리</button>
+                <button className={styles.secondaryBtn} onClick={() => setShowDefectKakao(true)} disabled={defectList.length === 0}>카톡 전송</button>
                 <button
                   className={styles.secondaryBtn}
                   onClick={openKimsungilSummonPicker}
@@ -3723,6 +3774,17 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
           </div>
         </div>
       )}
+
+      <DefectKakaoModal
+        open={showDefectKakao}
+        onClose={() => setShowDefectKakao(false)}
+        tabHeaders={tabHeaders}
+        counts={Object.fromEntries(
+          defectList
+            .filter((item) => (item.normal_qty ?? item.count) > 0)
+            .map((item) => [String(item.code || "").trim(), item.normal_qty ?? item.count])
+        )}
+      />
 
       {/* 김승일 리스트 모달 */}
       {showKimsungilList && (

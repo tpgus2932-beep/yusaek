@@ -124,7 +124,7 @@ const NormalizationStats = () => {
                                         <td>{r.name || r.code}</td>
                                         <td>{r.option}</td>
                                         <td>{r.qty}</td>
-                                        <td>{r.ref ? `송장 ${r.ref}` : ''}</td>
+                                        <td>{[r.ref ? `송장 ${r.ref}` : '', r.memo ? `메모: ${r.memo}` : ''].filter(Boolean).join(' · ')}</td>
                                     </tr>
                                 ))}
                             </tbody>
