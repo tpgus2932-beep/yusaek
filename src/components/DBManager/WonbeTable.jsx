@@ -1707,6 +1707,35 @@ export default function WonbeTable() {
               <button onClick={() => setTagGroups(null)} disabled={tagApplying}>닫기</button>
             </span>
           </div>
+          {(() => {
+            // 지금 화면에 보이는 목록(필터 적용 후) 전체에 한 번에 적용
+            const isVisible = (g) => !(tagManual && tagOnlyUnnumbered && g.current_number);
+            const visible = tagGroups.filter(isVisible);
+            const allChecked = visible.length > 0 && visible.every((g) => g.checked);
+            return (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6, paddingBottom: 6, borderBottom: "1px solid #eee", fontSize: 13 }}>
+                <label style={{ display: "flex", gap: 4, alignItems: "center", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={allChecked}
+                    onChange={(e) => setTagGroups((p) => p.map((x) => (isVisible(x) ? { ...x, checked: e.target.checked } : x)))}
+                  />
+                  전체 선택 ({visible.filter((g) => g.checked).length}/{visible.length})
+                </label>
+                <span style={{ marginLeft: 8 }}>전체 번호:</span>
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <button
+                    key={n}
+                    disabled={tagApplying}
+                    onClick={() => setTagGroups((p) => p.map((x) => (isVisible(x) ? { ...x, number: n } : x)))}
+                    style={{ minWidth: 28 }}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
           {tagManual && (
             <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 6, fontSize: 13 }}>
               <label style={{ display: "flex", gap: 4, alignItems: "center", cursor: "pointer" }}>
