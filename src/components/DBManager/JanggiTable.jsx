@@ -469,6 +469,14 @@ function JanggiListView({ initialQuery = "", initialDate = "", syncWonbeCost = f
       (syncWonbeCost ? `(먼저 장끼정리 가격 기준으로 원가베이스유 원가를 같은 에이블리상품번호의 모든 옵션에 반영합니다)\n` : "") +
       `(에이블리상품번호 기준 — 실제 판매중인 상품가가 바뀝니다)\n진행하시겠습니까?`
     )) return;
+    // 이벤트가 기준이면 이벤트전 할인가를 몇 % 올릴지 먼저 받는다 (원가베이스유의 "이벤트 할인가 채우기"와 동일)
+    let eventPercent = null;
+    if (syncWonbeCost && priceSource === "이벤트 할인가") {
+      const input = window.prompt("[이벤트전 할인가]를 몇 % 올려 [이벤트 할인가]에 채울까요? (예: 10)");
+      if (input === null) return;
+      eventPercent = Number(input);
+      if (input.trim() === "" || !Number.isFinite(eventPercent)) { setMessage("퍼센트 값이 올바르지 않습니다."); return; }
+    }
     setPricePushLoading(true);
     try {
       let costNote = "";
@@ -491,6 +499,28 @@ function JanggiListView({ initialQuery = "", initialDate = "", syncWonbeCost = f
           const cd = await cr.json().catch(() => ({}));
           if (!cr.ok || !cd.ok) throw new Error(cd?.detail || "원가베이스유 원가 수정 실패 (에이블리 상품가는 변경하지 않았습니다)");
           costNote = `원가베이스유 원가 ${cd.updated}개 옵션 수정 · `;
+
+          // 원가 기준으로 판매가(이벤트전 할인가)를 다시 계산 - 원가베이스유 "이벤트전 할인가 채우기"와 동일 (목표순마진율/택배비는 서버 기본값)
+          const priceCodes = Array.isArray(cd.codes) && cd.codes.length ? cd.codes : codes;
+          const pr = await fetch(`${API}/wonbe/fill-event-pre-discount-price`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+            body: JSON.stringify({ codes: priceCodes }),
+          });
+          const pd = await pr.json().catch(() => ({}));
+          if (!pr.ok || !pd.ok) throw new Error(pd?.detail || "판매가(이벤트전 할인가) 계산 실패 (에이블리 상품가는 변경하지 않았습니다)");
+          costNote += `판매가 ${pd.updated}건 재계산(마진 ${pd.margin_percent}%) · `;
+
+          if (eventPercent !== null) {
+            const er = await fetch(`${API}/wonbe/fill-event-discount`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+              body: JSON.stringify({ percent: eventPercent, codes: priceCodes }),
+            });
+            const ed = await er.json().catch(() => ({}));
+            if (!er.ok || !ed.ok) throw new Error(ed?.detail || "이벤트 할인가 계산 실패 (에이블리 상품가는 변경하지 않았습니다)");
+            costNote += `이벤트가 ${ed.updated}건 재계산(${ed.percent}%) · `;
+          }
         }
       }
       const res = await fetch(`${API}/wonbe/push-price-to-ably`, {
@@ -892,7 +922,7 @@ function JanggiListView({ initialQuery = "", initialDate = "", syncWonbeCost = f
           <button
             className={`${styles.btn} ${styles.btnDanger}`}
             onClick={handleBulkClear}
-        {["이벤트전 할인가", "이벤트 할인가"].map((src) => (
+        {syncWonbeCost && ["이벤트전 할인가", "이벤트 할인가"].map((src) => (
           <button
             key={src}
             className={`${styles.btn} ${styles.btnSecondary}`}

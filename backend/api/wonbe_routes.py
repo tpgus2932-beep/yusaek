@@ -1473,6 +1473,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         """이벤트전 할인가를 지정한 퍼센트만큼 올린 값으로 이벤트 할인가를 채운다.
         예: 퍼센트 10 → 이벤트 할인가 = 이벤트전 할인가 * 1.10 (반올림)."""
         q = str(payload.get("q") or "").strip()
+        codes_filter = [str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()]
         try:
             percent = float(payload.get("percent"))
         except (TypeError, ValueError):
@@ -1482,7 +1483,13 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         try:
             _init_wonbe_table(conn)
             select_cols = f"상품코드, 에이블리상품번호, {_qcol('이벤트전 할인가')}"
-            if q:
+            if codes_filter:
+                placeholders = ", ".join("?" for _ in codes_filter)
+                rows = conn.execute(
+                    f"SELECT {select_cols} FROM wonbe WHERE 상품코드 IN ({placeholders})",
+                    codes_filter,
+                ).fetchall()
+            elif q:
                 like = f"%{q}%"
                 rows = conn.execute(
                     f"SELECT {select_cols} FROM wonbe WHERE 상품코드 LIKE ? OR 상품명합 LIKE ? OR 거래처합 LIKE ? OR 거래처 LIKE ?",
