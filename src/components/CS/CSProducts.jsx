@@ -239,7 +239,7 @@ function OptionRow({ room, product, onChanged }) {
     );
 }
 
-const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom, conversation }) => {
+const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom, conversation, nextRoomRef }) => {
     // 탭을 옮겼다 돌아오면 지난번 결과를 바로 보여주고, 최신 값은 뒤에서 받아 갱신한다.
     const [products, setProducts] = useState(() => productsCache?.by_product || []);
     const [baseAvailable, setBaseAvailable] = useState(() => productsCache?.base_available ?? null);
@@ -313,13 +313,13 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
         setOnlyWaiting(false);
     };
 
-    const openRoom = (r) =>
-        onSelectRoom({
-            ...r,
-            goods: { sno: selected.goods_sno, name: selected.name },
-            asked_code: r.option_match?.code || '',
-            order_item: { order_sno: r.order_sno },
-        });
+    const toRoom = (r) => ({
+        ...r,
+        goods: { sno: selected.goods_sno, name: selected.name },
+        asked_code: r.option_match?.code || '',
+        order_item: { order_sno: r.order_sno },
+    });
+    const openRoom = (r) => onSelectRoom(toRoom(r));
 
     const timeOf = (r) => r.updated_latest_message_at || '';
     const rooms = (selected?.rooms || [])
@@ -330,6 +330,17 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
             // 답변 대기 우선: 대기 중인 문의를 위로, 그 안에서는 최신순
             return Number(b.waiting) - Number(a.waiting) || timeOf(b).localeCompare(timeOf(a));
         });
+
+    // Ctrl+Enter 완료 후 같은 상품의 다음 문의(없으면 이전 문의)를 열 수 있게, 지금 보이는 순서대로 찾아 주는 함수를 부모에 넘긴다.
+    if (nextRoomRef) {
+        nextRoomRef.current = (sno) => {
+            if (!selected) return null;
+            const i = rooms.findIndex((r) => r.sno === sno);
+            if (i < 0) return null;
+            const next = rooms[i + 1] || rooms[i - 1];
+            return next ? toRoom(next) : null;
+        };
+    }
 
     const sending = Boolean(bulkRun && bulkRun.done < bulkRun.total);
     const completing = Boolean(completeRun && completeRun.done < completeRun.total);
