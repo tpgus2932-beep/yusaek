@@ -5,8 +5,10 @@ import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
 const DEFAULT_PAGE_SIZE = 50;
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500];
-const EDITABLE_COLS = ["색상", "상품명합", "거래처합", "거래처", "거래처상품명", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"];
-const ALL_COLS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "이벤트전 할인가", "이벤트 할인가", "판매가", "아이디", "대표상품코드", "카테고리"];
+const EDITABLE_COLS = ["색상", "상품명합", "거래처합", "거래처", "거래처상품명", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가", "태그"];
+const ALL_COLS = ["상품코드", "상품명", "태그", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "이벤트전 할인가", "이벤트 할인가", "판매가", "아이디", "대표상품코드", "카테고리"];
+const NEW_COLS = ["태그"]; // 새로 생긴 칸은 예전에 저장된 '열 선택'에도 보이도록 한 번 추가해준다
+const NEW_COLS_STORAGE_KEY = "wonbe_new_cols_seen";
 const VISIBLE_COLS_STORAGE_KEY = "wonbe_visible_cols";
 const PAGE_SIZE_STORAGE_KEY = "wonbe_page_size";
 
@@ -111,7 +113,11 @@ export default function WonbeTable() {
     try {
       const saved = JSON.parse(localStorage.getItem(VISIBLE_COLS_STORAGE_KEY) || "null");
       if (Array.isArray(saved) && saved.length) {
-        return new Set(saved.filter((c) => ALL_COLS.includes(c)));
+        const set = new Set(saved.filter((c) => ALL_COLS.includes(c)));
+        const seen = JSON.parse(localStorage.getItem(NEW_COLS_STORAGE_KEY) || "[]");
+        NEW_COLS.forEach((c) => { if (!seen.includes(c)) set.add(c); });
+        localStorage.setItem(NEW_COLS_STORAGE_KEY, JSON.stringify(NEW_COLS));
+        return set;
       }
     } catch { /* noop */ }
     return new Set(ALL_COLS);
@@ -1300,7 +1306,7 @@ export default function WonbeTable() {
             className={styles.searchInput}
             value={inputQuery}
             onChange={(e) => setInputQuery(e.target.value)}
-            placeholder="상품코드 / 상품명합 / 거래처합 / 거래처"
+            placeholder="상품코드 / 상품명합 / 거래처합 / 거래처 / 태그"
           />
           <button className={`${styles.btn} ${styles.btnPrimary}`} type="submit" disabled={loading}>
             검색

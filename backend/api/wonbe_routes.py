@@ -81,7 +81,7 @@ JANGGI_DB_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\날짜별장끼�
 INGODAEGI_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\입고대기.xlsx")
 ZIGZAG_PRICE_TEMPLATE_XLSX_PATH = Path(r"C:\Users\ksh29\OneDrive\Desktop\원베\지그재그_판매가수정_템플릿.xlsx")
 
-COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가", "지그재그상품번호", "아이디", "대표상품코드", "카테고리"]
+COLUMNS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "제조국", "이벤트전 할인가", "이벤트 할인가", "판매가", "지그재그상품번호", "아이디", "대표상품코드", "카테고리", "태그"]
 
 CATEGORY_CHOICES = ("상의", "하의", "아우터", "악세사리")
 _CATEGORY_BY_LAST_WORD = {
@@ -160,7 +160,7 @@ def _qcol(col: str) -> str:
 def _qcols(cols: list[str]) -> str:
     return ", ".join(_qcol(c) for c in cols)
 
-EDITABLE = {"색상", "상품명합", "거래처합", "거래처", "거래처상품명", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"}
+EDITABLE = {"색상", "상품명합", "거래처합", "거래처", "거래처상품명", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가", "태그"}
 
 INGODAEGI_COLUMNS = ["상품코드", "입고수량"]
 ABLY_STOCK_COLUMNS = ["옵션번호", "수량"]
@@ -262,6 +262,8 @@ def _init_wonbe_table(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE wonbe ADD COLUMN 대표상품코드 TEXT")
     if "카테고리" not in wonbe_cols:
         conn.execute("ALTER TABLE wonbe ADD COLUMN 카테고리 TEXT")
+    if "태그" not in wonbe_cols:
+        conn.execute("ALTER TABLE wonbe ADD COLUMN 태그 TEXT")  # 쉼표로 구분한 태그 목록 (예: "대형")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS wonbe_meta (
             key   TEXT PRIMARY KEY,
@@ -308,6 +310,23 @@ def _init_wonbe_table(conn: sqlite3.Connection):
 
 # 대형 번호 상품명: "2 쿠로 하이넥"처럼 숫자+띄어쓰기로 시작 ("2way", "1+1"은 아님)
 _BIG_NUMBER_RE = re.compile(r"^(\d+)\s+")
+BIG_TAG = "대형"
+
+
+def _add_wonbe_tag(conn, codes, tag: str = BIG_TAG) -> None:
+    """wonbe.태그(쉼표 구분)에 tag를 추가한다. 이미 있으면 그대로. commit은 호출한 쪽에서."""
+    codes = list(dict.fromkeys(str(c).strip() for c in codes if str(c).strip()))
+    for i in range(0, len(codes), 500):
+        chunk = codes[i:i + 500]
+        ph = ",".join(["?"] * len(chunk))
+        conn.execute(
+            f"""UPDATE wonbe SET 태그 = CASE
+                    WHEN TRIM(COALESCE(태그, '')) = '' THEN ?
+                    WHEN ',' || REPLACE(태그, ' ', '') || ',' LIKE ? THEN 태그
+                    ELSE 태그 || ',' || ? END
+                WHERE 상품코드 IN ({ph})""",
+            (tag, f"%,{tag},%", tag, *chunk),
+        )
 
 COST_BASE_CODE_COL = 0
 COST_BASE_MATCH_COL = 8
@@ -2391,7 +2410,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 # 문자열로 LIKE 검색해서 "글로우 검정"이 정확히 그 순서로 붙어있어야 했고,
                 # 색상/사이즈 칼럼은 검색 대상에 아예 빠져 있었다.
                 tokens = q.split()
-                search_columns = ["상품코드", "상품명합", "거래처합", "거래처", "거래처상품명", "색상", "사이즈"]
+                search_columns = ["상품코드", "상품명합", "거래처합", "거래처", "거래처상품명", "색상", "사이즈", "태그"]
                 token_params = []
                 token_clauses = []
                 for token in tokens:
@@ -3336,7 +3355,10 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 conn.executemany(
                     "INSERT OR REPLACE INTO wonbe_big_number (상품코드, number, applied_at) VALUES (?, ?, ?)", numbered
                 )
-                conn.commit()
+            # 번호가 붙은 상품(이번 동기화 + 이전에 번호 기록된 상품)은 태그에 '대형' 추가
+            big_codes = [n[0] for n in numbered] + [r[0] for r in conn.execute("SELECT 상품코드 FROM wonbe_big_number").fetchall()]
+            _add_wonbe_tag(conn, big_codes)
+            conn.commit()
             # 상품명(원래 이름) 기준 unique 그룹 - 프론트에서 대형태그/번호 지정용 리스트로 사용
             done_codes = {r[0] for r in conn.execute("SELECT 상품코드 FROM wonbe_tag_done").fetchall()}
             groups_map: dict = {}
@@ -3492,7 +3514,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                     ).fetchall())
             else:
                 # /search 와 같은 방식: 띄어쓴 단어를 각각 AND로 요구
-                search_columns = ["상품코드", "상품명합", "거래처합", "거래처", "거래처상품명", "색상", "사이즈"]
+                search_columns = ["상품코드", "상품명합", "거래처합", "거래처", "거래처상품명", "색상", "사이즈", "태그"]
                 clauses, params = [], []
                 for token in q.split():
                     clauses.append("(" + " OR ".join(f"{col} LIKE ?" for col in search_columns) + ")")
@@ -3636,6 +3658,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                     nconn.executemany(
                         "INSERT OR REPLACE INTO wonbe_big_number (상품코드, number, applied_at) VALUES (?, ?, ?)", num_rows
                     )
+                    _add_wonbe_tag(nconn, [r[0] for r in num_rows])
                     nconn.commit()
                 finally:
                     nconn.close()
