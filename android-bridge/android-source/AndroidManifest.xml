@@ -1,0 +1,20 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.yusaek.talkbridge" android:versionCode="44" android:versionName="2.3.0">
+  <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+  <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+  <queries><package android:name="com.kakao.talk" /></queries>
+  <application android:label="YUSAEK TALK Bridge" android:allowBackup="false" android:usesCleartextTraffic="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+    <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
+    <activity android:name=".ShareActivity" android:exported="true" android:permission="android.permission.DUMP" />
+    <provider android:name=".MediaProvider" android:authorities="com.yusaek.talkbridge.media" android:exported="false" android:grantUriPermissions="true" />
+    <service android:name=".TalkNotifications" android:exported="true" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"><intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter></service>
+    <service android:name=".BridgeInputMethod" android:label="YUSAEK ADB Input" android:exported="true" android:permission="android.permission.BIND_INPUT_METHOD"><intent-filter><action android:name="android.view.InputMethod"/></intent-filter><meta-data android:name="android.view.im" android:resource="@xml/input_method"/></service>
+    <service android:name=".FastProbeAccessibilityService" android:label="YUSAEK TALK 화면 속도 시험" android:exported="true" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"><intent-filter><action android:name="android.accessibilityservice.AccessibilityService"/></intent-filter><meta-data android:name="android.accessibilityservice" android:resource="@xml/fast_probe_accessibility"/></service>
+    <receiver android:name=".FastProbeReceiver" android:exported="true" android:permission="android.permission.DUMP"><intent-filter><action android:name="com.yusaek.talkbridge.FAST_PROBE"/><action android:name="com.yusaek.talkbridge.SEND"/></intent-filter></receiver>
+    <receiver android:name=".InputReceiver" android:exported="true" android:permission="android.permission.DUMP"><intent-filter><action android:name="com.yusaek.talkbridge.INPUT_B64"/><action android:name="com.yusaek.talkbridge.INPUT_READY"/></intent-filter></receiver>
+    <receiver android:name=".ConfigReceiver" android:exported="true" android:permission="android.permission.DUMP"><intent-filter><action android:name="com.yusaek.talkbridge.CONFIGURE"/><action android:name="com.yusaek.talkbridge.HELLO"/></intent-filter></receiver>
+  </application>
+</manifest>

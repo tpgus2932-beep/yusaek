@@ -217,6 +217,7 @@ const CSPage = () => {
     const cancelPrefetch = () => clearTimeout(prefetchTimer.current);
 
     const selectedRef = useRef(null);
+    const nextProductRoomRef = useRef(null); // 상품별 탭이 채워 주는 '같은 상품의 다음 문의 찾기' 함수
 
     const openRoom = async (r) => {
         selectedRef.current = r.sno;
@@ -226,7 +227,6 @@ const CSPage = () => {
         if (cached) {
             setDetail(cached);
             setDetailLoading(false);
-            return;
             // 캐시는 새 메시지가 올 때만 바뀌므로, 아직 '준비중'으로 보이는 주문은 열 때마다 에이블리 최신 상태로 다시 받는다.
             if ((cached.order_items || []).some((o) => /준비/.test(o.status || ''))) {
                 apiGet(`/rooms/${r.sno}`, { refresh: 'true' })
@@ -236,6 +236,7 @@ const CSPage = () => {
                     })
                     .catch(() => {});
             }
+            return;
         }
         setDetail(null);
         setDetailLoading(true);
@@ -285,6 +286,9 @@ const CSPage = () => {
         if (opts?.next && view === 'inbox') {
             const i = shownRooms.findIndex((r) => r.sno === selected);
             if (i >= 0) next = shownRooms[i + 1] || shownRooms[i - 1] || null;
+        } else if (opts?.next && view === 'products') {
+            // 상품별 탭: 같은 상품 안에서만 다음 문의로 넘어간다 (다른 상품으로는 가지 않는다).
+            next = nextProductRoomRef.current?.(selected) || null;
         }
         const ok = await runAction('/complete');
         if (ok && next) openRoom(next);
@@ -386,6 +390,7 @@ const CSPage = () => {
                     initialGoodsSno={productSno}
                     selectedRoomSno={selected}
                     onSelectRoom={openRoom}
+                    nextRoomRef={nextProductRoomRef}
                     conversation={
                         <CSConversation
                             {...conversationProps}
@@ -465,12 +470,12 @@ const CSPage = () => {
                             className={`${styles.roomItem} ${selected === r.sno ? styles.roomItemActive : ''} ${hitWords.get(r.sno)?.length > 0 ? styles.roomItemHit : ''}`}
                             onClick={() => { cancelPrefetch(); openRoom(r); }}
                             onMouseEnter={() => prefetchRoom(r)}
+                            onMouseLeave={cancelPrefetch}
                         >
                             {roomImage(r) ? (
                                 <img src={roomImage(r)} alt="" className={styles.roomThumb} loading="lazy" />
                             ) : (
                                 <span className={styles.roomThumb} />
-                            onMouseLeave={cancelPrefetch}
                             )}
                             <div className={styles.roomBody}>
                                 <div className={styles.roomHead}>

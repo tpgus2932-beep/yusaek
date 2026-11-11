@@ -1,0 +1,1 @@
+<input-method xmlns:android="http://schemas.android.com/apk/res/android" android:settingsActivity="com.yusaek.talkbridge.MainActivity"><subtype android:imeSubtypeLocale="ko_KR" android:imeSubtypeMode="keyboard" /></input-method>
