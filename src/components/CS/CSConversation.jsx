@@ -3,6 +3,7 @@ import styles from './CSPage.module.css';
 import CSStock from './CSStock';
 import CSAddressModal from './CSAddressModal';
 import CSPurchaseReturnModal from './CSPurchaseReturnModal';
+import CSMisshipModal from './CSMisshipModal';
 import CSReturnWithdrawModal from './CSReturnWithdrawModal';
 import CSCancelApproveModal from './CSCancelApproveModal';
 import CSDeliveryModal from './CSDeliveryModal';
@@ -101,6 +102,7 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
     const [recallOpen, setRecallOpen] = useState(false); // 회수신청(전화번호 → 주문 선택 → 회수접수) 모달
     const [holdOpen, setHoldOpen] = useState(false); // 보류 해제·정상 복귀 모달
     const [exchangeOpen, setExchangeOpen] = useState(false); // 상품 교환(전화번호 → 주문 → 옵션 교환) 모달
+    const [misshipOpen, setMisshipOpen] = useState(false); // 오배송 특이사항 등록 + 입출고 모달
     const room = detail?.contact_room;
     const messages = detail?.contact_messages || [];
     const product = room ? roomProduct(preview, detail) : null;
@@ -130,6 +132,7 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
         { id: 'csLog', title: 'CS 로그 확인', desc: '전화번호로 주문을 검색해 이지어드민 C/S 이력 확인', onClick: () => setLogOpen(true) },
         { id: 'recall', title: '회수신청', desc: '전화번호로 주문을 검색해 선택하고, CS 로그를 보며 이지어드민에 회수접수', onClick: () => setRecallOpen(true) },
         { id: 'hold', title: '보류 해제 · 정상 복귀', desc: '전화번호로 주문을 검색해 보류 해제 및 취소·CS 상태를 정상으로 복귀', onClick: () => setHoldOpen(true) },
+        { id: 'misship', title: '오배송 특이사항 등록', desc: '원송장번호를 반품 특이사항에 오배송으로 등록하고, 정상화 통계 확인 후 상품 입출고', onClick: () => setMisshipOpen(true) },
         { id: 'exchange', title: '상품 교환', desc: '전화번호로 주문을 검색해 주문 상품의 옵션을 이지어드민에서 교환', onClick: () => setExchangeOpen(true) },
     ];
     const targetItems = product?.orderNo ? orderItems.filter((o) => String(o.order_sno) === String(product.orderNo)) : [];
@@ -262,6 +265,9 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
             )}
             {exchangeOpen && (
                 <CSExchangeModal phone={room?.member?.mobile || preview?.member?.mobile || ''} onClose={() => setExchangeOpen(false)} />
+            )}
+            {misshipOpen && (
+                <CSMisshipModal orderNo={orderNoStr} goodsName={product?.goods?.name || ''} onClose={() => setMisshipOpen(false)} />
             )}
             {deliveryOpen && (
                 <CSDeliveryModal phone={room?.member?.mobile || preview?.member?.mobile || ''} onClose={() => setDeliveryOpen(false)} />
