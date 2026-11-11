@@ -3446,6 +3446,66 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             conn.close()
         return len(codes)
 
+    @router.post("/big-groups")
+    def wonbe_big_groups(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        """[대형 수정] 버튼용 - 체크한 상품코드(codes)가 있으면 그 상품, 없으면 검색어(q) 결과 전체를
+        상품명 기준으로 묶어 돌려준다. 동기화 처리 완료 여부와 상관없이 다시 고칠 수 있게 하기 위함.
+        body: {q, codes, empty_col, group_id} -> {groups: [{name, codes, ids, count}]}"""
+        codes = list(dict.fromkeys(str(c).strip() for c in (payload.get("codes") or []) if str(c).strip()))
+        q = str(payload.get("q") or "").strip()
+        empty_col = str(payload.get("empty_col") or "").strip()
+        group_id = int(payload.get("group_id") or 0)
+        if empty_col and empty_col not in COLUMNS:
+            raise HTTPException(status_code=400, detail=f"잘못된 컬럼: {empty_col}")
+        if not codes and not q:
+            raise HTTPException(status_code=400, detail="상품명을 검색하거나 상품을 체크해주세요.")
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            rows = []
+            if codes:
+                for i in range(0, len(codes), 500):
+                    chunk = codes[i:i + 500]
+                    ph = ",".join(["?"] * len(chunk))
+                    rows.extend(conn.execute(
+                        f"SELECT 상품코드, 상품명, 대표상품코드, 아이디 FROM wonbe WHERE 상품코드 IN ({ph})", chunk
+                    ).fetchall())
+            else:
+                # /search 와 같은 방식: 띄어쓴 단어를 각각 AND로 요구
+                search_columns = ["상품코드", "상품명합", "거래처합", "거래처", "거래처상품명", "색상", "사이즈"]
+                clauses, params = [], []
+                for token in q.split():
+                    clauses.append("(" + " OR ".join(f"{col} LIKE ?" for col in search_columns) + ")")
+                    params.extend([f"%{token}%"] * len(search_columns))
+                if empty_col:
+                    clauses.append(f"TRIM({_qcol(empty_col)}) = ''")
+                if group_id:
+                    clauses.append("상품코드 IN (SELECT 상품코드 FROM wonbe_group_members WHERE group_id = ?)")
+                    params.append(group_id)
+                rows = conn.execute(
+                    f"SELECT 상품코드, 상품명, 대표상품코드, 아이디 FROM wonbe WHERE {' AND '.join(clauses)} ORDER BY 상품코드 LIMIT 5000",
+                    params,
+                ).fetchall()
+        finally:
+            conn.close()
+        groups_map: dict = {}
+        for r in rows:
+            name = re.sub(r"^\d+\s+", "", str(r["상품명"] or "").strip())  # 이미 번호가 붙어 있으면 떼고 묶는다
+            if not name:
+                continue
+            g = groups_map.setdefault(name, {"codes": [], "ids": []})
+            code = str(r["상품코드"])
+            if code not in g["codes"]:
+                g["codes"].append(code)
+            for v in (r["대표상품코드"], r["아이디"]):
+                v = str(v or "").strip()
+                if v.isdigit():
+                    if v not in g["ids"]:
+                        g["ids"].append(v)
+                    break
+        groups = [{"name": n, "codes": g["codes"], "ids": g["ids"], "count": len(g["codes"])} for n, g in groups_map.items()]
+        return {"ok": True, "groups": groups, "rows": len(rows)}
+
     @router.post("/tag-done")
     def wonbe_tag_done(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
         """동기화 목록의 [완료] - 넘겨준 상품코드들을 처리 완료로 기록해 다음 동기화부터 제외한다."""

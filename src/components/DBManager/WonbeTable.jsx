@@ -43,7 +43,9 @@ export default function WonbeTable() {
   const [message, setMessage] = useState("");
   const [rawUnexpected, setRawUnexpected] = useState(null);
   const [tagGroups, setTagGroups] = useState(null); // 동기화 직후 대형태그/번호 지정 리스트
+  const [tagManual, setTagManual] = useState(false); // true = [대형 수정] 버튼으로 연 리스트 (완료 기록 없이 적용만)
   const [tagApplying, setTagApplying] = useState(false);
+  const [bigLoading, setBigLoading] = useState(false);
   // 이지어드민 동기화 기간: 직접 입력 없이 최근 3일 / 7일 / 한달(30일) 중에서 고른다 (오늘 포함).
   const SYNC_PERIODS = [
     { days: 3, label: "3일" },
@@ -809,6 +811,7 @@ export default function WonbeTable() {
       setInputQuery("");
       await fetchRows("", 0);
       if (Array.isArray(data.groups) && data.groups.length) {
+        setTagManual(false);
         setTagGroups(data.groups.map((g) => ({ ...g, checked: false, number: 1 })));
       }
       // 동기화가 끝난 뒤 이어서 배포앱(Turso)으로 자동 전송 (동기화 실패 시에는 여기까지 오지 않는다)
@@ -824,6 +827,31 @@ export default function WonbeTable() {
       setMessage(err.message);
     } finally {
       setSyncing(false);
+    }
+  };
+
+  // [대형 수정] 체크한 상품이 있으면 그 상품, 없으면 현재 검색 결과 전체를 상품명별로 묶어 번호/대형태그 리스트를 연다.
+  // 동기화 때 이미 처리 완료된 상품도 다시 고칠 수 있다.
+  const handleOpenBigEdit = async () => {
+    const codes = [...selectedCodes];
+    if (!codes.length && !query) { setMessage("상품명을 먼저 검색하거나 상품을 체크해주세요."); return; }
+    setBigLoading(true);
+    try {
+      const res = await fetch(`${API}/wonbe/big-groups`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ codes, q: query, empty_col: emptyCol, group_id: activeGroupId || 0 }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "대형 수정 목록 조회 실패");
+      if (!data.groups?.length) { setMessage("대상 상품이 없습니다."); return; }
+      setTagManual(true);
+      setTagGroups(data.groups.map((g) => ({ ...g, checked: true, number: 1 })));
+      setMessage(`대형 수정: ${codes.length ? `체크한 ${codes.length}개` : `"${query}" 검색 결과`} → ${data.groups.length}개 상품명. 번호 고른 뒤 [선택 적용]을 누르세요.`);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setBigLoading(false);
     }
   };
 
@@ -1274,6 +1302,14 @@ export default function WonbeTable() {
             검색
           </button>
         </form>
+        <button
+          className={`${styles.btn} ${styles.btnSecondary}`}
+          onClick={handleOpenBigEdit}
+          disabled={loading || bigLoading || tagApplying || (!query && !selectedCodes.size)}
+          title="체크한 상품(없으면 검색된 상품 전체)의 이지어드민 상품명 앞에 번호(1·2·3…)를 붙이고 대형태그를 겁니다. 동기화 때 처리 끝난 상품도 다시 고칠 수 있습니다."
+        >
+          {bigLoading ? "불러오는 중..." : `대형 수정${selectedCodes.size ? ` (${selectedCodes.size})` : ""}`}
+        </button>
         <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => fetchRows(query, offset, emptyCol)} disabled={loading || syncing}>
           <RefreshCw size={13} />새로고침
         </button>
@@ -1660,10 +1696,10 @@ export default function WonbeTable() {
       {tagGroups && (
         <div style={{ border: "1px solid #ccc", borderRadius: 6, padding: 12, margin: "8px 0", maxHeight: 360, overflow: "auto" }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-            <strong>이지어드민 대형태그 / 상품명 번호 ({tagGroups.length}개 상품)</strong>
+            <strong>{tagManual ? "대형 수정" : "이지어드민 대형태그 / 상품명 번호"} ({tagGroups.length}개 상품)</strong>
             <span>
               <button onClick={() => handleApplyTagGroups()} disabled={tagApplying}>{tagApplying ? "적용 중..." : "선택 적용"}</button>{" "}
-              <button onClick={handleCompleteTagGroups} disabled={tagApplying} title="체크한 상품은 이지어드민에 반영한 뒤, 목록 전체를 처리 완료로 기록 — 다음 동기화부터 안 뜸">완료</button>{" "}
+              {!tagManual && <><button onClick={handleCompleteTagGroups} disabled={tagApplying} title="체크한 상품은 이지어드민에 반영한 뒤, 목록 전체를 처리 완료로 기록 — 다음 동기화부터 안 뜸">완료</button>{" "}</>}
               <button onClick={() => setTagGroups(null)} disabled={tagApplying}>닫기</button>
             </span>
           </div>
