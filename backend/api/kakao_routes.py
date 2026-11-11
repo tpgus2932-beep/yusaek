@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
-from services import kakao_phone
+from services import kakao_phone, kakao_photos
 from services.kakao_store import get_setting, init_kakao_tables, now_iso, set_settings
 
 _MAX_TEXT = 2000
@@ -764,7 +764,101 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
         finally:
             conn.close()
 
-    def _run_room_sync(contact_id: int, name: str, since: str, group: bool = False) -> None:
+    def _import_photos(cid: int, name: str, since: str, group: bool) -> dict:
+        """대화 동기화 뒤: 폰 사진 뷰어에서 사진을 가져와 `(사진)` 자리에 붙인다.
+
+        붙이는 규칙(확실한 것만): 같은 날짜의 사진 말풍선 수(웹에 있는 `(사진)` 자리 + 웹에서 보낸 사진)와
+        폰에서 가져온 그날의 사진 수가 정확히 같을 때만 시간순으로 1:1로 붙인다. 다르면 그날은 건드리지 않는다.
+        """
+        stats = {"photos_read": 0, "photos_attached": 0, "photos_skipped": 0}
+        floor = (datetime.strptime(since, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT id, kind, text, media_ids, substr(created_at, 1, 10) AS day, COALESCE(sort_no, id) AS k FROM kakao_messages "
+                "WHERE contact_id = ? AND dry_run = 0 AND status IN ('sent', 'received') AND substr(created_at, 1, 10) >= ? "
+                "ORDER BY COALESCE(sort_no, id)",
+                (cid, floor),
+            ).fetchall()
+        finally:
+            conn.close()
+        bubbles = [r for r in rows if (r["kind"] == "image" and r["media_ids"]) or (r["kind"] != "image" and r["text"] == "(사진)" and not r["media_ids"])]
+        placeholders = [r for r in bubbles if r["kind"] != "image"]
+        if not placeholders:
+            return stats                      # 붙일 자리가 없으면 폰을 건드리지 않는다
+        if not phone_lock.acquire(timeout=180):
+            raise RuntimeError("busy")
+        try:
+            photos = kakao_photos.import_room_photos(_device_config(), name, since, group=group)
+        finally:
+            phone_lock.release()
+        stats["photos_read"] = len(photos)
+        by_day_b: dict = {}
+        for r in bubbles:
+            by_day_b.setdefault(r["day"], []).append(r)
+        by_day_p: dict = {}
+        for ph in photos:
+            by_day_p.setdefault(ph["ts"][:10], []).append(ph)
+        _MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+        conn = get_db()
+        try:
+            def _attach(bubble, group_photos) -> bool:
+                """한 말풍선에 사진 1장 이상(앨범)을 붙인다."""
+                ids = []
+                for ph in group_photos:
+                    data = pathlib.Path(ph["path"]).read_bytes()
+                    kind = _sniff_image(data)
+                    if not kind:
+                        return False
+                    mime, ext = kind
+                    media_id = str(uuid.uuid4())
+                    target = _MEDIA_DIR / f"{media_id}.{ext}"
+                    target.write_bytes(data)
+                    conn.execute(
+                        "INSERT INTO kakao_media (id, name, mime, bytes, sha256, path, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, 'sync', ?)",
+                        (media_id, _safe_name(f"photo-{ph['ts'].replace(' ', '_').replace(':', '')}", ext), mime, len(data), hashlib.sha256(data).hexdigest(), str(target), now_iso()),
+                    )
+                    ids.append(media_id)
+                first = group_photos[0]["ts"]
+                conn.execute(
+                    "UPDATE kakao_messages SET kind = 'image', media_ids = ?, text = '(사진)', created_at = ?, time_known = 1, updated_at = ? WHERE id = ?",
+                    (",".join(ids), f"{first[:10]}T{first[11:]}:00+09:00", now_iso(), bubble["id"]),
+                )
+                return True
+
+            for day, plist in by_day_p.items():
+                blist = by_day_b.get(day, [])
+                if len(blist) == len(plist):
+                    units = [[ph] for ph in plist]                      # 1단계: 사진 1장 = 말풍선 1개
+                else:
+                    # 2단계(앨범): 같은 분·같은 보낸 사람의 사진은 한 말풍선(앨범)으로 묶어 개수를 다시 맞춰 본다
+                    units = []
+                    for ph in plist:
+                        key = (ph["ts"], ph["sender"])
+                        if units and (units[-1][0]["ts"], units[-1][0]["sender"]) == key:
+                            units[-1].append(ph)
+                        else:
+                            units.append([ph])
+                    if len(units) != len(blist):
+                        stats["photos_skipped"] += len([b for b in blist if b["kind"] != "image"])
+                        continue                                        # 그래도 안 맞으면 어느 사진인지 모르므로 붙이지 않는다
+                for b, group_photos in zip(blist, units):
+                    if b["kind"] == "image":
+                        continue                                        # 웹에서 보낸 사진은 이미 있다
+                    if _attach(b, group_photos):
+                        stats["photos_attached"] += len(group_photos)
+                    else:
+                        stats["photos_skipped"] += 1
+            conn.commit()
+        finally:
+            conn.close()
+            for ph in photos:
+                pathlib.Path(ph["path"]).unlink(missing_ok=True)
+        # 날짜가 폰에 아예 없는 사진 자리는 건너뛴 것으로 센다
+        stats["photos_skipped"] += sum(len([b for b in bl if b["kind"] != "image"]) for d, bl in by_day_b.items() if d >= since and d not in by_day_p)
+        return stats
+
+    def _run_room_sync(contact_id: int, name: str, since: str, group: bool = False, with_photos: bool = False) -> None:
         try:
             if not phone_lock.acquire(timeout=180):
                 raise RuntimeError("busy")
@@ -774,6 +868,11 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                 phone_lock.release()
             stats = _import_history(contact_id, messages, since)
             stats["removed"] = _drop_unsent_leftovers(contact_id, since)
+            if with_photos:
+                try:
+                    stats.update(_import_photos(contact_id, name, since, group))
+                except Exception as exc:  # noqa: BLE001 — 사진이 실패해도 글 동기화 결과는 그대로 남긴다
+                    stats["photos_error"] = kakao_phone.describe_error(kakao_phone.error_code(exc))
             room_sync["result"] = {**stats, "since": since, "pages": pages}
             room_sync["error"] = ""
         except RuntimeError:
@@ -812,7 +911,8 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
                 raise HTTPException(status_code=409, detail="이미 동기화가 진행 중입니다.")
             room_sync.update(running=True, contactId=contact_id, since=since, startedAt=now_iso(), finishedAt="", result=None, error="")
             state["syncing"] = True
-        threading.Thread(target=_run_room_sync, args=(contact_id, name, since, is_group), name="kakao-room-sync", daemon=True).start()
+        with_photos = bool((payload or {}).get("photos"))
+        threading.Thread(target=_run_room_sync, args=(contact_id, name, since, is_group, with_photos), name="kakao-room-sync", daemon=True).start()
         return {"ok": True, "started": True}
 
     def _record_added_friend(name: str, newly_added: bool) -> None:

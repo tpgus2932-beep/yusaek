@@ -115,6 +115,7 @@ const KakaoTalkPage = ({ openContactId = null, openNonce = 0 }) => {
     const [attachments, setAttachments] = useState([]); // {key, name, preview, id, error}
     const fileInput = useRef(null);
     const [roomSince, setRoomSince] = useState('');
+    const [roomPhotos, setRoomPhotos] = useState(true); // 대화 동기화 때 사진도 폰에서 가져올지
     const [renameOpen, setRenameOpen] = useState(false);
     const [renameValue, setRenameValue] = useState('');
     const scroller = useRef(null);
@@ -492,9 +493,9 @@ const KakaoTalkPage = ({ openContactId = null, openNonce = 0 }) => {
     const syncRoom = async () => {
         if (!selected || !roomSince) return;
         try {
-            await call(`/contacts/${selected.id}/sync-room`, { method: 'POST', body: { since: roomSince } });
+            await call(`/contacts/${selected.id}/sync-room`, { method: 'POST', body: { since: roomSince, photos: roomPhotos } });
             setRoomSyncOpen(false);
-            showNotice(`${selected.name} 님과의 대화를 ${roomSince}부터 폰에서 읽는 중입니다. 끝날 때까지 폰을 만지지 마세요.`);
+            showNotice(`${selected.name} 님과의 대화를 ${roomSince}부터 폰에서 읽는 중입니다.${roomPhotos ? ' 사진도 가져오느라 시간이 더 걸립니다.' : ''} 끝날 때까지 폰을 만지지 마세요.`);
             loadStatus();
         } catch (err) {
             showNotice(err.message);
@@ -511,7 +512,7 @@ const KakaoTalkPage = ({ openContactId = null, openNonce = 0 }) => {
             wasRoomSyncing.current = false;
             const { result, error } = status.roomSync;
             if (error) showNotice(`대화 동기화 실패: ${error}`);
-            else if (result) showNotice(`${result.since}부터 대화 ${result.read}개를 확인해 ${result.added}개를 가져왔습니다.${result.removed ? ` 전송 실패·확인 필요·취소 기록 ${result.removed}건은 지웠습니다.` : ''}`);
+            else if (result) showNotice(`${result.since}부터 대화 ${result.read}개를 확인해 ${result.added}개를 가져왔습니다.${result.removed ? ` 전송 실패·확인 필요·취소 기록 ${result.removed}건은 지웠습니다.` : ''}${result.photos_read !== undefined ? ` 사진 ${result.photos_read}장을 읽어 ${result.photos_attached}장을 붙였습니다${result.photos_skipped ? ` (개수가 맞지 않아 ${result.photos_skipped}곳은 (사진)으로 둠)` : ''}.` : ''}${result.photos_error ? ` 사진은 가져오지 못했습니다: ${result.photos_error}` : ''}`);
             loadMessages(selectedId);
         }
         return undefined;
@@ -1118,6 +1119,10 @@ const KakaoTalkPage = ({ openContactId = null, openNonce = 0 }) => {
                                         ))}
                                     </div>
                                     <input type="date" value={roomSince} max={isoDay(0)} onChange={(e) => setRoomSince(e.target.value)} />
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '8px 0', fontSize: 12 }}>
+                                        <input type="checkbox" checked={roomPhotos} onChange={(e) => setRoomPhotos(e.target.checked)} />
+                                        사진도 가져오기 (사진 1장당 몇 초 걸립니다)
+                                    </label>
                                     <div className={styles.popBtns}>
                                         <button type="button" className={styles.btn} onClick={() => setRoomSyncOpen(false)}>닫기</button>
                                         <button type="button" className={styles.btnYellow} disabled={!roomSince || anySyncing} onClick={syncRoom}>
