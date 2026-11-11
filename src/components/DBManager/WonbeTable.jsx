@@ -5,8 +5,10 @@ import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
 const DEFAULT_PAGE_SIZE = 50;
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500];
-const EDITABLE_COLS = ["색상", "상품명합", "거래처합", "거래처", "거래처상품명", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가"];
-const ALL_COLS = ["상품코드", "상품명", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "이벤트전 할인가", "이벤트 할인가", "판매가", "아이디", "대표상품코드", "카테고리"];
+const EDITABLE_COLS = ["색상", "상품명합", "거래처합", "거래처", "거래처상품명", "원가", "거래처주소", "옵션번호", "등록일", "이벤트전 할인가", "이벤트 할인가", "판매가", "태그"];
+const ALL_COLS = ["상품코드", "상품명", "태그", "색상", "사이즈", "원가", "거래처", "거래처상품명", "거래처합", "상품명합", "거래처주소", "옵션번호", "에이블리상품번호", "등록일", "진열상태", "품절상태", "이벤트전 할인가", "이벤트 할인가", "판매가", "아이디", "대표상품코드", "카테고리"];
+const NEW_COLS = ["태그"]; // 새로 생긴 칸은 예전에 저장된 '열 선택'에도 보이도록 한 번 추가해준다
+const NEW_COLS_STORAGE_KEY = "wonbe_new_cols_seen";
 const VISIBLE_COLS_STORAGE_KEY = "wonbe_visible_cols";
 const PAGE_SIZE_STORAGE_KEY = "wonbe_page_size";
 
@@ -43,7 +45,48 @@ export default function WonbeTable() {
   const [message, setMessage] = useState("");
   const [rawUnexpected, setRawUnexpected] = useState(null);
   const [tagGroups, setTagGroups] = useState(null); // 동기화 직후 대형태그/번호 지정 리스트
+  const [tagManual, setTagManual] = useState(false); // true = [대형 수정] 버튼으로 연 리스트 (완료 기록 없이 적용만)
   const [tagApplying, setTagApplying] = useState(false);
+  const [bigLoading, setBigLoading] = useState(false);
+  const [tagOnlyUnnumbered, setTagOnlyUnnumbered] = useState(false); // [대형 수정] 목록에서 번호 없는 상품만 보기
+  const [tagResult, setTagResult] = useState(""); // 대형 목록 패널 안에 보여줄 적용 결과
+  // 대형 추천 키워드 (서버에 저장, 상품명에 들어 있으면 대형 목록 맨 위로)
+  const [bigKeywords, setBigKeywords] = useState(["자켓", "패딩", "뽀글이", "점퍼"]);
+  const [savedKeywords, setSavedKeywords] = useState(null);
+  const [keywordInput, setKeywordInput] = useState("");
+  const [kwSaving, setKwSaving] = useState(false);
+  const kwDirty = savedKeywords !== null && JSON.stringify(savedKeywords) !== JSON.stringify(bigKeywords);
+  useEffect(() => {
+    fetch(`${API}/wonbe/big-keywords`, { headers: getAuthHeaders() })
+      .then((r) => r.json())
+      .then((d) => { if (d?.ok && Array.isArray(d.keywords)) { setBigKeywords(d.keywords); setSavedKeywords(d.keywords); } })
+      .catch(() => {});
+  }, []);
+  const matchBigKeyword = (name) => bigKeywords.find((k) => k && String(name || "").includes(k)) || "";
+  const addBigKeyword = () => {
+    const k = keywordInput.trim();
+    if (!k) return;
+    setBigKeywords((p) => (p.includes(k) ? p : [...p, k]));
+    setKeywordInput("");
+  };
+  const saveBigKeywords = async () => {
+    setKwSaving(true);
+    try {
+      const res = await fetch(`${API}/wonbe/big-keywords`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ keywords: bigKeywords }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d.ok) throw new Error(d?.detail || "키워드 저장 실패");
+      setBigKeywords(d.keywords);
+      setSavedKeywords(d.keywords);
+    } catch (err) {
+      setTagResult(err.message);
+    } finally {
+      setKwSaving(false);
+    }
+  };
   // 이지어드민 동기화 기간: 직접 입력 없이 최근 3일 / 7일 / 한달(30일) 중에서 고른다 (오늘 포함).
   const SYNC_PERIODS = [
     { days: 3, label: "3일" },
@@ -80,8 +123,15 @@ export default function WonbeTable() {
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, [syncMenu]);
+  const fmtDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  // 동기화 '직접설정': 달력으로 시작일~종료일 지정
+  const [syncCustomOpen, setSyncCustomOpen] = useState(false);
+  const [syncCustomStart, setSyncCustomStart] = useState(() => fmtDate(new Date()));
+  const [syncCustomEnd, setSyncCustomEnd] = useState(() => fmtDate(new Date()));
+  // days: 숫자(최근 N일) 또는 { start, end } (직접설정)
   const syncRange = (days) => {
-    const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    if (days && typeof days === "object") return { start: days.start, end: days.end };
+    const fmt = fmtDate;
     const end = new Date();
     const start = new Date();
     start.setDate(end.getDate() - (days - 1));
@@ -108,7 +158,11 @@ export default function WonbeTable() {
     try {
       const saved = JSON.parse(localStorage.getItem(VISIBLE_COLS_STORAGE_KEY) || "null");
       if (Array.isArray(saved) && saved.length) {
-        return new Set(saved.filter((c) => ALL_COLS.includes(c)));
+        const set = new Set(saved.filter((c) => ALL_COLS.includes(c)));
+        const seen = JSON.parse(localStorage.getItem(NEW_COLS_STORAGE_KEY) || "[]");
+        NEW_COLS.forEach((c) => { if (!seen.includes(c)) set.add(c); });
+        localStorage.setItem(NEW_COLS_STORAGE_KEY, JSON.stringify(NEW_COLS));
+        return set;
       }
     } catch { /* noop */ }
     return new Set(ALL_COLS);
@@ -809,6 +863,7 @@ export default function WonbeTable() {
       setInputQuery("");
       await fetchRows("", 0);
       if (Array.isArray(data.groups) && data.groups.length) {
+        setTagManual(false);
         setTagGroups(data.groups.map((g) => ({ ...g, checked: false, number: 1 })));
       }
       // 동기화가 끝난 뒤 이어서 배포앱(Turso)으로 자동 전송 (동기화 실패 시에는 여기까지 오지 않는다)
@@ -827,11 +882,44 @@ export default function WonbeTable() {
     }
   };
 
+  // [대형 수정] 체크한 상품이 있으면 그 상품, 없으면 현재 검색 결과 전체를 상품명별로 묶어 번호/대형태그 리스트를 연다.
+  // 동기화 때 이미 처리 완료된 상품도 다시 고칠 수 있다.
+  const handleOpenBigEdit = async () => {
+    const codes = [...selectedCodes];
+    if (!codes.length && !query) { setMessage("상품명을 먼저 검색하거나 상품을 체크해주세요."); return; }
+    setBigLoading(true);
+    try {
+      const res = await fetch(`${API}/wonbe/big-groups`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ codes, q: query, empty_col: emptyCol, group_id: activeGroupId || 0 }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "대형 수정 목록 조회 실패");
+      if (!data.groups?.length) { setMessage("대상 상품이 없습니다."); return; }
+      setTagManual(true);
+      setTagOnlyUnnumbered(false);
+      setTagResult("");
+      setTagGroups(data.groups.map((g) => ({ ...g, checked: true, number: g.current_number || 1 })));
+      setMessage(`대형 수정: ${codes.length ? `체크한 ${codes.length}개` : `"${query}" 검색 결과`} → ${data.groups.length}개 상품명. 번호 고른 뒤 [선택 적용]을 누르세요.`);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setBigLoading(false);
+    }
+  };
+
   // 체크한 상품을 이지어드민에 반영. 전부 성공하면 true (fromComplete: 완료 버튼에서 호출 시 목록을 닫지 않고 결과만 반환)
   const handleApplyTagGroups = async (fromComplete = false) => {
-    const items = (tagGroups || []).filter((g) => g.checked).map((g) => ({ name: g.name, codes: g.codes, ids: g.ids, number: g.number }));
-    if (!items.length) { setMessage("적용할 상품을 선택해주세요."); return false; }
+    const sent = (tagGroups || [])
+      .map((g, gi) => ({ g, gi }))
+      .filter(({ g }) => g.checked && !(tagManual && tagOnlyUnnumbered && g.current_number)); // 필터로 숨긴 상품은 적용하지 않는다
+    const items = sent.map(({ g }) => ({ name: g.name, codes: g.codes, ids: g.ids, number: g.number }));
+    if (!items.length) { setTagResult("적용할 상품을 선택해주세요."); setMessage("적용할 상품을 선택해주세요."); return false; }
     setTagApplying(true);
+    setTagResult(`이지어드민에 반영 중... (${items.length}개 상품, 상품마다 저장 후 다시 확인하느라 시간이 걸립니다)`);
+    setRawUnexpected(null);
+    const report = (text) => { setTagResult(text); setMessage(text); };
     try {
       const res = await fetch(`${API}/wonbe/ezadmin-apply`, {
         method: "POST",
@@ -839,18 +927,26 @@ export default function WonbeTable() {
         body: JSON.stringify({ items }),
       });
       const data = await res.json().catch(() => ({}));
-      if (data?.need_session) { setMessage("이지어드민 세션이 없습니다."); return false; }
-      if (!res.ok) throw new Error(data?.detail || "적용 실패");
-      setMessage(
-        `이지어드민 상품명 변경 ${data.uploaded}건 (오류 ${data.err_cnt ?? 0})` +
-        (data.detail ? ` · ${data.detail}` : ` · 대형태그 ${data.tag_applied}건 적용` + (data.tag_failed ? ` (실패 ${data.tag_failed})` : "")) +
-        (data.unresolved ? ` · 아이디 못 찾은 코드 ${data.unresolved}건` : "")
+      if (data?.need_session) { report("이지어드민 세션이 없거나 만료되었습니다. EZAdmin 설정에서 PHPSESSID를 다시 등록해주세요."); return false; }
+      if (!res.ok) throw new Error(data?.detail || `적용 실패 (서버 응답 ${res.status})`);
+      const failed = data.failed || [];
+      report(
+        `결과: 상품명 변경 ${data.renamed ?? 0}건 · 이미 같은 번호 ${data.same ?? 0}건` +
+        (failed.length ? ` · 실패 ${failed.length}건` : "") +
+        (data.unresolved ? ` · 이지어드민 아이디 못 찾은 코드 ${data.unresolved}건` : "") +
+        (data.detail ? ` · ${data.detail}` : ` · 대형태그 ${data.tag_applied ?? 0}건` + (data.tag_failed ? ` (태그 실패 ${data.tag_failed})` : ""))
       );
-      if (data.err_preview) setRawUnexpected({ 보낸값: data.sent_sample, 이지어드민응답: data.err_preview });
-      if (data.ok && !fromComplete) setTagGroups(null);
+      if (failed.length) setRawUnexpected({ 실패목록: failed });
+      // 성공한 상품은 목록에서 '현재 N번'으로 바로 갱신
+      const okByGroup = new Map();
+      (data.items || []).forEach((r) => { if (r.ok && sent[r.index]) okByGroup.set(sent[r.index].gi, r.number); });
+      if (okByGroup.size) {
+        setTagGroups((p) => (p ? p.map((x, j) => (okByGroup.has(j) ? { ...x, current_number: okByGroup.get(j), checked: false } : x)) : p));
+      }
+      if (data.ok && !fromComplete && !tagManual) setTagGroups(null);
       return !!data.ok;
     } catch (err) {
-      setMessage(err.message);
+      report(err.message);
       return false;
     } finally {
       setTagApplying(false);
@@ -1268,12 +1364,20 @@ export default function WonbeTable() {
             className={styles.searchInput}
             value={inputQuery}
             onChange={(e) => setInputQuery(e.target.value)}
-            placeholder="상품코드 / 상품명합 / 거래처합 / 거래처"
+            placeholder="상품코드 / 상품명합 / 거래처합 / 거래처 / 태그"
           />
           <button className={`${styles.btn} ${styles.btnPrimary}`} type="submit" disabled={loading}>
             검색
           </button>
         </form>
+        <button
+          className={`${styles.btn} ${styles.btnSecondary}`}
+          onClick={handleOpenBigEdit}
+          disabled={loading || bigLoading || tagApplying || (!query && !selectedCodes.size)}
+          title="체크한 상품(없으면 검색된 상품 전체)의 이지어드민 상품명 앞에 번호(1·2·3…)를 붙이고 대형태그를 겁니다. 동기화 때 처리 끝난 상품도 다시 고칠 수 있습니다."
+        >
+          {bigLoading ? "불러오는 중..." : `대형 수정${selectedCodes.size ? ` (${selectedCodes.size})` : ""}`}
+        </button>
         <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => fetchRows(query, offset, emptyCol)} disabled={loading || syncing}>
           <RefreshCw size={13} />새로고침
         </button>
@@ -1580,7 +1684,7 @@ export default function WonbeTable() {
               className={`${styles.btn} ${styles.btnPrimary}`}
               onClick={() => setSyncMenu((v) => (v === "sync" ? null : "sync"))}
               disabled={loading || syncing}
-              title="누르면 기간(3일 / 7일 / 한달)을 골라 바로 동기화합니다"
+              title="누르면 기간(3일 / 7일 / 한달 / 직접설정)을 골라 동기화합니다"
             >
               <RefreshCcw size={13} />{syncing ? "동기화 중..." : "이지어드민 동기화 ▾"}
             </button>
@@ -1591,6 +1695,31 @@ export default function WonbeTable() {
                     최근 {p.label}
                   </button>
                 ))}
+                <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "2px", paddingTop: "2px" }}>
+                  <button type="button" style={{ width: "100%", textAlign: "left", padding: "6px 10px", fontSize: "0.82rem", border: "none", background: "transparent", cursor: "pointer", borderRadius: "4px" }} onClick={() => setSyncCustomOpen((v) => !v)} title="달력으로 기간을 직접 골라 동기화합니다">
+                    직접설정 {syncCustomOpen ? "▴" : "▾"}
+                  </button>
+                  {syncCustomOpen && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "4px", padding: "4px 10px 6px", fontSize: "0.8rem" }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        시작
+                        <input type="date" value={syncCustomStart} max={syncCustomEnd} onChange={(e) => setSyncCustomStart(e.target.value)} />
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        종료
+                        <input type="date" value={syncCustomEnd} min={syncCustomStart} onChange={(e) => setSyncCustomEnd(e.target.value)} />
+                      </label>
+                      <button
+                        type="button"
+                        className={`${styles.btn} ${styles.btnPrimary}`}
+                        disabled={!syncCustomStart || !syncCustomEnd || syncCustomStart > syncCustomEnd}
+                        onClick={() => handleSyncEzadmin({ start: syncCustomStart, end: syncCustomEnd })}
+                      >
+                        이 기간으로 동기화
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -1660,15 +1789,83 @@ export default function WonbeTable() {
       {tagGroups && (
         <div style={{ border: "1px solid #ccc", borderRadius: 6, padding: 12, margin: "8px 0", maxHeight: 360, overflow: "auto" }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-            <strong>이지어드민 대형태그 / 상품명 번호 ({tagGroups.length}개 상품)</strong>
+            <strong>{tagManual ? "대형 수정" : "이지어드민 대형태그 / 상품명 번호"} ({tagGroups.length}개 상품)</strong>
             <span>
               <button onClick={() => handleApplyTagGroups()} disabled={tagApplying}>{tagApplying ? "적용 중..." : "선택 적용"}</button>{" "}
-              <button onClick={handleCompleteTagGroups} disabled={tagApplying} title="체크한 상품은 이지어드민에 반영한 뒤, 목록 전체를 처리 완료로 기록 — 다음 동기화부터 안 뜸">완료</button>{" "}
-              <button onClick={() => setTagGroups(null)} disabled={tagApplying}>닫기</button>
+              {!tagManual && <><button onClick={handleCompleteTagGroups} disabled={tagApplying} title="체크한 상품은 이지어드민에 반영한 뒤, 목록 전체를 처리 완료로 기록 — 다음 동기화부터 안 뜸">완료</button>{" "}</>}
+              <button onClick={() => { setTagGroups(null); setTagResult(""); }} disabled={tagApplying}>닫기</button>
             </span>
           </div>
-          {tagGroups.map((g, i) => (
-            <div key={g.name + i} style={{ display: "flex", gap: 8, alignItems: "center", padding: "2px 0" }}>
+          {tagResult && (
+            <div style={{ padding: "6px 8px", marginBottom: 6, background: "#f3f4f6", borderRadius: 4, fontSize: 13, fontWeight: 600 }}>
+              {tagResult}
+            </div>
+          )}
+          {(() => {
+            // 지금 화면에 보이는 목록(필터 적용 후) 전체에 한 번에 적용
+            const isVisible = (g) => !(tagManual && tagOnlyUnnumbered && g.current_number);
+            const visible = tagGroups.filter(isVisible);
+            const allChecked = visible.length > 0 && visible.every((g) => g.checked);
+            return (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6, paddingBottom: 6, borderBottom: "1px solid #eee", fontSize: 13 }}>
+                <label style={{ display: "flex", gap: 4, alignItems: "center", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={allChecked}
+                    onChange={(e) => setTagGroups((p) => p.map((x) => (isVisible(x) ? { ...x, checked: e.target.checked } : x)))}
+                  />
+                  전체 선택 ({visible.filter((g) => g.checked).length}/{visible.length})
+                </label>
+                <span style={{ marginLeft: 8 }}>전체 번호:</span>
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <button
+                    key={n}
+                    disabled={tagApplying}
+                    onClick={() => setTagGroups((p) => p.map((x) => (isVisible(x) ? { ...x, number: n } : x)))}
+                    style={{ minWidth: 28 }}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
+          {tagManual && (
+            <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 6, fontSize: 13 }}>
+              <label style={{ display: "flex", gap: 4, alignItems: "center", cursor: "pointer" }}>
+                <input type="checkbox" checked={tagOnlyUnnumbered} onChange={(e) => setTagOnlyUnnumbered(e.target.checked)} />
+                번호(1·2·3) 없는 상품만
+              </label>
+              <span style={{ color: "#888" }}>
+                번호 있음 {tagGroups.filter((g) => g.current_number).length} · 번호 없음 {tagGroups.filter((g) => !g.current_number).length}
+              </span>
+            </div>
+          )}
+          {/* 대형 추천 키워드: 상품명에 들어 있으면 맨 위로 추천 (추가/삭제 후 저장) */}
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 6, fontSize: 13 }}>
+            <span style={{ fontWeight: 600 }}>대형 추천 키워드:</span>
+            {bigKeywords.map((k) => (
+              <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "1px 6px", background: "#fef3c7", borderRadius: 10 }}>
+                {k}
+                <button type="button" onClick={() => setBigKeywords((p) => p.filter((x) => x !== k))} style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0, color: "#92400e" }} title="키워드 빼기">×</button>
+              </span>
+            ))}
+            <input
+              value={keywordInput}
+              onChange={(e) => setKeywordInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addBigKeyword(); } }}
+              placeholder="키워드 추가"
+              style={{ width: 90 }}
+            />
+            <button type="button" onClick={addBigKeyword} disabled={!keywordInput.trim()}>추가</button>
+            <button type="button" onClick={saveBigKeywords} disabled={kwSaving || !kwDirty}>{kwSaving ? "저장 중..." : kwDirty ? "키워드 저장" : "저장됨"}</button>
+            <span style={{ color: "#888" }}>추천 {tagGroups.filter((g) => matchBigKeyword(g.name)).length}개</span>
+          </div>
+          {tagGroups.map((g, i) => ({ g, i, kw: matchBigKeyword(g.name) }))
+            .filter(({ g }) => !(tagManual && tagOnlyUnnumbered && g.current_number))
+            .sort((a, b) => (a.kw ? 0 : 1) - (b.kw ? 0 : 1) || a.i - b.i) // 키워드 상품을 위로, 나머지는 원래 순서
+            .map(({ g, i, kw }) => (
+            <div key={g.name + i} style={{ display: "flex", gap: 8, alignItems: "center", padding: "2px 0", background: kw ? "#fffbeb" : undefined }}>
               <input
                 type="checkbox"
                 checked={g.checked}
@@ -1680,8 +1877,12 @@ export default function WonbeTable() {
               >
                 {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
+              {kw && <span style={{ color: "#fff", background: "#d97706", borderRadius: 4, padding: "0 5px", fontSize: 11 }} title={`상품명에 '${kw}' 포함`}>추천 · {kw}</span>}
               <span>{g.name}</span>
               <span style={{ color: "#888" }}>({g.count}코드)</span>
+              {tagManual && (g.current_number
+                ? <span style={{ color: "#2563eb", fontSize: 12 }}>현재 {g.current_number}번</span>
+                : <span style={{ color: "#d97706", fontSize: 12 }}>번호 없음</span>)}
             </div>
           ))}
         </div>
