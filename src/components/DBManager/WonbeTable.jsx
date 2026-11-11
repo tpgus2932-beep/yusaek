@@ -50,6 +50,43 @@ export default function WonbeTable() {
   const [bigLoading, setBigLoading] = useState(false);
   const [tagOnlyUnnumbered, setTagOnlyUnnumbered] = useState(false); // [대형 수정] 목록에서 번호 없는 상품만 보기
   const [tagResult, setTagResult] = useState(""); // 대형 목록 패널 안에 보여줄 적용 결과
+  // 대형 추천 키워드 (서버에 저장, 상품명에 들어 있으면 대형 목록 맨 위로)
+  const [bigKeywords, setBigKeywords] = useState(["자켓", "패딩", "뽀글이", "점퍼"]);
+  const [savedKeywords, setSavedKeywords] = useState(null);
+  const [keywordInput, setKeywordInput] = useState("");
+  const [kwSaving, setKwSaving] = useState(false);
+  const kwDirty = savedKeywords !== null && JSON.stringify(savedKeywords) !== JSON.stringify(bigKeywords);
+  useEffect(() => {
+    fetch(`${API}/wonbe/big-keywords`, { headers: getAuthHeaders() })
+      .then((r) => r.json())
+      .then((d) => { if (d?.ok && Array.isArray(d.keywords)) { setBigKeywords(d.keywords); setSavedKeywords(d.keywords); } })
+      .catch(() => {});
+  }, []);
+  const matchBigKeyword = (name) => bigKeywords.find((k) => k && String(name || "").includes(k)) || "";
+  const addBigKeyword = () => {
+    const k = keywordInput.trim();
+    if (!k) return;
+    setBigKeywords((p) => (p.includes(k) ? p : [...p, k]));
+    setKeywordInput("");
+  };
+  const saveBigKeywords = async () => {
+    setKwSaving(true);
+    try {
+      const res = await fetch(`${API}/wonbe/big-keywords`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ keywords: bigKeywords }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d.ok) throw new Error(d?.detail || "키워드 저장 실패");
+      setBigKeywords(d.keywords);
+      setSavedKeywords(d.keywords);
+    } catch (err) {
+      setTagResult(err.message);
+    } finally {
+      setKwSaving(false);
+    }
+  };
   // 이지어드민 동기화 기간: 직접 입력 없이 최근 3일 / 7일 / 한달(30일) 중에서 고른다 (오늘 포함).
   const SYNC_PERIODS = [
     { days: 3, label: "3일" },
@@ -1804,8 +1841,31 @@ export default function WonbeTable() {
               </span>
             </div>
           )}
-          {tagGroups.map((g, i) => ({ g, i })).filter(({ g }) => !(tagManual && tagOnlyUnnumbered && g.current_number)).map(({ g, i }) => (
-            <div key={g.name + i} style={{ display: "flex", gap: 8, alignItems: "center", padding: "2px 0" }}>
+          {/* 대형 추천 키워드: 상품명에 들어 있으면 맨 위로 추천 (추가/삭제 후 저장) */}
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 6, fontSize: 13 }}>
+            <span style={{ fontWeight: 600 }}>대형 추천 키워드:</span>
+            {bigKeywords.map((k) => (
+              <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "1px 6px", background: "#fef3c7", borderRadius: 10 }}>
+                {k}
+                <button type="button" onClick={() => setBigKeywords((p) => p.filter((x) => x !== k))} style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0, color: "#92400e" }} title="키워드 빼기">×</button>
+              </span>
+            ))}
+            <input
+              value={keywordInput}
+              onChange={(e) => setKeywordInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addBigKeyword(); } }}
+              placeholder="키워드 추가"
+              style={{ width: 90 }}
+            />
+            <button type="button" onClick={addBigKeyword} disabled={!keywordInput.trim()}>추가</button>
+            <button type="button" onClick={saveBigKeywords} disabled={kwSaving || !kwDirty}>{kwSaving ? "저장 중..." : kwDirty ? "키워드 저장" : "저장됨"}</button>
+            <span style={{ color: "#888" }}>추천 {tagGroups.filter((g) => matchBigKeyword(g.name)).length}개</span>
+          </div>
+          {tagGroups.map((g, i) => ({ g, i, kw: matchBigKeyword(g.name) }))
+            .filter(({ g }) => !(tagManual && tagOnlyUnnumbered && g.current_number))
+            .sort((a, b) => (a.kw ? 0 : 1) - (b.kw ? 0 : 1) || a.i - b.i) // 키워드 상품을 위로, 나머지는 원래 순서
+            .map(({ g, i, kw }) => (
+            <div key={g.name + i} style={{ display: "flex", gap: 8, alignItems: "center", padding: "2px 0", background: kw ? "#fffbeb" : undefined }}>
               <input
                 type="checkbox"
                 checked={g.checked}
@@ -1817,6 +1877,7 @@ export default function WonbeTable() {
               >
                 {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
+              {kw && <span style={{ color: "#fff", background: "#d97706", borderRadius: 4, padding: "0 5px", fontSize: 11 }} title={`상품명에 '${kw}' 포함`}>추천 · {kw}</span>}
               <span>{g.name}</span>
               <span style={{ color: "#888" }}>({g.count}코드)</span>
               {tagManual && (g.current_number

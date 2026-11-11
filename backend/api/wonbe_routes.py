@@ -3489,6 +3489,43 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
             conn.close()
         return len(codes)
 
+    _BIG_KEYWORDS_DEFAULT = ["자켓", "패딩", "뽀글이", "점퍼"]
+
+    def _load_big_keywords(conn) -> list:
+        row = conn.execute("SELECT value FROM wonbe_meta WHERE key = 'big_keywords'").fetchone()
+        if not row:
+            return list(_BIG_KEYWORDS_DEFAULT)
+        try:
+            data = json.loads(row["value"] or "[]")
+            return [str(k).strip() for k in data if str(k).strip()] if isinstance(data, list) else list(_BIG_KEYWORDS_DEFAULT)
+        except ValueError:
+            return list(_BIG_KEYWORDS_DEFAULT)
+
+    @router.get("/big-keywords")
+    def wonbe_get_big_keywords(user: str = Depends(get_current_user)):
+        """대형 추천 키워드 (상품명에 들어 있으면 대형 목록 맨 위로 추천)."""
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            return {"ok": True, "keywords": _load_big_keywords(conn)}
+        finally:
+            conn.close()
+
+    @router.put("/big-keywords")
+    def wonbe_put_big_keywords(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
+        keywords = list(dict.fromkeys(str(k).strip() for k in (payload.get("keywords") or []) if str(k).strip()))
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            conn.execute(
+                "INSERT OR REPLACE INTO wonbe_meta (key, value) VALUES ('big_keywords', ?)",
+                (json.dumps(keywords, ensure_ascii=False),),
+            )
+            conn.commit()
+            return {"ok": True, "keywords": keywords}
+        finally:
+            conn.close()
+
     @router.post("/big-groups")
     def wonbe_big_groups(payload: dict = Body(default={}), user: str = Depends(get_current_user)):
         """[대형 수정] 버튼용 - 체크한 상품코드(codes)가 있으면 그 상품, 없으면 검색어(q) 결과 전체를
