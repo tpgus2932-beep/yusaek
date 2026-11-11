@@ -16,6 +16,7 @@ import { useDailyRowEdits } from './useDailyRowEdits';
 import { useDiscoverMissedReorders } from './useDiscoverMissedReorders';
 import { sumValues, formatSum } from './tableSums';
 
+import usePersistentState from "../../lib/usePersistentState";
 const PAGE_TABS = [
   { key: 'dashboard', label: '대시보드' },
   { key: 'backtest', label: '백테스팅' },
@@ -342,7 +343,7 @@ function DailyDataTable({ date, items }) {
 export default function OrderRecommendationDashboardPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
-  const [pageTab, setPageTab] = useState('dashboard');
+  const [pageTab, setPageTab] = usePersistentState('orderRecommendationPageTab', 'dashboard');
 
   const daily = useJsonGet('/order-recommendation/daily', refreshKey);
   const accuracy = useJsonGet('/order-recommendation/forecast-accuracy?days=7', refreshKey);

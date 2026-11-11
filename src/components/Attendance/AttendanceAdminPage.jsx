@@ -5,6 +5,7 @@ import styles from './AttendanceAdminPage.module.css';
 import { COLLAB_API_BASE } from '../../lib/api';
 import ScheduleTab from './ScheduleTab';
 
+import usePersistentState from "../../lib/usePersistentState";
 const todayStr = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -150,7 +151,7 @@ export default function AttendanceAdminPage({ initialTab = 'members', paymentReq
   const [pin, setPin] = useState(() => standaloneMode ? '1234' : '');
   const [pinError, setPinError] = useState('');
   const [pinBusy, setPinBusy] = useState(false);
-  const [tab, setTab] = useState(initialTab);
+  const [tab, setTab] = usePersistentState(`attendanceAdminTab-${initialTab}`, initialTab);
   const [payrollMode, setPayrollMode] = useState('fixed');
 
   // 직원 관리

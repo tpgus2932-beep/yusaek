@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import styles from './CollabPortalPage.module.css';
 import { COLLAB_API_BASE as API } from '../../lib/api';
 
+import usePersistentState from "../../lib/usePersistentState";
 export default function CollabPortalPage({ currentUser, displayName, onLogout }) {
   const [users, setUsers] = useState([]);
   const [assignee, setAssignee] = useState('');
@@ -13,7 +14,7 @@ export default function CollabPortalPage({ currentUser, displayName, onLogout })
   const [todoText, setTodoText] = useState('');
   const [todoComment, setTodoComment] = useState('');
   const [todoCommentId, setTodoCommentId] = useState(null);
-  const [todoTab, setTodoTab] = useState('open');
+  const [todoTab, setTodoTab] = usePersistentState('collabPortalTodoTab', 'open');
   const [sentFilter, setSentFilter] = useState('all');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');

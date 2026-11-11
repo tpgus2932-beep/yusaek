@@ -6,6 +6,7 @@ import NormalizationStats from './NormalizationStats';
 import CancelStats from './CancelStats';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
+import usePersistentState from "../../lib/usePersistentState";
 const PERIODS = [7, 14, 30, 90];
 
 const fmtTime = (iso) => (iso ? iso.slice(0, 16).replace('T', ' ') : '');
@@ -18,10 +19,10 @@ const fmtDuration = (sec) => {
     return `${m}분`;
 };
 
-const CSStatsTab = () => {
 // 분당 처리 개수 = 보내기 개수 ÷ CS 시간(분). CS 시간이 0이면(연속 완료 기록이 없으면) 계산할 수 없다.
 const perMinute = (count, sec) => (sec > 0 ? `${((count || 0) / (sec / 60)).toFixed(2)}개` : '-');
 
+const CSStatsTab = () => {
     const [days, setDays] = useState(14);
     const [data, setData] = useState(null);
     const [error, setError] = useState('');
@@ -244,7 +245,7 @@ const perMinute = (count, sec) => (sec > 0 ? `${((count || 0) / (sec / 60)).toFi
 };
 
 const CSStatsPage = () => {
-    const [tab, setTab] = useState('cs');
+    const [tab, setTab] = usePersistentState('csStatsTab', 'cs');
     return (
         <div>
             <div className={styles.tabs}>

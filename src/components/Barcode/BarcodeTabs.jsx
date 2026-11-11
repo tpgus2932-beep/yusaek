@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React from "react";
 import BarcodePage from "./BarcodePage";
 import AmoodBarcodePage from "./AmoodBarcodePage";
 import PostShipmentCancelPage from "./PostShipmentCancelPage";
@@ -7,6 +7,7 @@ import InvoicePrintPage from "./InvoicePrintPage";
 import LeadTimePage from "./LeadTimePage";
 import styles from "./BarcodePage.module.css";
 
+import usePersistentState from "../../lib/usePersistentState";
 const TABS = [
   { key: "barcode", label: "바코드" },
   { key: "amood", label: "아무드" },
@@ -17,7 +18,7 @@ const TABS = [
 ];
 
 export default function BarcodeTabs({ onOpenTestTab = null, onTransferAmoodHapbae = null }) {
-  const [activeTab, setActiveTab] = useState("barcode");
+  const [activeTab, setActiveTab] = usePersistentState("barcodeTabsActiveTab", "barcode", TABS.map((t) => t.key));
   const headerExtra = (
     <div className={styles.tabRow}>
       {TABS.map((tab) => (

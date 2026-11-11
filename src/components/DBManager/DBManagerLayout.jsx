@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React from "react";
 import { Database } from "lucide-react";
 import styles from "./DBManager.module.css";
 import WonbeTable from "./WonbeTable";
@@ -11,6 +11,7 @@ import AblyStockTable from "./AblyStockTable";
 import DefectProcessLogTable from "./DefectProcessLogTable";
 import OrderHistoryTable from "./OrderHistoryTable";
 
+import usePersistentState from "../../lib/usePersistentState";
 const TABLES = [
   { key: "wonbe", label: "원가베이스유", component: WonbeTable },
   { key: "janggi", label: "날짜별장끼정리", component: JanggiTable },
@@ -24,7 +25,7 @@ const TABLES = [
 ];
 
 export default function DBManagerLayout() {
-  const [activeTable, setActiveTable] = useState(TABLES[0].key);
+  const [activeTable, setActiveTable] = usePersistentState('dbManagerTable', TABLES[0].key, TABLES.map((t) => t.key));
 
   const ActiveComponent = TABLES.find((t) => t.key === activeTable)?.component ?? null;
 

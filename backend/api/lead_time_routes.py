@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import json
+import os
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date as date_cls, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -10,14 +12,14 @@ import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from sdk.ezadmin import EzAdminSessionExpired
-from services.ezadmin_im00_client import fetch_im00_line_items, fetch_im00_vouchers
+from services.ezadmin_im00_client import fetch_im00_line_items, fetch_im00_vouchers, fetch_im10_product_rows
 
 _EZADMIN_BASE = "https://ga80.ezadmin.co.kr"
 _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
 # S700은 PHPSESSID만으로는 응답하지 않아 로그인 도메인/아이디 쿠키가 같이 필요하다 (shipping_eta_routes와 동일).
 _EZ_EXTRA_COOKIES = {"ezdomain": "yusaek", "ezuserid": "yusaek", "ezsave": "on"}
 _EZ_TIMEOUT = 300.0
-_SHIP_LOAD_CONCURRENCY = 4
+_SHIP_CLASSIFY_VERSION = 4  # classify_ship_orders 결과 모양이 바뀌면 올린다 (저장된 차수 결과를 다시 읽게 함)
 _KST = ZoneInfo("Asia/Seoul")
 _NUMBER_TITLE_RE = re.compile(r"\[\s*(\d+)\s*\]\s*\((\d{2}:\d{2}:\d{2})\)\s*개수\s*:\s*(\d+)")
 _PRODUCT_RE = re.compile(r"\[([A-Z]\d+)\](.*?)(?:-\[([^\]]*)\])?\s+(\d+)개")
@@ -27,13 +29,43 @@ _SLOT_START_MIN = 9 * 60
 _SLOT_END_MIN = 22 * 60
 _SLOT_STEP = 30
 _HEAD_KINDS = ("pack", "ship_bulk", "ship_single")  # 시간대별 근무 인원: 포장 / 대량출고 / 개별출고
-_RATE_KINDS = ("pack", "ship_bulk", "ship_single", "ship")  # 1인 1분 처리 개수 ("ship"은 예전에 합쳐 저장하던 값)
-_QTY_KINDS = ("pack", "ship")  # 직접 입력한 포장/출고 개수
-# 비우면(null) 해제되는 인원 설정: 합류 인원 / 대량출고 인원 / 개별출고 인원
-_COUNT_OPTIONS = ("join_count", "bulk_head", "single_head")
-# 시작 시각 직접 지정("HH:MM", 비우면 자동): 포장 / 출고
-_TIME_OPTIONS = ("pack_start", "ship_start")
+_RATE_KINDS = ("pack", "pack_big", "ship_bulk", "ship_single", "ship_big", "ship", "invoice_main", "invoice_stock",
+               "match_stock", "match_krl", "match_combo")  # match_*: 매칭작업 (재고매칭 / KRL매칭 / 합포빼기)  # 1인 1분 처리 개수 ("ship"은 예전에 합쳐 저장하던 값, invoice_*는 송장붙이기 본송장/재고송장, pack_big·ship_big은 대형 포장·출고)
+_QTY_KINDS = ("pack", "ship", "invoice", "match")  # 직접 입력한 포장/출고/송장/매칭작업 개수
+# 비우면(null) 해제되는 인원 설정: 합류 인원 / 대량출고 인원 / 개별출고 인원 / 송장붙이기 본송장·재고송장 인원
+_COUNT_OPTIONS = ("join_count", "bulk_head", "single_head", "invoice_main_head", "invoice_stock_head",
+                  "match_stock_head", "match_krl_head", "match_combo_head")  # match_*_head: 매칭작업 항목별 인원
+# 시작 시각 직접 지정("HH:MM", 비우면 자동): 포장 / 출고 / 송장붙이기
+_TIME_OPTIONS = ("pack_start", "ship_start", "invoice_start", "match_start",
+                 # 상세 항목별 시작 시각 (비우면 자동)
+                 "pack_bulk_start", "pack_single_start", "pack_big_start", "ship_bulk_start", "ship_single_start",
+                 "invoice_main_start", "invoice_stock_start", "match_stock_start", "match_krl_start", "match_combo_start")
 _TIME_RE = re.compile(r"^\d{1,2}:\d{2}$")
+# 대형 상품: 이지어드민 '상품명' 칸(공급처상품명 아님)이 "2 쿠로 하이넥 ..."처럼 숫자+띄어쓰기로 시작한다.
+# ("2way", "1+1", "L 1 ..."은 대형 아님)
+_BIG_NAME_RE = re.compile(r"^\d{1,2}\s+\S")
+# 매칭작업 K/R/L: 입고요청 품목의 '상품명'이 "K 노다 ...", "R 루세 ...", "L 1 브루 ..."처럼 K/R/L+띄어쓰기로 시작한다.
+_KRL_NAME_RE = re.compile(r"^([KRL])\s+\S")
+
+# 시간대별 근무 인원은 관리페이지(별도 서버) 근무표를 그대로 읽어 계산한다.
+# PIN은 backend/.env 의 GWANRI_ATTENDANCE_PIN 에 넣는다 (코드/채팅에 적지 않는다).
+_GWANRI_API_BASE = os.environ.get("GWANRI_API_BASE", "https://seungilsaiteu.onrender.com").rstrip("/")
+_GWANRI_TIMEOUT = 60.0  # Render 무료 서버는 잠들어 있으면 깨어나는 데 수십 초 걸린다
+_GWANRI_CACHE_SEC = 30
+_AFTERNOON_START_MIN = 12 * 60  # 12시 이후 출근은 오후 인원이라 리드타임 인원에서 뺀다
+# 관리페이지 근무표와 같은 공휴일 목록 (공휴일엔 고정 근무가 휴무, 주간 알바도 빠진다)
+_GWANRI_HOLIDAYS = frozenset({
+    "2026-01-01", "2026-02-16", "2026-02-17", "2026-02-18", "2026-03-02", "2026-05-05", "2026-05-25",
+    "2026-06-03", "2026-08-17", "2026-09-24", "2026-09-25", "2026-10-05", "2026-10-09", "2026-12-25",
+    "2027-01-01", "2027-02-05", "2027-02-08", "2027-03-01", "2027-05-05", "2027-05-13", "2027-08-16",
+    "2027-09-14", "2027-09-15", "2027-09-16", "2027-10-04", "2027-10-11", "2027-12-27", "2028-01-25",
+    "2028-01-26", "2028-01-27", "2028-03-01", "2028-05-02", "2028-05-05", "2028-06-06", "2028-08-15",
+    "2028-10-02", "2028-10-03", "2028-10-04", "2028-10-05", "2028-10-09", "2028-12-25", "2029-01-01",
+    "2029-02-12", "2029-02-13", "2029-02-14", "2029-03-01", "2029-05-07", "2029-05-21", "2029-06-06",
+    "2029-08-15", "2029-09-21", "2029-09-24", "2029-10-03", "2029-10-09", "2029-12-25", "2030-01-01",
+    "2030-02-04", "2030-02-05", "2030-02-06", "2030-03-01", "2030-05-06", "2030-05-09", "2030-06-06",
+    "2030-08-15", "2030-09-11", "2030-09-12", "2030-09-13", "2030-10-03", "2030-10-09", "2030-12-25",
+})
 
 
 def init_lead_time_tables(get_db):
@@ -78,6 +110,31 @@ def init_lead_time_tables(get_db):
                 pack_json TEXT NOT NULL DEFAULT '',
                 ship_json TEXT NOT NULL DEFAULT '',
                 updated_by TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        # 출력차수별 분류 결과. 출력이 끝난 차수는 바뀌지 않으므로 한 번 읽으면 다시 이지어드민에 묻지 않는다.
+        # version이 _SHIP_CLASSIFY_VERSION과 다르면(분류 규칙이 바뀌면) 다시 읽는다.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lead_time_ship_cache (
+                work_date TEXT NOT NULL,
+                print_num TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 0,
+                total INTEGER NOT NULL DEFAULT 0,
+                counts_json TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (work_date, print_num)
+            )
+            """
+        )
+        # 지난 날짜의 관리페이지 근무표(이름·시작·종료분만). 지난 날은 안 바뀌므로 저장해 두고 바로 쓴다.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lead_time_gwanri_cache (
+                work_date TEXT PRIMARY KEY,
+                ranges_json TEXT NOT NULL DEFAULT '[]',
                 updated_at TEXT NOT NULL DEFAULT ''
             )
             """
@@ -141,39 +198,61 @@ def _to_min(value: str) -> int | None:
 
 
 def classify_ship_orders(order_rows: list[dict]) -> dict:
-    """한 출력차수의 주문을 합포 / 대량 / 개별로 나눈다.
+    """한 출력차수의 주문을 합포 / 대량 / 개별로 나누고, 각 구분 안의 대형 상품 개수를 따로 센다.
 
     합포: 한 주문의 상품 수량 합이 2개 이상 (같은 코드 2개도 합포).
     대량: 합포를 뺀 단품 주문을 차수 안 순서대로 볼 때 같은 상품코드가 _BULK_RUN_MIN건 이상 연속.
     개별: 나머지 단품 주문 (상품 파싱이 안 된 주문 포함).
+    대형: 상품명이 숫자로 시작하는 상품(_BIG_NAME_RE). 별도 구분이 아니라 대량/개별/합포 안에 그대로 들어가고,
+          각 구분의 big_pieces(그중 대형 상품 개수)로 따로 표시한다 → 시간 계산에서 대형 처리 개수를 쓴다.
+          "big"은 세 구분의 대형을 모은 합계(표시용)라 다른 구분과 겹친다.
     orders는 주문 건수, pieces는 상품 개수다.
     """
-    combo_orders = combo_pieces = 0
-    singles: list[str | None] = []
+    combo_orders = combo_pieces = combo_big = combo_big_orders = big_orders = 0
+    # 매칭작업 KRL: 상품명이 K·R·L로 시작하는 상품이 든 송장 수 (한 송장에 여러 글자가 있으면 글자별로는 각각, 합계는 1번만)
+    krl = {"orders": 0, "K": 0, "R": 0, "L": 0}
+    singles: list[tuple[str | None, bool]] = []  # (상품코드, 대형 여부)
     for order in order_rows:
         cell = order.get("cell", {}) if isinstance(order, dict) else {}
-        found = [(m.group(1).strip(), int(m.group(4))) for m in _PRODUCT_RE.finditer(str(cell.get("products", "")))]
-        pieces = sum(q for _, q in found)
+        found = [
+            (m.group(1).strip(), int(m.group(4)), bool(_BIG_NAME_RE.match(m.group(2).strip())))
+            for m in _PRODUCT_RE.finditer(str(cell.get("products", "")))
+        ]
+        pieces = sum(q for _, q, _ in found)
+        if any(big for _, _, big in found):
+            big_orders += 1
+        letters = {m.group(1) for m in (_KRL_NAME_RE.match(pm.group(2).strip()) for pm in _PRODUCT_RE.finditer(str(cell.get("products", "")))) if m}
+        if letters:
+            krl["orders"] += 1
+            for c in letters:
+                krl[c] += 1
         if pieces >= 2:
             combo_orders += 1
             combo_pieces += pieces
+            combo_big += sum(q for _, q, big in found if big)
+            combo_big_orders += 1 if any(big for _, _, big in found) else 0
         else:
-            singles.append(found[0][0] if found else None)
+            singles.append((found[0][0], found[0][2]) if found else (None, False))
 
-    bulk = 0
+    bulk = bulk_big = 0
     i = 0
     while i < len(singles):
         j = i
-        while j < len(singles) and singles[j] is not None and singles[j] == singles[i]:
+        while j < len(singles) and singles[j][0] is not None and singles[j][0] == singles[i][0]:
             j += 1
         run = max(j - i, 1)
-        if singles[i] is not None and run >= _BULK_RUN_MIN:
+        if singles[i][0] is not None and run >= _BULK_RUN_MIN:
             bulk += run
+            bulk_big += sum(1 for _, big in singles[i:i + run] if big)
         i += run
+    single = len(singles) - bulk
+    single_big = sum(1 for _, big in singles if big) - bulk_big
     return {
-        "bulk": {"orders": bulk, "pieces": bulk},
-        "single": {"orders": len(singles) - bulk, "pieces": len(singles) - bulk},
-        "combo": {"orders": combo_orders, "pieces": combo_pieces},
+        "bulk": {"orders": bulk, "pieces": bulk, "big_pieces": bulk_big, "big_orders": bulk_big},
+        "single": {"orders": single, "pieces": single, "big_pieces": single_big, "big_orders": single_big},
+        "combo": {"orders": combo_orders, "pieces": combo_pieces, "big_pieces": combo_big, "big_orders": combo_big_orders},
+        "big": {"orders": big_orders, "pieces": bulk_big + single_big + combo_big},
+        "krl": krl,
     }
 
 
@@ -216,8 +295,122 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
             return False  # JSON이 아니면 세션 만료로 본다
 
     # ── 시간대별 인원 ──────────────────────────────────────
+    _gwanri_cache: dict[str, tuple[float, list[tuple[str, int, int]]]] = {}
+
+    def _gwanri_ranges(work_date: str, fresh: bool = False) -> list[tuple[str, int, int]]:
+        """관리페이지 근무표(백)에서 그날 출근하는 사람들의 (이름, 시작분, 종료분) 목록을 가져온다.
+
+        근무표 화면과 같은 규칙: 직원(고정요일 + 날짜별 수정, 공휴일은 휴무) + 그 주 주간 알바
+        + 근무표에 이름이 없는 일일알바. 실패하면 예외를 던진다.
+        """
+        hit = _gwanri_cache.get(work_date)
+        if hit and not fresh and time.monotonic() - hit[0] < _GWANRI_CACHE_SEC:
+            return hit[1]
+        is_past = work_date < datetime.now(_KST).date().isoformat()
+        if is_past and not fresh:
+            conn = get_db()
+            try:
+                row = conn.execute("SELECT ranges_json FROM lead_time_gwanri_cache WHERE work_date = ?", (work_date,)).fetchone()
+            finally:
+                conn.close()
+            if row:
+                ranges = [tuple(r) for r in json.loads(row["ranges_json"] or "[]")]
+                _gwanri_cache[work_date] = (time.monotonic(), ranges)
+                return ranges
+        pin = os.environ.get("GWANRI_ATTENDANCE_PIN", "").strip()
+        if not pin:
+            raise RuntimeError("관리페이지 PIN이 설정되지 않았습니다")
+        day = date_cls.fromisoformat(work_date)
+        weekday = day.isoweekday()  # 근무표와 같은 1(월)~7(일)
+        monday = (day - timedelta(days=weekday - 1)).isoformat()
+        holiday = work_date in _GWANRI_HOLIDAYS
+        try:
+            with httpx.Client(timeout=_GWANRI_TIMEOUT, follow_redirects=True) as client:
+                def _get(path: str, params: dict | None = None):
+                    res = client.get(f"{_GWANRI_API_BASE}{path}", params=params)
+                    res.raise_for_status()
+                    return res.json()
+                # 세 가지를 동시에 받는다 (차례로 받으면 약 5초, 동시에 받으면 약 2초).
+                # 일일알바 응답엔 계좌 등 개인정보도 섞여 오지만 이름·시간만 쓰고 그 외는 저장하지 않는다.
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    f_members = pool.submit(_get, "/attendance/members")
+                    f_schedule = pool.submit(_get, "/attendance/schedule", {"pin": pin, "date_from": monday, "date_to": work_date})
+                    f_daily = pool.submit(_get, "/attendance/daily-workers", {"pin": pin, "date_from": work_date, "date_to": work_date})
+                    members, schedule, daily = f_members.result(), f_schedule.result(), f_daily.result()
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"관리페이지 응답 오류 {e.response.status_code}") from e
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"관리페이지 연결 실패 ({type(e).__name__})") from e
+
+        best: dict[int, dict] = {}
+        for r in schedule.get("fixedRules") or []:
+            if r.get("weekday") != weekday or str(r.get("effectiveFrom") or "") > work_date:
+                continue
+            cur = best.get(r["memberId"])
+            if cur is None or (r["effectiveFrom"], r["id"]) > (cur["effectiveFrom"], cur["id"]):
+                best[r["memberId"]] = r
+        overrides = {o["memberId"]: o for o in schedule.get("overrides") or [] if o.get("date") == work_date}
+
+        shifts: list[tuple[str, str, str]] = []  # (이름, 시작, 종료)
+        for m in members:
+            if not m.get("includeInSchedule") or m.get("resigned") or (m.get("workArea") or "back") != "back":
+                continue
+            ov = overrides.get(m["id"])
+            if ov is not None:
+                shift = ov if ov.get("status") == "scheduled" else None
+            else:
+                rule = best.get(m["id"])
+                shift = rule if rule is not None and rule.get("status") == "scheduled" and not holiday else None
+            if shift:
+                shifts.append((str(m.get("name") or "").strip(), shift["startTime"], shift["endTime"]))
+        if not holiday:
+            for w in schedule.get("tempWorkers") or []:
+                if w.get("weekStart") == monday and w.get("workArea") == "back" and weekday in (w.get("weekdays") or []):
+                    shifts.append((str(w.get("name") or "").strip(), w["startTime"], w["endTime"]))
+
+        listed = {name for name, _, _ in shifts}
+        for d in daily if isinstance(daily, list) else []:
+            name = str(d.get("name") or "").strip()
+            if d.get("date") != work_date or name in listed:
+                continue  # 근무표에 이미 있는 사람은 중복으로 세지 않는다 (근무표 합계와 같은 규칙)
+            start = d.get("startTime")
+            ts = d.get("checkInTimestamp")
+            if ts:  # 오전/오후는 실제 출근 시각 기준 (근무표 하단 일일알바 칸과 같은 기준)
+                try:
+                    start_hour = datetime.fromisoformat(str(ts).replace("Z", "+00:00")).astimezone(_KST).hour
+                except ValueError:
+                    start_hour = None
+                if start_hour is not None and start_hour >= _AFTERNOON_START_MIN // 60:
+                    continue
+            shifts.append((name, start, d.get("endTime")))
+
+        ranges: list[tuple[str, int, int]] = []
+        for name, start, end in shifts:
+            s, e = _to_min(start or ""), _to_min(end or "")
+            if s is not None and e is not None and e > s and s < _AFTERNOON_START_MIN:
+                ranges.append((name, s, e))
+        _gwanri_cache[work_date] = (time.monotonic(), ranges)
+        if is_past:  # 지난 날짜는 저장해 두고 다음부터 바로 쓴다 (이름·시작·종료분만 저장)
+            conn = get_db()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO lead_time_gwanri_cache (work_date, ranges_json, updated_at) VALUES (?, ?, ?)",
+                    (work_date, json.dumps(ranges, ensure_ascii=False), _now().isoformat()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return ranges
+
+    def _count_slots(ranges: list[tuple[str, int, int]]) -> tuple[dict[str, int], dict[str, int], dict[str, list[str]]]:
+        """(표시용 인원, 계산용 인원, 시간대별 이름). 이름은 표시용 인원과 같은 기준(종료 시각 슬롯 포함)이다."""
+        names = {label: [n for n, s, e in ranges if s <= _to_min(label) <= e] for label in _slot_labels()}
+        shown = {label: len(v) for label, v in names.items()}
+        calc = {label: sum(1 for _, s, e in ranges if s <= _to_min(label) < e) for label in _slot_labels()}
+        return shown, calc, names
+
     def _scheduled_headcount(conn, work_date: str) -> tuple[dict[str, int], dict[str, int]]:
-        """스케줄관리(고정요일·시간 + 날짜별 예외)로 30분 슬롯별 예정 인원을 구한다.
+        """예전 방식: 이 서버에 남아 있는 근무표 복사본으로 계산한다. 관리페이지에 연결이 안 될 때만 쓴다.
 
         (표시용, 계산용)을 돌려준다. 표시용은 종료 시각 슬롯까지 포함하고(14:00까지 근무면 14:00 슬롯에도 표기),
         계산용은 종료 시각 슬롯을 뺀다 (14:00 이후 30분은 일하지 않으므로).
@@ -257,18 +450,22 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
             if shift is None:
                 continue
             s, e = _to_min(shift["start_time"]), _to_min(shift["end_time"])
-            if s is not None and e is not None and e > s:
-                ranges.append((s, e))
-        shown = {label: sum(1 for s, e in ranges if s <= _to_min(label) <= e) for label in _slot_labels()}
-        calc = {label: sum(1 for s, e in ranges if s <= _to_min(label) < e) for label in _slot_labels()}
-        return shown, calc
+            if s is not None and e is not None and e > s and s < _AFTERNOON_START_MIN:
+                ranges.append(("", s, e))  # 예전 복사본은 이름을 보여주지 않는다
+        return _count_slots(ranges)
 
     @router.get("/headcount")
-    def get_headcount(date: str, user: str = Depends(get_current_user)):
+    def get_headcount(date: str, fresh: bool = False, user: str = Depends(get_current_user)):
         work_date = _norm_date(date)
+        schedule_error = None
+        try:
+            remote = _count_slots(_gwanri_ranges(work_date, fresh))
+        except Exception as e:
+            remote = None
+            schedule_error = str(e) or type(e).__name__
         conn = get_db()
         try:
-            scheduled, scheduled_calc = _scheduled_headcount(conn, work_date)
+            scheduled, scheduled_calc, slot_names = remote if remote is not None else _scheduled_headcount(conn, work_date)
             legacy = {r["slot"]: r["headcount"] for r in conn.execute(
                 "SELECT slot, headcount FROM lead_time_headcount WHERE work_date = ?", (work_date,)
             ).fetchall()}
@@ -288,10 +485,11 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
                     "calc": scheduled_calc[s] if m is None else m}
 
         slots = [
-            {"slot": s, "scheduled": scheduled[s], **{kind: _kind_cell(kind, s) for kind in _HEAD_KINDS}}
+            {"slot": s, "scheduled": scheduled[s], "names": [n for n in slot_names[s] if n],
+             **{kind: _kind_cell(kind, s) for kind in _HEAD_KINDS}}
             for s in _slot_labels()
         ]
-        return {"ok": True, "date": work_date, "slots": slots}
+        return {"ok": True, "date": work_date, "slots": slots, "scheduleError": schedule_error}
 
     @router.put("/headcount")
     def put_headcount(payload: dict = Body(...), user: str = Depends(get_current_user)):
@@ -586,9 +784,10 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
 
     @router.post("/pack/load")
     async def load_pack(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        """입고요청 전표를 불러와 대량/개별/미검수로 나눈다.
+        """입고요청 전표를 불러와 대량/개별/대형/미검수로 나눈다.
 
         대량 = 사용자가 대량으로 지정한 전표, 개별 = 그 외.
+        대형 = 대량·개별 전표 안에서 상품명이 숫자로 시작하는 품목. 대량/개별 수량에서 빼서 따로 센다 (겹치지 않음).
         미검수 = 전표 세부목록의 공급처상품명에 등록 거래처 이름이 들어간 품목 (포장 수량에서 빼고 개수만 표기).
         """
         work_date = _norm_date(payload.get("date", ""))
@@ -627,6 +826,20 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
                     "checked": is_checked,
                     "unchecked": sum(unchecked_by.values()), "unchecked_by": unchecked_by,
                 })
+            # 대형: 대량·개별 전표의 상세 화면에서 '상품명'이 숫자로 시작하는 상품을 골라낸다.
+            # (다운로드 파일에는 상품명 칸이 없어 상세 화면을 전표마다 읽는다)
+            big_by_kind = {"bulk": 0, "single": 0}
+            big_items: dict[tuple[str, str], int] = {}
+            for r in rows:
+                if r["checked"] or r["total"] <= 0:
+                    continue
+                for item in await fetch_im10_product_rows(get_setting, sheet=r["sheet"]):
+                    qty = item["req_qty"] if item["req_qty"] > 0 else item["in_qty"]
+                    if qty <= 0 or not _BIG_NAME_RE.match(item["product_name"]):
+                        continue
+                    big_by_kind[r["kind"]] += qty
+                    key = (item["product_name"], item["option"])
+                    big_items[key] = big_items.get(key, 0) + qty
         except EzAdminSessionExpired:
             return {"ok": False, "need_session": True}
         except RuntimeError as e:
@@ -634,6 +847,7 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
 
         result: dict = {
             "bulk": {"qty": 0, "vouchers": []}, "single": {"qty": 0, "vouchers": []},
+            "big": {"qty": 0, "items": [], "from_bulk": big_by_kind["bulk"], "from_single": big_by_kind["single"]},
             "unchecked": {"qty": 0, "by_supplier": {}},
         }
         for r in rows:
@@ -646,6 +860,14 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
             result["unchecked"]["qty"] += r["unchecked"]
             for s, q in r["unchecked_by"].items():
                 result["unchecked"]["by_supplier"][s] = result["unchecked"]["by_supplier"].get(s, 0) + q
+        for kind in ("bulk", "single"):
+            moved = min(big_by_kind[kind], result[kind]["qty"])
+            result[kind]["qty"] -= moved
+            result["big"]["qty"] += moved
+        result["big"]["items"] = [
+            {"name": n, "option": o, "qty": q}
+            for (n, o), q in sorted(big_items.items(), key=lambda kv: -kv[1])
+        ]
         result["suppliers"] = suppliers
 
         conn = get_db()
@@ -717,11 +939,23 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
 
     @router.post("/ship/load")
     async def load_ship(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        """그날의 출력차수 전체를 조회해 본송장/재고송장 x 대량/개별/합포로 나눈다."""
+        """그날의 출력차수 전체를 조회해 본송장/재고송장 x 대량/개별/합포로 나눈다.
+
+        이미 읽어 둔 차수는 저장된 결과를 쓰고, 새 차수만 이지어드민에서 읽는다 (차수당 약 25초).
+        payload.fresh가 참이면 저장된 결과를 무시하고 전부 다시 읽는다.
+        """
         work_date = _norm_date(payload.get("date", ""))
+        fresh = bool(payload.get("fresh"))
         conn = get_db()
         try:
             assigned = _assignments(conn, work_date)
+            cached = {} if fresh else {
+                r["print_num"]: (int(r["total"]), json.loads(r["counts_json"] or "{}"))
+                for r in conn.execute(
+                    "SELECT print_num, total, counts_json FROM lead_time_ship_cache WHERE work_date = ? AND version = ?",
+                    (work_date, _SHIP_CLASSIFY_VERSION),
+                ).fetchall()
+            }
         finally:
             conn.close()
         if not assigned:
@@ -729,48 +963,58 @@ def build_lead_time_router(*, get_current_user, get_setting, get_db):
 
         d = date_cls.fromisoformat(work_date)
         weekday_kr = ["월", "화", "수", "목", "금", "토", "일"][d.weekday()]
-        empty = lambda: {"bulk": {"orders": 0, "pieces": 0}, "single": {"orders": 0, "pieces": 0}, "combo": {"orders": 0, "pieces": 0}}
+        empty = lambda: {k: {} for k in ("bulk", "single", "combo", "big", "krl")}
         totals = {"main": empty(), "stock": empty()}
         per_number = []
         sample_keys: list[str] = []
         nums = sorted(assigned, key=int)
-        # 차수마다 이지어드민을 따로 부르므로 동시에 조회한다(너무 많이 몰리지 않게 동시 4건까지).
-        sem = asyncio.Semaphore(_SHIP_LOAD_CONCURRENCY)
+        # 이지어드민은 한 세션의 요청을 하나씩 처리하므로(동시에 보내도 차례로 처리됨) 차수마다 차례로 읽고,
+        # 읽자마자 저장한다 → 중간에 세션이 끊겨도 이미 읽은 차수는 다음에 다시 읽지 않는다.
+        to_fetch = [n for n in nums if n not in cached]
+        fetched_counts: dict[str, tuple[int, dict]] = {}
+        if to_fetch:
+            async with httpx.AsyncClient(timeout=_EZ_TIMEOUT, verify=False, follow_redirects=True) as client:
+                for num in to_fetch:
+                    par = (
+                        f"orderReserve=0&priorityDeliv=0"
+                        f"&numberDate={d.year}-{d.month}-{d.day}"
+                        f"&start_date3={d.year}년 {d.month:02d}월 {d.day:02d}일 {weekday_kr}요일"
+                        f"&number_no={num}&is_download=0&orderType=2"
+                        f"&agencyTemplate=20004&check_address=2"
+                        f"&teamf_transType=tonight&kakaoT_type=0&deliv_today_type=0&hanjin_deliv_type=GN"
+                    )
+                    result = await _ez_post({
+                        "template": "S700", "action": "get_success_order", "_search": "false",
+                        "nd": str(int(datetime.now().timestamp() * 1000)), "rows": "999999", "page": "1",
+                        "sidx": "", "sord": "asc", "readonly": "T", "par": par,
+                    }, client)
+                    if result is None or result is False:
+                        return {"ok": False, "need_session": True}
+                    rows = result.get("rows", []) if isinstance(result, dict) else []
+                    if rows and not sample_keys:
+                        sample_keys = sorted((rows[0].get("cell") or {}).keys())
+                    total, counts = len(rows), classify_ship_orders(rows)
+                    fetched_counts[num] = (total, counts)
+                    conn = get_db()
+                    try:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO lead_time_ship_cache (work_date, print_num, version, total, counts_json, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                            (work_date, num, _SHIP_CLASSIFY_VERSION, total, json.dumps(counts), _now().isoformat()),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
 
-        async def fetch_number(client: httpx.AsyncClient, num: str):
-            par = (
-                f"orderReserve=0&priorityDeliv=0"
-                f"&numberDate={d.year}-{d.month}-{d.day}"
-                f"&start_date3={d.year}년 {d.month:02d}월 {d.day:02d}일 {weekday_kr}요일"
-                f"&number_no={num}&is_download=0&orderType=2"
-                f"&agencyTemplate=20004&check_address=2"
-                f"&teamf_transType=tonight&kakaoT_type=0&deliv_today_type=0&hanjin_deliv_type=GN"
-            )
-            async with sem:
-                result = await _ez_post({
-                    "template": "S700", "action": "get_success_order", "_search": "false",
-                    "nd": str(int(datetime.now().timestamp() * 1000)), "rows": "999999", "page": "1",
-                    "sidx": "", "sord": "asc", "readonly": "T", "par": par,
-                }, client)
-            return num, result
-
-        async with httpx.AsyncClient(timeout=_EZ_TIMEOUT, verify=False, follow_redirects=True) as client:
-            fetched = await asyncio.gather(*(fetch_number(client, n) for n in nums))
-
-        for num, result in fetched:
-            if result is None or result is False:
-                return {"ok": False, "need_session": True}
-            rows = result.get("rows", []) if isinstance(result, dict) else []
-            if rows and not sample_keys:
-                sample_keys = sorted((rows[0].get("cell") or {}).keys())
+        for num in nums:
+            total, counts = fetched_counts.get(num) or cached[num]
             kind = assigned[num]
-            counts = classify_ship_orders(rows)
-            for cat in counts:
-                for field in ("orders", "pieces"):
-                    totals[kind][cat][field] += counts[cat][field]
-            per_number.append({"print_num": num, "kind": kind, "total": len(rows), **counts})
+            for cat, fields in counts.items():
+                for field, n in fields.items():
+                    totals[kind].setdefault(cat, {})[field] = totals[kind].get(cat, {}).get(field, 0) + n
+            per_number.append({"print_num": num, "kind": kind, "total": total, **counts})
 
-        data = {"totals": totals, "per_number": per_number, "sample_cell_keys": sample_keys}
+        data = {"totals": totals, "per_number": per_number, "sample_cell_keys": sample_keys,
+                "fetched": to_fetch, "reused": [n for n in nums if n not in fetched_counts]}
         conn = get_db()
         try:
             _save_snapshot(conn, work_date, "ship_json", data, user)

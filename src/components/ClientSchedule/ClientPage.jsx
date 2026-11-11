@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React from 'react';
 import styles from './ClientPage.module.css';
 import ClientSchedulePage from './ClientSchedulePage';
 import ClientCancelSoldOutPage from './ClientCancelSoldOutPage';
 import ClientCancelSoldOutLogPage from './ClientCancelSoldOutLogPage';
 
+import usePersistentState from "../../lib/usePersistentState";
 const TABS = [
   { key: 'schedule', label: '일정' },
   { key: 'cancel-soldout', label: '품절취소' },
@@ -11,7 +12,7 @@ const TABS = [
 ];
 
 const ClientPage = () => {
-  const [activeTab, setActiveTab] = useState('schedule');
+  const [activeTab, setActiveTab] = usePersistentState('clientPageTab', 'schedule');
 
   return (
     <div className={styles.page}>

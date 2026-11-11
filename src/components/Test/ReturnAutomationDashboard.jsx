@@ -4,6 +4,7 @@ import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../..
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import styles from "./ReturnAutomationDashboard.module.css";
 
+import usePersistentState from "../../lib/usePersistentState";
 // Preview results and selection survive a page refresh - a preview can take a
 // while (30-day Ably scan + per-item LOGIS/EZAdmin calls), so losing it on an
 // accidental reload would mean re-running the whole scan.
@@ -218,7 +219,7 @@ export default function ReturnAutomationDashboard() {
   // 주문매칭실패 건 수동 매칭: { item, keyword, loading, candidates, error, applying }
   const [matchModal, setMatchModal] = useState(null);
   const [rejecting, setRejecting] = useState(false);
-  const [subTab, setSubTab] = useState("scan"); // "scan" | "manual"
+  const [subTab, setSubTab] = usePersistentState("returnAutomationSubTab", "scan"); // "scan" | "manual"
   const [manualInvoices, setManualInvoices] = useState([]);
   const [manualInvoiceInput, setManualInvoiceInput] = useState("");
   const [manualReasonInput, setManualReasonInput] = useState("");

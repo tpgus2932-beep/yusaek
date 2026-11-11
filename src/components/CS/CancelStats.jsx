@@ -8,6 +8,7 @@ import styles from './CSStatsPage.module.css';
 import cs from './CancelStats.module.css';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
+import usePersistentState from "../../lib/usePersistentState";
 const PERIODS = [7, 14, 30, 60, 90];
 const GROUPS = [['day', '일별'], ['week', '주간'], ['month', '월별']];
 const TABS = [['products', '상품 리스트'], ['trend', '추이·사유 그래프'], ['delay', '지연 현황']];
@@ -200,7 +201,7 @@ const CancelStats = () => {
     const [group, setGroup] = useState('day');
     const [reasonMode, setReasonMode] = useState('reason');
     const [elapsedMode, setElapsedMode] = useState('total');
-    const [tab, setTab] = useState('products');
+    const [tab, setTab] = usePersistentState('cancelStatsTab', 'products');
     const [products, setProducts] = useState(null);
     const [summary, setSummary] = useState(null);
     const [delay, setDelay] = useState(null);

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import pageStyles from "./BarcodePage.module.css";
 import styles from "./LeadTimePage.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
+import usePersistentState from "../../lib/usePersistentState";
 const DEFAULT_RATE = 2; // 1인 1분 처리 개수
 const HEADCOUNT_KINDS = [["pack", "포장"]]; // 시간대별 근무 인원 입력 구분 (대량출고/개별출고 인원은 출고 박스에서 설정)
 const DEFAULT_BREAK_MIN = 10; // 포장 종료 후 출고 시작까지 쉬는시간(분) 기본값
@@ -11,12 +12,30 @@ const DEFAULT_SHOW_UNTIL = 15 * 60; // 시간대별 인원은 기본 15:00까지
 const PACK_TABS = [
   { key: "bulk", label: "대량" },
   { key: "single", label: "개별" },
+  { key: "big", label: "대형" },
   { key: "unchecked", label: "미검수" },
 ];
 const SHIP_TABS = [
   { key: "bulk", label: "대량" },
   { key: "single", label: "개별" },
   { key: "combo", label: "합포" },
+  { key: "big", label: "그중 대형" }, // 대량·개별·합포 안에 든 대형 상품 (따로 떼지 않음)
+];
+// 매칭작업 항목: [처리 개수 설정 키, 이름]. 위에서부터 차례로 같은 인원이 이어서 처리한다고 보고 계산한다.
+const MATCH_PARTS = [
+  ["match_stock", "재고매칭 (대량제외)"],
+  ["match_krl", "KRL매칭"], // 출고(출력차수) 송장 중 K·R·L 상품이 든 송장 수에 KRL 처리 개수 하나로 계산 (글자별은 상세보기)
+  ["match_combo", "합포빼기"],
+];
+// 상세 항목별 시작 시각 설정 키 (비우면 자동: 포장은 앞 항목에 이어서, 나머지는 그 작업의 시작 시각)
+const PART_START_KEYS = ["pack_bulk", "pack_single", "pack_big", "ship_bulk", "ship_single", "invoice_main", "invoice_stock", "match_stock", "match_krl", "match_combo"];
+const START_KEYS = ["pack", "ship", "invoice", "match", ...PART_START_KEYS];
+// 시간표(타임라인)에 그릴 작업: [시작 시각 설정 키, 이름, 막대 색 클래스]
+const TIMELINE_TASKS = [
+  ["pack", "포장", "tlPack"],
+  ["ship", "출고", "tlShip"],
+  ["invoice", "송장붙이기", "tlInvoice"],
+  ["match", "매칭작업", "tlMatch"],
 ];
 const INVOICE_TABS = [
   { key: "main", label: "본송장" },
@@ -111,26 +130,42 @@ function runQueueWithHelp(qty, startMin, slots, helperSlots, rate, joinMin) {
 export default function LeadTimePage({ headerExtra = null }) {
   const [date, setDate] = useState(todayStr());
   const [packRate, setPackRate] = useState(DEFAULT_RATE);
+  const [packBigRate, setPackBigRate] = useState(DEFAULT_RATE); // 대형 포장 1인 1분 처리 개수
+  const [shipBigRate, setShipBigRate] = useState(DEFAULT_RATE); // 대형출고 1인 1분 처리 개수
   const [shipBulkRate, setShipBulkRate] = useState(DEFAULT_RATE);
   const [shipSingleRate, setShipSingleRate] = useState(DEFAULT_RATE);
   const [joinBulk, setJoinBulk] = useState(false); // 개별출고가 먼저 끝나면 그 인원이 대량출고에 합류
   const [joinCount, setJoinCount] = useState(""); // 합류 인원 수 (빈칸이면 개별출고 인원 전부)
-  const [starts, setStarts] = useState({ pack: "", ship: "" }); // 시작 시각 직접 지정 ("HH:MM"). 빈칸이면 자동(포장: 첫 근무 시간대, 출고: 포장 종료 + 쉬는시간)
+  const [invoiceMainRate, setInvoiceMainRate] = useState(DEFAULT_RATE); // 송장붙이기 본송장 1인 1분 처리 개수
+  const [invoiceStockRate, setInvoiceStockRate] = useState(DEFAULT_RATE); // 송장붙이기 재고송장 1인 1분 처리 개수
+  const [invoiceMainHead, setInvoiceMainHead] = useState(""); // 본송장 인원 (빈칸이면 시간대별 근무 인원을 따름)
+  const [invoiceStockHead, setInvoiceStockHead] = useState(""); // 재고송장 인원 (빈칸이면 시간대별 근무 인원을 따름)
+  const [invoiceEdit, setInvoiceEdit] = useState(null); // 송장 개수 직접 입력값 (null이면 출고에서 불러온 송장 수)
+  const [matchRates, setMatchRates] = useState(() => Object.fromEntries(MATCH_PARTS.map(([k]) => [k, DEFAULT_RATE]))); // 매칭작업 항목별 1인 1분 처리 개수
+  const [matchHeads, setMatchHeads] = useState(() => Object.fromEntries(MATCH_PARTS.map(([k]) => [k, ""]))); // 매칭작업 항목별 인원 (빈칸이면 시간대별 근무 인원을 따름)
+  const [matchEdit, setMatchEdit] = useState(null); // 매칭작업 개수 직접 입력값 (null이면 불러온 수량)
+  const [starts, setStarts] = useState(() => Object.fromEntries(START_KEYS.map((k) => [k, ""]))); // 시작 시각 직접 지정 ("HH:MM"). 빈칸이면 자동(포장·송장: 첫 근무 시간대, 출고: 포장 종료 + 쉬는시간)
   const [editingStart, setEditingStart] = useState(null); // 시작 시각을 누르면 "pack" | "ship" 수정칸으로 바뀐다
   const [shipBulkHead, setShipBulkHead] = useState(""); // 대량출고 인원 (빈칸이면 시간대별 근무 인원을 따름)
   const [shipSingleHead, setShipSingleHead] = useState(""); // 개별출고 인원 (빈칸이면 시간대별 근무 인원을 따름)
   const [packEdit, setPackEdit] = useState(null); // 포장 수량 직접 입력값 (null이면 불러온 수량)
   const [shipEdit, setShipEdit] = useState(null); // 출고 수량 직접 입력값 (null이면 불러온 수량)
   const [slots, setSlots] = useState([]);
+  const [scheduleError, setScheduleError] = useState(null); // 관리페이지 근무표 연결 실패 사유
+  const [showNames, setShowNames] = useState(false); // 시간대별 근무자 이름. 아무 칸의 열기/닫기를 눌러도 모든 칸이 같이 열리고 닫힘 (처음엔 닫힘)
   const [draft, setDraft] = useState({}); // 입력 중인 인원 (slot -> 문자열)
   const [pack, setPack] = useState(null);
   const [ship, setShip] = useState(null);
   const [suppliers, setSuppliers] = useState([]);
   const [newSupplier, setNewSupplier] = useState("");
-  const [phase, setPhase] = useState("pack");
-  const [packTab, setPackTab] = useState("bulk");
-  const [shipTab, setShipTab] = useState("bulk");
-  const [invoiceTab, setInvoiceTab] = useState("main");
+  const [timelineOpen, setTimelineOpen] = usePersistentState("leadTimeTimelineOpen", "0", ["0", "1"]); // 시간표 열기/닫기 (처음엔 닫힘)
+  const dragRef = useRef(null); // 시간표 막대 드래그 중인 정보 (화면 그리기와 상관없는 값이라 ref)
+  const [dragInfo, setDragInfo] = useState(null); // 드래그 중 말풍선: { key, min, fine }
+  const [nowMin, setNowMin] = useState(() => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); }); // 시간표의 지금 시각 선
+  const [phase, setPhase] = usePersistentState("leadTimePhase", "pack", ["pack", "ship"]);
+  const [packTab, setPackTab] = usePersistentState("leadTimePackTab", "bulk", PACK_TABS.map((t) => t.key));
+  const [shipTab, setShipTab] = usePersistentState("leadTimeShipTab", "bulk", SHIP_TABS.map((t) => t.key));
+  const [invoiceTab, setInvoiceTab] = usePersistentState("leadTimeInvoiceTab", "main", INVOICE_TABS.map((t) => t.key));
   const [showUntil, setShowUntil] = useState(DEFAULT_SHOW_UNTIL);
   const [showAssign, setShowAssign] = useState(false);
   const [showPackAssign, setShowPackAssign] = useState(false);
@@ -154,27 +189,46 @@ export default function LeadTimePage({ headerExtra = null }) {
     return data;
   }, []);
 
+  useEffect(() => {
+    if (timelineOpen !== "1") return undefined;
+    const id = setInterval(() => { const d = new Date(); setNowMin(d.getHours() * 60 + d.getMinutes()); }, 60000);
+    return () => clearInterval(id);
+  }, [timelineOpen]);
+  const dateRef = useRef(date); // 날짜를 빨리 넘길 때 이전 날짜의 늦은 응답이 화면을 덮어쓰지 않게 한다
+  dateRef.current = date;
   const loadAll = useCallback(async () => {
     setMessage("");
     try {
-      const [hc, snap, sup, st] = await Promise.all([
-        request(`/headcount?date=${date}`),
+      // 근무표(관리페이지)는 느릴 수 있어서 따로 받는다 → 저장된 포장·출고 결과와 설정을 먼저 보여준다.
+      request(`/headcount?date=${date}`)
+        .then((hc) => { if (hc && dateRef.current === date) { setSlots(hc.slots); setScheduleError(hc.scheduleError || null); setDraft({}); setShowUntil(DEFAULT_SHOW_UNTIL); } })
+        .catch((err) => { if (dateRef.current === date) setScheduleError(err.message || "근무표를 불러오지 못했습니다"); });
+      const [snap, sup, st] = await Promise.all([
         request(`/snapshot?date=${date}`),
         request("/suppliers"),
         request(`/settings?date=${date}`).catch(() => null), // 저장된 처리량/개수. 못 불러와도 나머지는 보여준다
       ]);
-      if (hc) { setSlots(hc.slots); setDraft({}); setShowUntil(DEFAULT_SHOW_UNTIL); }
       if (snap) { setPack(snap.pack); setShip(snap.ship); }
       setPackEdit(st?.qty?.pack != null ? String(st.qty.pack) : null);
       setShipEdit(st?.qty?.ship != null ? String(st.qty.ship) : null);
+      setInvoiceEdit(st?.qty?.invoice != null ? String(st.qty.invoice) : null);
+      setMatchEdit(st?.qty?.match != null ? String(st.qty.match) : null);
+      setMatchHeads(Object.fromEntries(MATCH_PARTS.map(([k]) => [k, st?.options?.[`${k}_head`] != null ? String(st.options[`${k}_head`]) : ""])));
+      setMatchRates((prev) => Object.fromEntries(MATCH_PARTS.map(([k]) => [k, st?.rates?.[k] > 0 ? st.rates[k] : prev[k]])));
       if (st?.rates?.pack > 0) setPackRate(st.rates.pack);
+      if (st?.rates?.pack_big > 0) setPackBigRate(st.rates.pack_big);
+      if (st?.rates?.ship_big > 0) setShipBigRate(st.rates.ship_big);
+      if (st?.rates?.invoice_main > 0) setInvoiceMainRate(st.rates.invoice_main);
+      if (st?.rates?.invoice_stock > 0) setInvoiceStockRate(st.rates.invoice_stock);
+      setInvoiceMainHead(st?.options?.invoice_main_head != null ? String(st.options.invoice_main_head) : "");
+      setInvoiceStockHead(st?.options?.invoice_stock_head != null ? String(st.options.invoice_stock_head) : "");
       // 예전에 출고 하나로 저장해 둔 값(ship)이 있으면 대량/개별의 처음 값으로 쓴다.
       const legacyShip = st?.rates?.ship > 0 ? st.rates.ship : null;
       const bulkRate = st?.rates?.ship_bulk > 0 ? st.rates.ship_bulk : legacyShip;
       const singleRate = st?.rates?.ship_single > 0 ? st.rates.ship_single : legacyShip;
       setJoinBulk(Boolean(st?.options?.join_bulk));
       setJoinCount(st?.options?.join_count != null ? String(st.options.join_count) : "");
-      setStarts({ pack: st?.options?.pack_start || "", ship: st?.options?.ship_start || "" });
+      setStarts(Object.fromEntries(START_KEYS.map((k) => [k, st?.options?.[`${k}_start`] || ""])));
       setShipBulkHead(st?.options?.bulk_head != null ? String(st.options.bulk_head) : "");
       setShipSingleHead(st?.options?.single_head != null ? String(st.options.single_head) : "");
       if (bulkRate) setShipBulkRate(bulkRate);
@@ -188,6 +242,27 @@ export default function LeadTimePage({ headerExtra = null }) {
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  // 관리페이지 근무표 인원만 다시 불러온다 (화면으로 돌아올 때 자동 + "근무표 다시 불러오기" 버튼).
+  // 입력 중인 칸(draft)은 건드리지 않는다. 버튼은 서버의 잠깐 저장해 둔 값(30초)을 건너뛴다.
+  const [headcountLoading, setHeadcountLoading] = useState(false);
+  const refreshHeadcount = useCallback(async (fresh = false) => {
+    setHeadcountLoading(true);
+    try {
+      const hc = await request(`/headcount?date=${date}${fresh ? "&fresh=1" : ""}`);
+      if (hc) { setSlots(hc.slots); setScheduleError(hc.scheduleError || null); }
+    } catch (err) {
+      if (fresh) setScheduleError(err.message || "근무표를 불러오지 못했습니다");
+    } finally {
+      setHeadcountLoading(false);
+    }
+  }, [request, date]);
+
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === "visible") refreshHeadcount(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [refreshHeadcount]);
 
   // 바꾸는 즉시 저장한다. 연속 입력은 잠깐 모아서(디바운스) 한 번에 보낸다.
   const headcountTimers = useRef({});
@@ -255,7 +330,8 @@ export default function LeadTimePage({ headerExtra = null }) {
 
   const changeRate = (kind, raw) => {
     const n = Math.max(Number(raw) || DEFAULT_RATE, 0.1);
-    ({ pack: setPackRate, ship_bulk: setShipBulkRate, ship_single: setShipSingleRate })[kind](n);
+    if (kind.startsWith("match_")) setMatchRates((prev) => ({ ...prev, [kind]: n }));
+    else ({ pack: setPackRate, pack_big: setPackBigRate, ship_bulk: setShipBulkRate, ship_single: setShipSingleRate, ship_big: setShipBigRate, invoice_main: setInvoiceMainRate, invoice_stock: setInvoiceStockRate })[kind](n);
     persistSettings({ rates: { [kind]: n } });
   };
 
@@ -275,19 +351,28 @@ export default function LeadTimePage({ headerExtra = null }) {
     persistCount("join_count", raw);
   };
 
-  // kind: "pack" | "ship". 빈 값이면 직접 지정을 해제하고 자동 시작으로 돌아간다.
+  // kind: "pack" | "ship" | "invoice". 빈 값이면 직접 지정을 해제하고 자동 시작으로 돌아간다.
   const changeStart = (kind, raw) => {
     setStarts((s) => ({ ...s, [kind]: raw }));
     persistSettings({ options: { [`${kind}_start`]: raw || null } });
   };
 
-  const changeShipHead = (kind, raw) => {
-    (kind === "ship_bulk" ? setShipBulkHead : setShipSingleHead)(raw);
-    persistCount(kind === "ship_bulk" ? "bulk_head" : "single_head", raw);
+  // 인원 직접 지정 (대량출고 / 개별출고 / 송장붙이기). 비우면 시간대별 근무 인원을 따른다.
+  const HEAD_SETTERS = {
+    ship_bulk: [setShipBulkHead, "bulk_head"],
+    ship_single: [setShipSingleHead, "single_head"],
+    invoice_main: [setInvoiceMainHead, "invoice_main_head"],
+    invoice_stock: [setInvoiceStockHead, "invoice_stock_head"],
+    ...Object.fromEntries(MATCH_PARTS.map(([k]) => [k, [(raw) => setMatchHeads((prev) => ({ ...prev, [k]: raw })), `${k}_head`]])),
+  };
+  const changeHead = (kind, raw) => {
+    const [setter, option] = HEAD_SETTERS[kind];
+    setter(raw);
+    persistCount(option, raw);
   };
 
   const changeQty = (kind, raw) => {
-    (kind === "pack" ? setPackEdit : setShipEdit)(raw);
+    ({ pack: setPackEdit, ship: setShipEdit, invoice: setInvoiceEdit, match: setMatchEdit })[kind](raw);
     if (raw === null || raw.trim() === "") persistSettings({ qty: { [kind]: null } });
     else if (Number.isInteger(Number(raw)) && Number(raw) >= 0) persistSettings({ qty: { [kind]: Number(raw) } });
   };
@@ -295,21 +380,30 @@ export default function LeadTimePage({ headerExtra = null }) {
   // 화면을 떠나거나 새로고침하기 직전에 아직 못 보낸 값을 보낸다.
   useEffect(() => () => { flushSettings(); }, [flushSettings]);
 
-  const runLoad = useCallback(async (kind) => {
+  // fresh: 출고에서 이미 읽어 둔 출력차수도 전부 이지어드민에서 다시 읽는다 (기본은 새 차수만 읽음).
+  const runLoad = useCallback(async (kind, fresh = false) => {
     setBusy(kind);
-    setMessage(kind === "ship" ? "출력차수 주문을 조회하는 중입니다. 건수가 많으면 몇 분 걸릴 수 있습니다." : "입고요청 전표를 조회하는 중입니다. 전표가 많으면 몇 분 걸릴 수 있습니다.");
+    setMessage(kind === "ship"
+      ? `출력차수 주문을 조회하는 중입니다. ${fresh ? "모든 차수를 다시 읽으므로" : "새 차수만 읽지만"} 차수 하나에 약 25초 걸립니다.`
+      : "입고요청 전표를 조회하는 중입니다. 전표가 많으면 몇 분 걸릴 수 있습니다.");
     try {
-      const data = await request(`/${kind}/load`, { method: "POST", body: JSON.stringify({ date }) });
+      const data = await request(`/${kind}/load`, { method: "POST", body: JSON.stringify({ date, fresh }) });
       if (!data) return;
       if (data.need_session) {
-        openEzadminModal(() => runLoad(kind));
+        openEzadminModal(() => runLoad(kind, fresh));
         return;
       }
       if (kind === "pack") setPack(data.pack); else setShip(data.ship);
       // 새로 불러오면 직접 입력한 개수는 지우고 불러온 수량을 쓴다
-      if (kind === "pack") setPackEdit(null); else setShipEdit(null);
-      persistSettings({ qty: { [kind]: null } });
-      setMessage("");
+      // 출고를 새로 불러오면 송장 수도 함께 새로 잡히므로 송장 직접 입력값도 지운다.
+      // 매칭작업 수량도 포장(K/R/L)·출고(합포)에서 오므로 직접 입력한 매칭 총개수를 지운다.
+      if (kind === "pack") setPackEdit(null); else { setShipEdit(null); setInvoiceEdit(null); }
+      setMatchEdit(null);
+      persistSettings({ qty: kind === "pack" ? { pack: null, match: null } : { ship: null, invoice: null, match: null } });
+      const reused = data.ship?.reused || [];
+      setMessage(kind === "ship" && reused.length
+        ? `저장된 차수(${reused.map((n) => `${n}차`).join(", ")})는 다시 읽지 않았습니다. 내용이 바뀌었으면 '전부 다시 읽기'를 누르세요.`
+        : "");
     } catch (err) {
       setMessage(err.message || "조회 실패");
     } finally {
@@ -361,7 +455,7 @@ export default function LeadTimePage({ headerExtra = null }) {
   const savePackAssign = async () => {
     try {
       const data = await request("/pack/assign", { method: "PUT", body: JSON.stringify({ date, bulk: bulkSheets, check: checkSheets }) });
-      if (data) { setBulkSheets(data.bulk); setCheckSheets(data.check); setMessage("전표 지정을 저장했습니다. '입고요청 불러오기'를 누르면 반영됩니다."); }
+      if (data) { setBulkSheets(data.bulk); setCheckSheets(data.check); setMessage("전표 지정을 저장했습니다. '반영하기'를 누르면 반영됩니다."); }
     } catch (err) {
       setMessage(err.message || "지정 저장 실패");
     }
@@ -371,7 +465,7 @@ export default function LeadTimePage({ headerExtra = null }) {
     const pick = (kind) => Object.keys(assign).filter((n) => assign[n] === kind);
     try {
       const data = await request("/ship/assign", { method: "PUT", body: JSON.stringify({ date, main: pick("main"), stock: pick("stock") }) });
-      if (data) { setAssign(data.assigned); setMessage("출력차수 지정을 저장했습니다. '출력차수 불러오기'를 누르면 반영됩니다."); }
+      if (data) { setAssign(data.assigned); setMessage("본송장·재고송장 지정을 저장했습니다. '반영하기'를 누르면 반영됩니다."); }
     } catch (err) {
       setMessage(err.message || "지정 저장 실패");
     }
@@ -397,24 +491,47 @@ export default function LeadTimePage({ headerExtra = null }) {
   const visibleSlots = slots.filter((s) => toMin(s.slot) <= Math.max(showUntil, lastManualMin));
   const canAddSlot = visibleSlots.length < slots.length;
 
-  const loadedPackQty = (pack?.bulk?.qty || 0) + (pack?.single?.qty || 0);
-  // 출고 대량 = 본송장+재고송장의 대량, 개별 = 그 나머지(개별 + 합포).
+  const loadedPackQty = (pack?.bulk?.qty || 0) + (pack?.single?.qty || 0) + (pack?.big?.qty || 0);
+  // 출고는 송장 개수(주문 건수, 합포 1건 = 1개)로 센다 → 송장붙이기 개수와 같다.
+  // 대량 = 본송장+재고송장의 대량, 개별 = 개별 + 합포 (송장 수). 대형은 따로 떼지 않고 대량/개별 안의 대형 주문 건수(bigBulk/bigSingle)만 센다.
   const loadedShipParts = useMemo(() => {
     const sumOf = (keys) => INVOICE_TABS.reduce(
-      (sum, inv) => sum + keys.reduce((s, k) => s + (ship?.totals?.[inv.key]?.[k]?.pieces || 0), 0),
+      (sum, inv) => sum + keys.reduce((s, k) => s + (ship?.totals?.[inv.key]?.[k]?.orders || 0), 0),
       0,
     );
-    return { bulk: sumOf(["bulk"]), single: sumOf(["single", "combo"]) };
+    const bigOf = (keys) => INVOICE_TABS.reduce(
+      (sum, inv) => sum + keys.reduce((s, k) => s + (ship?.totals?.[inv.key]?.[k]?.big_orders ?? ship?.totals?.[inv.key]?.[k]?.big_pieces ?? 0), 0),
+      0,
+    );
+    return { bulk: sumOf(["bulk"]), single: sumOf(["single", "combo"]), bigBulk: bigOf(["bulk"]), bigSingle: bigOf(["single", "combo"]) };
   }, [ship]);
   const loadedShipPieces = loadedShipParts.bulk + loadedShipParts.single;
+  const loadedShipBig = loadedShipParts.bigBulk + loadedShipParts.bigSingle;
   // 직접 입력한 수량이 있으면 그 값으로 시간을 계산한다. 비우면 불러온 수량으로 돌아간다.
   const editedQty = (raw, loaded) => {
     if (raw === null || raw.trim() === "") return loaded;
     const n = Number(raw);
     return Number.isFinite(n) && n >= 0 ? n : loaded;
   };
+  // 송장붙이기 = 출고에서 불러온 본송장+재고송장의 주문 건수 (송장 1장 = 주문 1건, 대량·개별·합포 전부)
+  const loadedInvoices = useMemo(() => {
+    const ordersOf = (inv) => ["bulk", "single", "combo"].reduce((s, k) => s + (ship?.totals?.[inv]?.[k]?.orders || 0), 0);
+    return { main: ordersOf("main"), stock: ordersOf("stock") };
+  }, [ship]);
+  const loadedInvoiceQty = loadedInvoices.main + loadedInvoices.stock;
+  // 매칭작업 (모두 송장 개수 기준, 합포 1건 = 1개):
+  // 재고매칭 = 재고송장으로 지정한 차수의 개별만 (대량·합포 제외) / KRL = 본송장 중 K·R·L 상품이 든 송장 수 (재고송장 제외)
+  // 합포빼기 = 본송장+재고송장 합포의 상품 개수 (송장 수 아님)
+  const loadedMatch = useMemo(() => ({
+    match_stock: ship?.totals?.stock?.single?.orders || 0, // 재고송장 중 개별만 (대량·합포 제외)
+    match_krl: ship?.totals?.main?.krl?.orders || 0, // 본송장만 (재고송장은 재고매칭에서 처리 → 중복 방지)
+    match_combo: INVOICE_TABS.reduce((sum, inv) => sum + (ship?.totals?.[inv.key]?.combo?.pieces || 0), 0), // 합포빼기는 상품 개수 기준
+  }), [ship]);
+  const loadedMatchQty = MATCH_PARTS.reduce((sum, [k]) => sum + loadedMatch[k], 0);
+  const matchQty = editedQty(matchEdit, loadedMatchQty);
   const packQty = editedQty(packEdit, loadedPackQty);
   const shipPieces = editedQty(shipEdit, loadedShipPieces);
+  const invoiceQty = editedQty(invoiceEdit, loadedInvoiceQty);
 
   // 현재 시각과 상관없이 시간대별 인원 입력값 전체로 계산한다. 입력 중인 값(draft)도 바로 반영한다.
   // 시간대별 근무 인원(draft 포함)을 계산용 슬롯으로 바꾼다. 화면에서는 포장(kind="pack")만 입력받는다.
@@ -447,17 +564,37 @@ export default function LeadTimePage({ headerExtra = null }) {
     const parseStart = (raw) => (/^\d{1,2}:\d{2}$/.test(raw) ? toMin(raw) : null);
     const packManual = parseStart(starts.pack);
     const packBase = run(packSlots, packQty, packRate, packManual ?? 0);
-    const packRes = { ...packBase, afterBreak: false, manualStart: packManual != null && packBase.afterBreak };
-    // 대량 → 개별 순서로 이어서 처리한다고 보고 구간을 나눈다. 포장 개수를 직접 고쳤으면 불러온 대량:개별 비율로 나눈다.
+    let packRes = { ...packBase, afterBreak: false, manualStart: packManual != null && packBase.afterBreak };
+    // 대량 → 개별 → 대형 순서로 이어서 처리한다고 보고 구간을 나눈다. 대량·개별은 포장 처리 개수, 대형은 대형 처리 개수로 계산.
+    // 셋은 겹치지 않는다(대형은 대량·개별 전표에서 빼낸 수량). 포장 개수를 직접 고쳤으면 불러온 비율로 나눈다.
     const loadedBulk = pack?.bulk?.qty || 0;
     const loadedSingle = pack?.single?.qty || 0;
+    const loadedBig = pack?.big?.qty || 0;
+    const loadedAll = loadedBulk + loadedSingle + loadedBig;
     let packDetail = null;
-    if (loadedBulk + loadedSingle > 0 && packRes.endMin != null) {
-      const bulkQty = Math.round(packQty * (loadedBulk / (loadedBulk + loadedSingle)));
-      const bulk = { qty: bulkQty, startMin: packRes.startMin, ...runQueue(bulkQty, packRes.startMin, packSlots, packRate) };
-      const singleStart = bulk.endMin ?? packRes.startMin;
-      const single = { qty: packQty - bulkQty, startMin: singleStart, ...runQueue(packQty - bulkQty, singleStart, packSlots, packRate) };
-      packDetail = { bulk, single };
+    if (loadedAll > 0) {
+      const bulkQty = Math.round(packQty * (loadedBulk / loadedAll));
+      const bigQty = Math.min(Math.round(packQty * (loadedBig / loadedAll)), packQty - bulkQty);
+      const singleQty = packQty - bulkQty - bigQty;
+      // 항목별 시작 시각을 직접 정했으면 그 시각부터(겹쳐서 동시에 진행 가능), 아니면 앞 항목이 끝난 뒤 이어서 시작한다.
+      const partRun = (key, qty, rate, prev) => {
+        const own = parseStart(starts[key]);
+        if (own == null && prev && prev.endMin == null) return { qty, startMin: prev.startMin, endMin: null, over: false };
+        return run(packSlots, qty, rate, own ?? (prev ? prev.endMin : packManual ?? 0));
+      };
+      const bulk = partRun("pack_bulk", bulkQty, packRate, null);
+      const single = partRun("pack_single", singleQty, packRate, bulk);
+      const big = partRun("pack_big", bigQty, packBigRate, single);
+      packDetail = { bulk, single, big };
+      const parts = [bulk, single, big].filter((p) => p.qty > 0);
+      if (parts.length) {
+        packRes = {
+          ...packRes,
+          startMin: Math.min(...parts.map((p) => p.startMin)),
+          over: parts.some((p) => p.over),
+          endMin: parts.some((p) => p.endMin == null) ? null : Math.max(...parts.map((p) => p.endMin)),
+        };
+      }
     }
     // 출고 시작: 시각을 직접 지정했으면 그 시각, 아니면 포장 종료 + 쉬는시간.
     const manualStart = parseStart(starts.ship);
@@ -466,8 +603,15 @@ export default function LeadTimePage({ headerExtra = null }) {
     // 전체는 먼저 시작한 쪽부터 늦게 끝나는 쪽까지다. 직접 고친 개수는 불러온 비율로 나눈다.
     const shipBulkQty = loadedShipPieces > 0 ? Math.round(shipPieces * (loadedShipParts.bulk / loadedShipPieces)) : 0;
     const shipSingleQty = shipPieces - shipBulkQty;
-    const bulkAlone = run(bulkSlots, shipBulkQty, shipBulkRate, shipNotBefore);
-    const single = run(singleSlots, shipSingleQty, shipSingleRate, shipNotBefore);
+    // 대형 상품도 대량/개별 조건대로 같은 팀이 처리하되, 대형 개수만 대형 처리 개수로 계산한다.
+    // → 팀의 처리 개수 기준 "환산 개수" = 일반 개수 + 대형 개수 × (팀 처리 개수 ÷ 대형 처리 개수)
+    const bigShare = (big, all) => (all > 0 ? Math.min(big / all, 1) : 0);
+    const bulkBig = Math.round(shipBulkQty * bigShare(loadedShipParts.bigBulk, loadedShipParts.bulk));
+    const singleBig = Math.round(shipSingleQty * bigShare(loadedShipParts.bigSingle, loadedShipParts.single));
+    const effective = (qty, big, rate) => qty - big + big * (rate / shipBigRate);
+    const withQty = (part, qty, big) => ({ ...part, qty, big });
+    const bulkAlone = withQty(run(bulkSlots, effective(shipBulkQty, bulkBig, shipBulkRate), shipBulkRate, parseStart(starts.ship_bulk) ?? shipNotBefore), shipBulkQty, bulkBig);
+    const single = withQty(run(singleSlots, effective(shipSingleQty, singleBig, shipSingleRate), shipSingleRate, parseStart(starts.ship_single) ?? shipNotBefore), shipSingleQty, singleBig);
     // 설정을 켰고 개별출고가 대량출고보다 먼저 끝나면, 끝난 시점부터 개별출고 인원이 대량출고(대량 처리 속도)에 합류한다.
     let bulk = bulkAlone;
     let joined = null;
@@ -477,7 +621,7 @@ export default function LeadTimePage({ headerExtra = null }) {
       // 합류 인원: 비우면 그 시간대 개별출고 인원 전부, 숫자를 넣으면 그 인원(개별출고 인원이 더 적은 시간대는 그 인원까지)
       const limit = joinCount.trim() !== "" && Number.isInteger(Number(joinCount)) && Number(joinCount) >= 0 ? Number(joinCount) : null;
       const helpers = singleSlots.map((s) => ({ ...s, calc: limit == null ? s.calc : Math.min(limit, s.calc) }));
-      const helped = runQueueWithHelp(shipBulkQty, bulkAlone.startMin, bulkSlots, helpers, shipBulkRate, single.endMin);
+      const helped = runQueueWithHelp(effective(shipBulkQty, bulkBig, shipBulkRate), bulkAlone.startMin, bulkSlots, helpers, shipBulkRate, single.endMin);
       if (helped.endMin != null && (bulkNoStaff || helped.endMin < bulkAlone.endMin)) {
         // 대량출고 인원이 없던 경우 대량출고는 합류 시점에 시작한다.
         bulk = { ...bulkAlone, ...helped, ...(bulkNoStaff ? { startMin: single.endMin, afterBreak: false } : {}) };
@@ -492,17 +636,77 @@ export default function LeadTimePage({ headerExtra = null }) {
       over: parts.some((p) => p.over),
       endMin: parts.length === 0 || parts.some((p) => p.endMin == null) ? null : Math.max(...parts.map((p) => p.endMin)),
     };
-    return { packRes, packDetail, shipRes, shipDetail: { bulk, single, joined } };
-  }, [slots, kindSlots, pack, packQty, shipPieces, loadedShipPieces, loadedShipParts, packRate, shipBulkRate, shipSingleRate, shipBulkHead, shipSingleHead, joinBulk, joinCount, starts]);
+    // 송장붙이기: 포장·출고와 따로, 첫 근무 시간대(또는 직접 지정한 시각)부터 자기 인원/처리 개수로 계산한다.
+    // 출고처럼 본송장과 재고송장을 동시에 진행한다. 각자 인원/처리 개수로 따로 계산하고, 전체는 늦게 끝나는 쪽 기준.
+    // 직접 고친 송장 수는 불러온 본송장:재고송장 비율로 나눈다 (불러온 게 없으면 전부 본송장).
+    const invoiceManual = parseStart(starts.invoice);
+    const invoiceMainQty = loadedInvoiceQty > 0 ? Math.round(invoiceQty * (loadedInvoices.main / loadedInvoiceQty)) : invoiceQty;
+    const invoiceMain = run(fixedSlots(invoiceMainHead), invoiceMainQty, invoiceMainRate, parseStart(starts.invoice_main) ?? invoiceManual ?? 0);
+    const invoiceStock = run(fixedSlots(invoiceStockHead), invoiceQty - invoiceMainQty, invoiceStockRate, parseStart(starts.invoice_stock) ?? invoiceManual ?? 0);
+    const invoiceParts = [invoiceMain, invoiceStock].filter((p) => p.qty > 0);
+    const invoiceRes = {
+      startMin: invoiceParts.length ? Math.min(...invoiceParts.map((p) => p.startMin)) : invoiceMain.startMin,
+      afterBreak: false,
+      manualStart: invoiceManual != null && invoiceParts.length > 0 && invoiceParts.every((p) => p.afterBreak),
+      over: invoiceParts.some((p) => p.over),
+      endMin: invoiceParts.length === 0 || invoiceParts.some((p) => p.endMin == null) ? null : Math.max(...invoiceParts.map((p) => p.endMin)),
+    };
+    // 매칭작업: 송장붙이기처럼 항목(재고매칭 / KRL매칭 / 합포빼기)마다 자기 인원·1분 처리 개수로 동시에 진행한다.
+    // 첫 근무 시간대(또는 직접 지정한 시각)부터 시작, 전체는 늦게 끝나는 항목 기준. 직접 고친 총개수는 불러온 비율로 나눈다.
+    const matchManual = parseStart(starts.match);
+    const matchDetail = {};
+    let assignedQty = 0;
+    MATCH_PARTS.forEach(([k], i) => {
+      const qty = i === MATCH_PARTS.length - 1
+        ? Math.max(matchQty - assignedQty, 0)
+        : (loadedMatchQty > 0 ? Math.min(Math.round(matchQty * (loadedMatch[k] / loadedMatchQty)), matchQty - assignedQty) : 0);
+      assignedQty += qty;
+      matchDetail[k] = run(fixedSlots(matchHeads[k]), qty, matchRates[k], parseStart(starts[k]) ?? matchManual ?? 0);
+    });
+    const matchParts = Object.values(matchDetail).filter((p) => p.qty > 0);
+    const matchFirst = matchDetail[MATCH_PARTS[0][0]];
+    const matchRes = {
+      startMin: matchParts.length ? Math.min(...matchParts.map((p) => p.startMin)) : matchFirst.startMin,
+      afterBreak: false,
+      manualStart: matchManual != null && matchParts.length > 0 && matchParts.every((p) => p.afterBreak),
+      over: matchParts.some((p) => p.over),
+      endMin: matchParts.length === 0 || matchParts.some((p) => p.endMin == null) ? null : Math.max(...matchParts.map((p) => p.endMin)),
+    };
+    return { packRes, packDetail, shipRes, shipDetail: { bulk, single, joined }, invoiceRes, invoiceDetail: { main: invoiceMain, stock: invoiceStock }, matchRes, matchDetail };
+  }, [matchHeads, matchQty, loadedMatch, loadedMatchQty, matchRates, slots, kindSlots, pack, packQty, shipPieces, loadedShipPieces, loadedShipParts, packRate, packBigRate, shipBulkRate, shipSingleRate, shipBigRate, shipBulkHead, shipSingleHead, joinBulk, joinCount, starts, invoiceQty, loadedInvoiceQty, loadedInvoices, invoiceMainRate, invoiceStockRate, invoiceMainHead, invoiceStockHead]);
 
-  const renderDetailRow = (label, part) => (
+  // 상세 항목의 시작 시각: 눌러서 바로 고친다. 직접 정한 시각이 있으면 "자동"을 눌러 원래 계산으로 되돌린다.
+  const renderPartStart = (key, startMin) => (
+    <>
+      {editingStart === key ? (
+        <input
+          type="time" autoFocus className={`${styles.input} ${styles.startInput}`}
+          value={starts[key] || fmtMin(startMin)}
+          onChange={(e) => changeStart(key, e.target.value)}
+          onBlur={() => setEditingStart(null)}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") setEditingStart(null); }}
+        />
+      ) : (
+        <button type="button" className={styles.partStartBtn} title="눌러서 이 항목의 시작 시각 수정" onClick={() => setEditingStart(key)}>
+          {fmtMin(startMin)}
+        </button>
+      )}
+      {starts[key] && editingStart !== key && (
+        <button type="button" className={styles.removeBtn} title="직접 정한 시작 시각을 지우고 자동으로" onClick={() => changeStart(key, "")}>자동</button>
+      )}
+    </>
+  );
+
+  const renderDetailRow = (label, part, startKey = null) => (
     <li className={styles.detailRow}>
       <span className={styles.detailLabel}>{label} {part.qty.toLocaleString()}개</span>
       {part.qty > 0 && part.endMin != null ? (
         <span>
           <b>{fmtDuration(part.endMin - part.startMin)}</b>
-          <span className={styles.muted}> · {fmtMin(part.startMin)} → {fmtMin(part.endMin)}</span>
+          <span className={styles.muted}> · {startKey ? renderPartStart(startKey, part.startMin) : fmtMin(part.startMin)} → {fmtMin(part.endMin)}</span>
         </span>
+      ) : part.qty > 0 && startKey ? (
+        <span className={styles.muted}>{renderPartStart(startKey, part.startMin)} 시작 · 근무 인원 없음</span>
       ) : <span className={styles.muted}>-</span>}
     </li>
   );
@@ -561,35 +765,201 @@ export default function LeadTimePage({ headerExtra = null }) {
   );
 
   // 출고는 같은 줄에서 인원(head)도 같이 설정한다. 인원을 비우면 시간대별 근무 인원을 따른다.
+  // 설정 한 줄 = 이름 / 인원 / 1분 처리 개수 세 칸. rateGrid 안에서 칸이 줄마다 같은 위치에 맞춰진다
+  // (이름 칸 폭 = 가장 긴 이름). 인원이 없는 줄은 인원 칸을 비워 둔다.
   const renderRateInput = (kind, value, label = "", head = null) => (
     <label className={styles.rateLabel}>
-      {label}
-      {head && (
-        <>
-          {" 인원"}
-          <input
-            type="number" min="0" className={`${styles.input} ${styles.rateInput}`}
-            value={head.value} placeholder="자동"
-            onChange={(e) => changeShipHead(kind, e.target.value)}
-          />
-          명 ×
-        </>
-      )}
-      {" 1인 1분"}
-      <input
-        type="number" min="1" className={`${styles.input} ${styles.rateInput}`} value={value}
-        onChange={(e) => changeRate(kind, e.target.value)}
-      />
-      개 처리
+      <span className={styles.rateName}>{label}</span>
+      <span className={styles.rateCell}>
+        {head && (
+          <>
+            인원
+            <input
+              type="number" min="0" className={`${styles.input} ${styles.rateInput}`}
+              value={head.value} placeholder="자동"
+              onChange={(e) => changeHead(kind, e.target.value)}
+            />
+            명 ×
+          </>
+        )}
+      </span>
+      <span className={styles.rateCell}>
+        1인 1분
+        <input
+          type="number" min="1" className={`${styles.input} ${styles.rateInput}`} value={value}
+          onChange={(e) => changeRate(kind, e.target.value)}
+        />
+        개 처리
+      </span>
     </label>
   );
+
+  // 시간표: 작업마다 시작~종료를 막대로 그린다. 시작 시각을 바꾸면 위 계산과 함께 바로 다시 그려진다.
+  // 겹치는 구간 = 동시에 진행되는 시간. 오늘 날짜면 지금 시각을 빨간 선으로 표시한다.
+  const renderTimeline = () => {
+    if (!estimate) return <div className={styles.muted}>근무 인원을 불러오면 시간표가 표시됩니다.</div>;
+    const results = { pack: [estimate.packRes, packQty], ship: [estimate.shipRes, shipPieces], invoice: [estimate.invoiceRes, invoiceQty], match: [estimate.matchRes, matchQty] };
+    const partsOf = {
+      pack: estimate.packDetail ? [["pack_bulk", "대량", estimate.packDetail.bulk], ["pack_single", "개별", estimate.packDetail.single], ["pack_big", "대형", estimate.packDetail.big]] : [],
+      ship: [["ship_bulk", "대량출고", estimate.shipDetail.bulk], ["ship_single", "개별출고", estimate.shipDetail.single]],
+      invoice: [["invoice_main", "본송장", estimate.invoiceDetail.main], ["invoice_stock", "재고송장", estimate.invoiceDetail.stock]],
+      match: MATCH_PARTS.map(([k, label]) => [k, label, estimate.matchDetail[k]]),
+    };
+    // 작업 하나 = 한 줄. 항목(본송장·재고송장 등)이 나뉘면 같은 줄 안에 항목별 막대를 그리고 막대에 항목 이름만 쓴다.
+    // 시간이 겹치는 항목(동시에 진행)은 같은 줄 안에서 위아래 칸(lane)으로 나눠 겹쳐 보이지 않게 한다.
+    const rows = TIMELINE_TASKS.map(([key, label, color]) => {
+      const [res, qty] = results[key];
+      const segs = partsOf[key]
+        .filter(([, , part]) => part && part.qty > 0 && part.endMin != null)
+        .map(([k, l, part]) => ({ key: k, label: l, startMin: part.startMin, endMin: part.endMin }))
+        .sort((a, b) => a.startMin - b.startMin);
+      const laneEnds = [];
+      for (const seg of segs) {
+        let lane = laneEnds.findIndex((end) => end <= seg.startMin);
+        if (lane < 0) { lane = laneEnds.length; laneEnds.push(0); }
+        laneEnds[lane] = seg.endMin;
+        seg.lane = lane;
+      }
+      return { key, label, color, qty, startMin: res.startMin, endMin: qty > 0 ? res.endMin : null, segs: segs.length > 1 ? segs : [], lanes: Math.max(laneEnds.length, 1) };
+    });
+    const drawn = rows.filter((r) => r.qty > 0 && r.endMin != null);
+    const from = Math.floor(Math.min(9 * 60, ...drawn.map((r) => r.startMin)) / 60) * 60;
+    // 기본 09~14시를 한 화면 너비에 꽉 차게 그린다. 그보다 길어지면 그만큼 옆으로 넓어지고 가로 스크롤로 본다.
+    const VIEW_MIN = 5 * 60;
+    const to = Math.max(14 * 60, from + VIEW_MIN, Math.ceil(Math.max(0, ...drawn.map((r) => r.endMin)) / 60) * 60);
+    const span = to - from;
+    const pct = (min) => `${((Math.min(Math.max(min, from), to) - from) / span) * 100}%`;
+    // 막대 드래그 → 그 작업(또는 항목)의 시작 시각을 바꾼다. 기본 30분 단위로 걸리고,
+    // 드래그 중 잠깐(0.45초) 멈추면 그때부터 10분 단위로 세밀하게 옮긴다. 옮기는 즉시 계산·저장된다.
+    // 왼쪽 버튼을 누르면 잡고, 떼면 놓는다. 움직임·떼기는 화면 전체(window)에서 받아서
+    // 막대가 다시 그려지거나 마우스가 막대 밖으로 나가도 떼는 순간 반드시 놓아진다.
+    const dragProps = (key, startMin) => ({
+      onPointerDown: (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        const width = e.currentTarget.parentElement.getBoundingClientRect().width || 1;
+        const d = { key, x: e.clientX, orig: startMin, width, span, from, to, last: null, fine: false, timer: null };
+        const onMove = (ev) => {
+          if (dragRef.current !== d) return;
+          if ((ev.buttons & 1) === 0) { onUp(); return; } // 버튼이 이미 떼어진 상태면 바로 놓는다
+          clearTimeout(d.timer);
+          if (!d.fine) {
+            d.timer = setTimeout(() => {
+              d.fine = true;
+              setDragInfo((info) => (info && info.key === key ? { ...info, fine: true } : info));
+            }, 450);
+          }
+          const raw = d.orig + ((ev.clientX - d.x) / d.width) * d.span;
+          const step = d.fine ? 10 : 30;
+          const snapped = Math.min(Math.max(Math.round(raw / step) * step, 0), 23 * 60 + 50);
+          if (snapped !== d.last && (d.last !== null || snapped !== d.orig)) {
+            d.last = snapped;
+            changeStart(key, fmtMin(snapped));
+          }
+          // raw: 마우스를 그대로 따라가는 위치 (잡은 막대는 끊김 없이 이 위치에 그린다)
+          setDragInfo({ key, min: d.last ?? d.orig, fine: d.fine, raw: Math.min(Math.max(raw, d.from), d.to) });
+        };
+        const onUp = () => {
+          clearTimeout(d.timer);
+          window.removeEventListener("pointermove", onMove);
+          window.removeEventListener("pointerup", onUp);
+          window.removeEventListener("pointercancel", onUp);
+          window.removeEventListener("blur", onUp);
+          if (dragRef.current === d) dragRef.current = null;
+          setDragInfo(null);
+        };
+        dragRef.current?.release?.(); // 혹시 남아 있던 이전 드래그는 정리
+        d.release = onUp;
+        dragRef.current = d;
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onUp);
+        window.addEventListener("blur", onUp);
+        setDragInfo({ key, min: startMin, fine: false });
+      },
+    });
+    // 잡고 있는 막대는 계산된 시작이 아니라 손 위치(raw)에 그려서 부드럽게 따라오게 한다.
+    const barLeft = (key, startMin) => pct(dragInfo?.key === key && dragInfo.raw != null ? dragInfo.raw : startMin);
+    const dragTip = (keys) => (dragInfo && keys.includes(dragInfo.key) ? (
+      <span className={styles.tlDragTip} style={{ left: pct(dragInfo.min) }}>
+        {fmtMin(dragInfo.min)} 시작 · {dragInfo.fine ? "10분" : "30분"} 단위
+      </span>
+    ) : null);
+    const hours = [];
+    for (let m = from; m <= to; m += 60) hours.push(m);
+    const showNow = date === todayStr() && nowMin >= from && nowMin <= to;
+    const lines = (
+      <>
+        {hours.map((m) => <span key={m} className={styles.tlTick} style={{ left: pct(m) }} />)}
+        {showNow && <span className={styles.tlNow} style={{ left: pct(nowMin) }} />}
+      </>
+    );
+    return (
+      <div className={styles.timeline}>
+        <div className={styles.timelineInner} style={{ "--tl-ratio": Math.max(1, (to - from) / VIEW_MIN) }}>
+        <div className={styles.tlRow}>
+          <span className={styles.tlLabel} />
+          <div className={styles.tlAxis}>
+            {hours.map((m) => <span key={m} className={styles.tlTickLabel} style={{ left: pct(m) }}>{fmtMin(m)}</span>)}
+          </div>
+        </div>
+        {rows.map((r) => (
+          <div key={r.key} className={styles.tlRow}>
+            <label className={styles.tlLabel}>
+              <span>
+                {r.label}
+                {r.qty > 0 && r.endMin != null && <small className={styles.tlRange}> {fmtMin(r.startMin)}–{fmtMin(r.endMin)}</small>}
+              </span>
+              <input
+                type="time" className={`${styles.input} ${styles.tlStart}`} title="시작 시각 (비우면 자동)"
+                value={starts[r.key] || fmtMin(r.startMin)}
+                onChange={(e) => changeStart(r.key, e.target.value)}
+              />
+            </label>
+            <div className={styles.tlTrack} style={{ height: `${0.6 + r.lanes * 1.6}rem` }}>
+              {lines}
+              {r.qty > 0 && r.endMin != null && r.segs.length > 0 ? (
+                r.segs.map((seg) => (
+                  <span
+                    key={seg.key}
+                    {...dragProps(seg.key, seg.startMin)}
+                    className={`${styles.tlBar} ${styles.tlDraggable} ${styles[r.color]} ${dragInfo?.key === seg.key ? styles.tlDragging : ""}`}
+                    style={{
+                      left: barLeft(seg.key, seg.startMin), width: `max(calc(${pct(seg.endMin)} - ${pct(seg.startMin)}), 3px)`,
+                      top: `${0.3 + seg.lane * 1.6}rem`, height: "1.4rem", bottom: "auto",
+                    }}
+                    title={`${seg.label} ${fmtMin(seg.startMin)} → ${fmtMin(seg.endMin)} (끌어서 시작 시각 이동)`}
+                  >
+                    {seg.label}
+                  </span>
+                ))
+              ) : r.qty > 0 && r.endMin != null ? (
+                <span
+                  {...dragProps(r.key, r.startMin)}
+                  className={`${styles.tlBar} ${styles.tlDraggable} ${styles[r.color]} ${dragInfo?.key === r.key ? styles.tlDragging : ""}`}
+                  style={{ left: barLeft(r.key, r.startMin), width: `max(calc(${pct(r.endMin)} - ${pct(r.startMin)}), 3px)` }}
+                  title={`${r.label} ${fmtMin(r.startMin)} → ${fmtMin(r.endMin)} (끌어서 시작 시각 이동)`}
+                >
+                  {fmtMin(r.startMin)}–{fmtMin(r.endMin)}
+                </span>
+              ) : (
+                <span className={styles.tlEmpty}>{r.qty > 0 ? "근무 인원 없음" : "수량 없음"}</span>
+              )}
+              {dragTip([r.key, ...r.segs.map((seg) => seg.key)])}
+            </div>
+          </div>
+        ))}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className={pageStyles.page}>
       <div className={pageStyles.pageHeader}>
         <div>
           <h2 className={pageStyles.title}>리드타임</h2>
-          <p className={pageStyles.subtitle}>입고요청·출력차수 수량과 시간대별 근무 인원으로 포장·출고 각각의 소요 시간 예상</p>
+          <p className={pageStyles.subtitle}>입고요청·출력차수 수량과 시간대별 근무 인원으로 포장·출고·송장붙이기·매칭작업 각각의 소요 시간 예상</p>
         </div>
         {headerExtra}
       </div>
@@ -613,17 +983,21 @@ export default function LeadTimePage({ headerExtra = null }) {
               {estimate?.packDetail ? (
                 <div className={styles.breakdown}>
                   <ul className={styles.detailList}>
-                    {renderDetailRow("대량", estimate.packDetail.bulk)}
-                    {renderDetailRow("개별", estimate.packDetail.single)}
+                    {renderDetailRow("대량", estimate.packDetail.bulk, "pack_bulk")}
+                    {renderDetailRow("개별", estimate.packDetail.single, "pack_single")}
+                    {renderDetailRow("대형", estimate.packDetail.big, "pack_big")}
                   </ul>
                   <span className={styles.muted}>
-                    대량 → 개별 순서로 이어서 포장한다고 보고 계산{packEdit !== null && packQty !== loadedPackQty ? " · 직접 입력한 개수는 불러온 대량:개별 비율로 나눔" : ""}
+                    대량 → 개별 → 대형 순서로 이어서 포장한다고 보고 계산(항목 시작 시각을 직접 정하면 그 시각부터) · 대형 = 상품명이 숫자로 시작하는 상품(대형 처리 개수로 계산){packEdit !== null && packQty !== loadedPackQty ? " · 직접 입력한 개수는 불러온 대량:개별:대형 비율로 나눔" : ""}
                   </span>
                 </div>
-              ) : <span className={styles.muted}>포장을 불러오면 대량/개별 시간이 표시됩니다.</span>}
+              ) : <span className={styles.muted}>포장에서 '반영하기'를 누르면 대량/개별 시간이 표시됩니다.</span>}
               <details className={styles.detail}>
                 <summary>상세보기 (1인 1분 처리 개수)</summary>
-                {renderRateInput("pack", packRate)}
+                <div className={styles.rateGrid}>
+                  {renderRateInput("pack", packRate, "대량·개별")}
+                  {renderRateInput("pack_big", packBigRate, "대형")}
+                </div>
               </details>
             </div>
             <div className={`${styles.summaryCell} ${styles.summaryMain}`}>
@@ -632,8 +1006,12 @@ export default function LeadTimePage({ headerExtra = null }) {
               {estimate && loadedShipPieces > 0 ? (
                 <div className={styles.breakdown}>
                   <ul className={styles.detailList}>
-                    {renderDetailRow("대량출고", estimate.shipDetail.bulk)}
-                    {renderDetailRow("개별출고", estimate.shipDetail.single)}
+                    {renderDetailRow(`대량출고${estimate.shipDetail.bulk.big > 0 ? ` (대형 ${estimate.shipDetail.bulk.big}개 포함)` : ""}`, estimate.shipDetail.bulk, "ship_bulk")}
+                    {renderDetailRow(`개별출고${estimate.shipDetail.single.big > 0 ? ` (대형 ${estimate.shipDetail.single.big}개 포함)` : ""}`, estimate.shipDetail.single, "ship_single")}
+                    <li className={styles.detailRow}>
+                      <span className={styles.detailLabel}>대형출고 {(estimate.shipDetail.bulk.big + estimate.shipDetail.single.big).toLocaleString()}개</span>
+                      <span className={styles.muted}>대량 {estimate.shipDetail.bulk.big.toLocaleString()} + 개별 {estimate.shipDetail.single.big.toLocaleString()} (위 개수에 포함)</span>
+                    </li>
                   </ul>
                   {joinBulk && (
                     <p className={styles.joinNote}>
@@ -643,16 +1021,19 @@ export default function LeadTimePage({ headerExtra = null }) {
                     </p>
                   )}
                   <span className={styles.muted}>
-                    대량 = 본송장+재고송장 대량 {loadedShipParts.bulk.toLocaleString()}개 · 개별 = 나머지(개별+합포) {loadedShipParts.single.toLocaleString()}개
+                    대량 = 본송장+재고송장 대량 {loadedShipParts.bulk.toLocaleString()}개 · 개별 = 나머지(개별+합포) {loadedShipParts.single.toLocaleString()}개 (송장 수 기준){loadedShipBig > 0 ? ` · 그중 대형 ${loadedShipBig.toLocaleString()}개는 대형 처리 개수로 계산` : ""}
                     <br />
                     대량출고와 개별출고는 동시에 진행하는 것으로 보고 각자 계산, 전체는 늦게 끝나는 쪽 기준{shipEdit !== null && shipPieces !== loadedShipPieces ? " · 직접 입력한 개수는 불러온 비율로 나눔" : ""}
                   </span>
                 </div>
-              ) : <span className={styles.muted}>출고를 불러오면 대량/개별 시간이 표시됩니다.</span>}
+              ) : <span className={styles.muted}>출고에서 '반영하기'를 누르면 대량/개별 시간이 표시됩니다.</span>}
               <details className={styles.detail}>
                 <summary>상세보기 (인원 · 1인 1분 처리 개수 · 합류)</summary>
-                {renderRateInput("ship_bulk", shipBulkRate, "대량출고", { value: shipBulkHead })}
-                {renderRateInput("ship_single", shipSingleRate, "개별출고", { value: shipSingleHead })}
+                <div className={styles.rateGrid}>
+                  {renderRateInput("ship_bulk", shipBulkRate, "대량출고", { value: shipBulkHead })}
+                  {renderRateInput("ship_single", shipSingleRate, "개별출고", { value: shipSingleHead })}
+                  {renderRateInput("ship_big", shipBigRate, "대형 상품 (대량·개별 안에서)")}
+                </div>
                 <span className={styles.muted}>인원을 비우면(자동) 시간대별 근무 인원을 따르고, 숫자를 넣으면 근무 시간대마다 그 인원이 일합니다.</span>
                 <label className={styles.joinLabel}>
                   <input type="checkbox" checked={joinBulk} onChange={(e) => changeJoinBulk(e.target.checked)} />
@@ -671,15 +1052,88 @@ export default function LeadTimePage({ headerExtra = null }) {
                 )}
               </details>
             </div>
+            <div className={`${styles.summaryCell} ${styles.summaryMain}`}>
+              {renderQtyInput("송장붙이기", "invoice", invoiceEdit, loadedInvoiceQty, invoiceQty)}
+              {estimate ? renderEnd(estimate.invoiceRes, invoiceQty, "invoice") : <span className={styles.endEmpty}>-</span>}
+              {estimate && loadedInvoiceQty > 0 ? (
+                <div className={styles.breakdown}>
+                  <ul className={styles.detailList}>
+                    {renderDetailRow("본송장", estimate.invoiceDetail.main, "invoice_main")}
+                    {renderDetailRow("재고송장", estimate.invoiceDetail.stock, "invoice_stock")}
+                  </ul>
+                  <span className={styles.muted}>
+                    출고에서 본송장으로 지정한 차수 {loadedInvoices.main.toLocaleString()}장 · 재고송장으로 지정한 차수 {loadedInvoices.stock.toLocaleString()}장 (주문 1건 = 송장 1장)
+                    <br />
+                    본송장과 재고송장은 동시에 진행하는 것으로 보고 각자 계산, 전체는 늦게 끝나는 쪽 기준{invoiceEdit !== null && invoiceQty !== loadedInvoiceQty ? " · 직접 입력한 개수는 불러온 비율로 나눔" : ""}
+                  </span>
+                </div>
+              ) : <span className={styles.muted}>출고에서 '반영하기'를 누르면 본송장/재고송장 시간이 표시됩니다.</span>}
+              <details className={styles.detail}>
+                <summary>상세보기 (인원 · 1인 1분 처리 개수)</summary>
+                <div className={styles.rateGrid}>
+                  {renderRateInput("invoice_main", invoiceMainRate, "본송장", { value: invoiceMainHead })}
+                  {renderRateInput("invoice_stock", invoiceStockRate, "재고송장", { value: invoiceStockHead })}
+                </div>
+                <span className={styles.muted}>인원을 비우면(자동) 시간대별 근무 인원을 따르고, 숫자를 넣으면 근무 시간대마다 그 인원이 일합니다. 시작 시각은 눌러서 바꿀 수 있습니다(기본: 첫 근무 시간대).</span>
+              </details>
+            </div>
+            <div className={`${styles.summaryCell} ${styles.summaryMain}`}>
+              {renderQtyInput("매칭작업", "match", matchEdit, loadedMatchQty, matchQty)}
+              {estimate ? renderEnd(estimate.matchRes, matchQty, "match") : <span className={styles.endEmpty}>-</span>}
+              {estimate && (
+                <div className={styles.breakdown}>
+                  <ul className={styles.detailList}>
+                    {MATCH_PARTS.map(([k, label]) => <Fragment key={k}>{renderDetailRow(label, estimate.matchDetail[k], k)}</Fragment>)}
+                  </ul>
+                  <span className={styles.muted}>
+                    재고매칭(대량제외) = 재고송장 차수의 개별 송장 수(대량·합포 제외) · KRL매칭 = 본송장 중 상품명이 K·R·L로 시작하는 상품이 든 송장 수(재고송장 제외) · 합포빼기 = 본송장+재고송장 합포의 상품 개수
+                    <br />
+                    세 항목은 동시에 진행하는 것으로 보고 각자 인원·1분 처리 개수로 계산, 전체는 늦게 끝나는 쪽 기준{matchEdit !== null && matchQty !== loadedMatchQty ? " · 직접 입력한 개수는 불러온 비율로 나눔" : ""}
+                  </span>
+                </div>
+              )}
+              <details className={styles.detail}>
+                <summary>상세보기 (KRL 수량 · 인원 · 1인 1분 처리 개수)</summary>
+                <ul className={styles.detailList}>
+                  {["K", "R", "L"].map((c) => (
+                    <li key={c} className={styles.detailRow}>
+                      <span className={styles.detailLabel}>{c}매칭</span>
+                      <span>{(ship?.totals?.main?.krl?.[c] || 0).toLocaleString()}개</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className={styles.rateGrid}>
+                  {MATCH_PARTS.map(([k, label]) => <Fragment key={k}>{renderRateInput(k, matchRates[k], label, { value: matchHeads[k] })}</Fragment>)}
+                </div>
+                <span className={styles.muted}>인원을 비우면(자동) 시간대별 근무 인원을 따르고, 숫자를 넣으면 근무 시간대마다 그 인원이 일합니다. 시작 시각은 눌러서 바꿀 수 있습니다(기본: 첫 근무 시간대).</span>
+              </details>
+            </div>
           </div>
+          <div className={styles.timelineHead}>
+            <button type="button" className={pageStyles.secondaryBtn} onClick={() => setTimelineOpen((v) => (v === "1" ? "0" : "1"))}>
+              {timelineOpen === "1" ? "시간표 닫기 ▲" : "시간표 열기 ▼"}
+            </button>
+          </div>
+          {timelineOpen === "1" && renderTimeline()}
           {message && <div className={pageStyles.statusMsg}>{message}</div>}
         </section>
 
         <section className={pageStyles.card}>
           <div className={pageStyles.cardHeader}>
             <h3 className={pageStyles.cardTitle}>시간대별 근무 인원</h3>
-            <span className={styles.muted}>포장 근무 인원 · 스케줄관리 예정 인원이 기본, 칸을 수정하면 바로 이 날짜에 저장 (비우면 예정 인원으로 복귀) · 대량/개별출고 인원은 출고 박스에서 설정</span>
+            <span className={styles.muted}>포장 근무 인원 · 관리페이지 근무표(백, 오전 출근)의 예정 인원이 기본, 칸을 수정하면 바로 이 날짜에 저장 (비우면 예정 인원으로 복귀) · 대량/개별출고 인원은 출고 박스에서 설정</span>
+            <button
+              type="button"
+              className={pageStyles.secondaryBtn}
+              onClick={() => refreshHeadcount(true)}
+              disabled={headcountLoading}
+            >
+              {headcountLoading ? "불러오는 중..." : "근무표 다시 불러오기"}
+            </button>
           </div>
+          {scheduleError && (
+            <div className={pageStyles.statusMsg}>관리페이지 근무표를 못 불러와 예전 근무표로 계산했습니다 ({scheduleError})</div>
+          )}
           <div className={styles.slotGrid}>
             {visibleSlots.map((s) => (
               <div key={s.slot} className={styles.slot}>
@@ -700,6 +1154,20 @@ export default function LeadTimePage({ headerExtra = null }) {
                   );
                 })}
                 {HEADCOUNT_KINDS.some(([kind]) => s[kind].manual != null) && <span className={styles.slotNote}>예정 {s.scheduled}명</span>}
+                <button type="button" className={styles.slotNamesToggle} onClick={() => setShowNames((v) => !v)}>
+                  {showNames ? "닫기 ▲" : "열기 ▼"}
+                </button>
+                {showNames && (
+                  <ul className={styles.slotNames}>
+                    {(s.names || []).length > 0
+                      ? s.names.map((name, i) => (
+                        <li key={`${name}-${i}`} className={styles.nameChip}>
+                          {name}
+                        </li>
+                      ))
+                      : <li className={styles.slotNote}>근무표 인원 없음</li>}
+                  </ul>
+                )}
               </div>
             ))}
             {canAddSlot && (
@@ -720,13 +1188,6 @@ export default function LeadTimePage({ headerExtra = null }) {
               <button className={`${pageStyles.tabBtn} ${phase === "pack" ? pageStyles.tabActive : ""}`} onClick={() => setPhase("pack")}>포장</button>
               <button className={`${pageStyles.tabBtn} ${phase === "ship" ? pageStyles.tabActive : ""}`} onClick={() => setPhase("ship")}>출고</button>
             </div>
-            <button
-              className={pageStyles.secondaryBtn}
-              onClick={() => runLoad(phase)}
-              disabled={Boolean(busy)}
-            >
-              {busy ? "조회 중..." : phase === "pack" ? "입고요청 불러오기" : "출력차수 불러오기"}
-            </button>
           </div>
 
           {phase === "pack" && (
@@ -738,6 +1199,14 @@ export default function LeadTimePage({ headerExtra = null }) {
                   disabled={busy === "vouchers"}
                 >
                   {busy === "vouchers" ? "조회 중..." : showPackAssign ? "대량 전표 지정 닫기" : "대량 전표 지정"}
+                </button>
+                <button
+                  className={`${pageStyles.secondaryBtn} ${busy === "pack" ? styles.applyBusy : ""}`}
+                  onClick={() => runLoad("pack")}
+                  disabled={Boolean(busy)}
+                  title="입고요청 전표를 이지어드민에서 불러와 포장 수량에 반영합니다"
+                >
+                  {busy === "pack" ? <><span className={styles.busyDot} />반영 중...</> : "반영하기"}
                 </button>
                 <span className={styles.muted}>지정 안 한 전표는 개별로 계산합니다.</span>
               </div>
@@ -780,8 +1249,24 @@ export default function LeadTimePage({ headerExtra = null }) {
                   </button>
                 ))}
               </div>
-              {!pack && <div className={styles.muted}>입고요청을 불러오면 표시됩니다.</div>}
-              {pack && packTab !== "unchecked" && (
+              {!pack && <div className={styles.muted}>'반영하기'를 누르면 표시됩니다.</div>}
+              {pack && packTab === "big" && (
+                <>
+                  <p className={styles.muted}>
+                    상품명이 숫자로 시작하는 상품 · 대량 전표에서 {(pack.big?.from_bulk || 0).toLocaleString()}개, 개별 전표에서 {(pack.big?.from_single || 0).toLocaleString()}개를 빼서 따로 계산합니다.
+                  </p>
+                  <ul className={styles.list}>
+                    {!(pack.big?.items || []).length && <li className={styles.muted}>{pack.big ? "대형 상품이 없습니다." : "포장에서 '반영하기'를 다시 누르면 대형이 표시됩니다."}</li>}
+                    {(pack.big?.items || []).map((it) => (
+                      <li key={`${it.name}|${it.option}`} className={styles.listRow}>
+                        <span>{it.name}{it.option && <span className={styles.muted}> {it.option}</span>}</span>
+                        <span>{it.qty.toLocaleString()}개</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {pack && packTab !== "unchecked" && packTab !== "big" && (
                 <ul className={styles.list}>
                   {pack[packTab].vouchers.length === 0 && <li className={styles.muted}>해당 전표가 없습니다.</li>}
                   {pack[packTab].vouchers.map((v) => (
@@ -832,7 +1317,7 @@ export default function LeadTimePage({ headerExtra = null }) {
                 >
                   <input className={styles.input} placeholder="미검수 거래처 이름" value={newSupplier} onChange={(e) => setNewSupplier(e.target.value)} />
                   <button type="submit" className={pageStyles.secondaryBtn}>거래처 추가</button>
-                  <span className={styles.muted}>추가한 거래처는 다음 입고요청 불러오기부터 반영됩니다.</span>
+                  <span className={styles.muted}>추가한 거래처는 다음 '반영하기'부터 적용됩니다.</span>
                 </form>
               )}
             </>
@@ -846,7 +1331,23 @@ export default function LeadTimePage({ headerExtra = null }) {
                   onClick={() => { setShowAssign((v) => !v); if (!numbers.length) loadNumbers(); }}
                   disabled={busy === "numbers"}
                 >
-                  {busy === "numbers" ? "조회 중..." : showAssign ? "출력차수 지정 닫기" : "출력차수 지정 (본송장/재고송장)"}
+                  {busy === "numbers" ? "조회 중..." : showAssign ? "본송장,재고송장 지정 닫기" : "본송장,재고송장 지정"}
+                </button>
+                <button
+                  className={`${pageStyles.secondaryBtn} ${busy === "ship" ? styles.applyBusy : ""}`}
+                  onClick={() => runLoad("ship")}
+                  disabled={Boolean(busy)}
+                  title="지정한 출력차수 주문을 이지어드민에서 불러와 출고·송장 수량에 반영합니다 (새 차수만 읽음)"
+                >
+                  {busy === "ship" ? <><span className={styles.busyDot} />반영 중...</> : "반영하기"}
+                </button>
+                <button
+                  className={pageStyles.secondaryBtn}
+                  onClick={() => runLoad("ship", true)}
+                  disabled={Boolean(busy)}
+                  title="이미 읽어 둔 출력차수도 이지어드민에서 전부 다시 읽습니다 (차수당 약 25초)"
+                >
+                  전부 다시 읽기
                 </button>
                 <span className={styles.muted}>
                   지정됨: 본송장 {Object.values(assign).filter((k) => k === "main").length}개 · 재고송장 {Object.values(assign).filter((k) => k === "stock").length}개 차수
@@ -882,22 +1383,22 @@ export default function LeadTimePage({ headerExtra = null }) {
               <div className={pageStyles.tabRow}>
                 {SHIP_TABS.map((t) => (
                   <button key={t.key} className={`${pageStyles.tabBtn} ${shipTab === t.key ? pageStyles.tabActive : ""}`} onClick={() => setShipTab(t.key)}>
-                    {t.label} {(ship?.totals?.[invoiceTab]?.[t.key]?.pieces || 0).toLocaleString()}개
+                    {t.label} {(ship?.totals?.[invoiceTab]?.[t.key]?.orders || 0).toLocaleString()}개
                   </button>
                 ))}
               </div>
-              {!ship && <div className={styles.muted}>출력차수를 불러오면 표시됩니다.</div>}
+              {!ship && <div className={styles.muted}>'반영하기'를 누르면 표시됩니다.</div>}
               {ship && (
                 <>
                   <div className={styles.bigNumber}>
-                    {(ship.totals?.[invoiceTab]?.[shipTab]?.pieces || 0).toLocaleString()}개
-                    <span className={styles.muted}> · 주문 {(ship.totals?.[invoiceTab]?.[shipTab]?.orders || 0).toLocaleString()}건</span>
+                    송장 {(ship.totals?.[invoiceTab]?.[shipTab]?.orders || 0).toLocaleString()}개
+                    <span className={styles.muted}> · 상품 {(ship.totals?.[invoiceTab]?.[shipTab]?.pieces || 0).toLocaleString()}개</span>
                   </div>
                   <ul className={styles.list}>
                     {ship.per_number.filter((n) => n.kind === invoiceTab).map((n) => (
                       <li key={n.print_num} className={styles.listRow}>
                         <span>{n.print_num}차</span>
-                        <span>{(n[shipTab]?.pieces || 0).toLocaleString()}개</span>
+                        <span>{(n[shipTab]?.orders || 0).toLocaleString()}개</span>
                       </li>
                     ))}
                   </ul>

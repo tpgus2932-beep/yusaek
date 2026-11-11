@@ -3,6 +3,7 @@ import pageStyles from "./BarcodePage.module.css";
 import styles from "./StockCheckPage.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
+import usePersistentState from "../../lib/usePersistentState";
 const TABS = [
   { key: "regress", label: "어제 일치 → 오늘 불일치" },
   { key: "ranking", label: "정상화 상품 순위" },
@@ -27,7 +28,7 @@ async function getJson(path, params = {}) {
 
 // 재고체크 이력·분석: 일별로 저장된 조회 결과와 정상화 내역을 이용한다.
 export default function StockCheckHistory({ onOpenLog }) {
-  const [tab, setTab] = useState("regress");
+  const [tab, setTab] = usePersistentState("stockCheckHistoryTab", "regress");
   const [month, setMonth] = useState(thisMonth);
   const [report, setReport] = useState(null);
   const [error, setError] = useState("");

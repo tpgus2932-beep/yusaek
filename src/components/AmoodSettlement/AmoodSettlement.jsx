@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Database, Download, Save } from 'lucide-reac
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import styles from './AmoodSettlement.module.css';
 
+import usePersistentState from "../../lib/usePersistentState";
 const API = LOCAL_API_BASE;
 
 function fmt(n) {
@@ -694,7 +695,7 @@ const TABS = [
 ];
 
 export default function AmoodSettlement() {
-  const [activeTab, setActiveTab] = useState('settlement');
+  const [activeTab, setActiveTab] = usePersistentState('amoodSettlementTab', 'settlement');
 
   return (
     <div className={styles.container}>

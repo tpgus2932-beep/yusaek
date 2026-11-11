@@ -200,3 +200,66 @@ async def fetch_im00_detail_rows(get_setting, *, sheets: list[str], date: str) -
             "code": _cell_text(values, 5),
         })
     return rows
+
+
+_IM10_ROW_RE = re.compile(r"<tr[^>]*\bproduct_id='([^']*)'[^>]*>(.*?)</tr>", re.S)
+_IM10_TD_RE = re.compile(r"<td class='([a-z_]+)[^']*'[^>]*>(.*?)</td>", re.S)
+_IM10_VALUE_RE = re.compile(r"\bvalue='([^']*)'")
+
+
+async def fetch_im10_product_rows(get_setting, *, sheet: str) -> list[dict]:
+    """입고요청 전표 상세 화면(IM10)을 읽어 [{product_name, supply_product_name, option, in_qty, req_qty, code}] 반환.
+
+    다운로드 파일(IM00)에는 '상품명' 칸이 없고 '공급처상품명'만 있어서, 상품명이 필요하면 이 화면을 읽는다.
+    읽기만 한다 (저장 버튼 등은 누르지 않음). 다운로드 대기가 없어 전표당 1~2초.
+    """
+    from html import unescape
+
+    from sdk.ezadmin import EzAdminSessionExpired
+
+    ez = EzAdminClient(get_setting)
+    async with httpx.AsyncClient(timeout=30, verify=False, follow_redirects=True) as client:
+        response = await client.get(
+            f"{config.EZADMIN_BASE}/popup35.htm",
+            params={"template": "IM10", "sheet": str(sheet), "search": "1", "readonly": "T"},
+            cookies={"PHPSESSID": ez._phpsessid()},
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+    body = response.text or ""
+    if "thead product_name" not in body:
+        raise EzAdminSessionExpired("이지어드민 세션이 만료되었습니다.")
+
+    def text(html: str) -> str:
+        m = _IM10_VALUE_RE.search(html)  # 입력칸(입고수량·메모)은 value 속성에 값이 있다
+        if m and "<input" in html:
+            return unescape(m.group(1)).strip()
+        # 옵션 칸은 title 속성 안에 <br>이 들어 있어 태그를 지우면 깨지므로, 마지막 '>' 뒤의 글자만 쓴다
+        last_text = re.findall(r">([^<>]*)<", html + "<")
+        raw = next((t for t in reversed(last_text) if t.strip()), "")
+        return unescape(raw).strip()
+
+    def to_int(s: str) -> int:
+        try:
+            return int(float(s.replace(",", "") or 0))
+        except ValueError:
+            return 0
+
+    rows: list[dict] = []
+    last: dict[str, str] = {}
+    for code, row_html in _IM10_ROW_RE.findall(body):
+        cells = {cls: text(inner) for cls, inner in _IM10_TD_RE.findall(row_html)}
+        if "options" not in cells:
+            continue
+        # 같은 상품의 여러 옵션이 칸 합치기(rowspan)로 묶이면 아래 줄에는 상품명 칸이 없으므로 위 줄 값을 쓴다
+        for key in ("product_name", "supply_product_name"):
+            if key in cells:
+                last[key] = cells[key]
+        rows.append({
+            "product_name": last.get("product_name", ""),
+            "supply_product_name": last.get("supply_product_name", ""),
+            "option": cells.get("options", ""),
+            "in_qty": to_int(cells.get("stockin_qty", "")),
+            "req_qty": to_int(cells.get("request_qty", "")),
+            "code": code,
+        })
+    return rows

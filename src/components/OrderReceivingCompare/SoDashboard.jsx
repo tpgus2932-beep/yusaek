@@ -4,6 +4,7 @@ import { ClipboardList, Minus, PackageCheck, PackageMinus, TrendingDown, Trendin
 import styles from "./SoDashboard.module.css";
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
+import usePersistentState from "../../lib/usePersistentState";
 // 색: dataviz 검증(validate_palette)을 통과한 조합. 한 차트에는 최대 2계열만 둔다
 //  - 발주 파랑 #2f6fd0 / 입고 초록 #1fcf93 / 미입고 빨강 #f0483e / 금액 보라 #7c3aed / 악성 거래처 탭 마젠타 #be185d (5색 모두 통과, 초록↔빨강 CVD ΔE 12.5)
 const C = { blue: "#2f6fd0", green: "#1fcf93", red: "#f0483e", violet: "#7c3aed", pink: "#be185d", ink: "#1e2a44", sub: "#7b8aa6", line: "#e6edf7", trend: "#7b8aa6" };
@@ -168,7 +169,7 @@ function ClientTip({ active, payload }) {
 }
 
 export default function SoDashboard({ refreshSig, client = "", onClearClient }) {
-  const [mode, setMode] = useState("day");
+  const [mode, setMode] = usePersistentState("soDashboardMode", "day");
   const [count, setCount] = useState({ day: 14, week: 12, month: 6 });
   const [days, setDays] = useState([]);
   const [error, setError] = useState("");

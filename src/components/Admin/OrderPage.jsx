@@ -7,6 +7,7 @@ import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import { getDownloadFilename } from "../../lib/download";
 
+import usePersistentState from "../../lib/usePersistentState";
 const getJinmoneyDownloadFilename = (res) => {
   const disposition = res.headers.get("content-disposition") || "";
   const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
@@ -70,7 +71,7 @@ const splitOptionColorSize = (optionName) => {
 };
 
 export default function OrderPage() {
-  const [activeTab, setActiveTab] = useState("standard");
+  const [activeTab, setActiveTab] = usePersistentState("orderPageTab", "standard");
   const [lizardFile, setLizardFile] = useState(null);
   const [lizardMessage, setLizardMessage] = useState("");
   const lizardFileInputRef = useRef(null);

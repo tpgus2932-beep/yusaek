@@ -7,6 +7,7 @@ import {
 import styles from './SMSPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
+import usePersistentState from "../../lib/usePersistentState";
 // EUC-KR 기준 바이트 수 (한글 2byte, 그 외 1byte)
 const getByteLength = (str) => {
   let bytes = 0;
@@ -73,7 +74,7 @@ export default function SMSPage() {
       return {};
     }
   });
-  const [activeTab, setActiveTab] = useState('send');
+  const [activeTab, setActiveTab] = usePersistentState('smsPageTab', 'send');
 
   // ─── 문자보내기 상태 ───
   const [receivers, setReceivers] = useState([]);

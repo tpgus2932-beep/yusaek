@@ -5,8 +5,14 @@
 .dateArrow:hover { background: var(--bg-secondary); }
 .rateLabel { display: flex; align-items: center; gap: 0.35rem; font-size: 0.9rem; }
 .rateInput { width: 4rem; }
+/* 상세보기 설정 줄 정렬: 이름 / 인원 / 처리 개수를 세 칸으로 맞춘다 (이름 칸 = 가장 긴 이름 폭) */
+.rateGrid { display: grid; grid-template-columns: max-content max-content max-content; align-items: center; column-gap: 0.75rem; row-gap: 0.45rem; }
+.rateGrid .rateLabel { display: contents; }
+.rateName { font-weight: 600; }
+.rateCell { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.9rem; white-space: nowrap; }
+@media (max-width: 640px) { .rateGrid { grid-template-columns: max-content; } }
 .muted { color: var(--text-muted); font-size: 0.82rem; }
-.summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 0.75rem; }
 .summaryCell { display: flex; flex-direction: column; gap: 0.25rem; padding: 0.75rem; border: 1px solid var(--border-color); border-radius: var(--radius-sm); }
 .summaryLabel { font-size: 0.85rem; color: var(--text-muted); }
 .summaryMain { gap: 0.5rem; padding: 1rem 1.25rem; border-width: 2px; border-color: var(--text-primary, #111); background: var(--bg-secondary); }
@@ -38,6 +44,10 @@
 .slotNumber { width: 3.2rem; padding: 0.2rem 0.3rem; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: transparent; color: inherit; font: inherit; }
 .slotAdd { align-self: stretch; min-height: 3rem; }
 .slotNote { font-size: 0.72rem; color: var(--text-muted); }
+.slotNamesToggle { align-self: flex-start; padding: 0; background: none; border: none; color: var(--text-muted); font-size: 0.72rem; cursor: pointer; }
+.slotNamesToggle:hover { color: inherit; text-decoration: underline; }
+.slotNames { list-style: none; margin: 0.2rem 0 0; padding: 0.45rem 0 0; border-top: 1px dashed var(--border-color); display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.nameChip { display: inline-flex; align-items: center; padding: 0.3rem 0.75rem; border: 1px solid var(--border-color); border-radius: 999px; background: var(--bg-secondary); font-size: 0.9rem; font-weight: 600; line-height: 1.2; white-space: nowrap; }
 .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.15rem; }
 .listRow { display: flex; justify-content: space-between; gap: 1rem; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border-color); font-size: 0.9rem; }
 .uncheckedBox { display: flex; flex-direction: column; gap: 0.5rem; }
@@ -45,6 +55,39 @@
 .removeBtn { margin-left: 0.6rem; background: none; border: none; color: var(--text-muted); cursor: pointer; text-decoration: underline; font-size: 0.8rem; }
 .bigNumber { font-size: 1.6rem; font-weight: 700; }
 
+/* 반영 중 버튼: 주황 불 */
+.applyBusy, .applyBusy:disabled { display: inline-flex; align-items: center; gap: 0.45rem; background: #f97316; border-color: #ea580c; color: #fff; opacity: 1; cursor: progress; }
+.busyDot { width: 0.6rem; height: 0.6rem; border-radius: 50%; background: #fff7ed; box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.8); animation: busyPulse 1s ease-in-out infinite; }
+@keyframes busyPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.75); } }
+
+/* 시간표(타임라인) */
+.timelineHead { display: flex; justify-content: flex-end; margin-top: 0.75rem; }
+.timeline { --tl-label: 8.5rem; margin-top: 0.5rem; padding: 1.2rem 0.75rem 0.75rem; border: 1px solid var(--border-color); border-radius: var(--radius-sm); overflow-x: auto; }
+/* 09~14시(5시간)가 화면 너비에 꽉 차게: 시간 칸 너비 = (화면 너비 - 이름 칸) × (전체 시간 ÷ 5시간) */
+.timelineInner { display: flex; flex-direction: column; gap: 0.45rem; width: calc(var(--tl-label) + 0.6rem + (100% - var(--tl-label) - 0.6rem) * var(--tl-ratio, 1)); }
+.tlRow { display: grid; grid-template-columns: var(--tl-label) minmax(0, 1fr); align-items: center; gap: 0.6rem; }
+.tlLabel { position: sticky; left: 0; z-index: 5; align-self: stretch; justify-content: center; display: flex; flex-direction: column; gap: 0.2rem; background: var(--bg-primary, #fff); font-size: 0.9rem; font-weight: 700; }
+.tlRange { font-weight: 400; font-size: 0.75rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.tlStart { padding: 0.1rem 0.3rem; font-size: 0.8rem; font-weight: 400; }
+.tlAxis { position: relative; height: 1.1rem; }
+.tlTickLabel { position: absolute; top: 0; transform: translateX(-50%); font-family: monospace; font-size: 0.72rem; color: var(--text-muted); white-space: nowrap; }
+.tlTrack { position: relative; height: 2.2rem; border-radius: var(--radius-sm); background: var(--bg-secondary); overflow: visible; }
+.tlTick { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--border-color); }
+.tlNow { position: absolute; top: 0; bottom: 0; border-left: 2px solid #dc2626; z-index: 2; }
+.tlBar { position: absolute; top: 0.3rem; bottom: 0.3rem; border: 1px solid rgba(255, 255, 255, 0.55); z-index: 1; display: flex; align-items: center; padding: 0 0.45rem; border-radius: 4px; color: #fff; font-size: 0.75rem; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; }
+/* 다른 막대는 위치·길이가 바뀔 때 부드럽게 미끄러지고, 잡고 있는 막대는 손을 바로 따라간다(전환 없음) */
+.tlDraggable { cursor: grab; touch-action: none; user-select: none; transition: left 0.25s ease, width 0.25s ease, top 0.25s ease; }
+.tlDragging { transition: width 0.25s ease, top 0.25s ease; cursor: grabbing; z-index: 3; box-shadow: 0 0 0 2px var(--text-primary, #111); }
+.tlDragTip { transition: left 0.15s ease; position: absolute; top: -1.1rem; z-index: 4; transform: translateX(-50%); padding: 0.05rem 0.4rem; border-radius: 4px; background: var(--text-primary, #111); color: var(--bg-primary, #fff); font-size: 0.7rem; font-weight: 700; white-space: nowrap; pointer-events: none; }
+.tlEmpty { position: absolute; inset: 0; display: flex; align-items: center; padding-left: 0.6rem; font-size: 0.8rem; color: var(--text-muted); }
+.partStartBtn { background: none; border: none; border-bottom: 1px dashed var(--text-muted); padding: 0; font: inherit; color: inherit; cursor: pointer; }
+.partStartBtn:hover { border-bottom-style: solid; color: var(--text-primary); }
+.tlPack { background: #2563eb; }
+.tlShip { background: #059669; }
+.tlInvoice { background: #d97706; }
+.tlMatch { background: #7c3aed; }
+
 @media (max-width: 640px) {
   .summary { grid-template-columns: 1fr; }
+  .timeline { --tl-label: 5.5rem; }
 }

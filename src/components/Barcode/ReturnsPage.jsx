@@ -10,6 +10,7 @@ import { LOCAL_API_BASE as API, getAuthHeaders } from '../../lib/api';
 import { decorateLabels } from '../../lib/decorateLabels';
 import ReturnInspectionTab from './ReturnInspectionTab';
 
+import usePersistentState from "../../lib/usePersistentState";
 // 이 PC에서 실행 중인 인쇄 에이전트 (backend/print_agent)
 const LOCAL_PRINT_AGENT = 'http://127.0.0.1:8765';
 
@@ -73,7 +74,7 @@ const ReturnsPage = () => {
     const [savedAt, setSavedAt] = useState('');
     const [queues, setQueues] = useState(EMPTY_QUEUES);
     const [onebeRows, setOnebeRows] = useState([]);
-    const [activeTab, setActiveTab] = useState('all');
+    const [activeTab, setActiveTab] = usePersistentState('returnsActiveTab', 'all');
     const [loading, setLoading] = useState(false);
     const [ezadminSheetLoading, setEzadminSheetLoading] = useState(false);
     const [ingoDaegiLoading, setIngoDaegiLoading] = useState(false);
