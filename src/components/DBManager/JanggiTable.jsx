@@ -15,7 +15,7 @@ function _parsePrice(v) { const n = parseFloat(String(v ?? "").replace(/[^\d.+-]
 const COLS = ["거래처", "거래처상품명", "가격", "옵션", "사이즈", "개수", "날짜", "미송체크", "상품코드", "메모", "거래처합산"];
 
 /* ── 목록 탭 ─────────────────────────────────────────────────── */
-function JanggiListView({ initialQuery = "", initialDate = "" } = {}) {
+function JanggiListView({ initialQuery = "", initialDate = "", syncWonbeCost = false } = {}) {
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -145,6 +145,25 @@ function JanggiListView({ initialQuery = "", initialDate = "" } = {}) {
         const newQty = patchNum(value);
         if (oldQty > 0 && newQty > 0 && oldPrice > 0) {
           const newPrice = Math.round((oldPrice / oldQty) * newQty);
+      // 거래처 모달에서 가격을 직접 고치면 원가베이스유 원가도 같이 수정 (원가 = 가격 ÷ 개수)
+      if (syncWonbeCost && col === "가격") {
+        const code = String(row?.["상품코드"] || "").trim();
+        const price = patchNum(value);
+        if (code && price > 0) {
+          const qty = patchNum(row?.["개수"]) > 0 ? patchNum(row["개수"]) : 1;
+          const unitCost = Math.round(price / qty);
+          const wr = await fetch(`${API}/wonbe/row`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+            body: JSON.stringify({ 상품코드: code, 원가: String(unitCost) }),
+          });
+          const wd = await wr.json().catch(() => ({}));
+          setMessage(wr.ok && wd.ok ? `원가베이스유 원가도 ${unitCost.toLocaleString()}원으로 수정됨 (${code})` : `장끼 가격은 저장됐지만 원가베이스유 수정 실패: ${wd?.detail || "오류"}`);
+        } else if (!code) {
+          setMessage("상품코드가 없어 원가베이스유는 수정하지 못했습니다.");
+        }
+      }
+
           const pr = await fetch(`${API}/wonbe/janggi/row`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json", ...getAuthHeaders() },
@@ -435,6 +454,63 @@ function JanggiListView({ initialQuery = "", initialDate = "" } = {}) {
       const q = productSearch.trim();
       setProductSearchLoading(true);
       try {
+  const [pricePushLoading, setPricePushLoading] = useState(false);
+
+  // 지금 목록(거래처 모달 포함)에 보이는 행의 상품코드로 에이블리 실제 상품가 변경 - 원가베이스유 화면의 상품가 변경과 동일 API
+  const pushSearchPriceToAbly = async (priceSource) => {
+    // 행을 선택했으면 선택한 행만, 없으면 목록 전체
+    const targetRows = selectedRowIds.size ? rows.filter((r) => selectedRowIds.has(r.id)) : rows;
+    const codes = Array.from(new Set(targetRows.map((r) => String(r["상품코드"] || "").trim()).filter(Boolean)));
+    if (!codes.length) { setMessage("상품코드가 있는 행이 없습니다."); return; }
+    const sourceName = priceSource === "이벤트 할인가" ? "이벤트 판매가" : "판매가";
+    const scopeLabel = selectedRowIds.size ? `선택한 행의 상품 ${codes.length}건` : `목록의 상품 ${codes.length}건`;
+    if (!window.confirm(
+      `${scopeLabel}을 [${sourceName}] 기준으로 에이블리 실제 상품가로 변경합니다.\n` +
+      (syncWonbeCost ? `(먼저 장끼정리 가격 기준으로 원가베이스유 원가를 같은 에이블리상품번호의 모든 옵션에 반영합니다)\n` : "") +
+      `(에이블리상품번호 기준 — 실제 판매중인 상품가가 바뀝니다)\n진행하시겠습니까?`
+    )) return;
+    setPricePushLoading(true);
+    try {
+      let costNote = "";
+      if (syncWonbeCost) {
+        // 원가 = 가격 ÷ 개수. 같은 상품코드가 여러 행이면 마지막 행 기준
+        const costByCode = new Map();
+        for (const r of targetRows) {
+          const code = String(r["상품코드"] || "").trim();
+          const price = patchNum(r["가격"]);
+          if (!code || price <= 0) continue;
+          const qty = patchNum(r["개수"]) > 0 ? patchNum(r["개수"]) : 1;
+          costByCode.set(code, String(Math.round(price / qty)));
+        }
+        if (costByCode.size) {
+          const cr = await fetch(`${API}/wonbe/update-cost-by-ably-product`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+            body: JSON.stringify({ items: [...costByCode].map(([상품코드, 원가]) => ({ 상품코드, 원가 })) }),
+          });
+          const cd = await cr.json().catch(() => ({}));
+          if (!cr.ok || !cd.ok) throw new Error(cd?.detail || "원가베이스유 원가 수정 실패 (에이블리 상품가는 변경하지 않았습니다)");
+          costNote = `원가베이스유 원가 ${cd.updated}개 옵션 수정 · `;
+        }
+      }
+      const res = await fetch(`${API}/wonbe/push-price-to-ably`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ source: priceSource, codes }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "에이블리 상품가 변경 실패");
+      setMessage(
+        `${costNote}[${sourceName}] 기준 에이블리 상품가 변경 완료: 성공 ${data.success_row_count}건 / 실패 ${data.error_row_count}건 ` +
+        `(요청 ${data.requested}건, 제외 - 값이상 ${data.skipped_invalid}건 · 중복상품 ${data.skipped_duplicate}건 · 제외그룹 ${data.skipped_group_excluded ?? 0}건)`
+      );
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setPricePushLoading(false);
+    }
+  };
+
         const params = new URLSearchParams({ q, limit: 50 });
         const res = await fetch(`${API}/wonbe/search?${params}`, { headers: getAuthHeaders() });
         const data = await res.json().catch(() => ({}));
@@ -816,6 +892,18 @@ function JanggiListView({ initialQuery = "", initialDate = "" } = {}) {
           <button
             className={`${styles.btn} ${styles.btnDanger}`}
             onClick={handleBulkClear}
+        {["이벤트전 할인가", "이벤트 할인가"].map((src) => (
+          <button
+            key={src}
+            className={`${styles.btn} ${styles.btnSecondary}`}
+            onClick={() => pushSearchPriceToAbly(src)}
+            disabled={loading || pricePushLoading || rows.length === 0}
+            title={`목록에 보이는 상품의 ${src === "이벤트 할인가" ? "이벤트 판매가" : "판매가"}로 에이블리 실제 상품가를 변경합니다`}
+            style={{ borderColor: "#0891b2", color: "#0891b2" }}
+          >
+            {pricePushLoading ? "변경 중..." : `에이블리 상품가 변경 (${src === "이벤트 할인가" ? "이벤트가" : "판매가"})`}
+          </button>
+        ))}
             disabled={loading || bulkMarkLoading}
             title={`${dateFilter} 날짜의 일괄이체 지정 전체 해제`}
           >
@@ -1837,7 +1925,7 @@ function JanggiTopComparison() {
               <span style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>{clientView.date} · 날짜별장끼정리 목록과 동일 (수정은 DB에 바로 저장)</span>
               <button className={styles.btn} style={{ marginLeft: "auto" }} onClick={closeClientView}>닫기</button>
             </div>
-            <JanggiListView initialQuery={clientView.client} initialDate={clientView.date} />
+            <JanggiListView initialQuery={clientView.client} initialDate={clientView.date} syncWonbeCost />
           </div>
         </div>
       )}

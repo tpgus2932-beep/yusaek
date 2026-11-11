@@ -2593,6 +2593,44 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         finally:
             conn.close()
 
+    @router.post("/update-cost-by-ably-product")
+    def wonbe_update_cost_by_ably_product(
+        payload: dict = Body(...),
+        user: str = Depends(get_current_user),
+    ):
+        """items=[{상품코드, 원가}] → 해당 상품코드와 같은 에이블리상품번호를 가진 모든 옵션의 원가를 수정한다.
+        에이블리상품번호가 비어 있으면 그 상품코드 한 건만 수정한다."""
+        items = payload.get("items") or []
+        if not isinstance(items, list) or not items:
+            raise HTTPException(status_code=400, detail="items가 필요합니다.")
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            updated_codes: set[str] = set()
+            not_found = 0
+            for it in items:
+                code = str((it or {}).get("상품코드") or "").strip()
+                cost = str((it or {}).get("원가") or "").strip()
+                if not code or not cost:
+                    continue
+                base = conn.execute("SELECT 에이블리상품번호 FROM wonbe WHERE 상품코드 = ?", (code,)).fetchone()
+                if base is None:
+                    not_found += 1
+                    continue
+                sno = str(base["에이블리상품번호"] or "").strip()
+                if sno:
+                    sib = conn.execute("SELECT 상품코드 FROM wonbe WHERE 에이블리상품번호 = ?", (sno,)).fetchall()
+                    sib_codes = [r["상품코드"] for r in sib]
+                else:
+                    sib_codes = [code]
+                for sc in sib_codes:
+                    conn.execute(f"UPDATE wonbe SET {_qcol('원가')} = ? WHERE 상품코드 = ?", (cost, sc))
+                    updated_codes.add(sc)
+            conn.commit()
+            return {"ok": True, "updated": len(updated_codes), "codes": sorted(updated_codes), "not_found": not_found}
+        finally:
+            conn.close()
+
     @router.post("/bulk-update")
     def wonbe_bulk_update(
         payload: dict = Body(...),
