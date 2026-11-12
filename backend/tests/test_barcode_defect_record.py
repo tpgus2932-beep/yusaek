@@ -256,3 +256,26 @@ def test_past_defect_record_does_not_attach_to_new_defect_of_same_code(monkeypat
     client.post("/barcode/defect/record/add", json={"code": "P1", "qty": 1, "reason": "새 사유", "photos": [_photo("new")], "attach_existing": True})
     assert [r["reason"] for r in client.get("/barcode/defect/record/list").json()["records"]] == ["새 사유"]
     assert len(client.get("/barcode/defect/record/search").json()["records"]) == 2
+
+
+
+def test_photo_reasons_per_photo(monkeypatch):
+    client, _db, _ = _make_client(monkeypatch)
+    rec = client.post(
+        "/barcode/defect/record/add",
+        json={
+            "code": "P1",
+            "photos": [{"data": _photo("1"), "reason": "얼룩"}, {"data": _photo("2"), "reason": "구멍"}, {"data": _photo("3"), "reason": "얼룩"}],
+        },
+    )
+    assert rec.status_code == 200  # 사진별 사유가 있으면 기록 사유가 비어도 등록된다
+    rec = rec.json()["records"][0]
+    assert rec["photo_reasons"] == ["얼룩", "구멍", "얼룩"]
+    assert rec["reason"] == "얼룩 / 구멍"
+
+    upd = client.post(
+        "/barcode/defect/record/update",
+        json={"id": rec["id"], "photo_reasons": {str(rec["photo_ids"][1]): "봉제 불량"}, "add_photos": [{"data": _photo("4"), "reason": "사이즈"}]},
+    ).json()["records"][0]
+    assert upd["photo_reasons"] == ["얼룩", "봉제 불량", "얼룩", "사이즈"]
+    assert upd["reason"] == "얼룩 / 봉제 불량 / 사이즈"

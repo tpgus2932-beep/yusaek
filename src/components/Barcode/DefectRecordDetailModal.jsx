@@ -9,7 +9,8 @@ const formatDate = (iso) => (iso ? String(iso).slice(0, 16).replace("T", " ") : 
 export default function DefectRecordDetailModal({ title, records, tabHeaders, onChanged, onClose }) {
   const [photoCache, setPhotoCache] = useState({}); // { [photoId]: dataURL }
   const [zoom, setZoom] = useState("");
-  const [editing, setEditing] = useState(null); // { id, qty, reason, keepIds, added }
+  const [editing, setEditing] = useState(null); // { id, qty, reason, hasPhotos } — 수량(사진 없으면 사유도) 수정
+  const [drafts, setDrafts] = useState({}); // 사진별 사유 입력 중인 값 { [photoId]: 사유 }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -69,24 +70,32 @@ export default function DefectRecordDetailModal({ title, records, tabHeaders, on
 
   const startEdit = (record) => {
     setError("");
-    setEditing({ id: record.id, qty: record.qty, reason: record.reason || "", keepIds: [...record.photo_ids], added: [] });
+    setEditing({ id: record.id, qty: record.qty, reason: record.reason || "", hasPhotos: record.photo_ids.length > 0 });
+  };
+
+  const savedPhotoReason = (record, i) => record.photo_reasons?.[i] ?? "";
+  const photoReasonValue = (record, i) => drafts[record.photo_ids[i]] ?? savedPhotoReason(record, i);
+  const clearDraft = (pid) => setDrafts((prev) => { const next = { ...prev }; delete next[pid]; return next; });
+
+  // 사진별 사유: 버튼을 누르거나 입력칸에서 빠져나가면 바로 저장
+  const commitPhotoReason = async (record, i, value) => {
+    const pid = record.photo_ids[i];
+    const text = String(value || "").trim();
+    if (text === savedPhotoReason(record, i).trim()) { clearDraft(pid); return; }
+    const ok = await post("update", { id: record.id, photo_reasons: { [pid]: text } });
+    if (ok) clearDraft(pid);
   };
 
   const saveEdit = async () => {
     const original = records.find((r) => r.id === editing.id);
     if (!original) return;
-    const noPhoto = editing.keepIds.length + editing.added.length < 1;
-    const noReason = editing.reason.trim() === "";
-    if (noPhoto || noReason) {
-      const what = [noPhoto && "사진첨부", noReason && "사유"].filter(Boolean).join(", ");
-      if (!window.confirm(`${what}가 등록되지 않았습니다.\n\n그래도 저장하시겠습니까?`)) return;
+    if (!editing.hasPhotos && editing.reason.trim() === "") {
+      if (!window.confirm("사유가 등록되지 않았습니다.\n\n그래도 저장하시겠습니까?")) return;
     }
     const ok = await post("update", {
       id: editing.id,
       qty: editing.qty,
-      reason: editing.reason.trim(),
-      add_photos: editing.added,
-      remove_photo_ids: original.photo_ids.filter((id) => !editing.keepIds.includes(id)),
+      ...(editing.hasPhotos ? {} : { reason: editing.reason.trim() }),
     });
     if (ok) setEditing(null);
   };
@@ -96,34 +105,20 @@ export default function DefectRecordDetailModal({ title, records, tabHeaders, on
     await post("remove", { id: record.id });
   };
 
-  const renderEdit = () => {
-    const existing = editing.keepIds.map((id) => ({ key: `e${id}`, id, src: photoCache[id] || "" }));
-    const added = editing.added.map((src, i) => ({ key: `n${i}`, src }));
-    const all = [...existing, ...added];
-    return (
-      <div className={styles.editBox}>
-        <div className={styles.qtyRow}>
-          <span className={styles.qtyLabel}>수량</span>
-          <input
-            type="number"
-            min={1}
-            max={999}
-            className={styles.qtyInput}
-            value={editing.qty}
-            onChange={(e) => setEditing({ ...editing, qty: Math.max(1, parseInt(e.target.value, 10) || 1) })}
-          />
-        </div>
-        <DefectPhotoPicker
-          photos={all}
-          onAdd={(srcs) => setEditing({ ...editing, added: [...editing.added, ...srcs] })}
-          onRemove={(i) =>
-            i < existing.length
-              ? setEditing({ ...editing, keepIds: editing.keepIds.filter((id) => id !== existing[i].id) })
-              : setEditing({ ...editing, added: editing.added.filter((_, n) => n !== i - existing.length) })
-          }
-          onZoom={setZoom}
-          disabled={busy}
+  const renderEdit = () => (
+    <div className={styles.editBox}>
+      <div className={styles.qtyRow}>
+        <span className={styles.qtyLabel}>수량</span>
+        <input
+          type="number"
+          min={1}
+          max={999}
+          className={styles.qtyInput}
+          value={editing.qty}
+          onChange={(e) => setEditing({ ...editing, qty: Math.max(1, parseInt(e.target.value, 10) || 1) })}
         />
+      </div>
+      {!editing.hasPhotos && (
         <input
           className={styles.reasonInput}
           value={editing.reason}
@@ -131,13 +126,13 @@ export default function DefectRecordDetailModal({ title, records, tabHeaders, on
           placeholder="사유"
           disabled={busy}
         />
-        <div className={styles.rowBtns}>
-          <button type="button" className={styles.smallBtn} onClick={saveEdit} disabled={busy}>저장</button>
-          <button type="button" className={styles.smallBtn} onClick={() => { setEditing(null); setError(""); }} disabled={busy}>취소</button>
-        </div>
+      )}
+      <div className={styles.rowBtns}>
+        <button type="button" className={styles.smallBtn} onClick={saveEdit} disabled={busy}>저장</button>
+        <button type="button" className={styles.smallBtn} onClick={() => { setEditing(null); setError(""); }} disabled={busy}>취소</button>
       </div>
-    );
-  };
+    </div>
+  );
 
   return (
     <div
@@ -164,23 +159,24 @@ export default function DefectRecordDetailModal({ title, records, tabHeaders, on
               </span>
             </div>
 
-            {editing?.id === record.id ? (
-              renderEdit()
-            ) : (
-              <>
-                {/* 사진은 [+ 사진 추가]를 누를 때마다 바로 저장된다 */}
-                <DefectPhotoPicker
-                  photos={record.photo_ids.map((id) => ({ key: id, id, src: photoCache[id] || "" }))}
-                  onAdd={(srcs) => post("update", { id: record.id, add_photos: srcs })}
-                  onRemove={(i) => {
-                    if (!window.confirm("이 사진을 삭제할까요?")) return;
-                    post("update", { id: record.id, remove_photo_ids: [record.photo_ids[i]] });
-                  }}
-                  onZoom={setZoom}
-                  disabled={busy || !!editing}
-                />
-                <div className={styles.reasonText}>{record.reason || "(사유 없음)"}</div>
-              </>
+            {editing?.id === record.id && renderEdit()}
+            {/* 사진 추가·삭제·사진별 사유는 바로 저장된다 */}
+            <DefectPhotoPicker
+              photos={record.photo_ids.map((id) => ({ key: id, id, src: photoCache[id] || "" }))}
+              reasons={record.photo_ids.map((_, i) => photoReasonValue(record, i))}
+              onReasonChange={(i, value) => setDrafts((prev) => ({ ...prev, [record.photo_ids[i]]: value }))}
+              onReasonCommit={(i, value) => commitPhotoReason(record, i, value)}
+              onAdd={(srcs) => post("update", { id: record.id, add_photos: srcs.map((src) => ({ data: src, reason: "" })) })}
+              onRemove={(i) => {
+                if (!window.confirm("이 사진을 삭제할까요?")) return;
+                post("update", { id: record.id, remove_photo_ids: [record.photo_ids[i]] });
+              }}
+              onZoom={setZoom}
+              disabled={busy}
+            />
+            {/* 사진별 사유가 없는 기록(사진 없이 등록했거나 예전 기록)은 기록 사유를 보여준다 */}
+            {!(record.photo_reasons ?? []).some((r) => (r || "").trim()) && editing?.id !== record.id && (
+              <div className={styles.reasonText}>{record.reason || "(사유 없음)"}</div>
             )}
           </div>
         ))}

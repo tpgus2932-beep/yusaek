@@ -2699,6 +2699,10 @@ def build_barcode_router(
         if "closed_at" not in cols:
             # 불량이 목록에서 빠진 뒤에는 '지난 불량'이므로 closed_at 을 채워 현재 불량과 분리한다.
             conn.execute("ALTER TABLE barcode_defect_records ADD COLUMN closed_at TEXT NOT NULL DEFAULT ''")
+        photo_cols = {row[1] for row in conn.execute("PRAGMA table_info(barcode_defect_record_photos)").fetchall()}
+        if "reason" not in photo_cols:
+            # 사진마다 따로 적는 불량 사유
+            conn.execute("ALTER TABLE barcode_defect_record_photos ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
         conn.commit()
         return conn
 
@@ -2732,21 +2736,44 @@ def build_barcode_router(
         except (TypeError, ValueError):
             return 1
 
-    def _parse_defect_photos(photos) -> list[tuple[str, str]]:
+    def _parse_defect_photos(photos) -> list[tuple[str, str, str]]:
+        """사진 목록 → [(mime, base64, 사진별 사유)]. 항목은 data URL 문자열 또는 {data, reason}."""
         if photos is None:
             return []
         if not isinstance(photos, list):
             raise HTTPException(status_code=400, detail="photos 형식이 올바르지 않습니다")
         parsed = []
         for photo in photos:
+            photo_reason = ""
+            if isinstance(photo, dict):
+                photo_reason = str(photo.get("reason") or "").strip()
+                photo = photo.get("data")
             text = str(photo or "")
             if len(text) > _DEFECT_PHOTO_MAX_CHARS:
                 raise HTTPException(status_code=400, detail="사진 용량이 너무 큽니다")
             match = _DEFECT_PHOTO_RE.match(text)
             if not match:
                 raise HTTPException(status_code=400, detail="사진 형식이 올바르지 않습니다")
-            parsed.append((match.group(1), match.group(2)))
+            parsed.append((match.group(1), match.group(2), photo_reason))
         return parsed
+
+    def _join_photo_reasons(reasons) -> str:
+        """사진별 사유를 기록 전체 사유 한 줄로 모은다 (카톡·매입관리 등 기존 화면용). 중복은 한 번만."""
+        seen: list[str] = []
+        for r in reasons:
+            r = str(r or "").strip()
+            if r and r not in seen:
+                seen.append(r)
+        return " / ".join(seen)
+
+    def _refresh_record_reason_from_photos(conn, record_id: int) -> None:
+        """사진별 사유가 하나라도 있으면 기록 사유를 그 모음으로 맞춘다."""
+        rows = conn.execute(
+            "SELECT reason FROM barcode_defect_record_photos WHERE record_id = ? ORDER BY id", (record_id,)
+        ).fetchall()
+        joined = _join_photo_reasons(row["reason"] for row in rows)
+        if joined:
+            conn.execute("UPDATE barcode_defect_records SET reason = ? WHERE id = ?", (joined, record_id))
 
     def _defect_record_product_name(state, code: str) -> str:
         # 원가베이스 표시명 → 현재 송장 상품명 순으로 찾는다 (불량 리스트 표시와 같은 우선순위).
@@ -2780,14 +2807,17 @@ def build_barcode_router(
         ids = [rec["id"] for rec in records]
         marks = ",".join("?" for _ in ids)
         photo_rows = conn.execute(
-            f"SELECT id, record_id FROM barcode_defect_record_photos WHERE record_id IN ({marks}) ORDER BY id",
+            f"SELECT id, record_id, reason FROM barcode_defect_record_photos WHERE record_id IN ({marks}) ORDER BY id",
             ids,
         ).fetchall()
         photo_ids: dict[int, list[int]] = {}
+        photo_reasons: dict[int, list[str]] = {}
         for row in photo_rows:
             photo_ids.setdefault(row["record_id"], []).append(row["id"])
+            photo_reasons.setdefault(row["record_id"], []).append(row["reason"] or "")
         for rec in records:
             rec["photo_ids"] = photo_ids.get(rec["id"], [])
+            rec["photo_reasons"] = photo_reasons.get(rec["id"], [])  # photo_ids 와 같은 순서
         return records
 
     def _defect_records_response(conn) -> dict:
@@ -2931,7 +2961,7 @@ def build_barcode_router(
             if not allow_incomplete:
                 if not photos:
                     raise HTTPException(status_code=400, detail=f"{idx}번째 불량: 사진을 1장 이상 첨부해 주세요")
-                if not reason:
+                if not reason and not _join_photo_reasons(p[2] for p in photos):
                     raise HTTPException(status_code=400, detail=f"{idx}번째 불량: 사유를 입력해 주세요")
             if len(photos) > _DEFECT_PHOTO_MAX_COUNT:
                 raise HTTPException(status_code=400, detail=f"사진은 최대 {_DEFECT_PHOTO_MAX_COUNT}장까지 가능합니다")
@@ -2951,11 +2981,12 @@ def build_barcode_router(
                 )
                 record_id = cur.lastrowid
                 record_ids.append(record_id)
-                for mime, data in photos:
+                for mime, data, photo_reason in photos:
                     conn.execute(
-                        "INSERT INTO barcode_defect_record_photos (record_id, mime, data, created_at) VALUES (?, ?, ?, ?)",
-                        (record_id, mime, data, now),
+                        "INSERT INTO barcode_defect_record_photos (record_id, mime, data, created_at, reason) VALUES (?, ?, ?, ?, ?)",
+                        (record_id, mime, data, now, photo_reason),
                     )
+                _refresh_record_reason_from_photos(conn, record_id)
             conn.commit()
             result = _defect_records_response(conn)
         finally:
@@ -2983,6 +3014,16 @@ def build_barcode_router(
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="id is required")
         add_photos = _parse_defect_photos(payload.get("add_photos"))
+        # 이미 있는 사진의 사유 수정: {사진id: 사유}
+        photo_reason_updates: list[tuple[int, str]] = []
+        raw_reasons = payload.get("photo_reasons") or {}
+        if not isinstance(raw_reasons, dict):
+            raise HTTPException(status_code=400, detail="photo_reasons 형식이 올바르지 않습니다")
+        for key, value in raw_reasons.items():
+            try:
+                photo_reason_updates.append((int(key), str(value or "").strip()))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="photo_reasons 형식이 올바르지 않습니다")
         remove_ids = []
         for value in payload.get("remove_photo_ids") or []:
             try:
@@ -3025,11 +3066,17 @@ def build_barcode_router(
                     "DELETE FROM barcode_defect_record_photos WHERE id = ? AND record_id = ?",
                     (pid, record_id),
                 )
-            for mime, data in add_photos:
+            for mime, data, photo_reason in add_photos:
                 conn.execute(
-                    "INSERT INTO barcode_defect_record_photos (record_id, mime, data, created_at) VALUES (?, ?, ?, ?)",
-                    (record_id, mime, data, now),
+                    "INSERT INTO barcode_defect_record_photos (record_id, mime, data, created_at, reason) VALUES (?, ?, ?, ?, ?)",
+                    (record_id, mime, data, now, photo_reason),
                 )
+            for pid, photo_reason in photo_reason_updates:
+                conn.execute(
+                    "UPDATE barcode_defect_record_photos SET reason = ? WHERE id = ? AND record_id = ?",
+                    (photo_reason, pid, record_id),
+                )
+            _refresh_record_reason_from_photos(conn, record_id)
             conn.commit()
             return _defect_records_response(conn)
         finally:
