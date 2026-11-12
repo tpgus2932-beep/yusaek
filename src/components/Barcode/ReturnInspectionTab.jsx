@@ -119,12 +119,12 @@ const ReturnInspectionTab = ({ mobile = false }) => {
             a.preload = 'auto';
             return a;
         };
-        // 바코드 메뉴와 동일: 다음(xx) / 완료(zz) / 오류(dd)
+        // 다음(xx) / 완료(zz)는 바코드 메뉴와 동일, 초과·리스트 없음은 음성 안내
         soundsRef.current = {
             next: makeAudio('/sounds/xx.wav'),
             done: makeAudio('/sounds/zz.wav'),
-            unknown: makeAudio('/sounds/dd.wav'),
-            over: makeAudio('/sounds/bb.wav'),
+            unknown: makeAudio('/sounds/unknown_voice.wav'),
+            over: makeAudio('/sounds/over_voice.wav'),
         };
     }, []);
 
