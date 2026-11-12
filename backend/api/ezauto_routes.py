@@ -88,10 +88,10 @@ def build_ezauto_router(*, get_current_user, get_setting, set_setting):
             return await ez_ably.run_auto_order(await _ably_client(), ez, shop_id=ez_config.EZAUTO_ABLY_SHOP_ID, today=today, log=logger("[에이블리] "))
 
         async def amood_shop():
-            return await ez_ably.run_auto_order_amood(await _amood_client(), ez, shop_id=ez_config.EZAUTO_AMOOD_SHOP_ID, today=today, log=logger("[아모드] "))
+            return await ez_ably.run_auto_order_amood(await _amood_client(), ez, shop_id=ez_config.EZAUTO_AMOOD_SHOP_ID, today=today, log=logger("[아무드] "))
 
         shops = []
-        for label, shop_id, runner in (("에이블리", ez_config.EZAUTO_ABLY_SHOP_ID, ably_shop), ("아모드", ez_config.EZAUTO_AMOOD_SHOP_ID, amood_shop)):
+        for label, shop_id, runner in (("에이블리", ez_config.EZAUTO_ABLY_SHOP_ID, ably_shop), ("아무드", ez_config.EZAUTO_AMOOD_SHOP_ID, amood_shop)):
             try:
                 shops.append({"shop": label, "shop_id": shop_id, "ok": True, "result": await runner()})
             except EzAdminSessionExpired:

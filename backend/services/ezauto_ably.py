@@ -107,7 +107,7 @@ def build_order_xls(items: list[dict]) -> bytes:
     return _text_xls(ORDER_HEADERS, [order_row(item) for item in items])
 
 
-# ---------------------------------------------------------------- 아모드(10080) 엑셀 변환
+# ---------------------------------------------------------------- 아무드(10080) 엑셀 변환
 AMOOD_ORDER_HEADERS = [
     "결제일", "상품주문번호", "주문번호", "택배사", "택배사 코드", "송장번호", "상품명", "판매자 상품코드", "옵션 정보",
     "수량", "판매금액", "주문자명", "연락처", "수취인명", "우편번호", "배송지 주소", "배송 메모", "주문상태", "에이블리 상품코드",
@@ -116,7 +116,7 @@ AMOOD_STATUS_LABEL = {"SHIPPING_READYING": "배송 준비중", "PAYMENT_COMPLETE
 
 
 def amood_order_row(item: dict) -> list[str]:
-    """아모드 order_line_item 1건 -> 엑셀 1행 (실제 이지오토 엑셀 78행과 셀 단위로 일치하는 규칙)."""
+    """아무드 order_line_item 1건 -> 엑셀 1행 (실제 이지오토 엑셀 78행과 셀 단위로 일치하는 규칙)."""
     order = item.get("order") or {}
     product = item.get("product") or {}
     option = item.get("product_option") or {}
@@ -197,7 +197,7 @@ class AblyVendorClient:
 
 
 class AmoodVendorClient:
-    """아모드(10080) 공식 API. 에이블리와 같은 서버(/v1/vendors/orders/order-line-items/)에 다른 인증 헤더를 쓴다."""
+    """아무드(10080) 공식 API. 에이블리와 같은 서버(/v1/vendors/orders/order-line-items/)에 다른 인증 헤더를 쓴다."""
 
     def __init__(self, token: str, api_key: str, *, base: str = "https://partner.api.a-bly.com", timeout: float = 120.0):
         self._base, self._timeout = base, timeout
@@ -208,7 +208,7 @@ class AmoodVendorClient:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             res = await client.request(method, f"{self._base}{path}", headers=headers, **kwargs)
         if res.status_code >= 400:
-            raise EzautoError(f"아모드 API 오류 (HTTP {res.status_code}, {method} {path}): {res.text[:120]}")
+            raise EzautoError(f"아무드 API 오류 (HTTP {res.status_code}, {method} {path}): {res.text[:120]}")
         return res
 
     async def list_items(self, status: str, start: date, end: date) -> list[dict]:

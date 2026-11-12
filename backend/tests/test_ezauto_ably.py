@@ -74,7 +74,7 @@ def test_upload_filename_matches_original_program():
     assert svc.upload_filename("10028", date(2026, 10, 27), date(2026, 11, 12)) == "10028_download_20261027_20261112.xls"
 
 
-# ---------------------------------------------------------------- 아모드(10080)
+# ---------------------------------------------------------------- 아무드(10080)
 def _amood_item(item_id, order_id, **over):
     base = {
         "id": item_id, "order": {"id": order_id, "placed_at": "2026-11-12T03:06:53.183362+09:00"},
@@ -96,7 +96,7 @@ def test_amood_row_follows_captured_format():
     r = dict(zip(svc.AMOOD_ORDER_HEADERS, row))
     assert r["결제일"] == "2026-11-12T03:06:53.183362+09:00" and r["상품주문번호"] == "9990001" and r["주문번호"] == "8880001"
     assert (r["택배사"], r["택배사 코드"], r["송장번호"], r["배송 메모"]) == ("", "", "", "")
-    assert r["상품명"] == "[MD🩶/ブランド]ニット"             # 아모드는 이모지를 지우지 않는다
+    assert r["상품명"] == "[MD🩶/ブランド]ニット"             # 아무드는 이모지를 지우지 않는다
     assert r["옵션 정보"] == "ブラック/FREE" and r["수량"] == "2" and r["판매금액"] == "5900"
     assert r["주문자명"] == "木下愛琉"                          # 고객 이름, 수취인은 포워딩(한국) 주소
     assert (r["수취인명"], r["연락처"], r["우편번호"]) == ("수취인", "+82100000000", "12345")
@@ -309,9 +309,9 @@ def test_api_runs_both_shops_and_keeps_last_result():
         client.post("/ezauto/auto-order")
         job = _wait_done(client, "auto_order")
     assert job["error"] == "" and job["started_by"] == "tester"
-    assert [(s["shop"], s["ok"]) for s in job["result"]["shops"]] == [("에이블리", True), ("아모드", True)]
+    assert [(s["shop"], s["ok"]) for s in job["result"]["shops"]] == [("에이블리", True), ("아무드", True)]
     assert [p[2]["data"]["shop_id"] for p in ez.posts] == ["10028", "10080"]          # 판매처별로 따로 업로드
-    assert any("[에이블리]" in s for s in job["steps"]) and any("[아모드]" in s for s in job["steps"])
+    assert any("[에이블리]" in s for s in job["steps"]) and any("[아무드]" in s for s in job["steps"])
     assert "ezauto_last_auto_order" in store          # 서버 재시작 후에도 마지막 결과를 보여주기 위해 저장
 
 

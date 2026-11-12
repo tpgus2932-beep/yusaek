@@ -4,7 +4,7 @@ import styles from './EzautoButtons.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 
 const KINDS = {
-    auto_order: { label: '자동발주', path: '/ezauto/auto-order', icon: <Play size={15} />, hint: '에이블리·아모드 신규 주문 확인 + 이지어드민 발주 입력' },
+    auto_order: { label: '자동발주', path: '/ezauto/auto-order', icon: <Play size={15} />, hint: '에이블리·아무드 신규 주문 확인 + 이지어드민 발주 입력' },
     invoice: { label: '판매처 송장등록', short: '송장등록', path: '/ezauto/register-invoices', icon: <Truck size={15} />, hint: '이지어드민에서 출고된 건의 송장을 에이블리에 전송' },
 };
 
