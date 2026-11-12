@@ -13,7 +13,7 @@ const buildText = (items) => {
     const reasons = (it.records || []).map((r) => String(r.reason || "").trim()).filter(Boolean).join(", ");
     return reasons ? `${head}\n${reasons}` : head;
   });
-  return `안녕하세요 사장님!\n${lines.join("\n")}\n불량 올리겠습니다!`;
+  return `안녕하세요 사장님!\n${lines.join("\n")}\n불량 올리겠습니다!\n사진 없는건 스티커로 모두 표기해 두었습니다!`;
 };
 
 /**
