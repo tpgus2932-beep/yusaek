@@ -202,6 +202,7 @@ SHARED_DEFECT_SUMMON_COUNTS: dict[str, dict[str, int]] = {t: {} for t in defect_
 SHARED_KIMSUNGIL_COUNTS: dict[str, dict[str, int]] = {t: {} for t in defect_tab.DEFECT_TABS}
 SHARED_AMOOD_EZADMIN_FILE: dict = {}
 _KIMSUNGIL_LOADED_TABS: set[str] = set()
+_DEFECT_LOADED_TABS: set[str] = set()
 SHARED_BARCODE_DATA: dict = {
     "loaded": False,
     "mapping": None,
@@ -387,20 +388,60 @@ def _set_shared_incoming_counts(counts: dict[str, int] | None):
         SHARED_INCOMING_COUNTS.update(counts)
 
 
+def _defect_setting_key(tab: str) -> str:
+    return f"defect_counts_{tab}"
+
+
+def _defect_summon_setting_key(tab: str) -> str:
+    return f"defect_summon_counts_{tab}"
+
+
+def _load_defect_tab(tab: str):
+    """서버 재시작 후 첫 접근 때 설정 DB에서 불량/소환 수량을 복원한다 (김승일 목록과 같은 방식)."""
+    if tab in _DEFECT_LOADED_TABS:
+        return
+    for key, store in (
+        (_defect_setting_key(tab), SHARED_DEFECT_COUNTS),
+        (_defect_summon_setting_key(tab), SHARED_DEFECT_SUMMON_COUNTS),
+    ):
+        try:
+            val = _get_setting(key)
+            if val:
+                data = json.loads(val)
+                store.setdefault(tab, {}).update({k: int(v) for k, v in data.items()})
+        except Exception:
+            pass
+    _DEFECT_LOADED_TABS.add(tab)
+
+
+def _persist_defect_store(tab: str, key: str, target: dict[str, int]):
+    try:
+        _set_setting(key, json.dumps(target, ensure_ascii=False))
+    except Exception:
+        pass
+
+
 def _get_shared_defect_counts() -> dict[str, int]:
-    return SHARED_DEFECT_COUNTS.setdefault(defect_tab.current_tab(), {})
+    tab = defect_tab.current_tab()
+    _load_defect_tab(tab)
+    return SHARED_DEFECT_COUNTS.setdefault(tab, {})
 
 
 def _set_shared_defect_counts(counts: dict[str, int] | None):
-    target = SHARED_DEFECT_COUNTS.setdefault(defect_tab.current_tab(), {})
+    tab = defect_tab.current_tab()
+    _load_defect_tab(tab)
+    target = SHARED_DEFECT_COUNTS.setdefault(tab, {})
     target.clear()
     if counts:
         target.update(counts)
+    _persist_defect_store(tab, _defect_setting_key(tab), target)
 
 
 def _get_all_tabs_defect_counts() -> dict[str, int]:
     """전 탭 합산 - 탭과 무관하게 '불량이 있는지'만 보는 곳(아무드 등)용."""
     total: dict[str, int] = {}
+    for tab in list(defect_tab.DEFECT_TABS):
+        _load_defect_tab(tab)
     for counts in SHARED_DEFECT_COUNTS.values():
         for code, qty in counts.items():
             total[code] = total.get(code, 0) + qty
@@ -410,6 +451,8 @@ def _get_all_tabs_defect_counts() -> dict[str, int]:
 def _get_all_tabs_defect_summon_counts() -> dict[str, int]:
     """전 탭 합산 - 김승일 소환술로 들어온 수량만."""
     total: dict[str, int] = {}
+    for tab in list(defect_tab.DEFECT_TABS):
+        _load_defect_tab(tab)
     for counts in SHARED_DEFECT_SUMMON_COUNTS.values():
         for code, qty in counts.items():
             total[code] = total.get(code, 0) + qty
@@ -417,14 +460,19 @@ def _get_all_tabs_defect_summon_counts() -> dict[str, int]:
 
 
 def _get_shared_defect_summon_counts() -> dict[str, int]:
-    return SHARED_DEFECT_SUMMON_COUNTS.setdefault(defect_tab.current_tab(), {})
+    tab = defect_tab.current_tab()
+    _load_defect_tab(tab)
+    return SHARED_DEFECT_SUMMON_COUNTS.setdefault(tab, {})
 
 
 def _set_shared_defect_summon_counts(counts: dict[str, int] | None):
-    target = SHARED_DEFECT_SUMMON_COUNTS.setdefault(defect_tab.current_tab(), {})
+    tab = defect_tab.current_tab()
+    _load_defect_tab(tab)
+    target = SHARED_DEFECT_SUMMON_COUNTS.setdefault(tab, {})
     target.clear()
     if counts:
         target.update(counts)
+    _persist_defect_store(tab, _defect_summon_setting_key(tab), target)
 
 
 def _kimsungil_setting_key(tab: str) -> str:
@@ -463,7 +511,10 @@ def _drop_defect_tab_data(tab: str):
     for store in (SHARED_DEFECT_COUNTS, SHARED_DEFECT_SUMMON_COUNTS, SHARED_KIMSUNGIL_COUNTS):
         store.pop(tab, None)
     _KIMSUNGIL_LOADED_TABS.discard(tab)
+    _DEFECT_LOADED_TABS.discard(tab)
     try:
+        _set_setting(_defect_setting_key(tab), None)
+        _set_setting(_defect_summon_setting_key(tab), None)
         _set_setting(_kimsungil_setting_key(tab), None)
     except Exception:
         pass
