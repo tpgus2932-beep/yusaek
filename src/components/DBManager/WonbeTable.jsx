@@ -568,6 +568,16 @@ export default function WonbeTable() {
   const handleKeyDown = (e) => {
     if (e.key === "Enter") commitEdit();
     if (e.key === "Escape") setEditing(null);
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && editing) {
+      // 방향키: 지금 칸을 저장하고 같은 열의 아래/위 행 칸을 바로 수정 상태로 연다
+      const idx = sortedRows.findIndex((r) => r["상품코드"] === editing.code);
+      const next = sortedRows[idx + (e.key === "ArrowDown" ? 1 : -1)];
+      if (idx < 0 || !next) return;
+      e.preventDefault();
+      const col = editing.col;
+      commitEdit();
+      startEdit(next["상품코드"], col, next[col]);
+    }
   };
 
   const openBulkEdit = (col) => {
