@@ -1485,31 +1485,58 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     return data;
   };
 
-  // 불러온(소환된) 불량을 탭별로 모아 실물 이중체크 모달에 넘긴다. KDG 탭은 불러오기 도중 새로 생길 수 있어 함께 조회한다.
-  const openDefectMatch = async () => {
-    const tabs = [...new Set([...defectTabs, KDG_TAB])];
-    try {
-      const groups = await Promise.all(tabs.map(async (tab) => {
+  // 이번에 불러온(소환된) 불량만 탭별로 모아 실물 이중체크 모달에 넘긴다.
+  // 예전에 불러온 다른 탭(A) 목록이 다음 탭(B) 매칭에 섞이지 않도록 서버가 돌려준 "이번 이동분"만 쓴다.
+  const openDefectMatch = async (movedItems) => {
+    const byTab = new Map();
+    for (const item of movedItems || []) {
+      const qty = Number(item?.qty) || 0;
+      if (!item?.code || qty <= 0) continue;
+      const tab = item.tab || KDG_TAB;
+      if (!byTab.has(tab)) byTab.set(tab, new Map());
+      const codes = byTab.get(tab);
+      codes.set(item.code, (codes.get(item.code) || 0) + qty);
+    }
+    if (byTab.size === 0) return;
+    const groups = await Promise.all([...byTab.entries()].map(async ([tab, codes]) => {
+      let lookup = {};
+      try {
         const res = await fetch(`${API}/barcode/defect/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) } });
-        if (handleUnauthorized(res)) return { tab, rows: [] };
         const data = await res.json().catch(() => ({}));
-        const rows = (data.defects ?? [])
-          .filter((d) => (d.kimsungil_summon_qty || 0) > 0)
-          .sort((a, b) => String(a.code || "").localeCompare(String(b.code || "")))
-          .map((d) => ({ code: d.code, label: renderDefectLabel(d), total: Number(d.kimsungil_summon_qty) || 0 }));
-        return { tab, rows };
-      }));
-      const filled = groups.filter((g) => g.rows.length > 0);
-      if (filled.length > 0) setDefectMatchGroups(filled);
-    } catch { /* 매칭 모달을 못 열어도 불러오기 자체는 이미 끝난 상태 */ }
+        lookup = Object.fromEntries((data.defects ?? []).map((d) => [d.code, d]));
+      } catch { /* 이름을 못 가져와도 코드로 매칭은 가능 */ }
+      const rows = [...codes.entries()]
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+        .map(([code, total]) => ({ code, label: lookup[code] ? renderDefectLabel(lookup[code]) : code, total }));
+      return { tab, rows };
+    }));
+    const order = [...defectTabs, KDG_TAB];
+    groups.sort((a, b) => (order.indexOf(a.tab) + 1 || 999) - (order.indexOf(b.tab) + 1 || 999));
+    setDefectMatchGroups(groups);
   };
 
-  const refreshAfterSummon = (moved = false) => {
+  // 매칭 모달에서 실물이 없는 불량을 지우면 해당 탭 불량 목록에서도 그 수량만큼 뺀다.
+  const removeUnmatchedDefect = async (tab, code, qty) => {
+    const res = await fetch(`${API}/barcode/defect/remove-summoned`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) },
+      body: JSON.stringify({ code, qty }),
+    });
+    if (handleUnauthorized(res)) throw new Error("로그인이 필요합니다.");
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.detail || "불량 삭제 실패");
+    pushLog(`불량 불러오기 미매칭 삭제(${tab}탭): ${code} ${data.removed_qty ?? qty}개`);
+    fetchDefectList();
+    fetchSummonedAllTabs();
+    return data;
+  };
+
+  const refreshAfterSummon = (movedItems = []) => {
     fetchDefectList();
     fetchKimsungilList();
     fetchSummonedAllTabs();
     setKimsungilSummonPicker(null);
-    if (moved) openDefectMatch();
+    if (movedItems.length > 0) openDefectMatch(movedItems).catch(() => {});
   };
 
   const handleKimsungilSummon = async (tab) => {
@@ -1519,7 +1546,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     try {
       setKimsungilSummonLoading(true);
       const summoned = await summonOneTab(tab);
-      refreshAfterSummon((summoned?.moved_count || 0) > 0);
+      refreshAfterSummon(summoned?.moved_items ?? []);
     } catch (err) {
       alert(err.message || "김승일 소환술 실패");
       pushLog(`김승일 소환술 실패: ${err.message || ""}`.trim());
@@ -1538,11 +1565,11 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     if (!window.confirm(`${targets.join(", ")}탭 김승일 ${kinds}종 ${total}개를 각 탭 불량 목록으로 소환하겠습니까?\n(케이디지 상품은 KDG 탭으로 갑니다)`)) return;
     setKimsungilSummonLoading(true);
     let done = 0;
-    let movedAny = false;
+    const movedItems = [];
     try {
       for (const tab of targets) {
         const summoned = await summonOneTab(tab);
-        if ((summoned?.moved_count || 0) > 0) movedAny = true;
+        movedItems.push(...(summoned?.moved_items ?? []));
         done += 1;
       }
     } catch (err) {
@@ -1550,7 +1577,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
       pushLog(`김승일 소환술 전체 실패: ${err.message || ""}`.trim());
     } finally {
       setKimsungilSummonLoading(false);
-      refreshAfterSummon(movedAny);
+      refreshAfterSummon(movedItems);
     }
   };
 
@@ -3599,6 +3626,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
         <DefectMatchModal
           groups={defectMatchGroups}
           toKey={toEnglishKey}
+          onRemove={removeUnmatchedDefect}
           onClose={() => { setDefectMatchGroups(null); setTimeout(() => scanRef.current?.focus(), 0); }}
         />
       )}

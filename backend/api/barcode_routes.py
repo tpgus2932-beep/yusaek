@@ -2400,8 +2400,11 @@ def build_barcode_router(
         with defect_tab_service.use_tab(_KDG_TAB):
             _sync_defect_records()
         moved_total = 0
+        moved_items: list[dict] = []  # 이번에 새로 불러온 것만 (탭별 실물 매칭용)
+        current_tab = defect_tab_service.current_tab()
         for code in moved_codes:
             qty = kimsungil_counts.pop(code, 0)
+            moved_items.append({"code": code, "qty": qty, "tab": _KDG_TAB if code in kdg_codes else current_tab})
             if code in kdg_codes:
                 kdg_defect[code] = kdg_defect.get(code, 0) + qty
                 kdg_summon[code] = kdg_summon.get(code, 0) + qty
@@ -2429,6 +2432,7 @@ def build_barcode_router(
         return {
             "ok": True,
             "moved_codes": moved_codes,
+            "moved_items": moved_items,
             "moved_count": len(moved_codes),
             "moved_total": moved_total,
             "kdg_moved_count": len(kdg_codes),
@@ -4201,6 +4205,51 @@ def build_barcode_router(
         inv = state.get("current_invoice")
         return {
             "ok": True,
+            "defects": _get_defect_list(state),
+            "items": _get_all_items(state, inv) if inv else [],
+            "current_next": _get_first_remaining_item(state, inv),
+        }
+
+    @router.post("/barcode/defect/remove-summoned")
+    def remove_summoned_defect(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """불량 불러오기 실물 매칭에서 실물이 없는 수량만 현재 탭 불량 목록에서 뺀다.
+        직접 찍은 불량 수량은 건드리지 않는다."""
+        state = get_barcode_state(user)
+        raw = (payload.get("code") or "").strip()
+        if not raw:
+            raise HTTPException(status_code=400, detail="code is required")
+        try:
+            qty = int(payload.get("qty") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            raise HTTPException(status_code=400, detail="qty must be positive")
+
+        code = normalize_code(raw) or raw
+        summon_counts = dict(get_shared_defect_summon_counts())
+        qty = min(qty, int(summon_counts.get(code, 0) or 0))
+        if qty <= 0:
+            raise HTTPException(status_code=400, detail="불러온 불량 수량이 없습니다.")
+
+        defect_counts = dict(get_shared_defect_counts())
+        remaining = defect_counts.get(code, 0) - qty
+        if remaining > 0:
+            defect_counts[code] = remaining
+        else:
+            defect_counts.pop(code, None)
+        left_summon = summon_counts.get(code, 0) - qty
+        if left_summon > 0:
+            summon_counts[code] = left_summon
+        else:
+            summon_counts.pop(code, None)
+        set_shared_defect_counts(defect_counts)
+        set_shared_defect_summon_counts(summon_counts)
+        _sync_defect_records()
+
+        inv = state.get("current_invoice")
+        return {
+            "ok": True,
+            "removed_qty": qty,
             "defects": _get_defect_list(state),
             "items": _get_all_items(state, inv) if inv else [],
             "current_next": _get_first_remaining_item(state, inv),

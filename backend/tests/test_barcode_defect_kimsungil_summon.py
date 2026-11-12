@@ -207,3 +207,32 @@ def test_revert_moves_only_summoned_qty_back_to_kimsungil(monkeypatch):
     assert data["kimsungil"][0]["count"] == 2
 
     assert client.post("/barcode/kimsungil/revert-from-defect", json={"code": "S1"}).status_code == 400
+
+
+def test_summon_returns_moved_items_with_tab_and_qty(monkeypatch):
+    client, _keep_alive = _make_client(monkeypatch, incoming={"S1": 3})
+    client.post("/barcode/kimsungil/add", json={"code": "S1"})
+    client.post("/barcode/kimsungil/add", json={"code": "S1"})
+
+    data = client.post("/barcode/kimsungil/summon-to-defect", headers={"X-Defect-Tab": "A"}).json()
+    assert data["moved_items"] == [{"code": "S1", "qty": 2, "tab": "A"}]
+
+
+def test_remove_summoned_only_removes_unmatched_summon_qty(monkeypatch):
+    client, _keep_alive = _make_client(monkeypatch, incoming={"S1": 3})
+    for _ in range(3):
+        client.post("/barcode/kimsungil/add", json={"code": "S1"})
+    client.post("/barcode/kimsungil/summon-to-defect")
+    client.post("/barcode/defect/add", json={"code": "S1"})  # 직접 찍은 불량 1개
+
+    res = client.post("/barcode/defect/remove-summoned", json={"code": "S1", "qty": 2})
+    assert res.status_code == 200
+    row = client.get("/barcode/defect/list").json()["defects"][0]
+    assert row["count"] == 2
+    assert row["kimsungil_summon_qty"] == 1
+
+    # 불러온 수량보다 많이 지우려 해도 직접 찍은 불량은 남는다
+    client.post("/barcode/defect/remove-summoned", json={"code": "S1", "qty": 5})
+    row = client.get("/barcode/defect/list").json()["defects"][0]
+    assert row["count"] == 1
+    assert row["kimsungil_summon_qty"] == 0

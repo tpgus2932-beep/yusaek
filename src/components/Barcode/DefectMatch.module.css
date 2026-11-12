@@ -230,3 +230,66 @@
   font-size: 0.75rem;
   font-weight: 700;
 }
+
+.tabBar {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.tabBtn {
+  flex: 1 1 0;
+  min-width: 70px;
+  border: 1px solid var(--border-color, #d1d5db);
+  background: var(--bg-secondary, #f3f4f6);
+  color: inherit;
+  border-radius: 8px;
+  padding: 0.5rem 0.4rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tabActive {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #fff;
+}
+
+.tabDone {
+  opacity: 0.6;
+}
+
+.tabActive.tabDone {
+  opacity: 1;
+  background: #15803d;
+  border-color: #15803d;
+}
+
+.removeBtn {
+  border: 1px solid #dc2626;
+  background: rgba(220, 38, 38, 0.08);
+  color: #b91c1c;
+  border-radius: 8px;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.removeBtn:disabled {
+  opacity: 0.5;
+}
+
+.completeBtn {
+  width: 100%;
+  border: none;
+  background: #15803d;
+  color: #fff;
+  border-radius: 10px;
+  padding: 0.75rem;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
