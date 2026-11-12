@@ -114,7 +114,10 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
   const [defectMatchSession, setDefectMatchSession] = useState(() => {
     try { return JSON.parse(localStorage.getItem(DEFECT_MATCH_STORAGE_KEY) || "null"); } catch { return null; }
   });
+  const defectMatchSessionRef = useRef(defectMatchSession);
+  const [matchSummonCounts, setMatchSummonCounts] = useState({}); // 매칭 창 탭 줄: 탭별 불러올 수 있는 {kinds,total}
   const saveDefectMatchSession = useCallback((session) => {
+    defectMatchSessionRef.current = session;
     setDefectMatchSession(session);
     try {
       if (session) localStorage.setItem(DEFECT_MATCH_STORAGE_KEY, JSON.stringify(session));
@@ -1483,9 +1486,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
   };
 
   // "불량 불러오기": 어느 탭의 김승일 리스트를 불러올지 고른다. 탭별로 불러올 수 있는(입고된) 종/개수를 함께 보여준다.
-  const openKimsungilSummonPicker = async () => {
-    const tabs = defectTabs;
-    setKimsungilSummonPicker({ tabs, counts: Object.fromEntries(tabs.map((t) => [t, null])) });
+  // 탭별로 불러올 수 있는(입고된) 김승일 종/개수. 탭 하나 끝날 때마다 onEach(counts) 호출.
+  const fetchSummonCounts = async (tabs, onEach) => {
     const counts = Object.fromEntries(tabs.map((t) => [t, null]));
     await Promise.all(tabs.map(async (tab) => {
       try {
@@ -1497,9 +1499,42 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
       } catch {
         counts[tab] = "?";
       }
-      setKimsungilSummonPicker((prev) => (prev ? { ...prev, counts: { ...counts } } : prev));
+      onEach?.({ ...counts });
     }));
+    return counts;
   };
+
+  const openKimsungilSummonPicker = async () => {
+    const tabs = defectTabs;
+    setKimsungilSummonPicker({ tabs, counts: Object.fromEntries(tabs.map((t) => [t, null])) });
+    await fetchSummonCounts(tabs, (counts) => setKimsungilSummonPicker((prev) => (prev ? { ...prev, counts } : prev)));
+  };
+
+  // 매칭 창 탭 줄용 개수 갱신
+  const refreshMatchSummonCounts = () => fetchSummonCounts(defectTabs, setMatchSummonCounts);
+
+  // 매칭 창 안에서 아직 안 불러온 탭을 바로 불러와 매칭 시작
+  const summonTabFromMatch = async (tab) => {
+    setKimsungilSummonLoading(true);
+    try {
+      const summoned = await summonOneTab(tab);
+      fetchDefectList();
+      fetchKimsungilList();
+      fetchSummonedAllTabs();
+      const moved = summoned?.moved_items ?? [];
+      if (moved.length > 0) await openDefectMatch(moved);
+      else window.alert(`${tab}탭에 새로 불러올 상품이 없습니다.`);
+    } finally {
+      setKimsungilSummonLoading(false);
+      refreshMatchSummonCounts();
+    }
+  };
+
+  // 매칭 창을 열 때마다 탭별로 더 불러올 게 있는지 다시 본다
+  useEffect(() => {
+    if (defectMatchOpen) refreshMatchSummonCounts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defectMatchOpen]);
 
   // 한 탭의 김승일 리스트를 불량으로 소환한다. 케이디지(KDG) 상품은 서버가 알아서 KDG 탭으로 보낸다. 실패하면 throw.
   // 탭별 "불러온 불량 수량" 스냅샷 { code: qty }. 불러오기 전/후를 비교해 이번에 들어온 것만 골라낸다.
@@ -1565,7 +1600,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
       return { tab, rows };
     }));
     // 저장된(아직 안 끝난) 매칭이 있으면 거기에 이어 붙인다. 이미 찍은 기록은 그대로 둔다.
-    const prev = defectMatchSession;
+    const prev = defectMatchSessionRef.current;
     const rowsByTab = { ...(prev?.rowsByTab ?? {}) };
     const doneTabs = { ...(prev?.doneTabs ?? {}) };
     for (const g of groups) {
@@ -3712,6 +3747,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
           onChange={saveDefectMatchSession}
           toKey={toEnglishKey}
           onRemove={removeUnmatchedDefect}
+          allTabs={defectTabs}
+          summonCounts={matchSummonCounts}
+          onSummonTab={summonTabFromMatch}
           onClose={() => { setDefectMatchOpen(false); setTimeout(() => scanRef.current?.focus(), 0); }}
         />
       )}
