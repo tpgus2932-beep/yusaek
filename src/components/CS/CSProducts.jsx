@@ -501,6 +501,11 @@ const CSProducts = ({ refreshKey, initialGoodsSno, selectedRoomSno, onSelectRoom
                             )}
                             <div className={styles.headText}>
                                 <h2 title={selected.name}>{selected.clean_name}</h2>
+                                {selected.match && (
+                                    <div className={styles.headSub} title="거래처 · 거래처 상품명">
+                                        {[selected.match.suppliers?.join(', '), selected.match.base_name].filter(Boolean).join(' ')}
+                                    </div>
+                                )}
                                 <div className={styles.headSub}>
                                     진행 중 문의 {selected.count}건 · 답변 대기 {selected.waiting}건
                                 </div>
