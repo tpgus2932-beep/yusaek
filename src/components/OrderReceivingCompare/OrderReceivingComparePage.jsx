@@ -262,7 +262,7 @@ function CsChip({ item, onOpen }) {
   );
 }
 
-function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onEditItem, onDeleteItem, onSaveMemo, onAddProduct, onAddDeduct, onAddFee, onEditVat, onJanggiCheck, noHist }) {
+function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onEditItem, onDeleteItem, onSaveMemo, onAddProduct, onAddDeduct, onAddFee, onEditVat, onJanggiCheck, onFinalize, noHist }) {
   const [picked, setPicked] = useState(new Set()); // 비어 있으면 전체
   const [histClient, setHistClient] = useState(null); // 거래처 옆 달력 뱃지로 연 일자별 매칭
   const [expanded, setExpanded] = useState(new Set()); // 기본: 전부 닫힘
@@ -459,10 +459,11 @@ function ResultView({ result: rawResult, cs, onOpenCs, lookupSlot, editable, onE
         <button className={styles.btn} onClick={toggleAllOpen}>{allOpen ? "전체 접기" : "전체 펼치기"}</button>
         <span className={styles.muted}>
           거래처 {clients.length}곳 · 정렬: {sortHint}
-          {result?.unclassified?.length > 0 && ` · 상품코드 없는 전표 줄 ${result.unclassified.length}건`}
+          {result?.unclassified?.length > 0 && ` · 상품코드 없는 ${result.source === "janggi" ? "장끼" : "전표"} 줄 ${result.unclassified.length}건`}
         </span>
         {editable && (
           <span style={{ marginLeft: "auto", display: "inline-flex", gap: "0.4rem" }}>
+            {onFinalize && <button className={styles.btn} onClick={onFinalize} title="입고/미송/금액/매입차감/택배비/부가세를 날짜별장끼정리 DB 기준으로 다시 만듭니다 (발주수량은 그대로)">DB 최종매칭</button>}
             <button className={styles.btn} onClick={onJanggiCheck} title="날짜별장끼정리 DB와 대조해 빠진 매입차감/상품이 있는지 확인">장끼 점검</button>
             <button className={styles.btn} onClick={onAddProduct} title="원가베이스유에서 검색해 상품 추가 (해당 거래처로 자동 배정)">+ 제품추가</button>
             <button className={styles.btn} onClick={onAddDeduct} title="거래처에 매입차감 금액 추가">+ 매입추가</button>
@@ -666,6 +667,7 @@ export default function OrderReceivingComparePage() {
   const [jVat, setJVat] = useState({}); // 장끼 점검 창에서 고치는 부가세 입력값 {거래처: 문자열}
   const [jCheck, setJCheck] = useState(null); // 장끼 점검 결과 { recordId, ...api result }
   const [jBusy, setJBusy] = useState(false);
+  const [jStale, setJStale] = useState(false); // 최종매칭 이후 장끼DB가 바뀌었는지
   const [prodResults, setProdResults] = useState([]);
   const [prodLoading, setProdLoading] = useState(false);
 
@@ -1143,6 +1145,52 @@ export default function OrderReceivingComparePage() {
     }
   };
 
+  // [DB 최종매칭]: 입고요청 전표(1차) 매칭을 날짜별장끼정리 DB 기준으로 다시 만든다. 여러 번 눌러도 항상 1차에서 새로 만든다.
+  const finalizeJanggi = async (rec) => {
+    if (!rec?.id) return;
+    if (!window.confirm("세부목록을 장끼DB(날짜별장끼정리) 기준으로 다시 만듭니다.\n입고·미송·미송픽업 수량, 금액, 매입차감, 택배비, 부가세가 장끼 기준으로 바뀌고 발주수량은 그대로입니다.\n직접 수정한 수량은 초기화됩니다(메모·누락 표시는 유지). 진행하시겠습니까?")) return;
+    setLoading(true);
+    setMessage("");
+    try {
+      const data = await api(`/records/${rec.id}/janggi-finalize`, { method: "POST" });
+      if (!data.ok) { setMessage(data.message || "장끼DB에서 데이터를 가져오지 못했습니다."); return; }
+      setViewRecord(data.record);
+      setJStale(false);
+      const notes = [
+        data.unclassified?.length ? `상품코드 없는 장끼 줄 ${data.unclassified.length}건은 금액 줄로 반영` : "",
+        ...(data.warnings || []),
+      ].filter(Boolean);
+      setMessage(`장끼DB 기준으로 최종매칭했습니다.${notes.length ? ` (${notes.join(" · ")})` : ""}`);
+      await loadRecords();
+      if (data.changes && !data.changes.empty) setJCheck({ recordId: rec.id, readOnly: true, finalized_at: data.record?.finalized_at, ...data.changes });
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // [변경 내역]: 최종매칭 때 1차(전표)와 장끼DB가 달랐던 부분을 읽기 전용으로 다시 본다
+  const showFinalizeChanges = async (rec) => {
+    if (!rec?.id) return;
+    try {
+      const data = await api(`/records/${rec.id}/finalize-changes`);
+      if (data.empty) { setMessage("저장된 변경 내역이 없습니다. (최종매칭을 다시 하면 기록됩니다)"); return; }
+      setJCheck({ recordId: rec.id, readOnly: true, ...data });
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  // 최종매칭본을 열면 그 뒤로 장끼DB가 바뀌었는지 확인
+  useEffect(() => {
+    setJStale(false);
+    if (!viewRecord?.id || viewRecord.source !== "janggi") return;
+    let alive = true;
+    api(`/records/${viewRecord.id}/janggi-stale`).then((d) => { if (alive) setJStale(!!d.stale); }).catch(() => {});
+    return () => { alive = false; };
+  }, [viewRecord?.id, viewRecord?.source, viewRecord?.finalized_at]);
+
   // 수정: 저장된 날짜/전표 선택을 다시 채워 전표 선택 단계로 들어간다.
   const startEdit = async (rec) => {
     const dates = rec.order_dates?.length ? rec.order_dates : [rec.order_date];
@@ -1173,7 +1221,9 @@ export default function OrderReceivingComparePage() {
   };
 
   const rematch = async (rec) => {
-    if (hasEdits(viewRecord) && !window.confirm("직접 수정/삭제한 세부목록이 있습니다.\n다시 매칭하면 전표 기준으로 초기화(덮어쓰기)되고, 이어서 장끼 DB 점검 목록이 표시됩니다. 진행하시겠습니까?")) return;
+    if (rec.source === "janggi") {
+      if (!window.confirm("장끼DB 기준 최종매칭본입니다.\n다시 매칭하면 입고요청 전표 기준(1차)으로 돌아갑니다. 최종본이 필요하면 [DB 최종매칭]을 다시 눌러야 합니다.\n진행하시겠습니까?")) return;
+    } else if (hasEdits(viewRecord) && !window.confirm("직접 수정/삭제한 세부목록이 있습니다.\n다시 매칭하면 전표 기준으로 초기화(덮어쓰기)되고, 이어서 장끼 DB 점검 목록이 표시됩니다. 진행하시겠습니까?")) return;
     setLoading(true);
     setMessage("");
     try {
@@ -1318,6 +1368,23 @@ export default function OrderReceivingComparePage() {
           </button>
           {viewRecord && !viewRecord.isClientReport && viewRecord.id && (
             <>
+              <span
+                className={styles.muted}
+                title={viewRecord.source === "janggi" ? `장끼DB 기준 최종매칭 (${viewRecord.finalized_at || ""})` : "입고요청 전표 기준 1차 매칭"}
+                style={{ padding: "0.15rem 0.5rem", borderRadius: 999, fontSize: "0.78rem", fontWeight: 600,
+                  background: viewRecord.source === "janggi" ? "rgba(34,197,94,0.15)" : "rgba(148,163,184,0.18)" }}
+              >
+                {viewRecord.source === "janggi" ? "최종(DB)" : "1차(전표)"}
+              </span>
+              {jStale && <span className={styles.muted} style={{ color: "#d97706", fontWeight: 600, fontSize: "0.8rem" }}>장끼DB가 바뀜 → 다시 최종매칭</span>}
+              <button className={styles.btn} onClick={() => finalizeJanggi(viewRecord)} disabled={loading} title="날짜별장끼정리 DB 기준으로 최종 매칭">
+                DB 최종매칭
+              </button>
+              {viewRecord.source === "janggi" && (
+                <button className={styles.btn} onClick={() => showFinalizeChanges(viewRecord)} disabled={loading} title="최종매칭 때 1차(전표)와 장끼DB가 달라서 바뀐 부분">
+                  변경 내역
+                </button>
+              )}
               <button className={styles.btn} onClick={() => rematch(viewRecord)} disabled={loading} title="저장된 전표를 이지어드민에서 다시 받아 재매칭">
                 다시 매칭
               </button>
@@ -1383,15 +1450,18 @@ export default function OrderReceivingComparePage() {
             onAddFee={openAddFee}
             onEditVat={editVat}
             onJanggiCheck={() => runJanggiCheck(viewRecord.id, false)}
+            onFinalize={() => finalizeJanggi(viewRecord)}
             lookupSlot={lookupPanel}
           />
       ) : lookupPanel}
       {jCheck && (() => {
         // 처리(반영·삭제·PASS·부가세 수정)한 항목은 서버가 점검 목록에서 빼고 돌려준다.
         const passed = {};
+        const ro = !!jCheck.readOnly; // 변경 내역 보기: 반영/삭제/PASS 없이 목록만
+        const SO = ro ? "1차" : "SO+";
         const rowStyle = () => ({ padding: "0.35rem 0", borderBottom: "1px solid rgba(0,0,0,0.06)" });
         // real: SO+ 세부목록에서 실제로 지울 때의 {body, label}. 없으면(장끼에만 있는 상품·부가세) SO+에 지울 게 없어 삭제 버튼을 두지 않는다.
-        const PassBtn = ({ k, real }) => (
+        const PassBtn = ({ k, real }) => ro ? null : (
           <>
             <button className={styles.btn} disabled={jBusy} onClick={() => passJanggi(k)} title="SO+는 그대로 두고 처리 완료로 표시해 목록에서 뺍니다">PASS</button>
             {real && (
@@ -1399,7 +1469,7 @@ export default function OrderReceivingComparePage() {
             )}
           </>
         );
-        const Reason = ({ children }) => <div className={styles.muted} style={{ fontSize: "0.78rem", marginTop: 2 }}>사유 · {children}</div>;
+        const Reason = ({ children }) => <div className={styles.muted} style={{ fontSize: "0.78rem", marginTop: 2 }}>사유 · {ro ? String(children || "").replaceAll("SO+", "1차") : children}</div>;
         const kinds = (x) => [x.received && `입고 ${x.received}`, x.misong && `미송 ${x.misong}`, x.pickup && `미송픽업 ${x.pickup}`].filter(Boolean).join(" · ");
         const selDed = (jCheck.deductions || []).filter((d) => d.diff > 0 && !passed[`d:${d.client}`]);
         const selProd = (jCheck.products || []).filter((p) => p.in_wonbe && !passed[`p:${p.code}`]);
@@ -1409,15 +1479,17 @@ export default function OrderReceivingComparePage() {
         return (
           <div className={styles.modalBack} onClick={() => !jBusy && setJCheck(null)}>
             <div className={styles.modal} style={{ maxWidth: 820, width: "95vw", maxHeight: "86vh", overflow: "auto" }} onClick={(e) => e.stopPropagation()}>
-              <h3>장끼 DB 점검 <span className={styles.muted} style={{ fontSize: "0.8rem" }}>{jCheck.dates?.join(", ")} · 장끼 {jCheck.janggi_rows}행 기준</span></h3>
-              <div className={styles.muted}>날짜별장끼정리 DB와 이 매칭을 비교해 다른 부분을 보여줍니다. 항목마다 [반영]·[삭제]·[PASS] 중 하나로 처리하면 목록에서 빠집니다. 아무것도 누르지 않으면 SO+ 매칭은 그대로입니다.</div>
-              {jCheck.resolved_count > 0 && (
+              <h3>{ro ? "최종매칭 변경 내역" : "장끼 DB 점검"} <span className={styles.muted} style={{ fontSize: "0.8rem" }}>{jCheck.dates?.join(", ")} · 장끼 {jCheck.janggi_rows}행 기준</span></h3>
+              {ro ? (
+                <div className={styles.muted}>1차(입고요청 전표) 매칭과 장끼정리가 달랐던 부분입니다. 최종매칭에서 모두 <b>장끼 기준</b>으로 바뀌었습니다{jCheck.finalized_at ? ` (${jCheck.finalized_at})` : ""}. 아래 "1차" 값이 최종에서 "장끼" 값으로 바뀐 것입니다.</div>
+              ) : <div className={styles.muted}>날짜별장끼정리 DB와 이 매칭을 비교해 다른 부분을 보여줍니다. 항목마다 [반영]·[삭제]·[PASS] 중 하나로 처리하면 목록에서 빠집니다. 아무것도 누르지 않으면 SO+ 매칭은 그대로입니다.</div>}
+              {!ro && jCheck.resolved_count > 0 && (
                 <div className={styles.row} style={{ alignItems: "center", gap: "0.5rem", marginTop: "0.4rem" }}>
                   <span className={styles.muted}>처리 완료되어 숨긴 항목 {jCheck.resolved_count}개</span>
                   <button className={styles.btn} disabled={jBusy} onClick={resetJanggiResolved}>다시 보기 (처리 기록 초기화)</button>
                 </div>
               )}
-              {diffCount(jCheck) === 0 && <div className={styles.muted} style={{ marginTop: "0.6rem" }}>남은 점검 항목이 없습니다.</div>}
+              {diffCount(jCheck) === 0 && <div className={styles.muted} style={{ marginTop: "0.6rem" }}>{ro ? "1차 매칭과 장끼정리가 같아 바뀐 부분이 없습니다." : "남은 점검 항목이 없습니다."}</div>}
 
               {jCheck.deductions?.length > 0 && (
                 <div className={styles.modalSec}>
@@ -1426,9 +1498,9 @@ export default function OrderReceivingComparePage() {
                     <div key={d.client} style={rowStyle(`d:${d.client}`)}>
                       <div className={styles.row} style={{ alignItems: "center", gap: "0.6rem" }}>
                         <b style={{ minWidth: 120 }}>{d.client}</b>
-                        <span className={styles.muted}>장끼 -{won(d.janggi)} · SO+ -{won(d.so)}</span>
+                        <span className={styles.muted}>장끼 -{won(d.janggi)} · {SO} -{won(d.so)}</span>
                         <span style={{ flex: 1 }} />
-                        {d.diff > 0 && <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={jBusy || passed[`d:${d.client}`]} onClick={() => applyJanggi({ deductions: [d.client] })}>반영 (-{won(d.diff)})</button>}
+                        {!ro && d.diff > 0 && <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={jBusy || passed[`d:${d.client}`]} onClick={() => applyJanggi({ deductions: [d.client] })}>반영 (-{won(d.diff)})</button>}
                         <PassBtn k={`d:${d.client}`} real={d.so > 0 ? { body: { kind: "deduct", client: d.client }, label: `${d.client} 매입차감 (-${won(d.so)})` } : null} />
                       </div>
                       <Reason>{d.reason}</Reason>
@@ -1447,9 +1519,9 @@ export default function OrderReceivingComparePage() {
                         <div className={styles.row} style={{ alignItems: "center", gap: "0.6rem" }}>
                           <b style={{ minWidth: 120 }}>{f.client}</b>
                           <span>{f.label}</span>
-                          <span className={styles.muted}>장끼 {won(f.janggi)} · SO+ {won(f.so)}</span>
+                          <span className={styles.muted}>장끼 {won(f.janggi)} · {SO} {won(f.so)}</span>
                           <span style={{ flex: 1 }} />
-                          {f.diff > 0 && <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={jBusy || passed[k]} onClick={() => applyJanggi({ fees: [{ client: f.client, label: f.label }] })}>{f.label} +{won(f.diff)} 추가</button>}
+                          {!ro && f.diff > 0 && <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={jBusy || passed[k]} onClick={() => applyJanggi({ fees: [{ client: f.client, label: f.label }] })}>{f.label} +{won(f.diff)} 추가</button>}
                           <PassBtn k={k} real={f.so ? { body: { kind: "fee", client: f.client, label: f.label }, label: `${f.client} ${f.label} (${won(f.so)})` } : null} />
                         </div>
                         <Reason>{f.reason}</Reason>
@@ -1466,9 +1538,9 @@ export default function OrderReceivingComparePage() {
                     <div key={v.client} style={rowStyle(`v:${v.client}`)}>
                       <div className={styles.row} style={{ alignItems: "center", gap: "0.6rem" }}>
                         <b style={{ minWidth: 120 }}>{v.client}</b>
-                        <span className={styles.muted}>장끼 {won(v.janggi)} · SO+ {won(v.so)}</span>
+                        <span className={styles.muted}>장끼 {won(v.janggi)} · {SO} {won(v.so)}</span>
                         <span style={{ flex: 1 }} />
-                        <input
+                        {!ro && <><input
                           className={styles.numInput}
                           style={{ width: 96, textAlign: "right" }}
                           inputMode="numeric"
@@ -1477,7 +1549,7 @@ export default function OrderReceivingComparePage() {
                           disabled={jBusy}
                           aria-label={`${v.client} 부가세 금액`}
                         />
-                        <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={jBusy || passed[`v:${v.client}`]} onClick={() => applyVat(v.client, jVat[v.client] ?? String(v.janggi))}>부가세 수정</button>
+                        <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={jBusy || passed[`v:${v.client}`]} onClick={() => applyVat(v.client, jVat[v.client] ?? String(v.janggi))}>부가세 수정</button></>}
                         <PassBtn k={`v:${v.client}`} />
                       </div>
                       <Reason>{v.reason}</Reason>
@@ -1488,7 +1560,7 @@ export default function OrderReceivingComparePage() {
 
               {jCheck.products?.length > 0 && (
                 <div className={styles.modalSec}>
-                  <div className={styles.modalLabel}>장끼정리에만 있는 상품 ({jCheck.products.length}개) · SO+ 에 없음</div>
+                  <div className={styles.modalLabel}>장끼정리에만 있는 상품 ({jCheck.products.length}개) · {SO}에 없음</div>
                   {jCheck.products.map((p) => (
                     <div key={p.code} style={rowStyle(`p:${p.code}`)}>
                       <div className={styles.row} style={{ alignItems: "center", gap: "0.6rem" }}>
@@ -1496,7 +1568,7 @@ export default function OrderReceivingComparePage() {
                         <span>{p.name} <span className={styles.muted}>{p.option} · {p.code}</span></span>
                         <b style={{ color: TONES.red.fg }}>{kinds(p)}</b>
                         <span style={{ flex: 1 }} />
-                        {p.in_wonbe
+                        {ro ? null : p.in_wonbe
                           ? <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={jBusy || passed[`p:${p.code}`]} onClick={() => applyJanggi({ products: [p.code] })}>SO+에 추가</button>
                           : <span style={{ color: TONES.red.fg }}>원가베이스유에 없음</span>}
                         <PassBtn k={`p:${p.code}`} />
@@ -1509,7 +1581,7 @@ export default function OrderReceivingComparePage() {
 
               {jCheck.so_only?.length > 0 && (
                 <div className={styles.modalSec}>
-                  <div className={styles.modalLabel}>SO+ 에만 있는 상품 ({jCheck.so_only.length}개) · 장끼정리에 없음</div>
+                  <div className={styles.modalLabel}>{SO}에만 있는 상품 ({jCheck.so_only.length}개) · 장끼정리에 없음</div>
                   {jCheck.so_only.map((x) => (
                     <div key={x.code} style={rowStyle(`s:${x.code}`)}>
                       <div className={styles.row} style={{ alignItems: "center", gap: "0.6rem" }}>
@@ -1527,15 +1599,15 @@ export default function OrderReceivingComparePage() {
 
               {jCheck.qty_diffs?.length > 0 && (
                 <div className={styles.modalSec}>
-                  <div className={styles.modalLabel}>수량·구분 상이 ({jCheck.qty_diffs.length}개) · SO+에 목록은 있으나 수량이 다름</div>
+                  <div className={styles.modalLabel}>수량·구분 상이 ({jCheck.qty_diffs.length}개) · {SO}에 목록은 있으나 수량이 다름</div>
                   {jCheck.qty_diffs.map((q) => (
                     <div key={q.code} style={rowStyle(`q:${q.code}`)}>
                       <div className={styles.row} style={{ alignItems: "center", gap: "0.6rem" }}>
                         <b style={{ minWidth: 110 }}>{q.client}</b>
                         <span>{q.name} <span className={styles.muted}>{q.option} · {q.code}</span></span>
-                        <span className={styles.muted}>장끼 {q.janggi}개 · SO+ {q.so}개</span>
+                        <span className={styles.muted}>장끼 {q.janggi}개 · {SO} {q.so}개</span>
                         <span style={{ flex: 1 }} />
-                        {hasAdd(q) && (
+                        {!ro && hasAdd(q) && (
                           <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={jBusy || passed[`q:${q.code}`]} onClick={() => applyJanggi({ qtyDiffs: [q.code] })}>
                             {kinds(q.add)} 추가
                           </button>
@@ -1550,7 +1622,7 @@ export default function OrderReceivingComparePage() {
 
               <div className={styles.row} style={{ justifyContent: "flex-end", marginTop: "0.9rem", gap: "0.5rem" }}>
                 <button className={styles.btn} onClick={() => setJCheck(null)} disabled={jBusy}>닫기</button>
-                {(selDed.length > 0 || selProd.length > 0 || selQty.length > 0 || selFee.length > 0) && (
+                {!ro && (selDed.length > 0 || selProd.length > 0 || selQty.length > 0 || selFee.length > 0) && (
                   <button
                     className={`${styles.btn} ${styles.btnPrimary}`}
                     disabled={jBusy}

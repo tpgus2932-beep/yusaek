@@ -804,8 +804,12 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
             "created_by": r["created_by"], "created_at": r["created_at"], "updated_at": r["updated_at"],
         }
         result = json.loads(r["result_json"] or "{}")
+        out["source"] = result.get("source") or "voucher"  # voucher = 1차(입고요청 전표), janggi = 최종(장끼DB)
+        out["finalized_at"] = result.get("finalized_at") or ""
         if with_result:
             out["result"] = _attach_costs(result)
+            out["result"].pop("first_match", None)  # 1차 스냅샷/변경 내역은 서버에서만 쓴다 (화면 전송량 줄임)
+            out["result"].pop("finalize_changes", None)
         else:
             totals: dict[str, int] = defaultdict(int)
             for c in result.get("clients", []):
@@ -958,6 +962,9 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
                 i["status"] = _status(i["ordered"], i["received"], i["misong"])
                 i["pickup_status"] = _status(i["ordered_pickup"], i["pickup"], 0)
                 i["amount"] = (i["received"] + i["misong"]) * cost + int(i.get("fee") or 0)  # 일반입고 + 미송 (미송픽업 0원) + 택배비 등
+                if i.get("fixed_amount") is not None:
+                    # 장끼DB 최종매칭: 장끼에 적힌 가격 합계를 그대로 쓴다 (단가 나눗셈 오차 / 미송픽업 금액까지 장끼와 일치)
+                    i["amount"] = int(i["fixed_amount"]) + int(i.get("fee") or 0)
                 if i.get("omitted"):
                     i["amount"] = 0  # 누락 처리한 줄은 0원
                 i["ordered_amount"] = i["ordered"] * cost
@@ -1225,6 +1232,199 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
     def _kinds_text(d: dict) -> str:
         return " · ".join(f"{lb} {d.get(k)}" for k, lb in (("received", "입고"), ("misong", "미송"), ("pickup", "미송픽업")) if d.get(k)) or "0"
 
+    def _record_dates(row) -> list[str]:
+        """매칭 기록의 입고요청 전표 날짜들 (= 장끼정리 날짜)."""
+        return sorted({str(v.get("date") or "") for v in json.loads(row["vouchers_json"] or "[]") if v.get("date")})
+
+    def _janggi_db_available() -> bool:
+        """장끼DB 파일이 이 PC에 있는지. 없는 PC에서 빈 DB 파일/폴더를 만들지 않도록 먼저 확인한다."""
+        if get_janggi_db is None:
+            return False
+        try:
+            from api.wonbe_routes import JANGGI_DB_PATH
+            return JANGGI_DB_PATH.exists()
+        except Exception:
+            return True  # 경로를 모르면 열어 보고 판단
+
+    def _fetch_janggi_rows(dates: list[str]) -> list | None:
+        """해당 날짜들의 날짜별장끼정리 행. 장끼DB가 없거나 읽을 수 없으면 None, 행이 없으면 []."""
+        if not dates or not _janggi_db_available():
+            return None
+        jconn = None
+        try:
+            jconn = get_janggi_db()
+            ph = ",".join("?" * len(dates))
+            return jconn.execute(
+                f"SELECT 거래처, 거래처상품명, 가격, 옵션, 사이즈, 개수, 날짜, 미송체크, 상품코드 "
+                f"FROM 날짜별장끼정리 WHERE 날짜 IN ({ph}) ORDER BY id", dates,
+            ).fetchall()
+        except Exception:
+            return None  # 테이블/파일이 없는 환경
+        finally:
+            if jconn is not None:
+                jconn.close()
+
+    def _janggi_fee_label(mark: str, name: str) -> str:
+        """상품코드 없는 장끼 행(택배비 등)의 이름. 장끼 점검과 최종매칭이 같은 규칙을 쓴다."""
+        return mark.strip() if any(ch.isalpha() for ch in mark) else (name or "기타금액")
+
+    def _janggi_signature(jrows) -> dict:
+        """장끼DB가 최종매칭 이후 바뀌었는지 알아보기 위한 요약 (행 수 + 가격 합 + 개수 합)."""
+        return {"rows": len(jrows or []), "price": sum(_num(r["가격"]) for r in jrows or []),
+                "qty": sum(_num(r["개수"]) for r in jrows or [])}
+
+    def _janggi_client_map(jrows, so_clients: set) -> tuple[dict, list]:
+        """장끼 거래처 이름 → SO+(원가베이스유) 거래처 이름. 장끼와 원가베이스유의 거래처 표기가 다를 수 있어서
+        (예: '가나' / '가나상회') 같은 장끼 거래처의 상품코드들이 원가베이스유에서 가장 많이 속한 거래처로 맞춘다.
+        SO+에 같은 이름이 이미 있으면 그대로 쓴다. 맞출 수 없으면 장끼 이름 그대로 (warnings에 기록)."""
+        codes_by_j: dict[str, list] = defaultdict(list)
+        for r in jrows:
+            code = to_s_code(str(r["상품코드"] or "").strip().upper())
+            if code:
+                codes_by_j[str(r["거래처"] or "").strip()].append(code)
+        infos = _wonbe_infos(list({c for cs in codes_by_j.values() for c in cs}))
+        cmap, warnings = {}, []
+        for jc in {str(r["거래처"] or "").strip() for r in jrows}:
+            if jc in so_clients:
+                cmap[jc] = jc
+                continue
+            votes: dict[str, int] = defaultdict(int)
+            for code in codes_by_j.get(jc, []):
+                w = infos.get(code)
+                if w and (w["거래처"] or "").strip():
+                    votes[(w["거래처"] or "").strip()] += 1
+            if votes:
+                cmap[jc] = max(votes.items(), key=lambda kv: kv[1])[0]
+            else:
+                cmap[jc] = jc or "(거래처 미확인)"
+                if jc:
+                    warnings.append(f"장끼 거래처 '{jc}'를 원가베이스유 거래처와 맞추지 못해 장끼 이름 그대로 사용")
+        return cmap, warnings
+
+    def _build_from_janggi(row, first: dict, prev: dict, jrows) -> dict:
+        """장끼DB(날짜별장끼정리) 행으로 SO+ 매칭 결과를 새로 만든다 (최종매칭).
+        - 입고/미송/미송픽업 수량, 금액(장끼 가격), 매입차감, 택배비 등, 부가세 = 장끼DB
+        - 발주수량/교환 = 1차(입고요청 전표) 매칭에서 상품코드로 가져옴 (장끼에는 없음)
+        - 상품 거래처 = 원가베이스유 거래처 (기존 매칭/보고서와 같은 이름)"""
+        first_items: dict[str, dict] = {}
+        for c in first.get("clients", []) or []:
+            for i in c.get("items", []) or []:
+                code = str(i.get("code", ""))
+                if code and not code.startswith(("DEDUCT-", "FEE-")):
+                    first_items.setdefault(code, {**i, "client": c.get("client", "")})
+        prev_marks: dict[str, dict] = {}  # 직접 적은 메모 / 누락 표시는 다시 만들어도 유지
+        for c in prev.get("clients", []) or []:
+            for i in c.get("items", []) or []:
+                keep = {k: i[k] for k in ("memo", "omitted") if i.get(k)}
+                if keep:
+                    prev_marks[str(i.get("code", ""))] = keep
+
+        # 1) 장끼 행 집계
+        prods: dict[str, dict] = {}
+        j_deduct: dict[str, int] = defaultdict(int)
+        j_vat: dict[str, int] = defaultdict(int)
+        j_fee: dict[str, dict] = defaultdict(lambda: defaultdict(int))
+        j_clients: list[str] = []
+        unclassified = []
+        for r in jrows:
+            jc = str(r["거래처"] or "").strip()
+            if jc not in j_clients:
+                j_clients.append(jc)
+            mark = str(r["미송체크"] or "")
+            price = _num(r["가격"])
+            qty = _num(r["개수"])
+            name = str(r["거래처상품명"] or "").strip()
+            opt = str(r["옵션"] or "").strip()
+            if "매입차감" in mark:
+                j_deduct[jc] += abs(price)
+                continue
+            code = to_s_code(str(r["상품코드"] or "").strip().upper())
+            if not code:
+                if "부가세" in (name, opt) or "부가세" in mark:
+                    j_vat[jc] += price
+                elif price:
+                    label = _janggi_fee_label(mark, name)
+                    j_fee[jc][label] += price
+                    if qty > 0:  # 상품인데 코드가 빠진 행: 금액은 거래처에 남기고 목록으로 알려준다
+                        unclassified.append({"name": name, "option": f"{opt}/{r['사이즈'] or ''}".strip("/"),
+                                             "client": jc, "qty": qty, "amount": price,
+                                             "reason": f"장끼정리에 상품코드 없음 → '{label}' 금액 줄로 반영"})
+                continue
+            p = prods.setdefault(code, {"jclient": jc, "name": name, "option": f'{opt}/{r["사이즈"] or ""}'.strip("/"),
+                                        "received": 0, "misong": 0, "pickup": 0, "amount": 0})
+            p["amount"] += price  # 개수 0/음수 행(반품·금액 조정)도 금액은 반영
+            if qty > 0:
+                kind = "pickup" if has_pickup_marker(mark) else ("misong" if "미송" in _norm_text(mark) else "received")
+                p[kind] += qty
+
+        # 2) 상품 거래처 = 원가베이스유 거래처. 장끼 거래처 → 원가베이스유 거래처 이름 대응(가장 많이 겹치는 것)
+        infos = _wonbe_infos(list(prods))
+        cmap, warnings = _janggi_client_map(jrows, {str(c.get("client", "")) for c in first.get("clients", []) or []})
+        for code, p in prods.items():
+            w = infos.get(code)
+            p["client"] = ((w["거래처"] or "").strip() if w else "") or cmap.get(p["jclient"], p["jclient"])
+
+        # 3) 결과 만들기
+        built: dict = {"clients": []}
+
+        def group(client: str) -> dict:
+            return _client_group(built, client)
+
+        for code, p in prods.items():
+            f = first_items.get(code, {})
+            w = infos.get(code)
+            color, size = (w["색상"] or "", w["사이즈"] or "") if w else ("", "")
+            sold = p["received"] + p["misong"]
+            item = {
+                "code": code, "name": (w["상품명"] if w else "") or p["name"] or f.get("name", ""),
+                "option": f"{color}/{size}".strip("/") if (color or size) else p["option"],
+                "client": p["client"],
+                "ordered": int(f.get("ordered") or 0), "ordered_pickup": int(f.get("ordered_pickup") or 0),
+                "received": p["received"], "misong": p["misong"], "pickup": p["pickup"],
+                "exchange": int(f.get("exchange") or 0),
+                "cost": int(round(p["amount"] / sold)) if sold else int(f.get("cost") or 0),
+                "fixed_amount": p["amount"], "deduct": 0, "from_janggi": True,
+                **prev_marks.get(code, {}),
+            }
+            group(p["client"])["items"].append(item)
+        for code, f in first_items.items():  # 발주는 있었지만 장끼에 없는 상품 → 미입고로 남김
+            if code in prods or not (int(f.get("ordered") or 0) or int(f.get("ordered_pickup") or 0)):
+                continue
+            item = {k: f.get(k) for k in ("code", "name", "option", "ordered", "ordered_pickup", "exchange", "cost")}
+            item.update({"client": f["client"], "received": 0, "misong": 0, "pickup": 0, "deduct": 0,
+                         "fixed_amount": 0, **prev_marks.get(code, {})})
+            group(f["client"])["items"].append(item)
+        for jc, amount in j_deduct.items():
+            if amount:
+                _put_deduct(built, cmap[jc], amount, "장끼DB 매입차감", from_janggi=True)
+        for jc, fees in j_fee.items():
+            for label, amount in fees.items():
+                if amount:
+                    _put_fee(built, cmap[jc], label, amount, from_janggi=True)
+        vat_by_client: dict[str, int] = defaultdict(int)
+        for jc in j_clients:
+            vat_by_client[cmap[jc]] += j_vat.get(jc, 0)
+        for client, v in vat_by_client.items():
+            g = group(client)
+            g["vat_override"] = int(v)  # 장끼에 부가세 행이 없으면 0원
+            g["vat"] = bool(v) or g["vat"]
+
+        result = {
+            "ok": True,
+            "order_dates": first.get("order_dates") or _row_dates(row),
+            "voucher_rows": first.get("voucher_rows", 0),
+            "unclassified": unclassified,
+            "warnings": warnings,
+            "clients": built["clients"],
+            "source": "janggi",
+            "finalized_at": datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S"),
+            "janggi_sig": _janggi_signature(jrows),
+            "first_match": first,
+            "cost_snapshot": True,
+        }
+        _recalc_result(result)
+        return _attach_costs(result)
+
     def _janggi_diff(row, result: dict) -> dict:
         """저장된 매칭(result)을 날짜별장끼정리 DB와 대조한다 (전표 날짜 = 장끼 날짜). 차이마다 사유(reason)를 붙인다.
         - empty=True: 장끼DB가 비었거나 읽을 수 없음 (아무것도 하지 않음)
@@ -1232,23 +1432,9 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
         - products: 장끼에만 있는 상품 (SO+에 없음 → 추가 후보)
         - so_only: SO+에만 있는 상품 (장끼정리에 없음)
         - qty_diffs: 양쪽에 있지만 수량/구분이 다른 상품"""
-        dates = sorted({str(v.get("date") or "") for v in json.loads(row["vouchers_json"] or "[]") if v.get("date")})
+        dates = _record_dates(row)
         empty = {"ok": True, "empty": True, "dates": dates}
-        if get_janggi_db is None or not dates:
-            return empty
-        jconn = None
-        try:
-            jconn = get_janggi_db()
-            ph = ",".join("?" * len(dates))
-            jrows = jconn.execute(
-                f"SELECT 거래처, 거래처상품명, 가격, 옵션, 사이즈, 개수, 날짜, 미송체크, 상품코드 "
-                f"FROM 날짜별장끼정리 WHERE 날짜 IN ({ph})", dates,
-            ).fetchall()
-        except Exception:
-            return empty  # 테이블/파일이 없는 환경
-        finally:
-            if jconn is not None:
-                jconn.close()
+        jrows = _fetch_janggi_rows(dates)
         if not jrows:
             return empty
 
@@ -1279,8 +1465,9 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
         j_clients: set[str] = set()
         j_total: dict[str, int] = defaultdict(int)  # 장끼 거래처 합산금액 (매입차감은 뺀다)
         j_prod: dict[str, dict] = {}
+        cmap, _ = _janggi_client_map(jrows, {str(c.get("client", "")) for c in result.get("clients", []) or []})
         for r in jrows:
-            client = str(r["거래처"] or "").strip()
+            client = cmap.get(str(r["거래처"] or "").strip(), str(r["거래처"] or "").strip())
             j_clients.add(client)
             mark = str(r["미송체크"] or "")
             price_ = _num(r["가격"])
@@ -1296,10 +1483,8 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
                 price = _num(r["가격"])
                 if "부가세" in (name, opt) or "부가세" in mark:
                     j_vat[client] += price
-                else:
-                    label = mark.strip() if any(ch.isalpha() for ch in mark) else name
-                    if label and price:
-                        j_fee[client][label] += price
+                elif price:
+                    j_fee[client][_janggi_fee_label(mark, name)] += price
                 continue
             qty = _num(r["개수"])
             if qty <= 0:
@@ -1470,6 +1655,61 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
             conn.close()
         return _janggi_diff_open(row, result)
 
+    @router.post("/records/{record_id}/janggi-finalize")
+    def janggi_finalize(record_id: int, admin: str = Depends(require_admin)):
+        """최종매칭: 저장된 매칭(1차, 입고요청 전표 기준)을 날짜별장끼정리 DB 기준으로 다시 만든다.
+        여러 번 눌러도 항상 1차 결과(first_match)에서 새로 만든다. 장끼DB가 없거나 해당 날짜 행이 없으면 바꾸지 않는다."""
+        conn = get_db()
+        try:
+            row, result = _load_for_edit(conn, record_id)
+            dates = _record_dates(row)
+            jrows = _fetch_janggi_rows(dates)
+            if jrows is None:
+                return {"ok": False, "empty": True, "dates": dates,
+                        "message": "이 PC에서 장끼DB를 찾을 수 없습니다. 장끼DB가 있는 PC에서 실행하세요."}
+            if not jrows:
+                return {"ok": False, "empty": True, "dates": dates,
+                        "message": f"장끼정리에 {', '.join(dates)} 날짜 데이터가 없습니다."}
+            first = result.get("first_match") if result.get("source") == "janggi" else result
+            first = dict(first or {})
+            first.pop("janggi_resolved", None)
+            # 최종매칭으로 바뀌는 부분 = 1차(전표) 매칭과 장끼DB의 상이 (장끼 점검과 같은 형식)
+            changes = _janggi_diff(row, first)
+            built = _build_from_janggi(row, first, result, jrows)
+            built["finalize_changes"] = changes
+            return {"ok": True, "record": _persist_edit(conn, row, built), "changes": changes,
+                    "unclassified": built.get("unclassified", []), "warnings": built.get("warnings", [])}
+        finally:
+            conn.close()
+
+    @router.get("/records/{record_id}/finalize-changes")
+    def finalize_changes(record_id: int, admin: str = Depends(require_admin)):
+        """최종매칭 때 1차(전표)와 장끼DB가 달랐던 부분 (최종매칭 시점에 저장한 내역). 최종매칭본이 아니면 empty."""
+        conn = get_db()
+        try:
+            row, result = _load_for_edit(conn, record_id)
+        finally:
+            conn.close()
+        changes = result.get("finalize_changes") if result.get("source") == "janggi" else None
+        if not changes:
+            return {"ok": True, "empty": True}
+        return {**changes, "finalized_at": result.get("finalized_at") or ""}
+
+    @router.get("/records/{record_id}/janggi-stale")
+    def janggi_stale(record_id: int, admin: str = Depends(require_admin)):
+        """최종매칭 이후 장끼DB가 바뀌었는지. stale=None 이면 확인 불가(장끼DB 없음/1차 매칭)."""
+        conn = get_db()
+        try:
+            row, result = _load_for_edit(conn, record_id)
+        finally:
+            conn.close()
+        if result.get("source") != "janggi":
+            return {"ok": True, "stale": None}
+        jrows = _fetch_janggi_rows(_record_dates(row))
+        if jrows is None:
+            return {"ok": True, "stale": None}
+        return {"ok": True, "stale": _janggi_signature(jrows) != result.get("janggi_sig")}
+
     @router.post("/records/{record_id}/janggi-resolve")
     def janggi_resolve(record_id: int, payload: dict = Body(...), admin: str = Depends(require_admin)):
         """PASS 등으로 처리한 점검 항목을 기록한다. body: {keys: [...]} / {reset: true}면 처리 기록을 모두 지운다."""
@@ -1629,6 +1869,7 @@ def build_order_receiving_compare_router(*, require_admin, get_db, get_setting, 
                     if v < 0:
                         raise HTTPException(status_code=400, detail="수량은 0 이상이어야 합니다.")
                     item[k] = v
+                    item.pop("fixed_amount", None)  # 수량을 직접 고치면 장끼 금액 고정을 풀고 수량 × 단가로 계산
             # 누락 처리: 표시만 '누락'으로 하고 금액은 0원 (수량은 그대로 둔다)
             if "omitted" in payload:
                 if payload.get("omitted"):
