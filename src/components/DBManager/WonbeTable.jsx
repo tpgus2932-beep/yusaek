@@ -139,6 +139,10 @@ export default function WonbeTable() {
   };
   const [lastSync, setLastSync] = useState(null);
   const [editing, setEditing] = useState(null); // { code, col, value }
+  const [editLogOpen, setEditLogOpen] = useState(false); // 수정 로그 보기
+  const [editLogs, setEditLogs] = useState([]);
+  const [editLogQuery, setEditLogQuery] = useState("");
+  const [editLogLoading, setEditLogLoading] = useState(false);
   const inputRef = useRef(null);
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
@@ -536,6 +540,26 @@ export default function WonbeTable() {
     e.preventDefault();
     setOffset(0);
     setQuery(inputQuery.trim());
+  };
+
+  const loadEditLogs = async (q = editLogQuery) => {
+    setEditLogLoading(true);
+    try {
+      const res = await fetch(`${API}/wonbe/edit-log?q=${encodeURIComponent(q.trim())}&limit=300`, { headers: getAuthHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.detail || "수정 로그 조회 실패");
+      setEditLogs(data.logs || []);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setEditLogLoading(false);
+    }
+  };
+
+  const toggleEditLog = () => {
+    const next = !editLogOpen;
+    setEditLogOpen(next);
+    if (next) loadEditLogs();
   };
 
   const startEdit = (code, col, currentValue) => {
@@ -1756,6 +1780,9 @@ export default function WonbeTable() {
         <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={handleExport} disabled={loading}>
           <Download size={13} />xls 내보내기
         </button>
+        <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={toggleEditLog} title="원가베이스유를 수정·삭제한 내역 (누가, 언제, 무엇을)">
+          수정 로그
+        </button>
         <button
           className={`${styles.btn} ${styles.btnPrimary}`}
           onClick={handlePushToDeploy}
@@ -1795,6 +1822,48 @@ export default function WonbeTable() {
       {message && <div className={styles.message}>{message}</div>}
       {rawUnexpected && (
         <pre className={styles.rawBlock}>{JSON.stringify(rawUnexpected, null, 2)}</pre>
+      )}
+      {editLogOpen && (
+        <div style={{ border: "1px solid #ccc", borderRadius: 6, padding: 12, margin: "8px 0", maxHeight: 360, overflow: "auto", background: "#fff" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+            <strong>원가베이스유 수정 로그 ({editLogs.length}건, 최신순)</strong>
+            <input
+              value={editLogQuery}
+              onChange={(e) => setEditLogQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") loadEditLogs(); }}
+              placeholder="상품코드·상품명·칸·수정자 검색"
+              style={{ width: 220 }}
+            />
+            <button onClick={() => loadEditLogs()} disabled={editLogLoading}>{editLogLoading ? "조회 중..." : "검색"}</button>
+            <button onClick={() => setEditLogOpen(false)}>닫기</button>
+          </div>
+          {editLogs.length === 0 && !editLogLoading ? (
+            <div style={{ color: "#888", fontSize: 13 }}>수정 로그가 없습니다.</div>
+          ) : (
+            <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
+                  <th>일시</th><th>수정자</th><th>구분</th><th>상품코드</th><th>상품</th><th>칸</th><th>이전 값</th><th>변경 값</th><th>비고</th>
+                </tr>
+              </thead>
+              <tbody>
+                {editLogs.map((l) => (
+                  <tr key={l.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                    <td style={{ whiteSpace: "nowrap" }}>{l.created_at}</td>
+                    <td>{l.username}</td>
+                    <td>{l.action === "edit" ? "수정" : l.action === "bulk-edit" ? "일괄수정" : l.action === "delete" ? "삭제" : l.action}</td>
+                    <td>{l["상품코드"]}</td>
+                    <td>{l["상품명"]}</td>
+                    <td>{l.col}</td>
+                    <td style={{ color: "#b91c1c" }}>{l.old_value}</td>
+                    <td style={{ color: "#15803d" }}>{l.new_value}</td>
+                    <td style={{ color: "#666" }}>{l.detail}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       )}
       {tagGroups && (
         <div style={{ border: "1px solid #ccc", borderRadius: 6, padding: 12, margin: "8px 0", maxHeight: 360, overflow: "auto" }}>

@@ -290,6 +290,21 @@ def _init_wonbe_table(conn: sqlite3.Connection):
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_wonbe_group_members_code ON wonbe_group_members(상품코드)")
+    # 원가베이스유 화면에서 사람이 수정/삭제한 내역 (누가·언제·어떤 상품의 어떤 칸을 무엇에서 무엇으로)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS wonbe_edit_log (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL DEFAULT '',
+            username   TEXT NOT NULL DEFAULT '',
+            action     TEXT NOT NULL DEFAULT '',
+            상품코드   TEXT NOT NULL DEFAULT '',
+            상품명     TEXT NOT NULL DEFAULT '',
+            col        TEXT NOT NULL DEFAULT '',
+            old_value  TEXT NOT NULL DEFAULT '',
+            new_value  TEXT NOT NULL DEFAULT '',
+            detail     TEXT NOT NULL DEFAULT ''
+        )
+    """)
     # 이지어드민 동기화 목록에서 대형태그/번호 처리가 끝난 상품코드 (다음 동기화부터 목록에서 제외)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS wonbe_tag_done (
@@ -307,6 +322,23 @@ def _init_wonbe_table(conn: sqlite3.Connection):
         )
     """)
     conn.commit()
+
+
+def _wonbe_log(conn, user, action, code="", name="", col="", old="", new="", detail=""):
+    """원가베이스유 수정 로그 한 줄. 로그 기록 실패가 수정 자체를 막지 않도록 예외는 삼킨다."""
+    try:
+        conn.execute(
+            "INSERT INTO wonbe_edit_log (created_at, username, action, 상품코드, 상품명, col, old_value, new_value, detail)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), str(user or ""), action, str(code or ""), str(name or ""),
+             str(col or ""), str(old if old is not None else ""), str(new if new is not None else ""), str(detail or "")),
+        )
+    except Exception:
+        pass
+
+
+def _wonbe_row_label(row) -> str:
+    return " ".join(x for x in (str(row["상품명"] or "").strip(), str(row["색상"] or "").strip(), str(row["사이즈"] or "").strip()) if x)
 
 
 # 대형 번호 상품명: "2 쿠로 하이넥"처럼 숫자+띄어쓰기로 시작 ("2way", "1+1"은 아님)
@@ -2584,6 +2616,24 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         finally:
             conn.close()
 
+    @router.get("/edit-log")
+    def wonbe_edit_log(q: str = "", limit: int = 300, user: str = Depends(get_current_user)):
+        """원가베이스유 수정 로그 (최신순). q가 있으면 상품코드·상품명·칸·수정자에서 검색한다."""
+        limit = min(max(int(limit or 300), 1), 2000)
+        conn = _get_wonbe_db()
+        try:
+            _init_wonbe_table(conn)
+            sql = "SELECT * FROM wonbe_edit_log"
+            params: list = []
+            if q.strip():
+                like = f"%{q.strip()}%"
+                sql += " WHERE 상품코드 LIKE ? OR 상품명 LIKE ? OR col LIKE ? OR username LIKE ? OR detail LIKE ?"
+                params = [like] * 5
+            rows = conn.execute(sql + " ORDER BY id DESC LIMIT ?", (*params, limit)).fetchall()
+            return {"ok": True, "logs": [dict(r) for r in rows]}
+        finally:
+            conn.close()
+
     @router.patch("/row")
     def wonbe_update_row(
         payload: dict = Body(...),
@@ -2603,10 +2653,17 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         conn = _get_wonbe_db()
         try:
             _init_wonbe_table(conn)
+            before = conn.execute("SELECT * FROM wonbe WHERE 상품코드 = ?", (code,)).fetchone()
             cur = conn.execute(f"UPDATE wonbe SET {set_clause} WHERE 상품코드 = ?", values)
-            conn.commit()
             if cur.rowcount == 0:
+                conn.commit()
                 raise HTTPException(status_code=404, detail="해당 상품코드 없음")
+            if before is not None:
+                for col, new_value in updates.items():
+                    old_value = str(before[col] if before[col] is not None else "")
+                    if old_value != new_value:
+                        _wonbe_log(conn, user, "edit", code, _wonbe_row_label(before), col, old_value, new_value)
+            conn.commit()
             row = conn.execute("SELECT * FROM wonbe WHERE 상품코드 = ?", (code,)).fetchone()
             return {"ok": True, "row": dict(row)}
         finally:
@@ -2643,8 +2700,11 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 else:
                     sib_codes = [code]
                 for sc in sib_codes:
+                    prev = conn.execute("SELECT 상품명, 색상, 사이즈, 원가 FROM wonbe WHERE 상품코드 = ?", (sc,)).fetchone()
                     conn.execute(f"UPDATE wonbe SET {_qcol('원가')} = ? WHERE 상품코드 = ?", (cost, sc))
                     updated_codes.add(sc)
+                    if prev is not None and str(prev["원가"] or "") != cost:
+                        _wonbe_log(conn, user, "edit", sc, _wonbe_row_label(prev), "원가", prev["원가"], cost, "에이블리 상품 단위 원가 수정")
             conn.commit()
             return {"ok": True, "updated": len(updated_codes), "codes": sorted(updated_codes), "not_found": not_found}
         finally:
@@ -2672,6 +2732,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 )
             else:
                 cur = conn.execute(f"UPDATE wonbe SET {_qcol(col)} = ? WHERE {GROUP_EXCLUDE_SQL_CLAUSE}", (value,))
+            _wonbe_log(conn, user, "bulk-edit", col=col, new=value, detail=f"{cur.rowcount}건 일괄 수정" + (f" (검색: {q})" if q else " (전체)"))
             conn.commit()
             return {"ok": True, "count": cur.rowcount}
         finally:
@@ -2693,6 +2754,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 "DELETE FROM wonbe WHERE 등록일 != '' AND substr(등록일, 1, 10) BETWEEN ? AND ?",
                 (start, end),
             )
+            _wonbe_log(conn, user, "delete", detail=f"등록일 {start}~{end} {cur.rowcount}건 삭제")
             conn.commit()
             return {"ok": True, "deleted": cur.rowcount}
         finally:
@@ -2710,9 +2772,14 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         try:
             _init_wonbe_table(conn)
             placeholders = ", ".join("?" for _ in codes)
+            doomed = conn.execute(
+                f"SELECT 상품코드, 상품명, 색상, 사이즈 FROM wonbe WHERE 상품코드 IN ({placeholders})", codes
+            ).fetchall()
             cur = conn.execute(
                 f"DELETE FROM wonbe WHERE 상품코드 IN ({placeholders})", codes
             )
+            for r in doomed[:500]:
+                _wonbe_log(conn, user, "delete", r["상품코드"], _wonbe_row_label(r), detail="행 삭제")
             conn.commit()
             return {"ok": True, "deleted": cur.rowcount}
         finally:
