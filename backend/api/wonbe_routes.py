@@ -3503,6 +3503,11 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 ingodaegi_added = _sync_ingodaegi_from_wonbe(conn)
             except Exception:
                 ingodaegi_added = None
+            # 에이블리재고변경 탭도 같은 방식으로 최신업데이트 (원가베이스유 기준 신규 옵션 추가)
+            try:
+                ably_stock_added = _sync_ably_stock_from_wonbe(conn)
+            except Exception:
+                ably_stock_added = None
             return {
                 "ok": True,
                 "fetched": len(data_rows),
@@ -3511,6 +3516,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 "synced_at": synced_at,
                 "groups": groups,
                 "ingodaegi_added": ingodaegi_added,
+                "ably_stock_added": ably_stock_added,
             }
         finally:
             conn.close()
