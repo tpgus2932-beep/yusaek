@@ -1715,9 +1715,17 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
 
     @router.post("/defect-purchase/manual")
     def add_defect_purchase_manual(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        """직접입력: 거래처 / 금액(+잡힘, -차감) / 사유 만으로 매입 금액을 증감한다."""
+        """직접입력: 거래처 / 금액 / 구분(차감·추가)으로 매입 금액을 증감한다.
+        상품명(product_name 또는 memo)·옵션(option)·수량(qty)은 로그에 보이는 참고용이다.
+        entry='deduct'면 금액을 −로, 'add'면 +로 저장한다 (없으면 입력한 부호 그대로 — 예전 직접입력 호환).
+        일시는 등록 시각(서버 현재 시각)이다."""
         vendor = str(payload.get("vendor") or "").strip()
-        memo = str(payload.get("memo") or "").strip()
+        memo = str(payload.get("product_name") or payload.get("memo") or "").strip()
+        option = str(payload.get("option") or "").strip()
+        try:
+            qty = max(int(re.sub(r"[^\d]", "", str(payload.get("qty") or "")) or 0), 0)
+        except ValueError:
+            qty = 0
         if not vendor:
             raise HTTPException(status_code=400, detail="거래처를 입력해 주세요")
         try:
@@ -1725,7 +1733,12 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
         except ValueError:
             amount = 0.0
         if amount == 0:
-            raise HTTPException(status_code=400, detail="금액을 입력해 주세요 (예: -23000)")
+            raise HTTPException(status_code=400, detail="금액을 입력해 주세요 (예: 23000)")
+        entry = str(payload.get("entry") or "").strip()
+        if entry == "deduct":
+            amount = -abs(amount)
+        elif entry == "add":
+            amount = abs(amount)
         conn = get_db()
         try:
             _init_defect_purchase_tables(conn)
@@ -1733,8 +1746,8 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
             cur = conn.execute(
                 "INSERT INTO defect_purchase_items (vendor, code, product_name, own_name, color, size, qty, unit_cost, amount,"
                 " defect_date, records_json, status, memo, source, created_at, updated_at)"
-                " VALUES (?, '', ?, '', '', '', 0, 0, ?, ?, '[]', 'held', ?, 'manual', ?, ?)",
-                (vendor, memo, amount, str(payload.get("date") or "")[:10] or now[:10], memo, now, now),
+                " VALUES (?, '', ?, '', ?, '', ?, 0, ?, ?, '[]', 'held', ?, 'manual', ?, ?)",
+                (vendor, memo, option, qty, amount, str(payload.get("date") or "")[:10] or now[:10], memo, now, now),
             )
             _dp_log(conn, vendor, {"id": cur.lastrowid, "product_name": memo}, "manual", amount, user)
             conn.commit()
@@ -1824,9 +1837,11 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
                 amount = row["amount"] if locked else _num(payload.get("amount", row["amount"]), row["amount"])
                 if amount == 0:
                     raise HTTPException(status_code=400, detail="금액은 0이 될 수 없습니다")
+                color = text("color", row["color"])
+                qty = max(int(_num(payload.get("qty", row["qty"]), row["qty"])), 0)
                 conn.execute(
-                    "UPDATE defect_purchase_items SET memo = ?, product_name = ?, amount = ?, defect_date = ?, updated_at = ? WHERE id = ?",
-                    (memo, memo, amount, defect_date, _dp_now(), item_id),
+                    "UPDATE defect_purchase_items SET memo = ?, product_name = ?, color = ?, qty = ?, amount = ?, defect_date = ?, updated_at = ? WHERE id = ?",
+                    (memo, memo, color, qty, amount, defect_date, _dp_now(), item_id),
                 )
                 product_name = memo
             else:

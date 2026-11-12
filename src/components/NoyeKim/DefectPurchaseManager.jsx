@@ -55,7 +55,10 @@ export default function DefectPurchaseManager() {
   const [pDate, setPDate] = useState(todayStr());
   const [mVendor, setMVendor] = useState("");
   const [mAmount, setMAmount] = useState("");
-  const [mMemo, setMMemo] = useState("");
+  const [mMemo, setMMemo] = useState(""); // 상품명
+  const [mOption, setMOption] = useState("");
+  const [mQty, setMQty] = useState("");
+  const [mEntry, setMEntry] = useState("deduct"); // 구분: deduct(금액 차감) | add(금액 추가)
   const [addBusy, setAddBusy] = useState(false);
   const [addMsg, setAddMsg] = useState("");
   // 항목 수정 (거래처 제외)
@@ -224,15 +227,16 @@ export default function DefectPurchaseManager() {
       const res = await fetch(`${API}/noye-kimsungil/defect-purchase/manual`, {
         method: "POST",
         headers: jsonHeaders(),
-        body: JSON.stringify({ vendor: mVendor, amount: mAmount, memo: mMemo }),
+        body: JSON.stringify({ vendor: mVendor, amount: mAmount, product_name: mMemo, option: mOption, qty: mQty, entry: mEntry }),
       });
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "등록 실패");
       const vendorName = mVendor.trim();
-      setMVendor(""); setMAmount(""); setMMemo("");
+      const entryLabel = mEntry === "deduct" ? "금액 차감" : "금액 추가";
+      setMVendor(""); setMAmount(""); setMMemo(""); setMOption(""); setMQty("");
       closeAdd();
-      setError(`✅ ${vendorName} 직접입력이 등록되었습니다. (거래처 현재 잔액 ${won(data.vendor_balance)})`);
+      setError(`✅ ${vendorName} ${entryLabel}이(가) 등록되었습니다. (거래처 현재 잔액 ${won(data.vendor_balance)})`);
       setLogsByVendor((prev) => { const next = { ...prev }; delete next[vendorName]; return next; });
       await refresh(true);
     } catch (err) {
@@ -240,6 +244,15 @@ export default function DefectPurchaseManager() {
     } finally {
       setAddBusy(false);
     }
+  };
+
+  // 거래처 줄의 "금액 차감 / 금액 추가" 버튼: 직접입력 창을 거래처·구분이 채워진 채로 연다
+  const openManual = (vendorName, entry) => {
+    setMVendor(vendorName);
+    setMEntry(entry);
+    setAddTab("manual");
+    setAddMsg("");
+    setAddOpen(true);
   };
 
   const toggleVendor = (name) => {
@@ -314,7 +327,7 @@ export default function DefectPurchaseManager() {
       vendor: vendorName,
       item,
       form: item.source === "manual"
-        ? { memo: item.memo || item.product_name || "", amount: String(item.amount ?? ""), defect_date: item.defect_date || "" }
+        ? { memo: item.memo || item.product_name || "", color: item.color || "", qty: item.qty ? String(item.qty) : "", amount: String(item.amount ?? ""), defect_date: item.defect_date || "" }
         : {
           product_name: item.product_name || "",
           own_name: item.own_name || "",
@@ -454,6 +467,9 @@ export default function DefectPurchaseManager() {
       </>
     );
 
+  // 직접입력 로그는 금액 부호로 "금액 차감 / 금액 추가"를 구분해서 보여준다
+  const kindLabel = (log) => (log.kind === "manual" ? (Number(log.delta) < 0 ? "금액 차감" : "금액 추가") : KIND_LABEL[log.kind] || log.kind);
+
   const KIND_BADGE = { add: styles.badgeAdd, deduct: styles.badgeDeduct, restore: styles.badgeRestore, manual: styles.badgeManual, delete: styles.badgeDeduct };
 
   const renderLogTable = (logs) =>
@@ -474,9 +490,9 @@ export default function DefectPurchaseManager() {
               <tr key={log.id}>
                 <td>{productCell(log)}</td>
                 <td>{optionOf(log)}</td>
-                <td className={styles.right}>{log.source === "manual" ? "" : (log.qty ?? "")}</td>
+                <td className={styles.right}>{log.source === "manual" ? (log.qty || "") : (log.qty ?? "")}</td>
                 <td className={styles.time}>{formatDateTime(log.created_at)}</td>
-                <td><span className={`${styles.badge} ${KIND_BADGE[log.kind] || ""}`}>{KIND_LABEL[log.kind] || log.kind}</span></td>
+                <td><span className={`${styles.badge} ${KIND_BADGE[log.kind] || ""}`}>{kindLabel(log)}</span></td>
                 <td className={`${styles.right} ${styles.nowrap} ${log.delta < 0 ? styles.minus : styles.plus}`}>{signed(log.delta)}</td>
                 <td className={`${styles.right} ${styles.nowrap} ${styles.balance}`}>{won(log.vendor_balance_after)}</td>
                 <td className={styles.right}>
@@ -592,7 +608,7 @@ export default function DefectPurchaseManager() {
                           <td>{l.vendor}</td>
                           <td>{productCell(l)}</td>
                           <td>{optionOf(l)}</td>
-                          <td className={styles.right}>{l.source === "manual" ? "" : (l.qty ?? "")}</td>
+                          <td className={styles.right}>{l.source === "manual" ? (l.qty || "") : (l.qty ?? "")}</td>
                           <td className={`${styles.right} ${styles.nowrap} ${l.delta < 0 ? styles.minus : styles.plus}`}>{signed(l.delta)}</td>
                           <td className={styles.right}>
                             <div className={styles.rowActions}>
@@ -673,6 +689,8 @@ export default function DefectPurchaseManager() {
               <span className={styles.vendorAmount}>{won(vendor.held_amount)}</span>
               <span className={styles.countPill}>상품 {vendor.items.length}건</span>
               <span className={styles.barRight} onClick={(e) => e.stopPropagation()}>
+                <button type="button" className={`${styles.btn} ${styles.btnDanger}`} onClick={() => openManual(vendor.vendor, "deduct")}>금액 차감</button>
+                <button type="button" className={styles.btn} onClick={() => openManual(vendor.vendor, "add")}>금액 추가</button>
                 <button type="button" className={`${styles.iconBtn} ${styles.iconBtnDanger}`} title="거래처 전체 삭제" onClick={() => deleteVendor(vendor)}><TrashIcon /></button>
                 <span className={`${styles.chevron} ${isOpen ? styles.chevronOpen : ""}`} onClick={() => toggleVendor(vendor.vendor)}>▾</span>
               </span>
@@ -807,12 +825,27 @@ export default function DefectPurchaseManager() {
                 <datalist id="dp-vendor-list">
                   {vendors.map((v) => <option key={v.vendor} value={v.vendor} />)}
                 </datalist>
-                <label className={styles.formLabel}>금액 <span className={styles.hintText}>(+ 매입 잡힘 / − 차감)</span>
-                  <input className={styles.searchInput} value={mAmount} onChange={(e) => setMAmount(e.target.value)} placeholder="예: -23000" inputMode="text" />
+                <label className={styles.formLabel}>구분
+                  <select className={styles.searchInput} value={mEntry} onChange={(e) => setMEntry(e.target.value)}>
+                    <option value="deduct">금액 차감</option>
+                    <option value="add">금액 추가</option>
+                  </select>
                 </label>
-                <label className={styles.formLabel}>사유
-                  <input className={styles.searchInput} value={mMemo} onChange={(e) => setMMemo(e.target.value)} placeholder="예: 오이체로 인한 매입잡음" />
+                <label className={styles.formLabel}>상품명
+                  <input className={styles.searchInput} value={mMemo} onChange={(e) => setMMemo(e.target.value)} placeholder="예: 글로우 니트" />
                 </label>
+                <div className={styles.formRow}>
+                  <label className={styles.formLabel}>옵션
+                    <input className={styles.searchInput} value={mOption} onChange={(e) => setMOption(e.target.value)} placeholder="예: 블랙 M" />
+                  </label>
+                  <label className={styles.formLabel}>수량
+                    <input className={styles.searchInput} type="number" min={0} value={mQty} onChange={(e) => setMQty(e.target.value)} style={{ maxWidth: "6rem" }} />
+                  </label>
+                </div>
+                <label className={styles.formLabel}>금액 <span className={styles.hintText}>(숫자만 — {mEntry === "deduct" ? "차감" : "추가"}할 금액)</span>
+                  <input className={styles.searchInput} value={mAmount} onChange={(e) => setMAmount(e.target.value)} placeholder="예: 23000" inputMode="numeric" />
+                </label>
+                <div className={styles.hintText}>일시는 등록하는 시각으로 자동 기록돼요.</div>
                 <div className={styles.formActions}>
                   <button type="button" className={`${styles.btn} ${styles.btnPrimary}`} onClick={submitManual} disabled={addBusy}>{addBusy ? "등록 중…" : "등록"}</button>
                 </div>
@@ -849,7 +882,11 @@ export default function DefectPurchaseManager() {
               )}
               {item.source === "manual" ? (
                 <>
-                  {field("memo", "사유")}
+                  {field("memo", "상품명(사유)")}
+                  <div className={styles.formRow}>
+                    {field("color", "옵션")}
+                    {field("qty", "수량", { type: "number", min: 0 })}
+                  </div>
                   {field("amount", <>금액 <span className={styles.hintText}>(+ 매입 잡힘 / − 차감)</span></>, { inputMode: "text", disabled: locked })}
                   {field("defect_date", "날짜", { type: "date" })}
                 </>
