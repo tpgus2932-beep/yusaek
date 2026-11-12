@@ -428,3 +428,19 @@
 }
 .dayTotal { margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums; }
 .dayCard .tableWrap { padding: 0 0.6rem 0.5rem; border-top: 1px solid var(--border-color); }
+
+/* 사진 아래 그 사진의 사유 */
+.captionedPhoto {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  max-width: 120px;
+}
+
+.photoCaption {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #b91c1c;
+  word-break: break-all;
+  line-height: 1.3;
+}

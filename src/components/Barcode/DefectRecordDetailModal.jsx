@@ -73,7 +73,11 @@ export default function DefectRecordDetailModal({ title, records, tabHeaders, on
     setEditing({ id: record.id, qty: record.qty, reason: record.reason || "", hasPhotos: record.photo_ids.length > 0 });
   };
 
-  const savedPhotoReason = (record, i) => record.photo_reasons?.[i] ?? "";
+  // 사진별 사유가 없으면(예전 기록) 기록 사유를 그 사진의 사유로 보여준다
+  const savedPhotoReason = (record, i) => {
+    const own = record.photo_reasons?.[i];
+    return own && own.trim() ? own : (record.reason || "");
+  };
   const photoReasonValue = (record, i) => drafts[record.photo_ids[i]] ?? savedPhotoReason(record, i);
   const clearDraft = (pid) => setDrafts((prev) => { const next = { ...prev }; delete next[pid]; return next; });
 
@@ -174,8 +178,8 @@ export default function DefectRecordDetailModal({ title, records, tabHeaders, on
               onZoom={setZoom}
               disabled={busy}
             />
-            {/* 사진별 사유가 없는 기록(사진 없이 등록했거나 예전 기록)은 기록 사유를 보여준다 */}
-            {!(record.photo_reasons ?? []).some((r) => (r || "").trim()) && editing?.id !== record.id && (
+            {/* 사진 없이 등록한 기록은 사유 한 줄 */}
+            {record.photo_ids.length === 0 && editing?.id !== record.id && (
               <div className={styles.reasonText}>{record.reason || "(사유 없음)"}</div>
             )}
           </div>

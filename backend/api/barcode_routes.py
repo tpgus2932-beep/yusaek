@@ -2703,6 +2703,11 @@ def build_barcode_router(
         if "reason" not in photo_cols:
             # 사진마다 따로 적는 불량 사유
             conn.execute("ALTER TABLE barcode_defect_record_photos ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
+            # 예전 기록: 기록 사유를 그 기록의 사진마다 그대로 옮겨 둔다 (사진별로 보이게)
+            conn.execute(
+                "UPDATE barcode_defect_record_photos SET reason = COALESCE("
+                "(SELECT r.reason FROM barcode_defect_records r WHERE r.id = barcode_defect_record_photos.record_id), '')"
+            )
         conn.commit()
         return conn
 
@@ -4019,6 +4024,7 @@ def build_barcode_router(
                     "qty": rec["qty"],
                     "reason": rec["reason"],
                     "photo_ids": rec["photo_ids"],
+                    "photo_reasons": rec.get("photo_reasons") or [],
                     "created_at": rec["created_at"],
                 })
         finally:

@@ -856,15 +856,18 @@ export default function DefectPurchaseManager() {
                 <div className={styles.recordMeta}>#{idx + 1} · 수량 {rec.qty} · {formatDateTime(rec.created_at)}</div>
                 <div className={styles.photos}>
                   {(rec.photo_ids || []).length === 0 && <div className={styles.recordMeta}>사진 없음</div>}
-                  {(rec.photo_ids || []).map((id) =>
-                    photoCache[id] ? (
-                      <img key={id} src={photoCache[id]} alt="불량 사진" className={styles.photo} onClick={() => setZoom(photoCache[id])} />
-                    ) : (
-                      <div key={id} className={styles.photoLoading}>불러오는 중…</div>
-                    ),
-                  )}
+                  {(rec.photo_ids || []).map((id, i) => (
+                    <div key={id} className={styles.captionedPhoto}>
+                      {photoCache[id] ? (
+                        <img src={photoCache[id]} alt="불량 사진" className={styles.photo} onClick={() => setZoom(photoCache[id])} />
+                      ) : (
+                        <div className={styles.photoLoading}>불러오는 중…</div>
+                      )}
+                      <div className={styles.photoCaption}>{i + 1}. {(rec.photo_reasons?.[i] || "").trim() || rec.reason || "(사유 없음)"}</div>
+                    </div>
+                  ))}
                 </div>
-                <div className={styles.reason}>{rec.reason || "(사유 없음)"}</div>
+                {(rec.photo_ids || []).length === 0 && <div className={styles.reason}>{rec.reason || "(사유 없음)"}</div>}
               </div>
             ))}
           </div>

@@ -42,6 +42,7 @@ export default function DefectPhotoPicker({
 
   const renderThumb = (photo, idx) => (
     <div className={styles.thumbWrap}>
+      {withReasons && <span className={styles.thumbNo}>{idx + 1}</span>}
       {photo.src ? (
         <img
           src={photo.src}
@@ -96,6 +97,9 @@ export default function DefectPhotoPicker({
           <div key={photo.key ?? idx} className={styles.photoReasonItem}>
             {renderThumb(photo, idx)}
             <div className={styles.photoReasonBody}>
+              <div className={`${styles.photoReasonLabel} ${value.trim() ? "" : styles.photoReasonEmpty}`}>
+                {idx + 1}번 사진 사유: {value.trim() || "미입력"}
+              </div>
               <div className={styles.chipRow}>
                 {REASON_CHIPS.map((chip) => (
                   <button

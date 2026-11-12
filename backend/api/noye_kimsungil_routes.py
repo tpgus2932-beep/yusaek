@@ -1679,6 +1679,7 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
                         "qty": rec.get("qty"),
                         "reason": str(rec.get("reason") or ""),
                         "photo_ids": [p for p in (rec.get("photo_ids") or []) if isinstance(p, int)],
+                        "photo_reasons": [str(r or "") for r in (rec.get("photo_reasons") or [])],
                         "created_at": str(rec.get("created_at") or ""),
                     }
                     for rec in records

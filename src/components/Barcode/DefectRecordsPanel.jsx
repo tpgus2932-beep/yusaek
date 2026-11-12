@@ -170,13 +170,16 @@ export default function DefectRecordsPanel({ records, tabHeaders, onChanged, con
               )}
               {showPhotos[record.id] && (
                 <div className={styles.photoRow}>
-                  {record.photo_ids.map((id) =>
-                    photoCache[id] ? (
-                      <img key={id} src={photoCache[id]} alt="불량 사진" className={styles.thumb} onClick={() => setZoom(photoCache[id])} />
-                    ) : (
-                      <div key={id} className={styles.thumbLoading}>불러오는 중…</div>
-                    ),
-                  )}
+                  {record.photo_ids.map((id, i) => (
+                    <div key={id} className={styles.captionedPhoto}>
+                      {photoCache[id] ? (
+                        <img src={photoCache[id]} alt="불량 사진" className={styles.thumb} onClick={() => setZoom(photoCache[id])} />
+                      ) : (
+                        <div className={styles.thumbLoading}>불러오는 중…</div>
+                      )}
+                      <div className={styles.photoCaption}>{i + 1}. {(record.photo_reasons?.[i] || "").trim() || record.reason || "(사유 없음)"}</div>
+                    </div>
+                  ))}
                 </div>
               )}
               {editing?.id === record.id && renderEdit()}
