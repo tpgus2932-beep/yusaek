@@ -110,7 +110,7 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
     const product = room ? roomProduct(preview, detail) : null;
     const stockItems = stockProducts(preview, detail);
     const [lookupAll, setLookupAll] = useState(0); // 값이 바뀔 때마다 모든 상품 재고를 조회
-    const [sideTab, setSideTab] = useState('order'); // 상품별 탭 오른쪽 패널: 'order' | 'stock'
+    const [sideTab, setSideTab] = useState('order'); // 상품별·문의함 오른쪽 패널: 'order'(주문 정보+재고) | 'action' | 추가 탭
     // 답변 입력창에서 전송/완료를 하면 처리 후에도(다음 문의로 넘어가 입력창이 새로 그려져도) 커서를 입력창에 둔다.
     const replyRef = useRef(null);
     const keepFocus = useRef(false);
@@ -407,7 +407,7 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                     {!selected && <div className={styles.empty}>문의를 선택하면 주문 정보가 여기에 표시돼요.</div>}
                     {selected && (
                         <div className={styles.sideTabs} role="tablist">
-                            {[['order', '주문 정보'], ['stock', '재고'], ['action', '작업'], ...extraTabs.map((t) => [t.key, t.label])].map(([key, label]) => (
+                            {[['order', '주문 정보·재고'], ['action', '작업'], ...extraTabs.map((t) => [t.key, t.label])].map(([key, label]) => (
                                 <button
                                     key={key}
                                     type="button"
@@ -471,9 +471,7 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                                 </section>
                             )}
                             {room && <section className={styles.sideSec}>{renderStock('rank')}</section>}
-                            </div>
-                            <div hidden={sideTab !== 'stock'}>
-                                {room && <section className={styles.sideSec}>{renderStock('stock')}</section>}
+                            {room && <section className={styles.sideSec}>{renderStock('stock')}</section>}
                             </div>
                             <div hidden={sideTab !== 'action'}>
                                 <section className={styles.sideSec}>
