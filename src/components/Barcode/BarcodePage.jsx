@@ -3781,8 +3781,8 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
         tabHeaders={tabHeaders}
         counts={Object.fromEntries(
           defectList
-            .filter((item) => (item.normal_qty ?? item.count) > 0)
-            .map((item) => [String(item.code || "").trim(), item.normal_qty ?? item.count])
+            .filter((item) => (Number(item.count) || 0) > 0)
+            .map((item) => [String(item.code || "").trim(), Number(item.count) || 0])
         )}
       />
 
