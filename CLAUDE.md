@@ -131,6 +131,13 @@ Key integrations:
 - Schema changes use `ALTER TABLE ... ADD COLUMN` pattern at startup (`_ensure_*_column` functions)
 - `collab_app.py` imports from `main.py` — be careful not to introduce import-time side effects in `main.py` that break the collab-only server
 
+### 커밋 규칙 (필수)
+
+- 코드를 수정하면 작업이 끝나는 즉시 **반드시 커밋**한다. 미커밋 상태로 남겨두지 않는다 (미커밋 수정은 폴더/브랜치를 바꾸거나 덮어쓸 때 사라지거나 옛 버전으로 되돌아갈 수 있음).
+- 작업 폴더에 내가 건드리지 않은 미커밋 수정이 섞여 있으면 `git add .`/통째 스테이징 금지. 내 변경분 파일(또는 hunk)만 골라서 커밋한다.
+- 커밋은 기능 단위로 나눈다. 환경파일(`*.env`)·개인 데이터·바이너리 도구(`kakao_tools/` 등)는 커밋하지 않는다.
+- 푸시는 사용자가 요청할 때 한다.
+
 ### 개발 업데이트 기록 규칙 (필수)
 
 - 코드를 수정/추가/삭제할 때마다 `src/data/devUpdates.js`의 `DEV_UPDATES` **맨 위**에 한 줄을 추가한다. 대시보드의 "개발 업데이트" 카드에 그대로 표시된다.
