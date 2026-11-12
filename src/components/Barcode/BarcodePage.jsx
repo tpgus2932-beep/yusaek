@@ -603,6 +603,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     if (data.defects) setDefectList(data.defects);
     if (data.items) setItems(data.items);
     if (data.code) setDefectRecentCodes((prev) => [data.code, ...prev.filter((code) => code !== data.code)]);
+    if (defectSheet?.reopenPhoto && data.code) setDefectPhotoCode(data.code); // 📷 창에서 추가했으면 다시 그 창으로
     setDefectSheet(null);
     pushLog(`불량 등록: ${data.code || ""} (누적 ${data.defect_count ?? ""}) — 사진·사유 포함`.trim());
     setTimeout(() => scanRef.current?.focus(), 0);
@@ -3513,6 +3514,11 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
           tabHeaders={tabHeaders}
           onChanged={setDefectRecords}
           onClose={() => setDefectPhotoCode(null)}
+          onAddDefect={() => {
+            const it = defectList.find((i) => i.code === defectPhotoCode);
+            setDefectSheet({ code: defectPhotoCode, label: it ? renderDefectLabel(it) : "", qty: 1, reopenPhoto: true });
+            setDefectPhotoCode(null);
+          }}
         />
       )}
 
@@ -3829,15 +3835,17 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                       <button className={styles.ghostBtn} onClick={() => handleDefectDec(item.code)}>-1</button>
                       <button className={styles.ghostBtn} onClick={() => handleDefectRemove(item.code)}>삭제</button>
                       {(() => {
-                        const recCount = defectRecords.filter((r) => r.code === item.code).length;
+                        const recs = defectRecords.filter((r) => r.code === item.code);
+                        const recCount = recs.length;
+                        const photoCount = recs.reduce((s, r) => s + (r.photo_ids?.length || 0), 0);
                         return (
                           <button
                             className={styles.ghostBtn}
-                            title="사진·사유 보기 / 수정"
+                            title="사진·사유 보기 / 사진 추가 / 불량 추가"
                             disabled={recCount === 0}
                             onClick={() => setDefectPhotoCode(item.code)}
                           >
-                            📷{recCount > 0 ? recCount : ""}
+                            📷{recCount > 0 ? ` ${photoCount}장${recCount > 1 ? ` · ${recCount}건` : ""}` : ""}
                           </button>
                         );
                       })()}
