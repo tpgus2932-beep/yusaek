@@ -1485,7 +1485,20 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
   };
 
   // 한 탭의 김승일 리스트를 불량으로 소환한다. 케이디지(KDG) 상품은 서버가 알아서 KDG 탭으로 보낸다. 실패하면 throw.
+  // 탭별 "불러온 불량 수량" 스냅샷 { code: qty }. 불러오기 전/후를 비교해 이번에 들어온 것만 골라낸다.
+  const fetchSummonQtyMap = async (tab) => {
+    try {
+      const res = await fetch(`${API}/barcode/defect/list`, { headers: { ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) } });
+      const data = await res.json().catch(() => ({}));
+      return Object.fromEntries((data.defects ?? []).map((d) => [d.code, Number(d.kimsungil_summon_qty) || 0]));
+    } catch {
+      return {};
+    }
+  };
+
   const summonOneTab = async (tab) => {
+    const watchTabs = [...new Set([tab, KDG_TAB])];
+    const before = Object.fromEntries(await Promise.all(watchTabs.map(async (t) => [t, await fetchSummonQtyMap(t)])));
     const res = await fetch(`${API}/barcode/kimsungil/summon-to-defect`, {
       method: "POST", headers: { ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) },
     });
@@ -1494,6 +1507,18 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     if (!res.ok) throw new Error(data?.detail || "김승일 소환술 실패");
     if (data.tabs) applyTabsConfig(data.tabs); // KDG 탭이 새로 생겼으면 탭 목록에 반영
     pushLog(`김승일 소환술(${tab}탭): ${data.moved_count}종 ${data.moved_total}개 불량 이동${data.kdg_moved_count ? ` (KDG 탭 ${data.kdg_moved_count}종)` : ""}`);
+    // 서버가 이번 이동분(moved_items)을 안 주면(예전 서버) 전/후 수량 차이로 직접 계산한다.
+    if (!Array.isArray(data.moved_items) && (data.moved_count || 0) > 0) {
+      const movedItems = [];
+      for (const t of watchTabs) {
+        const after = await fetchSummonQtyMap(t);
+        for (const [code, qty] of Object.entries(after)) {
+          const diff = qty - (before[t]?.[code] || 0);
+          if (diff > 0) movedItems.push({ code, qty: diff, tab: t });
+        }
+      }
+      data.moved_items = movedItems;
+    }
     return data;
   };
 
@@ -1558,6 +1583,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
       body: JSON.stringify({ code, qty }),
     });
     if (handleUnauthorized(res)) throw new Error("로그인이 필요합니다.");
+    if (res.status === 404) throw new Error("서버가 아직 예전 버전이라 삭제할 수 없습니다.\n서버(백엔드)를 다시 켠 뒤 시도해 주세요.");
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.detail || "불량 삭제 실패");
     pushLog(`불량 불러오기 미매칭 삭제(${tab}탭): ${code} ${data.removed_qty ?? qty}개`);
