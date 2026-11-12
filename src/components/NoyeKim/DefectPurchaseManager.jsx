@@ -57,6 +57,10 @@ export default function DefectPurchaseManager() {
   const [mMemo, setMMemo] = useState("");
   const [addBusy, setAddBusy] = useState(false);
   const [addMsg, setAddMsg] = useState("");
+  // 항목 수정 (거래처 제외)
+  const [edit, setEdit] = useState(null); // { item, vendor, form }
+  const [editBusy, setEditBusy] = useState(false);
+  const [editMsg, setEditMsg] = useState("");
 
   const loadList = useCallback(async () => {
     const res = await fetch(`${API}/noye-kimsungil/defect-purchase/list`, { headers: getAuthHeaders() });
@@ -303,6 +307,71 @@ export default function DefectPurchaseManager() {
     }
   };
 
+  const openEdit = (vendorName, item) => {
+    setEditMsg("");
+    setEdit({
+      vendor: vendorName,
+      item,
+      form: item.source === "manual"
+        ? { memo: item.memo || item.product_name || "", amount: String(item.amount ?? ""), defect_date: item.defect_date || "" }
+        : {
+          product_name: item.product_name || "",
+          own_name: item.own_name || "",
+          color: item.color || "",
+          size: item.size || "",
+          qty: String(item.qty ?? ""),
+          unit_cost: String(Math.round(Number(item.unit_cost) || 0)),
+          defect_date: item.defect_date || "",
+        },
+    });
+  };
+
+  // 로그 줄에서 수정: 로그에는 원가·날짜가 없으므로 목록의 항목을 찾아 연다
+  const openEditById = (vendorName, itemId) => {
+    const item = vendors.flatMap((v) => v.items).find((i) => i.id === itemId);
+    if (!item) { setError("수정할 항목을 찾을 수 없습니다. 새로고침 후 다시 시도해 주세요."); return; }
+    openEdit(vendorName, item);
+  };
+
+  const setEditField = (key, value) => setEdit((prev) => ({ ...prev, form: { ...prev.form, [key]: value } }));
+
+  const submitEdit = async () => {
+    if (!edit) return;
+    const { item, vendor, form } = edit;
+    const before = Number(item.amount) || 0;
+    const after = item.source === "manual"
+      ? Number(String(form.amount).replace(/[^\d.-]/g, "")) || 0
+      : (parseInt(form.qty, 10) || 0) * (Number(String(form.unit_cost).replace(/[^\d.-]/g, "")) || 0);
+    const moneyNote = item.status !== "deducted" && after !== before ? `\n금액 ${won(before)} → ${won(after)} (로그 금액도 함께 바뀝니다)` : "";
+    if (!window.confirm(`이 항목을 수정할까요?${moneyNote}`)) return;
+    setEditBusy(true);
+    setEditMsg("");
+    try {
+      const res = await fetch(`${API}/noye-kimsungil/defect-purchase/update`, {
+        method: "POST",
+        headers: jsonHeaders(),
+        body: JSON.stringify({ item_id: item.id, ...form }),
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "수정 실패");
+      setEdit(null);
+      setError(`✅ 수정했습니다. (${vendor} 현재 잔액 ${won(data.vendor_balance)})`);
+      const reloads = [loadList()];
+      Object.keys(logsByVendor).forEach((v) => reloads.push(loadVendorLogs(v)));
+      if (dailyOpen) reloads.push(loadDailyLogs());
+      await Promise.all(reloads);
+    } catch (err) {
+      setEditMsg(err.message || "수정 실패");
+    } finally {
+      setEditBusy(false);
+    }
+  };
+
+  const editBtn = (onClick, disabled = false) => (
+    <button type="button" className={styles.iconBtn} title="수정" disabled={disabled} onClick={onClick}>✏️</button>
+  );
+
   const openDetail = async (title, records) => {
     setDetail({ title, records });
     const ids = records.flatMap((rec) => rec.photo_ids || []).filter((id) => !photoCache[id]);
@@ -403,6 +472,7 @@ export default function DefectPurchaseManager() {
                 <td className={styles.right}>
                   <div className={styles.rowActions}>
                     {cameraBtn(`${log.product_name} ${optionOf(log)}`, log.records)}
+                    {editBtn(() => openEditById(log.vendor, log.item_id), !log.item_id || log.item_status === "deleted")}
                     <button
                       type="button"
                       className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
@@ -496,7 +566,12 @@ export default function DefectPurchaseManager() {
                           <td>{optionOf(l)}</td>
                           <td className={styles.right}>{l.source === "manual" ? "" : (l.qty ?? "")}</td>
                           <td className={`${styles.right} ${styles.nowrap} ${l.delta < 0 ? styles.minus : styles.plus}`}>{signed(l.delta)}</td>
-                          <td className={styles.right}>{cameraBtn(`${l.product_name} ${optionOf(l)}`, l.records)}</td>
+                          <td className={styles.right}>
+                            <div className={styles.rowActions}>
+                              {cameraBtn(`${l.product_name} ${optionOf(l)}`, l.records)}
+                              {editBtn(() => openEditById(l.vendor, l.item_id), !l.item_id || l.item_status === "deleted")}
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -602,6 +677,7 @@ export default function DefectPurchaseManager() {
                                   <td>
                                     <div className={styles.rowActions}>
                                       {cameraBtn(`${item.product_name} ${optionOf(item)}`, item.records)}
+                                      {editBtn(() => openEdit(vendor.vendor, item))}
                                       {item.source === "manual" ? null : deducted ? (
                                         <button type="button" className={`${styles.btn} ${styles.btnGood}`} onClick={() => changeStatus(vendor.vendor, [item.id], "held")}>재매입</button>
                                       ) : (
@@ -710,6 +786,63 @@ export default function DefectPurchaseManager() {
           </div>
         </div>
       )}
+
+      {edit && (() => {
+        const { item, form } = edit;
+        const locked = item.status === "deducted";
+        const preview = item.source === "manual"
+          ? Number(String(form.amount).replace(/[^\d.-]/g, "")) || 0
+          : (parseInt(form.qty, 10) || 0) * (Number(String(form.unit_cost).replace(/[^\d.-]/g, "")) || 0);
+        const field = (key, label, props = {}) => (
+          <label className={styles.formLabel}>{label}
+            <input className={styles.searchInput} value={form[key] ?? ""} onChange={(e) => setEditField(key, e.target.value)} {...props} />
+          </label>
+        );
+        return (
+          <div className={styles.overlay} onClick={() => !editBusy && setEdit(null)}>
+            <div className={styles.sheet} onClick={(e) => e.stopPropagation()}>
+              <div className={styles.sheetHead}>
+                <div className={styles.sheetTitle}>✏️ 항목 수정 <span className={styles.hintText}>· {edit.vendor}</span></div>
+                <button type="button" className={styles.btn} onClick={() => setEdit(null)} disabled={editBusy}>닫기</button>
+              </div>
+              {locked && (
+                <div className={styles.notice} style={{ marginTop: 0 }}>
+                  차감완료된 항목은 이름·옵션·날짜만 고칠 수 있습니다. 수량·원가를 고치려면 먼저 "재매입"으로 되돌려 주세요.
+                </div>
+              )}
+              {item.source === "manual" ? (
+                <>
+                  {field("memo", "사유")}
+                  {field("amount", <>금액 <span className={styles.hintText}>(+ 매입 잡힘 / − 차감)</span></>, { inputMode: "text", disabled: locked })}
+                  {field("defect_date", "날짜", { type: "date" })}
+                </>
+              ) : (
+                <>
+                  {field("product_name", "공급처 상품명")}
+                  {field("own_name", "상품명")}
+                  <div className={styles.formRow}>
+                    {field("color", "색상")}
+                    {field("size", "사이즈")}
+                  </div>
+                  <div className={styles.formRow}>
+                    {field("qty", "수량", { type: "number", min: 1, disabled: locked })}
+                    {field("unit_cost", "원가(1개)", { inputMode: "numeric", disabled: locked })}
+                  </div>
+                  {field("defect_date", "불량 날짜", { type: "date" })}
+                </>
+              )}
+              <div className={styles.hintText} style={{ marginTop: "0.5rem" }}>
+                금액 {won(item.amount)}{!locked && preview !== Number(item.amount) ? ` → ${won(preview)}` : ""}
+              </div>
+              <div className={styles.formActions}>
+                <button type="button" className={styles.btn} onClick={() => setEdit(null)} disabled={editBusy}>취소</button>
+                <button type="button" className={`${styles.btn} ${styles.btnPrimary}`} onClick={submitEdit} disabled={editBusy}>{editBusy ? "저장 중…" : "저장"}</button>
+              </div>
+              {editMsg && <div className={styles.notice} style={{ marginTop: "0.7rem", marginBottom: 0 }}>{editMsg}</div>}
+            </div>
+          </div>
+        );
+      })()}
 
       {detail && (
         <div className={styles.overlay} onClick={() => setDetail(null)}>

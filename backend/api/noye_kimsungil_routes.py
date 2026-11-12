@@ -1793,6 +1793,74 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
         finally:
             conn.close()
 
+    @router.post("/defect-purchase/update")
+    def update_defect_purchase_item(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """항목 수정 (거래처 제외). 금액이 바뀌면 이 항목의 기존 로그 금액을 덮어쓰고 잔액을 다시 계산한다.
+        차감완료 항목은 이름·옵션·날짜만 바꿀 수 있다 (수량·원가·금액 잠금)."""
+        try:
+            item_id = int(payload.get("item_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="item_id is required")
+
+        def _num(value, default):
+            try:
+                return float(re.sub(r"[^\d.\-]", "", str(value)) or default)
+            except ValueError:
+                return default
+
+        conn = get_db()
+        try:
+            _init_defect_purchase_tables(conn)
+            row = conn.execute("SELECT * FROM defect_purchase_items WHERE id = ?", (item_id,)).fetchone()
+            if not row or row["status"] == "deleted":
+                raise HTTPException(status_code=404, detail="항목을 찾을 수 없습니다")
+            locked = row["status"] == "deducted"
+            text = lambda key, cur: str(payload.get(key) if payload.get(key) is not None else cur or "").strip()  # noqa: E731
+            defect_date = text("defect_date", row["defect_date"])[:10]
+
+            if row["source"] == "manual":
+                memo = text("memo", row["memo"])
+                amount = row["amount"] if locked else _num(payload.get("amount", row["amount"]), row["amount"])
+                if amount == 0:
+                    raise HTTPException(status_code=400, detail="금액은 0이 될 수 없습니다")
+                conn.execute(
+                    "UPDATE defect_purchase_items SET memo = ?, product_name = ?, amount = ?, defect_date = ?, updated_at = ? WHERE id = ?",
+                    (memo, memo, amount, defect_date, _dp_now(), item_id),
+                )
+                product_name = memo
+            else:
+                product_name = text("product_name", row["product_name"])
+                own_name = text("own_name", row["own_name"])
+                color = text("color", row["color"])
+                size = text("size", row["size"])
+                if locked:
+                    qty, unit_cost = row["qty"], row["unit_cost"]
+                else:
+                    qty = int(_num(payload.get("qty", row["qty"]), row["qty"]))
+                    unit_cost = _num(payload.get("unit_cost", row["unit_cost"]), row["unit_cost"])
+                    if qty <= 0:
+                        raise HTTPException(status_code=400, detail="수량은 1 이상이어야 합니다")
+                    if unit_cost < 0:
+                        raise HTTPException(status_code=400, detail="원가는 0 이상이어야 합니다")
+                amount = unit_cost * qty
+                conn.execute(
+                    "UPDATE defect_purchase_items SET product_name = ?, own_name = ?, color = ?, size = ?, qty = ?, unit_cost = ?,"
+                    " amount = ?, defect_date = ?, updated_at = ? WHERE id = ?",
+                    (product_name, own_name, color, size, qty, unit_cost, amount, defect_date, _dp_now(), item_id),
+                )
+
+            # 이 항목의 로그를 새 금액·이름으로 덮어쓴다 (잡힘/직접입력/재매입 = +금액, 차감 = −금액)
+            conn.execute(
+                "UPDATE defect_purchase_logs SET product_name = ?,"
+                " delta = CASE WHEN kind = 'deduct' THEN -? ELSE ? END WHERE item_id = ?",
+                (product_name, amount, amount, item_id),
+            )
+            _dp_recalc_balances(conn, row["vendor"])
+            conn.commit()
+            return {"ok": True, "amount": amount, "vendor_balance": _dp_vendor_balance(conn, row["vendor"])}
+        finally:
+            conn.close()
+
     @router.post("/defect-purchase/delete")
     def delete_defect_purchase_item(payload: dict = Body(...), user: str = Depends(get_current_user)):
         """항목 삭제: 항목과 그 항목의 로그를 완전히 지운다 (차감처럼 '−금액' 로그를 남기지 않음).
