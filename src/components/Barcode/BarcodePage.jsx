@@ -1801,7 +1801,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
         allItems.filter((item) => (Number(item.kimsungil_summon_qty) || 0) > 0).map((item) => item.code)
       ).size;
       const includeSummon = summonedCount === 0
-        || window.confirm(`김승일 소환술 항목 ${summonedCount}종이 있습니다. 불량출력에 포함할까요? (확인=포함, 취소=제외)`);
+        || window.confirm(`불량관리 목록 ${summonedCount}종이 있습니다. 불량출력에 포함할까요? (확인=포함, 취소=제외)`);
       const merged = new Map();
       allItems.forEach((item) => {
         const qty = includeSummon
@@ -2508,7 +2508,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                         </span>
                         <span className={styles.inlineTagDanger}>불량 {item.count}</span>
                         {item.kimsungil_summon_qty > 0 && (
-                          <span className={styles.inlineTagIncoming}>김승일 소환 {item.kimsungil_summon_qty}</span>
+                          <span className={styles.inlineTagIncoming}>불량관리 {item.kimsungil_summon_qty}</span>
                         )}
                         {item.code && <span className={styles.inlineMeta}>{item.code}</span>}
                       </span>
@@ -3861,7 +3861,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
             )}
             {summonedByTab.some((g) => g.rows.length > 0) && (
               <div style={{ marginTop: "1rem", borderTop: "2px solid var(--border-color)", paddingTop: "0.75rem" }}>
-                <h4 className={styles.modalTitle} style={{ marginBottom: "0.5rem" }}>김승일 소환술 항목</h4>
+                <h4 className={styles.modalTitle} style={{ marginBottom: "0.5rem" }}>불량관리 목록</h4>
                 {summonedByTab.filter((g) => g.rows.length > 0).map((g) => (
                   <div key={`summon-group-${g.tab}`} style={{ marginBottom: "0.75rem" }}>
                     <div style={{ fontWeight: 700, marginBottom: "0.3rem" }}>
@@ -3871,10 +3871,10 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                       {g.rows.map((item) => (
                         <div key={`${g.tab}-${item.code}-summon`} className={styles.defectLine}>
                           <span className={styles.defectText}>{renderDefectLabel(item)}</span>
-                          <span className={styles.inlineTagIncoming}>김승일 소환 {item.kimsungil_summon_qty}</span>
+                          <span className={styles.inlineTagIncoming}>불량관리 {item.kimsungil_summon_qty}</span>
                           <span className={styles.inlineMeta}>{g.tab}탭</span>
                           <div className={styles.defectActions}>
-                            <button className={styles.ghostBtn} onClick={() => handleKimsungilRevert(g.tab, item.code)}>김승일로 되돌리기</button>
+                            <button className={styles.ghostBtn} onClick={() => handleKimsungilRevert(g.tab, item.code)}>불량관리로 되돌리기</button>
                           </div>
                         </div>
                       ))}
