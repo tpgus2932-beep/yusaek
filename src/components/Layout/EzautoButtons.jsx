@@ -5,11 +5,11 @@ import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../..
 
 const KINDS = {
     auto_order: { label: '자동발주', path: '/ezauto/auto-order', icon: <Play size={15} />, hint: '에이블리·아무드 신규 주문 확인 + 이지어드민 발주 입력' },
-    invoice: { label: '판매처 송장등록', short: '송장등록', path: '/ezauto/register-invoices', icon: <Truck size={15} />, hint: '이지어드민에서 출고된 건의 송장을 에이블리에 전송' },
+    invoice: { label: '판매처 송장등록', short: '송장등록', path: '/ezauto/register-invoices', icon: <Truck size={15} />, hint: '이지어드민에서 출고된 건의 송장을 에이블리에 전송 (아무드는 아직 미지원)' },
 };
 
-// 화면에 보여줄 작업. 판매처 송장등록은 구현해 두었지만 당분간 숨긴다 (다시 쓰려면 'invoice'를 추가).
-const VISIBLE_KINDS = ['auto_order'];
+// 화면에 보여줄 작업 (숨기려면 목록에서 뺀다).
+const VISIBLE_KINDS = ['auto_order', 'invoice'];
 
 const num = (v) => (v === null || v === undefined || v === '' ? '-' : Number(v).toLocaleString());
 
