@@ -43,6 +43,7 @@ export default function DefectPurchaseManager() {
   const [dailyLogs, setDailyLogs] = useState([]);
   const [dailyLoading, setDailyLoading] = useState(false);
   const [openDay, setOpenDay] = useState({});
+  const [openTodayVendor, setOpenTodayVendor] = useState({}); // 오늘 추가 박스: 거래처 → 열림
   // 항목추가 (상품추가 / 직접입력)
   const [addOpen, setAddOpen] = useState(false);
   const [addTab, setAddTab] = useState("product");
@@ -409,6 +410,15 @@ export default function DefectPurchaseManager() {
     .flatMap((v) => v.items.map((i) => ({ ...i, vendor: v.vendor })))
     .filter((i) => String(i.created_at || "").slice(0, 10) === today)
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  // 거래처별로 묶기 (금액 큰 거래처가 위)
+  const todayGroups = Object.values(todayAdded.reduce((acc, i) => {
+    const g = (acc[i.vendor] ||= { vendor: i.vendor, items: [], total: 0, qty: 0 });
+    g.items.push(i);
+    g.total += Number(i.amount) || 0;
+    g.qty += i.source === "manual" ? 0 : Number(i.qty) || 0;
+    return acc;
+  }, {})).sort((a, b) => b.total - a.total || a.vendor.localeCompare(b.vendor));
+  const todayTotal = todayGroups.reduce((sum, g) => sum + g.total, 0);
   const keyword = searchText.trim();
   const candidates = keyword ? logVendors.filter((v) => v.vendor.includes(keyword)).slice(0, 12) : [];
 
@@ -522,20 +532,38 @@ export default function DefectPurchaseManager() {
             <span className={styles.todayDot} />
             <span className={styles.todayTitle}>오늘 추가된 항목</span>
             <span className={styles.todayCount}>{todayAdded.length}건</span>
+            <span className={styles.todaySub}>거래처 {todayGroups.length}곳</span>
+            <span className={styles.todayTotal}>{won(todayTotal)}</span>
           </div>
-          <ul className={styles.todayList}>
-            {todayAdded.map((i) => (
-              <li key={i.id} className={styles.todayItem}>
-                <span className={styles.todayTime}>{String(i.created_at).slice(11, 16)}</span>
-                <span className={styles.todayVendor}>{i.vendor}</span>
-                <span className={styles.todayName}>
-                  {i.source === "manual" ? (i.memo || "직접입력") : [i.product_name || i.code, optionOf(i)].filter(Boolean).join(" ")}
-                  {i.source !== "manual" && i.qty ? ` × ${i.qty}` : ""}
-                </span>
-                <span className={styles.todayAmount}>{won(i.amount)}</span>
-              </li>
-            ))}
-          </ul>
+          <div className={styles.todayList}>
+            {todayGroups.map((g) => {
+              const open = !!openTodayVendor[g.vendor];
+              return (
+                <div key={g.vendor} className={`${styles.todayGroup} ${open ? styles.todayGroupOpen : ""}`}>
+                  <button type="button" className={styles.todayGroupHead} onClick={() => setOpenTodayVendor((p) => ({ ...p, [g.vendor]: !p[g.vendor] }))}>
+                    <span className={styles.todayVendor}>{g.vendor}</span>
+                    <span className={styles.todaySub}>{g.items.length}건{g.qty ? ` · ${g.qty}개` : ""}</span>
+                    <span className={styles.todayAmount}>{won(g.total)}</span>
+                    <span className={`${styles.chevron} ${open ? styles.chevronOpen : ""}`}>▾</span>
+                  </button>
+                  {open && (
+                    <ul className={styles.todayItems}>
+                      {g.items.map((i) => (
+                        <li key={i.id} className={styles.todayItem}>
+                          <span className={styles.todayTime}>{String(i.created_at).slice(11, 16)}</span>
+                          <span className={styles.todayName}>
+                            {i.source === "manual" ? (i.memo || "직접입력") : [i.product_name || i.code, optionOf(i)].filter(Boolean).join(" ")}
+                            {i.source !== "manual" && i.qty ? ` × ${i.qty}` : ""}
+                          </span>
+                          <span className={styles.todayItemAmount}>{won(i.amount)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
