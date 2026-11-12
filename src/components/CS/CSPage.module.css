@@ -132,7 +132,7 @@
 
 .body {
     display: grid;
-    grid-template-columns: 330px minmax(0, 1fr) 460px;
+    grid-template-columns: 330px minmax(0, 1fr) 800px;
     gap: 12px;
     flex: 1;
     min-height: 0;
@@ -745,6 +745,17 @@
 .sideTabOn {
     border-bottom-color: var(--cs-accent);
     color: var(--cs-accent);
+}
+
+/* 주문 정보·재고 탭: 주문 정보(왼쪽) + 재고 카드(오른쪽) 나란히 */
+.orderCols:not([hidden]) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+}
+
+.orderColStock {
+    border-left: 1px solid var(--cs-line);
 }
 
 .sideSec {
