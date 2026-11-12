@@ -150,7 +150,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
   const [kimsungilSummonLoading, setKimsungilSummonLoading] = useState(false);
   const [purchaseModePicker, setPurchaseModePicker] = useState(false); // 매입관리 보내기 범위 선택 창
   const [purchaseScope, setPurchaseScope] = useState("all"); // normal | summon | all
-  const [purchaseSelected, setPurchaseSelected] = useState({}); // 코드 → 선택 여부
+  const [purchaseSelected, setPurchaseSelected] = useState({}); // "탭|코드" → 선택 여부
+  const [purchaseItems, setPurchaseItems] = useState([]); // 매입관리 창: 전 탭 불량 [{...item, _tab}]
+  const [purchaseSentByTab, setPurchaseSentByTab] = useState({}); // 탭 → { 코드: {normal, summon} }
   const [purchaseSending, setPurchaseSending] = useState(false);
   const [defectPhotoCode, setDefectPhotoCode] = useState(null); // 📷 버튼으로 연 사진·사유 팝업의 상품코드
   const [purchaseSent, setPurchaseSent] = useState({}); // 이미 매입관리로 보낸 수량: 코드 → {normal, summon}
@@ -1922,9 +1924,11 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     const kinds = scope === "normal" ? ["normal"] : scope === "summon" ? ["summon"] : ["normal", "summon"];
     return kinds.reduce((sum, k) => sum + Math.max(gross[k] - (Number(done[k]) || 0), 0), 0);
   };
-  const selectAllNew = (scope, sent) => {
+  const purchaseKey = (item) => `${item._tab}|${String(item.code || "").trim()}`;
+  const purchaseNewQtyOf = (item, scope, sentByTab = purchaseSentByTab) => purchaseNewQty(item, scope, sentByTab[item._tab] || {});
+  const selectAllNew = (scope, sentByTab = purchaseSentByTab, items = purchaseItems) => {
     const selected = {};
-    defectList.forEach((item) => { if (purchaseNewQty(item, scope, sent) > 0) selected[item.code] = true; });
+    items.forEach((item) => { if (purchaseNewQtyOf(item, scope, sentByTab) > 0) selected[purchaseKey(item)] = true; });
     setPurchaseSelected(selected);
   };
 
@@ -1947,12 +1951,42 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     return sent;
   };
 
+  // 한 탭의 불량 목록과 "이미 매입관리로 보낸 수량"을 가져온다.
+  const fetchTabPurchaseData = async (tab) => {
+    const headers = { ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) };
+    const res = await fetch(`${API}/barcode/defect/list`, { headers });
+    const data = await res.json().catch(() => ({}));
+    const defects = (data.defects ?? []).map((d) => ({ ...d, _tab: tab }));
+    const parts = {};
+    defects.forEach((item) => { parts[String(item.code || "").trim()] = purchaseParts(item); });
+    let sent = {};
+    try {
+      const sres = await fetch(`${API}/noye-kimsungil/defect-purchase/sent-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ tab, parts, reconcile: true }),
+      });
+      const sdata = await sres.json().catch(() => ({}));
+      if (sres.ok) sent = sdata.sent || {};
+    } catch { /* 보낸 기록을 못 읽으면 전부 신규로 본다 */ }
+    return { defects, sent };
+  };
+
+  // 매입관리: 오늘 불량 + A·B·C·KDG 등 모든 탭의 불량을 한 번에 모아 보여준다.
   const openPurchasePicker = async () => {
     setPurchaseScope("all");
     setPurchaseSelected({});
+    setPurchaseItems([]);
     setPurchaseModePicker(true);
-    const sent = await refreshPurchaseSent();
-    if (sent) selectAllNew("all", sent);
+    const results = await Promise.all(defectTabs.map(async (tab) => {
+      try { return [tab, await fetchTabPurchaseData(tab)]; } catch { return [tab, { defects: [], sent: {} }]; }
+    }));
+    const items = results.flatMap(([, r]) => r.defects);
+    const sentByTab = Object.fromEntries(results.map(([tab, r]) => [tab, r.sent]));
+    setPurchaseItems(items);
+    setPurchaseSentByTab(sentByTab);
+    if (sentByTab[defectTabRef.current]) setPurchaseSent(sentByTab[defectTabRef.current]);
+    selectAllNew("all", sentByTab, items);
   };
 
   // 불량 리스트 항목의 매입관리 이동 상태: none | partial | done (직접 찍은 불량 기준)
@@ -1967,65 +2001,84 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
   // 선택한 범위·항목만 거래처 불량 매입 관리에 등록하고, 항목별 결과를 팝업으로 보여준다.
   const handleDefectPurchaseManager = async () => {
     if (purchaseSending) return;
-    const targets = defectList.filter((item) => purchaseSelected[item.code] && purchaseNewQty(item, purchaseScope) > 0);
+    const targets = purchaseItems.filter((item) => purchaseSelected[purchaseKey(item)] && purchaseNewQtyOf(item, purchaseScope) > 0);
     if (targets.length === 0) { alert("보낼 항목을 선택해 주세요."); return; }
     setPurchaseSending(true);
     try {
-      const counts = {};
-      const labelByCode = {};
-      const partsToSend = {};
+      const byTab = new Map();
       targets.forEach((item) => {
-        const code = String(item.code || "").trim();
-        counts[code] = (counts[code] || 0) + purchaseNewQty(item, purchaseScope);
-        labelByCode[code] = renderDefectLabel(item);
-        const gross = purchaseParts(item);
-        partsToSend[code] = {
-          normal: purchaseScope === "summon" ? 0 : gross.normal,
-          summon: purchaseScope === "normal" ? 0 : gross.summon,
-        };
+        if (!byTab.has(item._tab)) byTab.set(item._tab, []);
+        byTab.get(item._tab).push(item);
       });
-      const res = await fetch(`${API}/barcode/defect/purchase-manager-handoff`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...tabHeaders() },
-        body: JSON.stringify({ counts }),
-      });
-      if (handleUnauthorized(res)) return;
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.detail || "매입관리 데이터 변환에 실패했습니다.");
-      const rows = data.rows || [];
-      const unmatched = new Set((data.unmatched_codes || []).map((c) => String(c)));
-
-      const statusByCode = {};
-      let addError = "";
-      if (rows.length > 0) {
+      const items = [];
+      // 탭마다 따로 변환·등록한다 (매입관리 쪽 "보낸 수량" 기록도 탭별)
+      for (const [tab, tabItems] of byTab) {
+        const counts = {};
+        const labelByCode = {};
+        const partsToSend = {};
+        tabItems.forEach((item) => {
+          const code = String(item.code || "").trim();
+          counts[code] = (counts[code] || 0) + purchaseNewQtyOf(item, purchaseScope);
+          labelByCode[code] = renderDefectLabel(item);
+          const gross = purchaseParts(item);
+          partsToSend[code] = {
+            normal: purchaseScope === "summon" ? 0 : gross.normal,
+            summon: purchaseScope === "normal" ? 0 : gross.summon,
+          };
+        });
+        const tabHdr = { ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) };
+        let rows = [];
+        let unmatched = new Set();
+        let convertError = "";
         try {
-          const addRes = await fetch(`${API}/noye-kimsungil/defect-purchase/add`, {
+          const res = await fetch(`${API}/barcode/defect/purchase-manager-handoff`, {
             method: "POST",
-            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-            body: JSON.stringify({ rows, tab: defectTabRef.current, parts: partsToSend }),
+            headers: { "Content-Type": "application/json", ...tabHdr },
+            body: JSON.stringify({ counts }),
           });
-          if (handleUnauthorized(addRes)) return;
-          const addData = await addRes.json().catch(() => ({}));
-          if (!addRes.ok) throw new Error(addData?.detail || "등록 실패");
-          (addData.results || []).forEach((r) => { statusByCode[r.code] = r; });
+          if (handleUnauthorized(res)) return;
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data?.detail || "매입관리 데이터 변환에 실패했습니다.");
+          rows = data.rows || [];
+          unmatched = new Set((data.unmatched_codes || []).map((c) => String(c)));
         } catch (err) {
-          addError = err.message || "등록 실패";
+          convertError = err.message || "매입관리 데이터 변환에 실패했습니다.";
         }
-      }
 
-      const items = Object.keys(counts).map((code) => {
-        const label = labelByCode[code] || code;
-        const qty = counts[code];
-        if (unmatched.has(code)) return { code, label, qty, state: "fail", note: "원가베이스에 없는 상품코드" };
-        if (addError) return { code, label, qty, state: "fail", note: addError };
-        const st = statusByCode[code];
-        if (st?.status === "added") {
-          const partial = st.already > 0 ? ` (신규 ${st.qty}개만 · 기존 ${st.already}개는 이미 이동됨)` : "";
-          return { code, label, qty: st.qty ?? qty, state: "ok", note: `${st.vendor || ""} · ${Math.round(st.amount || 0).toLocaleString("ko-KR")}원${partial}` };
+        const statusByCode = {};
+        let addError = convertError;
+        if (!addError && rows.length > 0) {
+          try {
+            const addRes = await fetch(`${API}/noye-kimsungil/defect-purchase/add`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+              body: JSON.stringify({ rows, tab, parts: partsToSend }),
+            });
+            if (handleUnauthorized(addRes)) return;
+            const addData = await addRes.json().catch(() => ({}));
+            if (!addRes.ok) throw new Error(addData?.detail || "등록 실패");
+            (addData.results || []).forEach((r) => { statusByCode[r.code] = r; });
+          } catch (err) {
+            addError = err.message || "등록 실패";
+          }
         }
-        if (st?.status === "skipped") return { code, label, qty, state: "skip", note: "이미 매입관리로 이동됨 (신규 수량 없음)" };
-        return { code, label, qty, state: "fail", note: "등록되지 않음" };
-      });
+
+        const tabName = tab.endsWith("불량") ? tab : `${tab}탭`;
+        Object.keys(counts).forEach((code) => {
+          const label = `[${tabName}] ${labelByCode[code] || code}`;
+          const qty = counts[code];
+          if (unmatched.has(code)) { items.push({ code, label, qty, state: "fail", note: "원가베이스에 없는 상품코드" }); return; }
+          if (addError) { items.push({ code, label, qty, state: "fail", note: addError }); return; }
+          const st = statusByCode[code];
+          if (st?.status === "added") {
+            const partial = st.already > 0 ? ` (신규 ${st.qty}개만 · 기존 ${st.already}개는 이미 이동됨)` : "";
+            items.push({ code, label, qty: st.qty ?? qty, state: "ok", note: `${st.vendor || ""} · ${Math.round(st.amount || 0).toLocaleString("ko-KR")}원${partial}` });
+            return;
+          }
+          if (st?.status === "skipped") { items.push({ code, label, qty, state: "skip", note: "이미 매입관리로 이동됨 (신규 수량 없음)" }); return; }
+          items.push({ code, label, qty, state: "fail", note: "등록되지 않음" });
+        });
+      }
       setPurchaseModePicker(false);
       setPurchaseResult({ items });
       refreshPurchaseSent(false);
@@ -3555,20 +3608,20 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
         <div className={styles.modalOverlay} style={{ zIndex: 1100 }} onClick={() => setPurchaseModePicker(false)}>
           <div className={styles.modal} style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHeader}>
-              <h4 className={styles.modalTitle}>매입관리로 보낼 항목 ({defectTab}탭)</h4>
+              <h4 className={styles.modalTitle}>매입관리로 보낼 항목 (전체 탭)</h4>
               <div className={styles.modalActions}>
                 <button className={styles.secondaryBtn} onClick={() => setPurchaseModePicker(false)}>닫기</button>
               </div>
             </div>
             <div style={{ display: "flex", gap: "0.4rem", marginBottom: "0.6rem" }}>
-              {[["all", "둘 다"], ["normal", "불량만"], ["summon", "소환술만"]].map(([mode, label]) => (
+              {[["all", "둘 다"], ["normal", "오늘 불량만"], ["summon", "불량관리만"]].map(([mode, label]) => (
                 <button
                   key={mode}
                   className={purchaseScope === mode ? styles.primaryBtn : styles.secondaryBtn}
                   style={{ flex: 1, padding: "10px 4px", fontWeight: 700 }}
                   onClick={() => {
                     setPurchaseScope(mode);
-                    selectAllNew(mode, purchaseSent);
+                    selectAllNew(mode);
                   }}
                 >
                   {label}
@@ -3577,12 +3630,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
             </div>
             {(() => {
               // 해당 범위에 수량이 있는 항목 중 신규가 있는 것을 먼저, 이미 이동된 것은 아래에 흐리게 표시
-              const inScope = defectList.filter((i) => purchaseQty(i, purchaseScope) > 0);
-              const rows = [...inScope.filter((i) => purchaseNewQty(i, purchaseScope) > 0), ...inScope.filter((i) => purchaseNewQty(i, purchaseScope) <= 0)];
-              const sentRows = rows.filter((i) => purchaseNewQty(i, purchaseScope) <= 0);
-              const selectable = rows.filter((i) => purchaseNewQty(i, purchaseScope) > 0);
-              const checked = selectable.filter((i) => purchaseSelected[i.code]);
-              const total = checked.reduce((s, i) => s + purchaseNewQty(i, purchaseScope), 0);
+              const inScope = purchaseItems.filter((i) => purchaseQty(i, purchaseScope) > 0);
+              const rows = [...inScope.filter((i) => purchaseNewQtyOf(i, purchaseScope) > 0), ...inScope.filter((i) => purchaseNewQtyOf(i, purchaseScope) <= 0)];
+              const sentRows = rows.filter((i) => purchaseNewQtyOf(i, purchaseScope) <= 0);
+              const selectable = rows.filter((i) => purchaseNewQtyOf(i, purchaseScope) > 0);
+              const checked = selectable.filter((i) => purchaseSelected[purchaseKey(i)]);
+              const total = checked.reduce((s, i) => s + purchaseNewQtyOf(i, purchaseScope), 0);
               const allOn = selectable.length > 0 && checked.length === selectable.length;
               return (
                 <>
@@ -3592,26 +3645,29 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                       checked={allOn}
                       onChange={() => {
                         const selected = {};
-                        if (!allOn) selectable.forEach((i) => { selected[i.code] = true; });
+                        if (!allOn) selectable.forEach((i) => { selected[purchaseKey(i)] = true; });
                         setPurchaseSelected(selected);
                       }}
                     />
                     전체 선택 ({checked.length}/{selectable.length}종){sentRows.length > 0 ? ` · 이미 이동 ${sentRows.length}종` : ""}
                   </label>
                   <div style={{ maxHeight: "42vh", overflowY: "auto", borderTop: "1px solid #e5e7eb" }}>
-                    {rows.length === 0 && <div className={styles.hint} style={{ padding: "12px 4px" }}>해당 범위에 보낼 항목이 없습니다.</div>}
+                    {purchaseItems.length === 0 && <div className={styles.hint} style={{ padding: "12px 4px" }}>전체 탭 불량을 불러오는 중...</div>}
+                    {purchaseItems.length > 0 && rows.length === 0 && <div className={styles.hint} style={{ padding: "12px 4px" }}>해당 범위에 보낼 항목이 없습니다.</div>}
                     {rows.map((item) => {
-                      const newQty = purchaseNewQty(item, purchaseScope);
+                      const newQty = purchaseNewQtyOf(item, purchaseScope);
+                      const key = purchaseKey(item);
                       const gross = purchaseQty(item, purchaseScope);
                       const done = newQty <= 0;
                       return (
-                        <label key={item.code} style={{ display: "flex", gap: "0.5rem", alignItems: "center", padding: "10px 2px", borderBottom: "1px solid #f1f5f9", opacity: done ? 0.5 : 1 }}>
+                        <label key={key} style={{ display: "flex", gap: "0.5rem", alignItems: "center", padding: "10px 2px", borderBottom: "1px solid #f1f5f9", opacity: done ? 0.5 : 1 }}>
                           <input
                             type="checkbox"
                             disabled={done}
-                            checked={!done && !!purchaseSelected[item.code]}
-                            onChange={() => setPurchaseSelected((prev) => ({ ...prev, [item.code]: !prev[item.code] }))}
+                            checked={!done && !!purchaseSelected[key]}
+                            onChange={() => setPurchaseSelected((prev) => ({ ...prev, [key]: !prev[key] }))}
                           />
+                          <span className={styles.inlineTagIncoming} style={{ flexShrink: 0 }}>{item._tab}</span>
                           <span style={{ flex: 1, wordBreak: "break-all" }}>{renderDefectLabel(item)}</span>
                           {done ? (
                             <span className={styles.inlineTagDanger} style={{ background: "#e5e7eb", color: "#374151" }}>이동됨</span>
@@ -3762,7 +3818,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
               <div className={styles.modalActions}>
                 <button className={styles.secondaryBtn} onClick={handleDefectExport}>내보내기</button>
                 <button className={styles.secondaryBtn} onClick={handleDefectPrint}>불량출력</button>
-                <button className={styles.secondaryBtn} onClick={openPurchasePicker} disabled={defectList.length === 0}>매입관리</button>
+                <button className={styles.secondaryBtn} onClick={openPurchasePicker}>매입관리</button>
                 <button className={styles.secondaryBtn} onClick={() => setShowDefectKakao(true)} disabled={defectList.length === 0}>카톡 전송</button>
                 <button
                   className={styles.secondaryBtn}
