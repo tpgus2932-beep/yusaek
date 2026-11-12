@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -52,6 +53,8 @@ LLOGIS_CREDENTIAL = "1q2w3e4r5t"
 LLOGIS_EMP_NO = "348867"
 
 _LAST_RUN_SETTING_KEY = "delivery_anomaly_last_run_date"
+_EZ_LOOKUP_DAYS = 90  # 주문번호로 EZAdmin 송장번호를 찾을 때 검색할 기간
+_EZ_LOOKUP_CONCURRENCY = 5
 _ABLY_MAX_PAGES = 100  # 무한 루프 방지용 안전 상한 (per_page 100 기준 1만 건)
 
 
@@ -436,6 +439,56 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
 
         conn.commit()
 
+    async def _resolve_ezadmin_invoices(items: list[dict]) -> None:
+        """주문번호로 EZAdmin(CS 검색과 같은 주문 검색)을 조회해 실제 등록된 송장번호(trans_no)로 invoice_no를 교체한다.
+
+        EZAdmin에서 못 찾거나(없음/세션 문제/오류) 송장번호가 비어 있으면 에이블리가 준 송장번호를 그대로 쓴다.
+        한 주문번호에 송장이 여러 개로 나오면 에이블리 송장과 일치하는 것을 우선한다.
+        """
+        order_nos = sorted({it["order_no"] for it in items if it.get("order_no")})
+        if not order_nos:
+            return
+        ez = EzAdminClient(get_setting)
+        now = datetime.now(_KST)
+        start_date = (now - timedelta(days=_EZ_LOOKUP_DAYS)).strftime("%Y-%m-%d")
+        end_date = now.strftime("%Y-%m-%d")
+        sem = asyncio.Semaphore(_EZ_LOOKUP_CONCURRENCY)
+        found: dict[str, list[str]] = {}
+        session_failed = False
+
+        async def lookup(order_no: str) -> None:
+            nonlocal session_failed
+            if session_failed:
+                return
+            async with sem:
+                try:
+                    rows = await ez.query_orders(order_no, start_date=start_date, end_date=end_date, rows=10)
+                except EzAdminSessionExpired:
+                    session_failed = True  # 세션이 없으면 나머지도 실패하므로 중단하고 에이블리 송장으로 진행
+                    return
+                except Exception:
+                    return
+            nos: list[str] = []
+            for row in rows:
+                cell = row.get("cell") if isinstance(row, dict) else None
+                trans_no = str((cell or {}).get("trans_no") or "").strip()
+                if trans_no and trans_no not in nos:
+                    nos.append(trans_no)
+            if nos:
+                found[order_no] = nos
+
+        await asyncio.gather(*(lookup(no) for no in order_nos))
+        for it in items:
+            nos = found.get(it.get("order_no") or "")
+            if not nos:
+                continue
+            ably_no = it["invoice_no"]
+            if ably_no in nos:
+                continue  # 에이블리와 이지어드민 송장이 일치
+            it["invoice_no"] = nos[0]
+            if ably_no:
+                it["mismatch_reason"] = f"송장번호 불일치 (에이블리 {ably_no} / 이지어드민 {', '.join(nos)})"
+
     async def _run_check_core(force: bool = False) -> None:
         today_str = datetime.now(_KST).strftime("%Y-%m-%d")
         last_run = get_setting(_LAST_RUN_SETTING_KEY)
@@ -444,6 +497,7 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
 
         ably_token = await _ably_login()
         ably_items = await _fetch_ably_shipping_items(ably_token)
+        await _resolve_ezadmin_invoices(ably_items)
 
         llogis_token = await _llogis_login()
         computed: dict[str, dict] = {}
@@ -453,6 +507,7 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
             if not inv_no:
                 continue
             sent_date = parse_ably_sent_date(item["sent_date"])
+            mismatch = item.get("mismatch_reason") or ""
             try:
                 llogis_raw = await _llogis_query(inv_no, llogis_token)
             except Exception as exc:
@@ -468,7 +523,7 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
                     "status": "-",
                     "location": "-",
                     "scan_date": "-",
-                    "reason": f"llogis 조회 실패 ({detail})",
+                    "reason": " / ".join(filter(None, [mismatch, f"llogis 조회 실패 ({detail})"])),
                 }
                 continue
             reason = evaluate_anomaly(
@@ -478,8 +533,9 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
                 sent_at=parse_ably_sent_datetime(item["sent_date"]),
                 now=datetime.now(_KST),
             )
-            if not reason:
+            if not reason and not mismatch:
                 continue
+            reason = " / ".join(filter(None, [mismatch, reason]))
             if is_invoice_missing(llogis_raw):
                 status, location, scan_date = "-", "-", "-"
             else:

@@ -1528,6 +1528,9 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
 
     def _dp_sent_map(conn, tab: str) -> dict:
         sent: dict[str, dict] = {}
+        # 불량은 매일 갱신되므로 오늘 이전에 보낸 기록은 오늘 상태에 반영하지 않고 정리한다.
+        conn.execute("DELETE FROM defect_purchase_sent WHERE substr(updated_at, 1, 10) < ?", (_dp_now()[:10],))
+        conn.commit()
         for r in conn.execute("SELECT code, kind, sent_qty FROM defect_purchase_sent WHERE tab = ?", (tab,)).fetchall():
             sent.setdefault(r["code"], {"normal": 0, "summon": 0})[r["kind"]] = int(r["sent_qty"] or 0)
         return sent
