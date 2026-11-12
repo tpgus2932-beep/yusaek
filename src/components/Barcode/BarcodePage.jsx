@@ -603,7 +603,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     if (data.defects) setDefectList(data.defects);
     if (data.items) setItems(data.items);
     if (data.code) setDefectRecentCodes((prev) => [data.code, ...prev.filter((code) => code !== data.code)]);
-    if (defectSheet?.reopenPhoto && data.code) setDefectPhotoCode(data.code); // 📷 창에서 추가했으면 다시 그 창으로
     setDefectSheet(null);
     pushLog(`불량 등록: ${data.code || ""} (누적 ${data.defect_count ?? ""}) — 사진·사유 포함`.trim());
     setTimeout(() => scanRef.current?.focus(), 0);
@@ -3514,11 +3513,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
           tabHeaders={tabHeaders}
           onChanged={setDefectRecords}
           onClose={() => setDefectPhotoCode(null)}
-          onAddDefect={() => {
-            const it = defectList.find((i) => i.code === defectPhotoCode);
-            setDefectSheet({ code: defectPhotoCode, label: it ? renderDefectLabel(it) : "", qty: 1, reopenPhoto: true });
-            setDefectPhotoCode(null);
-          }}
         />
       )}
 

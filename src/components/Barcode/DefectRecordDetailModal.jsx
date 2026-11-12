@@ -6,8 +6,7 @@ import styles from "./DefectRecord.module.css";
 const formatDate = (iso) => (iso ? String(iso).slice(0, 16).replace("T", " ") : "");
 
 // 불량 리스트의 📷 버튼: 한 상품의 사진·사유를 바로 보여주고 그 자리에서 수정/삭제한다.
-// onAddDefect: 같은 상품에 불량을 한 건 더(수량 +1, 사진·사유 따로) 등록하는 시트를 연다.
-export default function DefectRecordDetailModal({ title, records, tabHeaders, onChanged, onClose, onAddDefect }) {
+export default function DefectRecordDetailModal({ title, records, tabHeaders, onChanged, onClose }) {
   const [photoCache, setPhotoCache] = useState({}); // { [photoId]: dataURL }
   const [zoom, setZoom] = useState("");
   const [editing, setEditing] = useState(null); // { id, qty, reason, keepIds, added }
@@ -160,7 +159,7 @@ export default function DefectRecordDetailModal({ title, records, tabHeaders, on
               <span className={styles.recordQty}>#{idx + 1} · 수량 {record.qty}</span>
               <span className={styles.hint}>{formatDate(record.created_at)}</span>
               <span style={{ marginLeft: "auto", display: "flex", gap: "0.3rem" }}>
-                <button type="button" className={styles.smallBtn} onClick={() => startEdit(record)} disabled={busy || !!editing}>사진 추가·수정</button>
+                <button type="button" className={styles.smallBtn} onClick={() => startEdit(record)} disabled={busy || !!editing}>수정</button>
                 <button type="button" className={styles.smallBtn} onClick={() => removeRecord(record)} disabled={busy}>삭제</button>
               </span>
             </div>
@@ -169,27 +168,23 @@ export default function DefectRecordDetailModal({ title, records, tabHeaders, on
               renderEdit()
             ) : (
               <>
-                <div className={styles.photoRow}>
-                  {record.photo_ids.length === 0 && <div className={styles.hint}>사진 없음</div>}
-                  {record.photo_ids.map((id) =>
-                    photoCache[id] ? (
-                      <img key={id} src={photoCache[id]} alt="불량 사진" className={styles.thumb} onClick={() => setZoom(photoCache[id])} />
-                    ) : (
-                      <div key={id} className={styles.thumbLoading}>불러오는 중…</div>
-                    ),
-                  )}
-                </div>
+                {/* 사진은 [+ 사진 추가]를 누를 때마다 바로 저장된다 */}
+                <DefectPhotoPicker
+                  photos={record.photo_ids.map((id) => ({ key: id, id, src: photoCache[id] || "" }))}
+                  onAdd={(srcs) => post("update", { id: record.id, add_photos: srcs })}
+                  onRemove={(i) => {
+                    if (!window.confirm("이 사진을 삭제할까요?")) return;
+                    post("update", { id: record.id, remove_photo_ids: [record.photo_ids[i]] });
+                  }}
+                  onZoom={setZoom}
+                  disabled={busy || !!editing}
+                />
                 <div className={styles.reasonText}>{record.reason || "(사유 없음)"}</div>
               </>
             )}
           </div>
         ))}
         {error && <div className={styles.error}>{error}</div>}
-        {onAddDefect && (
-          <button type="button" className={styles.confirmBtn} onClick={onAddDefect} disabled={busy || !!editing}>
-            + 같은 상품 불량 1건 더 등록 (사진·사유 따로)
-          </button>
-        )}
       </div>
 
       {zoom && (

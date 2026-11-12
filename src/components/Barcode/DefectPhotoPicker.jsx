@@ -4,11 +4,10 @@ import styles from "./DefectRecord.module.css";
 
 const DEFECT_PHOTO_MAX = 10; // 서버 _DEFECT_PHOTO_MAX_COUNT 와 같은 값 (불량 1건당)
 
-// 사진 썸네일 목록 + [촬영] 버튼(모바일 카메라, 여러 번 눌러 계속 추가) + [앨범] 버튼(여러 장 한 번에 선택).
+// 사진 썸네일 목록 + [+ 사진 추가] 버튼(모바일 카메라). 누를 때마다 한 장씩 계속 추가된다.
 // photos: [{ key, src }]
 export default function DefectPhotoPicker({ photos, onAdd, onRemove, onZoom, disabled = false, max = DEFECT_PHOTO_MAX }) {
   const cameraRef = useRef(null);
-  const albumRef = useRef(null);
   const left = Math.max(0, max - photos.length);
   const full = left <= 0;
 
@@ -32,46 +31,33 @@ export default function DefectPhotoPicker({ photos, onAdd, onRemove, onZoom, dis
       <div className={styles.photoRow}>
         {photos.map((photo, idx) => (
           <div key={photo.key ?? idx} className={styles.thumbWrap}>
-            <img
-              src={photo.src}
-              alt={`불량 사진 ${idx + 1}`}
-              className={styles.thumb}
-              onClick={() => onZoom?.(photo.src)}
-            />
+            {photo.src ? (
+              <img
+                src={photo.src}
+                alt={`불량 사진 ${idx + 1}`}
+                className={styles.thumb}
+                onClick={() => onZoom?.(photo.src)}
+              />
+            ) : (
+              <div className={styles.thumbLoading}>불러오는 중…</div>
+            )}
             <button type="button" className={styles.thumbRemove} onClick={() => onRemove(idx)} disabled={disabled}>
               ×
             </button>
           </div>
         ))}
         {!full && (
-          <>
-            <button type="button" className={styles.addPhotoBtn} onClick={() => cameraRef.current?.click()} disabled={disabled}>
-              <span className={styles.addPhotoPlus}>+</span>
-              <span>{photos.length > 0 ? "한 장 더 촬영" : "사진 촬영"}</span>
-            </button>
-            <button type="button" className={styles.addPhotoBtn} onClick={() => albumRef.current?.click()} disabled={disabled}>
-              <span className={styles.addPhotoPlus}>🖼</span>
-              <span>앨범 여러 장</span>
-            </button>
-          </>
+          <button type="button" className={styles.addPhotoBtn} onClick={() => cameraRef.current?.click()} disabled={disabled}>
+            <span className={styles.addPhotoPlus}>+</span>
+            <span>사진 추가</span>
+          </button>
         )}
-      </div>
-      <div className={styles.hint} style={{ marginTop: "0.3rem" }}>
-        사진 {photos.length}/{max}장{full ? " (최대)" : " · 여러 장 등록 가능"}
       </div>
       <input
         ref={cameraRef}
         type="file"
         accept="image/*"
         capture="environment"
-        style={{ display: "none" }}
-        onChange={handleFiles}
-      />
-      <input
-        ref={albumRef}
-        type="file"
-        accept="image/*"
-        multiple
         style={{ display: "none" }}
         onChange={handleFiles}
       />
