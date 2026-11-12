@@ -10,7 +10,7 @@ import DefectKakaoModal from "./DefectKakaoModal";
 import { getDownloadFilename } from "../../lib/download";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
-const BASE_DEFECT_TABS = ["A", "B", "C"];
+const BASE_DEFECT_TABS = ["오늘 불량", "A", "B", "C"]; // "오늘 불량"은 맨 왼쪽 고정 (서버와 같은 목록)
 const DEFECT_MATCH_STORAGE_KEY = "defectMatchSession";
 const KDG_TAB = "KDG"; // 케이디지 상품은 불량 불러오기 때 항상 이 탭으로 간다 (서버와 같은 이름)
 const DEFECT_TAB_STORAGE_KEY = "barcodeDefectTab";
@@ -3716,7 +3716,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                       handleKimsungilSummon(tab);
                     }}
                   >
-                    {tab}탭
+                    {tab.endsWith("불량") ? tab : `${tab}탭`}
                     <div style={{ fontSize: "0.8rem", fontWeight: 500 }}>
                       {info === null ? "조회 중..." : info === "?" ? "?" : none ? "불러올 상품 없음" : `${info.kinds}종 ${info.total}개`}
                     </div>

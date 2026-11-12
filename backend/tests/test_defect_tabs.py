@@ -30,4 +30,13 @@ def test_tab_header_selects_separate_storage():
     client.post("/add", headers={"X-Defect-Tab": "B"})
     client.post("/add")  # 헤더 없음 -> A
     client.post("/add", headers={"X-Defect-Tab": "zzz"})  # 잘못된 값 -> A
-    assert store == {"A": {"x": 2}, "B": {"x": 2}, "C": {}}
+    assert store == {"오늘 불량": {}, "A": {"x": 2}, "B": {"x": 2}, "C": {}}
+
+
+def test_today_tab_is_first_and_works_with_encoded_header():
+    from urllib.parse import quote
+
+    assert defect_tab.DEFECT_TABS[0] == "오늘 불량"
+    client, store = _client()
+    client.post("/add", headers={"X-Defect-Tab": quote("오늘 불량")})
+    assert store["오늘 불량"] == {"x": 1} and store["A"] == {}

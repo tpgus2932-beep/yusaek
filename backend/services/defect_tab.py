@@ -11,7 +11,7 @@ from urllib.parse import unquote
 
 from fastapi import Header
 
-BASE_DEFECT_TABS = ("A", "B", "C")
+BASE_DEFECT_TABS = ("오늘 불량", "A", "B", "C")  # "오늘 불량"은 맨 왼쪽 고정
 DEFAULT_DEFECT_TAB = "A"
 MAX_TAB_NAME_LEN = 10
 SETTING_KEY = "defect_tabs_config"
@@ -72,7 +72,7 @@ def add_tab(name: str | None) -> str:
 def remove_tab(name: str | None) -> str:
     tab = clean_tab_name(name)
     if tab in BASE_DEFECT_TABS:
-        raise ValueError("기본 탭(A/B/C)은 삭제할 수 없습니다.")
+        raise ValueError("기본 탭(오늘 불량/A/B/C)은 삭제할 수 없습니다.")
     if tab not in DEFECT_TABS:
         raise ValueError("없는 탭입니다.")
     DEFECT_TABS.remove(tab)

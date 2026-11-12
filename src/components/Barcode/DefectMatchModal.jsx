@@ -273,7 +273,7 @@ export default function DefectMatchModal({ session, onChange, toKey, onRemove, o
                 onClick={() => clickTab(tab)}
                 disabled={Boolean(summoning) || (!inSession && !summonable(tab))}
               >
-                <span className={styles.tabName}>{tab}탭</span>
+                <span className={styles.tabName}>{tab.endsWith("불량") ? tab : `${tab}탭`}</span>
                 <span className={styles.tabSub}>{sub}</span>
               </button>
             );

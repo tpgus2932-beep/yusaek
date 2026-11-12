@@ -42,7 +42,7 @@ const EMPTY_QUEUES = {
     all: [],
 };
 
-const BASE_DEFECT_TABS = ['A', 'B', 'C'];
+const BASE_DEFECT_TABS = ['오늘 불량', 'A', 'B', 'C'];
 
 // 바코드 라벨 제목은 상품명만 쓴다 - 옵션(색상/사이즈)은 라벨의 옵션 줄에 따로 찍힌다.
 // goods_name이 비어 item_text(상품명+옵션)로 대체되거나 이름 끝에 옵션이 섞여 있어도 끝의 옵션 토큰은 떼어낸다.
