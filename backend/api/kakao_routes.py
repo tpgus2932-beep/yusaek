@@ -1338,6 +1338,46 @@ def build_kakao_router(*, get_current_user, get_db, get_user_display):
             conn.close()
         return {"ok": True, "lists": [{"id": r["id"], "name": r["name"], "count": r["n"], "createdAt": r["created_at"]} for r in rows]}
 
+    @router.post("/lists")
+    def create_list(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """메시지를 보내지 않고 리스트만 만든다(같은 이름이 있으면 그 리스트에 친구를 추가). 거래처 카톡 전체 전송처럼
+        사람마다 문구가 달라 일괄 전송을 못 쓰는 경우에 보낸 사람들을 묶어 두는 용도."""
+        name = re.sub(r"\s+", " ", str(payload.get("name") or "")).strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="리스트 이름을 입력하세요.")
+        if len(name) > _MAX_LIST_NAME:
+            raise HTTPException(status_code=400, detail=f"리스트 이름은 {_MAX_LIST_NAME}자까지 입력할 수 있습니다.")
+        ids = []
+        for value in payload.get("contact_ids") or []:
+            try:
+                cid = int(value)
+            except (TypeError, ValueError):
+                continue
+            if cid not in ids:
+                ids.append(cid)
+        if not ids:
+            raise HTTPException(status_code=400, detail="리스트에 넣을 친구를 선택하세요.")
+        if len(ids) > _MAX_BULK_RECIPIENTS:
+            raise HTTPException(status_code=400, detail=f"한 리스트에 {_MAX_BULK_RECIPIENTS}명까지 넣을 수 있습니다.")
+        conn = get_db()
+        try:
+            marks = ",".join("?" * len(ids))
+            found = [r["id"] for r in conn.execute(f"SELECT id FROM kakao_contacts WHERE id IN ({marks})", ids).fetchall()]
+            if not found:
+                raise HTTPException(status_code=400, detail="선택한 친구를 찾을 수 없습니다.")
+            stamp = now_iso()
+            row = conn.execute("SELECT id FROM kakao_lists WHERE name = ?", (name,)).fetchone()
+            created = row is None
+            list_id = row["id"] if row else conn.execute(
+                "INSERT INTO kakao_lists (name, created_by, created_at) VALUES (?, ?, ?)", (name, user, stamp)
+            ).lastrowid
+            for cid in found:
+                conn.execute("INSERT OR IGNORE INTO kakao_list_members (list_id, contact_id, added_at) VALUES (?, ?, ?)", (list_id, cid, stamp))
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "listId": list_id, "listName": name, "listCreated": created, "count": len(found)}
+
     @router.get("/lists/{list_id}")
     def get_list(list_id: int, user: str = Depends(get_current_user)):
         conn = get_db()

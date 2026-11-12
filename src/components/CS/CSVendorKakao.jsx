@@ -50,6 +50,7 @@ export default function CSVendorKakao({ onClose }) {
     const [editing, setEditing] = useState({});
     const [status, setStatus] = useState({}); // { 거래처: {busy, ok, msg} }
     const [bulkBusy, setBulkBusy] = useState(false);
+    const [removed, setRemoved] = useState(() => new Set()); // 이번 목록에서만 뺀 거래처 (제외 거래처와 달리 저장하지 않음, 다시 불러오면 돌아옴)
     const [texts, setTexts] = useState({}); // 직접 고친 전송 문구 { 거래처: text } (없으면 자동 문구)
     const textOf = (g) => (texts[g.vendor] !== undefined ? texts[g.vendor] : g.message);
 
@@ -136,6 +137,7 @@ export default function CSVendorKakao({ onClose }) {
             setProcessed(rows);
             setStatus({});
             setTexts({});
+            setRemoved(new Set());
             setNote(`불러오기 완료: ${rows.length}행 · CS 입고일정이 잡힌 ${scheduled}행은 문자 대상에서 제외`);
         } catch (e) {
             setNote(`불러오기 실패: ${e.message || ''}`);
@@ -149,10 +151,10 @@ export default function CSVendorKakao({ onClose }) {
         if (!processed) return null;
         const result = buildSheet1AndSheet2(processed, prefix, suffix, excluded);
         return {
-            groups: result.sheet1Rows.slice(1).map(([vendor, message]) => ({ vendor, message })),
+            groups: result.sheet1Rows.slice(1).map(([vendor, message]) => ({ vendor, message })).filter((g) => !removed.has(g.vendor)),
             excludedHit: result.excludedMatchedClients,
         };
-    }, [processed, prefix, suffix, excluded]);
+    }, [processed, prefix, suffix, excluded, removed]);
 
     const contactById = useMemo(() => new Map(contacts.map((c) => [c.id, c])), [contacts]);
     const setSt = (vendor, patch) => setStatus((p) => ({ ...p, [vendor]: { ...p[vendor], ...patch } }));
@@ -183,9 +185,17 @@ export default function CSVendorKakao({ onClose }) {
         try {
             await call('/send', { method: 'POST', body: { contact_id: contact.id, text, request_id: newRequestId() } });
             setSt(g.vendor, { busy: false, ok: true, msg: '전송 요청됨' });
+            return true;
         } catch (e) {
             setSt(g.vendor, { busy: false, ok: false, msg: e.message || '전송 실패' });
+            return false;
         }
+    };
+
+    const removeVendor = (vendor) => {
+        if (!window.confirm(`'${vendor}' 거래처를 이번 목록에서 뺄까요?
+(저장되지 않아요. EZAdmin을 다시 불러오면 돌아옵니다)`)) return;
+        setRemoved((p) => new Set(p).add(vendor));
     };
 
     const groups = built?.groups || [];
@@ -198,7 +208,24 @@ export default function CSVendorKakao({ onClose }) {
         if (!window.confirm(`${sendable.length}곳에 카톡으로 보낼까요?\n\n${names}${skipped}`)) return;
         setBulkBusy(true);
         try {
-            for (const g of sendable) await send(g, true);
+            const sentIds = [];
+            for (const g of sendable) {
+                if (await send(g, true)) sentIds.push(vendorMap[g.vendor]);
+            }
+            // 보낸 거래처들을 상단메뉴 CS > 카카오톡 탭의 '리스트'로 묶어 둔다.
+            if (sentIds.length > 0) {
+                const d = new Date();
+                const p2 = (n) => String(n).padStart(2, '0');
+                const name = `거래처 카톡 ${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+                try {
+                    await call('/lists', { method: 'POST', body: { name, contact_ids: sentIds } });
+                    setNote(`전송 요청 ${sentIds.length}곳 · 카카오톡 탭 리스트 '${name}'에 묶었습니다.`);
+                    setNoteBad(false);
+                } catch (e) {
+                    setNote(`전송은 요청했지만 리스트를 만들지 못했습니다: ${e.message || ''}`);
+                    setNoteBad(true);
+                }
+            }
         } finally {
             setBulkBusy(false);
         }
@@ -296,7 +323,12 @@ export default function CSVendorKakao({ onClose }) {
                         const options = contacts.filter((c) => !kw || c.name.toLowerCase().includes(kw)).slice(0, 60);
                         return (
                             <div key={g.vendor} style={{ borderTop: '1px solid var(--border-color, #e5e7eb)', padding: '10px 0' }}>
-                                <strong>{g.vendor}</strong>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <strong style={{ marginRight: 'auto' }}>{g.vendor}</strong>
+                                    <button type="button" style={btn} disabled={st.busy} onClick={() => removeVendor(g.vendor)} title="이번 목록에서 이 거래처를 뺍니다 (저장 안 됨)">
+                                        목록에서 제거 ✕
+                                    </button>
+                                </div>
                                 <textarea
                                     value={textOf(g)}
                                     disabled={st.busy}
