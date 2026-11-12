@@ -2940,7 +2940,7 @@ body { background: #fff; font-family: sans-serif; }
                                 ['hold', '대기상태'],
                                 ['onebe', '원베양식(고객대기)'],
                                 ['processing_log', '처리기록'],
-                                ['inspection', '입고검수'],
+                                ['inspection', '반품입고 매칭'],
                             ].map(([key, label]) => (
                                 <button
                                     key={key}

@@ -4,6 +4,7 @@ import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import BarcodePage from "../Barcode/BarcodePage";
 import StockCheckPage from "../Barcode/StockCheckPage";
 import HapbaePreMatch from "../Test/HapbaePreMatch";
+import ReturnInspectionTab from "../Barcode/ReturnInspectionTab";
 import MobileInvoiceDelete from "./MobileInvoiceDelete";
 import styles from "./MobileLogPage.module.css";
 
@@ -12,6 +13,7 @@ const TABS = [
   { key: "stock-count", label: "재고 개수" },
   { key: "invoice-delete", label: "송장삭제" },
   { key: "receipt", label: "입고확인" },
+  { key: "inspection", label: "반품입고 매칭" },
   { key: "stock-check", label: "재고체크" },
   { key: "hapbae", label: "합배선매칭" },
 ];
@@ -354,7 +356,17 @@ function ReceiptCheck() {
 // 모바일 전용 페이지 (/bacode): 바코드 / 로그 확인 / 재고체크 / 송장삭제.
 // 바코드·재고체크는 PC 화면과 같은 컴포넌트를 그대로 쓰고, 로그 확인은 조회 전용 모바일 화면이다.
 export default function MobileLogPage() {
-  const [tab, setTab] = useState("barcode");
+  // 새로고침해도 보던 탭 그대로 유지
+  const [tab, setTabState] = useState(() => {
+    try {
+      const saved = localStorage.getItem("bacode-mobile-tab");
+      return TABS.some((t) => t.key === saved) ? saved : "barcode";
+    } catch { return "barcode"; }
+  });
+  const setTab = (key) => {
+    setTabState(key);
+    try { localStorage.setItem("bacode-mobile-tab", key); } catch { /* ignore */ }
+  };
   return (
     <div className={styles.page}>
       <header className={styles.header}>
@@ -372,6 +384,7 @@ export default function MobileLogPage() {
       {tab === "invoice-delete" && <main className={styles.main}><MobileInvoiceDelete /></main>}
       {tab === "hapbae" && <HapbaePreMatch />}
       {tab === "receipt" && <main className={styles.main}><ReceiptCheck /></main>}
+      {tab === "inspection" && <main className={styles.main}><ReturnInspectionTab mobile /></main>}
     </div>
   );
 }

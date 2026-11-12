@@ -58,6 +58,9 @@ def init_return_inspection_tables(get_shared_db):
     log_cols = [r["name"] for r in conn.execute("PRAGMA table_info(return_inspection_log)").fetchall()]
     if "snapshot_id" not in log_cols:
         conn.execute("ALTER TABLE return_inspection_log ADD COLUMN snapshot_id INTEGER")
+    # 불량 모드로 찍은 스캔 표시 (수량은 정상 스캔과 똑같이 채우고, 불량 개수만 따로 센다)
+    if "defect" not in log_cols:
+        conn.execute("ALTER TABLE return_inspection_log ADD COLUMN defect INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         """
         INSERT OR IGNORE INTO return_inspection_snap_items
@@ -145,6 +148,15 @@ def build_return_inspection_router(
             """,
             tuple(ids),
         ).fetchall()
+        defect_rows = conn.execute(
+            f"""
+            SELECT product_code, COUNT(*) AS cnt FROM return_inspection_log
+            WHERE snapshot_id IN ({_marks(ids)}) AND undone = 0 AND defect = 1 AND result IN ('next', 'done')
+            GROUP BY product_code
+            """,
+            tuple(ids),
+        ).fetchall()
+        defects = {r["product_code"]: r["cnt"] for r in defect_rows}
         items = [
             {
                 "code": r["product_code"],
@@ -152,6 +164,7 @@ def build_return_inspection_router(
                 "unresolved": bool(r["unresolved"]),
                 "total": r["total_qty"],
                 "scanned": r["scanned_qty"],
+                "defect": min(defects.get(r["product_code"], 0), r["scanned_qty"]),
             }
             for r in rows
         ]
@@ -170,7 +183,7 @@ def build_return_inspection_router(
             "snapshot_ids": ids,
             "items": items,
             "errors": [dict(e) for e in errors],
-            "summary": {"done": done, "total": len(items)},
+            "summary": {"done": done, "total": len(items), "defect": sum(i["defect"] for i in items)},
         }
 
     def _import_snapshot(conn, snapshot_id: int, product_codes, option_sno_map):
@@ -296,6 +309,7 @@ def build_return_inspection_router(
         if not raw:
             raise HTTPException(status_code=400, detail="code가 필요합니다.")
         code = _norm(raw)
+        defect = 1 if payload.get("defect") else 0
         now = datetime.now(_KST).isoformat()
 
         conn = get_shared_db()
@@ -330,12 +344,21 @@ def build_return_inspection_router(
             conn.execute(
                 """
                 INSERT INTO return_inspection_log
-                    (work_date, product_code, scanned_raw, result, created_at, username, snapshot_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (work_date, product_code, scanned_raw, result, created_at, username, snapshot_id, defect)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (log_date, code, raw, result, now, user, log_snapshot),
+                (log_date, code, raw, result, now, user, log_snapshot, defect),
             )
             conn.commit()
+            # 방금 넣은 기록 id (개별 취소·불량 전환에 사용). Turso HTTP 연결도 지원하도록 lastrowid 대신 조회한다.
+            new_log = conn.execute(
+                """
+                SELECT id FROM return_inspection_log
+                WHERE created_at = ? AND username = ? AND product_code = ? AND snapshot_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (now, user, code, log_snapshot),
+            ).fetchone()
             state = _state(conn, ids)
         finally:
             conn.close()
@@ -346,21 +369,37 @@ def build_return_inspection_router(
                 result = "done" if item["scanned"] >= item["total"] else "next"
         state["result"] = result
         state["code"] = code
+        state["defect"] = bool(defect)
+        state["log_id"] = new_log["id"] if new_log else None
         return state
 
     @router.post("/undo")
     def inspection_undo(payload: dict = Body(...), user: str = Depends(get_current_user)):
-        """마지막 스캔 1건을 취소한다. code가 있으면 해당 상품의 마지막 정상 스캔만 -1."""
+        """스캔 1건을 취소한다.
+        - log_id: 그 기록 1건만 취소 (방금 찍은 목록·상품별 기록에서 골라 취소)
+          count가 2 이상이면 그 기록 + 같은 상품의 최근 수량 스캔을 count개까지 취소
+        - code: 해당 상품의 마지막 수량 스캔 -1
+        - 없으면 마지막 스캔 (mine=true면 내가 찍은 것 중 마지막)
+        """
         ids = _snapshot_ids(payload)
         code = str(payload.get("code") or "").strip()
         code = _norm(code) if code else ""
+        log_id = payload.get("log_id")
 
         conn = get_shared_db()
         try:
-            if code:
+            if log_id is not None:
                 log = conn.execute(
                     f"""
-                    SELECT id, product_code, result, snapshot_id FROM return_inspection_log
+                    SELECT id, product_code, result, snapshot_id, defect FROM return_inspection_log
+                    WHERE id = ? AND snapshot_id IN ({_marks(ids)}) AND undone = 0
+                    """,
+                    (int(log_id), *ids),
+                ).fetchone()
+            elif code:
+                log = conn.execute(
+                    f"""
+                    SELECT id, product_code, result, snapshot_id, defect FROM return_inspection_log
                     WHERE product_code = ? AND snapshot_id IN ({_marks(ids)})
                       AND undone = 0 AND result IN ('next', 'done')
                     ORDER BY id DESC LIMIT 1
@@ -368,30 +407,107 @@ def build_return_inspection_router(
                     (code, *ids),
                 ).fetchone()
             else:
+                mine = bool(payload.get("mine"))
                 log = conn.execute(
                     f"""
-                    SELECT id, product_code, result, snapshot_id FROM return_inspection_log
-                    WHERE snapshot_id IN ({_marks(ids)}) AND undone = 0 ORDER BY id DESC LIMIT 1
+                    SELECT id, product_code, result, snapshot_id, defect FROM return_inspection_log
+                    WHERE snapshot_id IN ({_marks(ids)}) AND undone = 0 {"AND username = ?" if mine else ""}
+                    ORDER BY id DESC LIMIT 1
                     """,
-                    tuple(ids),
+                    (*ids, user) if mine else tuple(ids),
                 ).fetchone()
             if log is None:
-                raise HTTPException(status_code=404, detail="취소할 스캔 기록이 없습니다.")
-            conn.execute("UPDATE return_inspection_log SET undone = 1 WHERE id = ?", (log["id"],))
-            if log["result"] in ("next", "done"):
-                conn.execute(
-                    """
-                    UPDATE return_inspection_snap_items SET scanned_qty = MAX(scanned_qty - 1, 0)
-                    WHERE snapshot_id = ? AND product_code = ?
-                    """,
-                    (log["snapshot_id"], log["product_code"]),
-                )
+                raise HTTPException(status_code=404, detail="취소할 스캔 기록이 없습니다. (이미 취소되었을 수 있습니다)")
+            def _undo_one(row):
+                conn.execute("UPDATE return_inspection_log SET undone = 1 WHERE id = ?", (row["id"],))
+                if row["result"] in ("next", "done"):
+                    conn.execute(
+                        """
+                        UPDATE return_inspection_snap_items SET scanned_qty = MAX(scanned_qty - 1, 0)
+                        WHERE snapshot_id = ? AND product_code = ?
+                        """,
+                        (row["snapshot_id"], row["product_code"]),
+                    )
+
+            _undo_one(log)
+            undone_ids = [log["id"]]
+            try:
+                count = max(1, min(int(payload.get("count") or 1), 999))
+            except (TypeError, ValueError):
+                count = 1
+            if log_id is not None and count > 1 and log["result"] in ("next", "done"):
+                for _ in range(count - 1):
+                    extra = conn.execute(
+                        f"""
+                        SELECT id, product_code, result, snapshot_id, defect FROM return_inspection_log
+                        WHERE product_code = ? AND snapshot_id IN ({_marks(ids)})
+                          AND undone = 0 AND result IN ('next', 'done')
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (log["product_code"], *ids),
+                    ).fetchone()
+                    if extra is None:
+                        break
+                    _undo_one(extra)
+                    undone_ids.append(extra["id"])
             conn.commit()
             state = _state(conn, ids)
         finally:
             conn.close()
-        state["undone"] = {"code": log["product_code"], "result": log["result"]}
+        state["undone"] = {
+            "log_id": log["id"], "code": log["product_code"], "result": log["result"], "defect": bool(log["defect"]),
+            "log_ids": undone_ids,
+        }
         return state
+
+    @router.post("/toggle-defect")
+    def inspection_toggle_defect(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """찍힌 스캔 1건을 정상 ↔ 불량으로 바꾼다 (수량은 그대로)."""
+        ids = _snapshot_ids(payload)
+        try:
+            log_id = int(payload.get("log_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="log_id가 필요합니다.")
+        conn = get_shared_db()
+        try:
+            log = conn.execute(
+                f"""
+                SELECT id, product_code, defect FROM return_inspection_log
+                WHERE id = ? AND snapshot_id IN ({_marks(ids)}) AND undone = 0 AND result IN ('next', 'done')
+                """,
+                (log_id, *ids),
+            ).fetchone()
+            if log is None:
+                raise HTTPException(status_code=404, detail="바꿀 스캔 기록이 없습니다. (취소되었을 수 있습니다)")
+            new_defect = 0 if log["defect"] else 1
+            conn.execute("UPDATE return_inspection_log SET defect = ? WHERE id = ?", (new_defect, log_id))
+            conn.commit()
+            state = _state(conn, ids)
+        finally:
+            conn.close()
+        state["toggled"] = {"log_id": log_id, "code": log["product_code"], "defect": bool(new_defect)}
+        return state
+
+    @router.post("/item-logs")
+    def inspection_item_logs(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """한 상품의 스캔 기록 (취소 안 된 것, 최신순) — 누가 언제 정상/불량으로 찍었는지."""
+        ids = _snapshot_ids(payload)
+        code = _norm(str(payload.get("code") or ""))
+        if not code:
+            raise HTTPException(status_code=400, detail="code가 필요합니다.")
+        conn = get_shared_db()
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT id, result, defect, created_at, username FROM return_inspection_log
+                WHERE product_code = ? AND snapshot_id IN ({_marks(ids)}) AND undone = 0
+                ORDER BY id DESC LIMIT 100
+                """,
+                (code, *ids),
+            ).fetchall()
+        finally:
+            conn.close()
+        return {"ok": True, "code": code, "logs": [dict(r) | {"defect": bool(r["defect"])} for r in rows]}
 
     @router.post("/clear-errors")
     def inspection_clear_errors(payload: dict = Body(...), user: str = Depends(get_current_user)):
