@@ -22,6 +22,8 @@ const SellerPage = () => {
     const [zoomImage, setZoomImage] = useState(null);
     const [view, setView] = useState('list');
     const [loaded, setLoaded] = useState(false); // 새로고침 버튼을 눌러 한 번이라도 불러왔는지
+    const [dateFrom, setDateFrom] = useState(''); // 접수일 조회 시작 (YYYY-MM-DD, 비우면 제한 없음)
+    const [dateTo, setDateTo] = useState('');
 
     const fetchAll = async () => {
         setLoaded(true);
@@ -64,6 +66,7 @@ const SellerPage = () => {
                 buyer_tel: r.buyer_tel,
                 images: r.images || [],
                 thumbs: r.images_webp || [],
+                receivedAt: r.received_at || '',
             })),
             ...exchanges.map((e) => ({
                 type: 'exchange',
@@ -77,16 +80,32 @@ const SellerPage = () => {
                 buyer_name: e.buyer_name,
                 buyer_tel: e.buyer_tel,
                 images: e.images || [],
+                receivedAt: e.received_at || '',
             })),
         ];
         const q = search.trim().toLowerCase();
         return all.filter((r) => {
             if (typeFilter !== 'all' && r.type !== typeFilter) return false;
+            if (dateFrom || dateTo) {
+                const day = String(r.receivedAt || '').slice(0, 10);
+                if (!day) return false;
+                if (dateFrom && day < dateFrom) return false;
+                if (dateTo && day > dateTo) return false;
+            }
             if (!q) return true;
             return [r.goods_name, r.invoice, r.buyer_name, r.buyer_tel, r.comment]
                 .some((v) => String(v || '').toLowerCase().includes(q));
         });
-    }, [returns, exchanges, typeFilter, search]);
+    }, [returns, exchanges, typeFilter, search, dateFrom, dateTo]);
+
+    const setQuickRange = (days) => {
+        const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const end = new Date();
+        const start = new Date();
+        start.setDate(start.getDate() - days);
+        setDateFrom(fmt(start));
+        setDateTo(fmt(end));
+    };
 
     const groups = useMemo(() => {
         const map = new Map();
@@ -134,7 +153,7 @@ const SellerPage = () => {
                 </div>
                 {r.comment && <div className={styles.comment}>고객메모: {r.comment}</div>}
                 <div className={styles.meta}>
-                    주문번호 {r.order_sno || '-'} · 송장 {r.invoice || '-'} · {r.buyer_name || '-'} · {r.buyer_tel || '-'}
+                    접수 {String(r.receivedAt || '').slice(0, 10) || '-'} · 주문번호 {r.order_sno || '-'} · 송장 {r.invoice || '-'} · {r.buyer_name || '-'} · {r.buyer_tel || '-'}
                 </div>
             </div>
         </div>
@@ -197,6 +216,31 @@ const SellerPage = () => {
                     />
                     상품별로 묶기
                 </label>
+                <div className={styles.segment} title="접수일 기준 조회 기간">
+                    <input
+                        type="date"
+                        className={styles.search}
+                        style={{ width: 'auto' }}
+                        value={dateFrom}
+                        max={dateTo || undefined}
+                        onChange={(e) => setDateFrom(e.target.value)}
+                        aria-label="접수일 시작"
+                    />
+                    <span>~</span>
+                    <input
+                        type="date"
+                        className={styles.search}
+                        style={{ width: 'auto' }}
+                        value={dateTo}
+                        min={dateFrom || undefined}
+                        onChange={(e) => setDateTo(e.target.value)}
+                        aria-label="접수일 끝"
+                    />
+                    <button type="button" className={styles.segBtn} onClick={() => setQuickRange(0)}>오늘</button>
+                    <button type="button" className={styles.segBtn} onClick={() => setQuickRange(6)}>7일</button>
+                    <button type="button" className={styles.segBtn} onClick={() => setQuickRange(29)}>30일</button>
+                    <button type="button" className={styles.segBtn} onClick={() => { setDateFrom(''); setDateTo(''); }}>전체</button>
+                </div>
                 <input
                     type="text"
                     className={styles.search}

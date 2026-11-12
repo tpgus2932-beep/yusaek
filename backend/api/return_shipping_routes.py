@@ -868,7 +868,13 @@ def build_return_shipping_router(*, get_current_user, get_db, get_setting, enque
                             item.get("receiver_name") or item.get("buyer_name") or ""
                         )
                         reason_code = item.get("cancel_reason")
+                        # 반품접수일 (조회 기준 date_type=cancel_received_at과 같은 값)
+                        received_at = str(
+                            cancel.get("cancel_received_at") or item.get("cancel_received_at")
+                            or cancel.get("received_at") or cancel.get("created_at") or ""
+                        ).strip()
                         items_out.append({
+                            "received_at": received_at,
                             "invoice": str(item.get("invoice") or "").strip(),
                             "order_sno": str(item.get("order_sno") or "").strip(),
                             "sno": item.get("sno"),

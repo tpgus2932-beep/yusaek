@@ -909,6 +909,8 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
                         "return_delivery": ex.get("return_delivery") or {},
                         "exchange_delivery": ex.get("exchange_delivery") or {},
                         "goods_name": order_item.get("goods_name") or first.get("goods_name") or "",
+                        # 교환 접수일 (조회 기준 requested_at과 같은 값)
+                        "received_at": str(ex.get("requested_at") or ex.get("created_at") or "").strip(),
                     })
                 if page >= data.get("max_page_number", 1):
                     break
@@ -943,6 +945,7 @@ def build_exchange_return_router(*, get_current_user, get_setting, get_db=None, 
         items_out = [
             {
                 "hold": str(ex["exchange_sno"]) in held,
+                "received_at": ex.get("received_at", ""),
                 "exchange_sno": ex["exchange_sno"],
                 "order_sno": ex["order_sno"],
                 "reason_code": ex["reason_code"],
