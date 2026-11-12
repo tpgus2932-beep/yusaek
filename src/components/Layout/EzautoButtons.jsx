@@ -8,6 +8,9 @@ const KINDS = {
     invoice: { label: '판매처 송장등록', short: '송장등록', path: '/ezauto/register-invoices', icon: <Truck size={15} />, hint: '이지어드민에서 출고된 건의 송장을 에이블리에 전송' },
 };
 
+// 화면에 보여줄 작업. 판매처 송장등록은 구현해 두었지만 당분간 숨긴다 (다시 쓰려면 'invoice'를 추가).
+const VISIBLE_KINDS = ['auto_order'];
+
 const num = (v) => (v === null || v === undefined || v === '' ? '-' : Number(v).toLocaleString());
 
 function resultLines(kind, r) {
@@ -87,7 +90,8 @@ export default function EzautoButtons() {
 
     return (
         <>
-            {Object.entries(KINDS).map(([kind, { label, short, icon, hint }]) => {
+            {VISIBLE_KINDS.map((kind) => {
+                const { label, short, icon, hint } = KINDS[kind];
                 const running = status[kind]?.running || starting === kind;
                 return (
                     <button
