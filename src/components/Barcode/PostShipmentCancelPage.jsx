@@ -626,6 +626,11 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
         delete next[cancelSno];
         return next;
       });
+      setStockSmsLogs((prev) => prev.map((row) => (
+        row.cancel_sno === cancelSno
+          ? { ...row, sent_reply_content: data.sent_reply_content ?? message, sent_reply_at: data.sent_reply_at ?? "" }
+          : row
+      )));
       setReplyModalRow(null);
       setRepliesMessage("답장을 보냈습니다.");
     } catch (err) {
@@ -1357,6 +1362,12 @@ export default function PostShipmentCancelPage({ headerExtra = null }) {
                     <td style={{ whiteSpace: "pre-wrap" }}>{row.reply_content || "-"}</td>
                     <td>{row.reply_at || "-"}</td>
                     <td>
+                      {row.sent_reply_content && (
+                        <div style={{ marginBottom: "0.35rem", fontSize: "0.82rem" }}>
+                          <div style={{ whiteSpace: "pre-wrap" }}>{row.sent_reply_content}</div>
+                          <div style={{ opacity: 0.6, fontSize: "0.75rem" }}>{row.sent_reply_at}</div>
+                        </div>
+                      )}
                       <button
                         className={pageStyles.secondaryBtn}
                         onClick={() => setReplyModalRow(row)}

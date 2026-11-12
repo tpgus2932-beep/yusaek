@@ -1967,6 +1967,12 @@ _ensure_post_shipment_cancel_stock_review_column(
 _ensure_post_shipment_cancel_stock_review_column(
     "stock_items", "ALTER TABLE post_shipment_cancel_stock_review ADD COLUMN stock_items TEXT NOT NULL DEFAULT '[]'"
 )
+_ensure_post_shipment_cancel_stock_review_column(
+    "sent_reply_content", "ALTER TABLE post_shipment_cancel_stock_review ADD COLUMN sent_reply_content TEXT NOT NULL DEFAULT ''"
+)
+_ensure_post_shipment_cancel_stock_review_column(
+    "sent_reply_at", "ALTER TABLE post_shipment_cancel_stock_review ADD COLUMN sent_reply_at TEXT NOT NULL DEFAULT ''"
+)
 
 app.include_router(
     build_amood_unpack_router(

@@ -27,7 +27,8 @@ def _make_db_factory():
         "order_sno TEXT NOT NULL DEFAULT '', buyer_tel TEXT NOT NULL DEFAULT '', "
         "product_names TEXT NOT NULL DEFAULT '[]', action TEXT NOT NULL, error TEXT, "
         "reply_content TEXT NOT NULL DEFAULT '', reply_at TEXT NOT NULL DEFAULT '', "
-        "closed_at TEXT NOT NULL DEFAULT '', item_snos TEXT NOT NULL DEFAULT '[]')"
+        "closed_at TEXT NOT NULL DEFAULT '', item_snos TEXT NOT NULL DEFAULT '[]', "
+        "sent_reply_content TEXT NOT NULL DEFAULT '', sent_reply_at TEXT NOT NULL DEFAULT '')"
     )
     keep_alive.commit()
 

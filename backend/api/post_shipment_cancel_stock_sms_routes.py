@@ -241,7 +241,7 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
         try:
             rows = conn.execute(
                 "SELECT id, created_at, username, cancel_sno, order_sno, buyer_tel, product_names, "
-                "action, error, reply_content, reply_at, closed_at "
+                "action, error, reply_content, reply_at, closed_at, sent_reply_content, sent_reply_at "
                 "FROM post_shipment_cancel_stock_review ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -629,7 +629,20 @@ def build_post_shipment_cancel_stock_sms_router(*, get_current_user, get_setting
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"답장 발송 실패: {exc}")
 
-        return {"ok": True, "cancel_sno": cancel_sno}
+        # 보낸 답장을 저장해 목록에 표시한다 (가장 최근에 보낸 답장 기준).
+        sent_at = datetime.now().isoformat(timespec="seconds")
+        conn = get_db()
+        try:
+            conn.execute(
+                "UPDATE post_shipment_cancel_stock_review SET sent_reply_content = ?, sent_reply_at = ? "
+                "WHERE cancel_sno = ?",
+                (message, sent_at, cancel_sno),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        return {"ok": True, "cancel_sno": cancel_sno, "sent_reply_content": message, "sent_reply_at": sent_at}
 
     @router.post("/delete")
     def delete(payload: dict = Body(...), user: str = Depends(get_current_user)):
