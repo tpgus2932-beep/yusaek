@@ -82,6 +82,7 @@ from api.return_processing_log_routes import build_return_processing_log_router
 from api.return_inspection_routes import build_return_inspection_router, init_return_inspection_tables
 from api.return_special_notes_routes import build_return_special_notes_router
 from api.delivery_anomaly_routes import build_delivery_anomaly_router
+from api.ezauto_routes import build_ezauto_router
 from api.client_cancel_soldout_routes import build_client_cancel_soldout_router
 from api.post_shipment_cancel_stock_sms_routes import build_post_shipment_cancel_stock_sms_router
 from api.amood_unpack_routes import build_amood_unpack_router
@@ -2378,6 +2379,15 @@ _delivery_anomaly_router = build_delivery_anomaly_router(
     set_setting=_set_setting,
 )
 app.include_router(_delivery_anomaly_router)
+
+# 이지오토(에이블리 자동발주·판매처 송장등록) 웹 실행
+app.include_router(
+    build_ezauto_router(
+        get_current_user=_get_current_user,
+        get_setting=_get_setting,
+        set_setting=_set_setting,
+    )
+)
 
 init_equipment_tables(_get_shared_db)
 

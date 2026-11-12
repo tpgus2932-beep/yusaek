@@ -3,11 +3,12 @@ import { useState } from 'react';
 import styles from './Header.module.css';
 import { COLLAB_API_BASE, LOCAL_API_BASE, getAuthHeaders } from '../../lib/api';
 import EventCalendarModal from '../EventCalendar/EventCalendarModal';
+import EzautoButtons from './EzautoButtons';
 import { requestEzadminSessionFromExtension } from '../../lib/ezadminAuto';
 
 const DEV_SERVER_USERS = ['tmddlfnan']; // 5175 서버 재시작 버튼 노출 계정(김승일)
 
-const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode, currentUser }) => {
+const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode, currentUser, userRole }) => {
     const initials = displayName ? displayName.slice(0, 2) : 'JD';
     const [showProfile, setShowProfile] = useState(false);
     const [nameInput, setNameInput] = useState(displayName || '');
@@ -262,6 +263,7 @@ const Header = ({ onLogout, displayName, onProfileUpdate, topMode, setTopMode, c
                     <CalendarDays size={15} />
                     행사 일정
                 </button>
+                {userRole !== 'viewer' && <EzautoButtons />}
                 <a
                     href="https://gwanri-page.vercel.app/"
                     target="_blank"

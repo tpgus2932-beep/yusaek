@@ -321,6 +321,7 @@ const App = () => {
           topMode={topMode}
           setTopMode={setTopMode}
           currentUser={username}
+          userRole={role}
           onProfileUpdate={(name) => {
             setDisplayName(name);
             localStorage.setItem('displayName', name);
