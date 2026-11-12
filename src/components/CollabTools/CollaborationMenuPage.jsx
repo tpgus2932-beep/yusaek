@@ -53,6 +53,9 @@ const DEFAULT_LABEL_SUPPLIERS = ['리마인드', '케이디지', '리자드스�
 // 거래처별로 라벨 상품명 앞에 붙는 접두어(예: 리마인드 → "R 상품명"). 서버 조회 전/실패 시 기본값.
 const DEFAULT_LABEL_PREFIXES = { 리마인드: 'R', 케이디지: 'K', 리자드스탠다드: 'L' };
 
+// 같은 상품코드 라벨이 이 장수 이상이면 묶음 앞에 수량 구분 라벨을 한 장 더 출력한다.
+const SEPARATOR_LABEL_MIN_QTY = 10;
+
 function buildBarcodeSvgMarkup(text) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   try {
@@ -77,7 +80,9 @@ function printProductLabels(labels) {
         <div class="title">${escapeHtml(l.title)}</div>
         ${l.clientLine ? `<div class="client">${escapeHtml(l.clientLine)}</div>` : ''}
         <div class="option"${l.option ? '' : ' style="visibility:hidden"'}>${l.option ? escapeHtml(l.option) : '-'}</div>
-        <div class="barcode">${buildBarcodeSvgMarkup(l.code)}</div>
+        ${l.separatorQty
+          ? `<div class="sep">↓ ${Number(l.separatorQty)}개</div>`
+          : `<div class="barcode">${buildBarcodeSvgMarkup(l.code)}</div>`}
     </div>
   `).join('\n');
 
@@ -103,6 +108,7 @@ body { background: #fff; font-family: sans-serif; }
 .client { font-size: 8pt; margin-top: 0.8mm; color: #111; line-height: 1.2; }
 .barcode { margin-top: 1.5mm; width: 100%; }
 .barcode svg { width: 100%; height: 8mm; display: block; }
+.sep { margin-top: 1.5mm; height: 8mm; line-height: 8mm; font-size: 14pt; font-weight: 800; color: #111; }
 </style>
 </head>
 <body>${cardsHtml}</body>
@@ -1131,7 +1137,19 @@ export default function CollaborationMenuPage() {
       const option = (item.options || '').replace(/\(?미송픽업\)?/g, '').replace(/\s+/g, ' ').trim();
       return Array.from({ length: qty }, () => ({ title, option, clientLine, code: item.code }));
     });
-    printProductLabels(labels);
+    // 같은 상품코드(일반/미송픽업 줄 합산)가 10장 이상이면 그 묶음 맨 앞에 바코드 없는 구분 라벨
+    // (상품명/옵션 + "↓ 수량개")을 한 장 넣는다 - 출력물에서 상품 묶음의 시작을 쉽게 찾기 위함.
+    const labelsByCode = new Map();
+    labels.forEach((label) => {
+      if (!labelsByCode.has(label.code)) labelsByCode.set(label.code, []);
+      labelsByCode.get(label.code).push(label);
+    });
+    const orderedLabels = [...labelsByCode.values()].flatMap((group) => (
+      group.length >= SEPARATOR_LABEL_MIN_QTY
+        ? [{ ...group[0], separatorQty: group.length }, ...group]
+        : group
+    ));
+    printProductLabels(orderedLabels);
   };
 
   const toggleReceivingSelected = (key) =>
