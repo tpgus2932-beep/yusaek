@@ -58,6 +58,63 @@ _EZ_LOOKUP_CONCURRENCY = 5
 _ABLY_MAX_PAGES = 100  # 무한 루프 방지용 안전 상한 (per_page 100 기준 1만 건)
 
 
+async def resolve_ezadmin_invoices(ez, items: list[dict], *, start_date: str, end_date: str, concurrency: int = 5) -> None:
+    """주문번호로 이지어드민을 조회해 실제 등록된 송장번호로 item["invoice_no"]를 교체한다.
+
+    주문 검색 결과(query_orders)에는 송장번호가 없고, 주문의 상품 목록(packlist)의 trans_no / order_id_seq에 있다.
+    이지어드민에서 못 찾거나(없음/세션 문제/오류) 송장번호가 비어 있으면 에이블리가 준 송장번호를 그대로 쓴다.
+    에이블리 sno와 같은 order_id_seq의 송장을 우선하고, 없으면 그 주문의 송장 전부를 후보로 본다.
+    에이블리 송장이 있는데 이지어드민 송장과 다르면 item["mismatch_reason"]을 채운다.
+    """
+    order_nos = sorted({it["order_no"] for it in items if it.get("order_no")})
+    if not order_nos:
+        return
+    sem = asyncio.Semaphore(concurrency)
+    found: dict[str, list[tuple[str, str]]] = {}  # 주문번호 -> [(order_id_seq, trans_no)]
+    session_failed = False
+
+    async def lookup(order_no: str) -> None:
+        nonlocal session_failed
+        if session_failed:
+            return
+        async with sem:
+            try:
+                rows = await ez.query_orders(order_no, start_date=start_date, end_date=end_date, rows=10)
+                packs: list[str] = []
+                for row in rows:
+                    pack = str(((row.get("cell") if isinstance(row, dict) else None) or {}).get("pack") or "").strip()
+                    if pack and pack not in packs:
+                        packs.append(pack)
+                pairs: list[tuple[str, str]] = []
+                for pack in packs:
+                    for entry in await ez.packlist_items(pack):
+                        trans_no = str(entry.get("trans_no") or "").strip()
+                        if trans_no:
+                            pairs.append((str(entry.get("order_id_seq") or "").strip(), trans_no))
+            except EzAdminSessionExpired:
+                session_failed = True  # 세션이 없으면 나머지도 실패하므로 중단하고 에이블리 송장으로 진행
+                return
+            except Exception:
+                return
+        if pairs:
+            found[order_no] = pairs
+
+    await asyncio.gather(*(lookup(no) for no in order_nos))
+    for it in items:
+        pairs = found.get(it.get("order_no") or "")
+        if not pairs:
+            continue
+        sno = str(it.get("sno") or "").strip()
+        exact = [no for seq, no in pairs if sno and seq == sno]
+        candidates = list(dict.fromkeys(exact or [no for _seq, no in pairs]))
+        ably_no = it["invoice_no"]
+        if ably_no in candidates:
+            continue  # 에이블리와 이지어드민 송장이 일치
+        it["invoice_no"] = candidates[0]
+        if ably_no:
+            it["mismatch_reason"] = f"송장번호 불일치 (에이블리 {ably_no} / 이지어드민 {', '.join(candidates)})"
+
+
 def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_setting):
     router = APIRouter(prefix="/delivery-anomaly")
 
@@ -116,6 +173,7 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
                         "product_name": item.get("goods_name") or "",
                         "option_info": item.get("option_info") or "",
                         "order_no": str(item.get("order_sno") or item.get("sno") or ""),
+                        "sno": str(item.get("sno") or ""),
                         "invoice_no": str(item.get("invoice") or "").strip(),
                         "phone": item.get("receiver_tel") or "",
                         "sent_date": item.get("goods_sent_at") or "",
@@ -440,54 +498,13 @@ def build_delivery_anomaly_router(*, get_current_user, get_db, get_setting, set_
         conn.commit()
 
     async def _resolve_ezadmin_invoices(items: list[dict]) -> None:
-        """주문번호로 EZAdmin(CS 검색과 같은 주문 검색)을 조회해 실제 등록된 송장번호(trans_no)로 invoice_no를 교체한다.
-
-        EZAdmin에서 못 찾거나(없음/세션 문제/오류) 송장번호가 비어 있으면 에이블리가 준 송장번호를 그대로 쓴다.
-        한 주문번호에 송장이 여러 개로 나오면 에이블리 송장과 일치하는 것을 우선한다.
-        """
-        order_nos = sorted({it["order_no"] for it in items if it.get("order_no")})
-        if not order_nos:
-            return
-        ez = EzAdminClient(get_setting)
         now = datetime.now(_KST)
-        start_date = (now - timedelta(days=_EZ_LOOKUP_DAYS)).strftime("%Y-%m-%d")
-        end_date = now.strftime("%Y-%m-%d")
-        sem = asyncio.Semaphore(_EZ_LOOKUP_CONCURRENCY)
-        found: dict[str, list[str]] = {}
-        session_failed = False
-
-        async def lookup(order_no: str) -> None:
-            nonlocal session_failed
-            if session_failed:
-                return
-            async with sem:
-                try:
-                    rows = await ez.query_orders(order_no, start_date=start_date, end_date=end_date, rows=10)
-                except EzAdminSessionExpired:
-                    session_failed = True  # 세션이 없으면 나머지도 실패하므로 중단하고 에이블리 송장으로 진행
-                    return
-                except Exception:
-                    return
-            nos: list[str] = []
-            for row in rows:
-                cell = row.get("cell") if isinstance(row, dict) else None
-                trans_no = str((cell or {}).get("trans_no") or "").strip()
-                if trans_no and trans_no not in nos:
-                    nos.append(trans_no)
-            if nos:
-                found[order_no] = nos
-
-        await asyncio.gather(*(lookup(no) for no in order_nos))
-        for it in items:
-            nos = found.get(it.get("order_no") or "")
-            if not nos:
-                continue
-            ably_no = it["invoice_no"]
-            if ably_no in nos:
-                continue  # 에이블리와 이지어드민 송장이 일치
-            it["invoice_no"] = nos[0]
-            if ably_no:
-                it["mismatch_reason"] = f"송장번호 불일치 (에이블리 {ably_no} / 이지어드민 {', '.join(nos)})"
+        await resolve_ezadmin_invoices(
+            EzAdminClient(get_setting), items,
+            start_date=(now - timedelta(days=_EZ_LOOKUP_DAYS)).strftime("%Y-%m-%d"),
+            end_date=now.strftime("%Y-%m-%d"),
+            concurrency=_EZ_LOOKUP_CONCURRENCY,
+        )
 
     async def _run_check_core(force: bool = False) -> None:
         today_str = datetime.now(_KST).strftime("%Y-%m-%d")
