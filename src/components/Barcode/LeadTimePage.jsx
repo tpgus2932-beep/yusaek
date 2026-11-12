@@ -20,11 +20,13 @@ const SHIP_TABS = [
   { key: "single", label: "개별" },
   { key: "combo", label: "합포" },
   { key: "big", label: "그중 대형" }, // 대량·개별·합포 안에 든 대형 상품 (따로 떼지 않음)
+  { key: "krl_bulk", label: "KRL 대량" }, // 대량 안의 K·R·L 상품 송장 (표시만, 대량 개수에 포함)
+  { key: "krl_single", label: "KRL 개별" }, // 개별 안의 K·R·L 상품 송장 (표시만, 개별 개수에 포함)
 ];
 // 매칭작업 항목: [처리 개수 설정 키, 이름]. 위에서부터 차례로 같은 인원이 이어서 처리한다고 보고 계산한다.
 const MATCH_PARTS = [
   ["match_stock", "재고매칭 (대량제외)"],
-  ["match_krl", "KRL매칭"], // 출고(출력차수) 송장 중 K·R·L 상품이 든 송장 수에 KRL 처리 개수 하나로 계산 (글자별은 상세보기)
+  ["match_krl", "KRL 송장 매칭"], // 출고(출력차수) 송장 중 K·R·L 상품이 든 송장 수에 KRL 처리 개수 하나로 계산 (글자별은 상세보기)
   ["match_combo", "합포빼기"],
 ];
 // 상세 항목별 시작 시각 설정 키 (비우면 자동: 포장은 앞 항목에 이어서, 나머지는 그 작업의 시작 시각)
@@ -1125,7 +1127,7 @@ export default function LeadTimePage({ headerExtra = null }) {
                     {MATCH_PARTS.map(([k, label]) => <Fragment key={k}>{renderDetailRow(label, estimate.matchDetail[k], k)}</Fragment>)}
                   </ul>
                   <span className={styles.muted}>
-                    재고매칭(대량제외) = 재고송장 차수의 개별 송장 수(대량·합포 제외) · KRL매칭 = 본송장 중 상품명이 K·R·L로 시작하는 상품이 든 송장 수(재고송장 제외) · 합포빼기 = 본송장+재고송장 합포의 상품 개수
+                    재고매칭(대량제외) = 재고송장 차수의 개별 송장 수(대량·합포 제외) · KRL 송장 매칭 = 본송장 중 상품명이 K·R·L로 시작하는 상품이 든 송장 수(재고송장 제외) · 합포빼기 = 본송장+재고송장 합포의 상품 개수
                     <br />
                     세 항목은 동시에 진행하는 것으로 보고 각자 인원·1분 처리 개수로 계산, 전체는 늦게 끝나는 쪽 기준{matchEdit !== null && matchQty !== loadedMatchQty ? " · 직접 입력한 개수는 불러온 비율로 나눔" : ""}
                   </span>

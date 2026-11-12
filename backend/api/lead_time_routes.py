@@ -19,7 +19,7 @@ _EZADMIN_SESSION_KEY = "ezadmin_phpsessid"
 # S700은 PHPSESSID만으로는 응답하지 않아 로그인 도메인/아이디 쿠키가 같이 필요하다 (shipping_eta_routes와 동일).
 _EZ_EXTRA_COOKIES = {"ezdomain": "yusaek", "ezuserid": "yusaek", "ezsave": "on"}
 _EZ_TIMEOUT = 300.0
-_SHIP_CLASSIFY_VERSION = 4  # classify_ship_orders 결과 모양이 바뀌면 올린다 (저장된 차수 결과를 다시 읽게 함)
+_SHIP_CLASSIFY_VERSION = 5  # classify_ship_orders 결과 모양이 바뀌면 올린다 (저장된 차수 결과를 다시 읽게 함)
 _KST = ZoneInfo("Asia/Seoul")
 _NUMBER_TITLE_RE = re.compile(r"\[\s*(\d+)\s*\]\s*\((\d{2}:\d{2}:\d{2})\)\s*개수\s*:\s*(\d+)")
 _PRODUCT_RE = re.compile(r"\[([A-Z]\d+)\](.*?)(?:-\[([^\]]*)\])?\s+(\d+)개")
@@ -214,7 +214,7 @@ def classify_ship_orders(order_rows: list[dict]) -> dict:
     combo_orders = combo_pieces = combo_big = combo_big_orders = big_orders = 0
     # 매칭작업 KRL: 상품명이 K·R·L로 시작하는 상품이 든 송장 수 (한 송장에 여러 글자가 있으면 글자별로는 각각, 합계는 1번만)
     krl = {"orders": 0, "K": 0, "R": 0, "L": 0}
-    singles: list[tuple[str | None, bool]] = []  # (상품코드, 대형 여부)
+    singles: list[tuple[str | None, bool, bool]] = []  # (상품코드, 대형 여부, K·R·L 상품 여부)
     for order in order_rows:
         cell = order.get("cell", {}) if isinstance(order, dict) else {}
         found = [
@@ -235,9 +235,9 @@ def classify_ship_orders(order_rows: list[dict]) -> dict:
             combo_big += sum(q for _, q, big in found if big)
             combo_big_orders += 1 if any(big for _, _, big in found) else 0
         else:
-            singles.append((found[0][0], found[0][2]) if found else (None, False))
+            singles.append((found[0][0], found[0][2], bool(letters)) if found else (None, False, False))
 
-    bulk = bulk_big = 0
+    bulk = bulk_big = bulk_krl = 0
     i = 0
     while i < len(singles):
         j = i
@@ -246,16 +246,21 @@ def classify_ship_orders(order_rows: list[dict]) -> dict:
         run = max(j - i, 1)
         if singles[i][0] is not None and run >= _BULK_RUN_MIN:
             bulk += run
-            bulk_big += sum(1 for _, big in singles[i:i + run] if big)
+            bulk_big += sum(1 for _, big, _ in singles[i:i + run] if big)
+            bulk_krl += sum(1 for _, _, k in singles[i:i + run] if k)
         i += run
     single = len(singles) - bulk
-    single_big = sum(1 for _, big in singles if big) - bulk_big
+    single_big = sum(1 for _, big, _ in singles if big) - bulk_big
+    # K·R·L 상품 송장을 대량/개별 안에서 따로 센 값 (표시용, 대량·개별 개수에 그대로 포함)
+    single_krl = sum(1 for _, _, k in singles if k) - bulk_krl
     return {
         "bulk": {"orders": bulk, "pieces": bulk, "big_pieces": bulk_big, "big_orders": bulk_big},
         "single": {"orders": single, "pieces": single, "big_pieces": single_big, "big_orders": single_big},
         "combo": {"orders": combo_orders, "pieces": combo_pieces, "big_pieces": combo_big, "big_orders": combo_big_orders},
         "big": {"orders": big_orders, "pieces": bulk_big + single_big + combo_big},
         "krl": krl,
+        "krl_bulk": {"orders": bulk_krl, "pieces": bulk_krl},
+        "krl_single": {"orders": single_krl, "pieces": single_krl},
     }
 
 
