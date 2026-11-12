@@ -38,7 +38,8 @@ const STATE_ORDER = { partial: 0, todo: 1, done: 2 };
 // allTabs: 위 탭 줄에 보여줄 전체 탭(A·B·C…). 아직 안 불러온 탭은 summonCounts[탭]={kinds,total} 를 보고
 //   누르면 onSummonTab(탭) 으로 그 자리에서 불러와 바로 매칭한다.
 // onRemove(tab, code, qty): 실물이 없는 불량을 그 탭 불량 목록에서도 지운다 (Promise).
-export default function DefectMatchModal({ session, onChange, toKey, onRemove, onClose, allTabs = [], summonCounts = {}, onSummonTab }) {
+// onMatch(tab, code, delta): 찍을 때 +1, 취소할 때 -1 → 서버에 "매칭된 수량" 저장 (출력·매입관리 기준)
+export default function DefectMatchModal({ session, onChange, toKey, onRemove, onClose, allTabs = [], summonCounts = {}, onSummonTab, onMatch }) {
   const tabs = session.tabs ?? [];
   const rowsByTab = session.rowsByTab ?? {};
   const scanned = session.scanned ?? {};
@@ -106,6 +107,7 @@ export default function DefectMatchModal({ session, onChange, toKey, onRemove, o
     if (target) {
       const nextScanned = { ...latest, [target.key]: (latest[target.key] || 0) + 1 };
       update({ scanned: nextScanned });
+      onMatch?.(target.tab, target.code, 1);
       const allDone = rows.every((r) => (nextScanned[r.key] || 0) >= r.total);
       result = allDone ? "done" : "next";
       left = target.total - nextScanned[target.key];
@@ -125,6 +127,7 @@ export default function DefectMatchModal({ session, onChange, toKey, onRemove, o
     if (n <= 0) return;
     if (!window.confirm(`${row.label || row.code}\n마지막으로 찍은 1개를 취소할까요?`)) { focusInput(); return; }
     update({ scanned: { ...scanned, [row.key]: n - 1 } });
+    onMatch?.(row.tab, row.code, -1);
     focusInput();
   };
 

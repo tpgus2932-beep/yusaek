@@ -236,3 +236,24 @@ def test_remove_summoned_only_removes_unmatched_summon_qty(monkeypatch):
     row = client.get("/barcode/defect/list").json()["defects"][0]
     assert row["count"] == 1
     assert row["kimsungil_summon_qty"] == 0
+
+
+
+def test_summon_matched_qty_tracks_scans_and_caps(monkeypatch):
+    client, _keep_alive = _make_client(monkeypatch, incoming={"S1": 5})
+    for _ in range(3):
+        client.post("/barcode/kimsungil/add", json={"code": "S1"})
+    client.post("/barcode/kimsungil/summon-to-defect")
+    row = client.get("/barcode/defect/list").json()["defects"][0]
+    assert row["kimsungil_summon_qty"] == 3 and row["summon_matched_qty"] == 0
+
+    for _ in range(5):  # 불러온 수량(3)보다 많이 찍어도 3까지만
+        client.post("/barcode/defect/summon-match", json={"code": "S1", "delta": 1})
+    assert client.get("/barcode/defect/list").json()["defects"][0]["summon_matched_qty"] == 3
+    client.post("/barcode/defect/summon-match", json={"code": "S1", "delta": -1})
+    assert client.get("/barcode/defect/list").json()["defects"][0]["summon_matched_qty"] == 2
+
+    # 미매칭 1개 삭제 → 불러온 수량 2, 매칭 2 그대로
+    client.post("/barcode/defect/remove-summoned", json={"code": "S1", "qty": 1})
+    row = client.get("/barcode/defect/list").json()["defects"][0]
+    assert row["kimsungil_summon_qty"] == 2 and row["summon_matched_qty"] == 2

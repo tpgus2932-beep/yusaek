@@ -1629,6 +1629,25 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     setDefectMatchOpen(true);
   };
 
+  // 매칭 창에서 찍을 때마다 서버에 "매칭된 수량"을 올린다 (불량출력·매입관리는 매칭된 수량만 쓴다).
+  const matchWarnedRef = useRef(false);
+  const reportSummonMatch = async (tab, code, delta) => {
+    try {
+      const res = await fetch(`${API}/barcode/defect/summon-match`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders(), "X-Defect-Tab": encodeURIComponent(tab) },
+        body: JSON.stringify({ code, delta }),
+      });
+      if (res.status === 404 && !matchWarnedRef.current) {
+        matchWarnedRef.current = true;
+        alert("서버가 아직 예전 버전이라 매칭 결과가 저장되지 않습니다.\n서버(백엔드)를 다시 켠 뒤 매칭해 주세요.");
+      }
+      if (res.ok && tab === defectTabRef.current) fetchDefectList();
+    } catch { /* 네트워크 오류: 화면 기록은 남고 서버 저장만 빠지므로 로그를 남긴다 */
+      pushLog(`매칭 저장 실패: ${tab}탭 ${code}`);
+    }
+  };
+
   // 매칭 모달에서 실물이 없는 불량을 지우면 해당 탭 불량 목록에서도 그 수량만큼 뺀다.
   const removeUnmatchedDefect = async (tab, code, qty) => {
     const res = await fetch(`${API}/barcode/defect/remove-summoned`, {
@@ -1834,16 +1853,16 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
       // 소환술 항목이 있으면 포함할지 먼저 묻는다. count = 일반 불량 + 소환술 수량이라
       // 포함하면 count를, 제외하면 일반 불량(normal_qty)만 모든 탭에 걸쳐 코드별로 합산한다.
       const allItems = perTab.flat();
+      // 불량관리(불러오기) 항목은 바코드 매칭이 된 수량만 출력한다. 매칭 안 된 수량은 항상 빠진다.
       const summonedCount = new Set(
-        allItems.filter((item) => (Number(item.kimsungil_summon_qty) || 0) > 0).map((item) => item.code)
+        allItems.filter((item) => (Number(item.summon_matched_qty) || 0) > 0).map((item) => item.code)
       ).size;
       const includeSummon = summonedCount === 0
-        || window.confirm(`불량관리 목록 ${summonedCount}종이 있습니다. 불량출력에 포함할까요? (확인=포함, 취소=제외)`);
+        || window.confirm(`매칭 완료된 불량관리 목록 ${summonedCount}종이 있습니다. 불량출력에 포함할까요? (확인=포함, 취소=제외)`);
       const merged = new Map();
       allItems.forEach((item) => {
-        const qty = includeSummon
-          ? Number(item.count) || 0
-          : Number(item.normal_qty ?? item.count) || 0;
+        const normal = Number(item.normal_qty ?? item.count) || 0;
+        const qty = includeSummon ? normal + (Number(item.summon_matched_qty) || 0) : normal;
         if (qty <= 0) return;
         const prev = merged.get(item.code);
         if (prev) prev.count += qty;
@@ -1901,16 +1920,19 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
   };
 
   // 매입관리로 넘길 수량: normal=직접 찍은 불량만, summon=김승일 소환술로 들어온 것만, all=둘 다(count).
+  // 불량관리(불러오기) 수량은 바코드 매칭으로 실물 확인된 수량만 센다.
+  const matchedSummonQty = (item) => Number(item.summon_matched_qty) || 0;
   const purchaseQty = (item, mode) => {
-    if (mode === "normal") return Number(item.normal_qty ?? item.count) || 0;
-    if (mode === "summon") return Number(item.kimsungil_summon_qty) || 0;
-    return Number(item.count) || 0;
+    const normal = Number(item.normal_qty ?? item.count) || 0;
+    if (mode === "normal") return normal;
+    if (mode === "summon") return matchedSummonQty(item);
+    return normal + matchedSummonQty(item);
   };
 
   // 현재 불량 목록의 종류별(직접 찍은 불량 / 소환술) 수량
   const purchaseParts = (item) => ({
     normal: Number(item.normal_qty ?? item.count) || 0,
-    summon: Number(item.kimsungil_summon_qty) || 0,
+    summon: matchedSummonQty(item), // 매칭 완료된 수량만
   });
   const allPurchaseParts = () => {
     const parts = {};
@@ -2596,7 +2618,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                         </span>
                         <span className={styles.inlineTagDanger}>불량 {item.count}</span>
                         {item.kimsungil_summon_qty > 0 && (
-                          <span className={styles.inlineTagIncoming}>불량관리 {item.kimsungil_summon_qty}</span>
+                          <span className={styles.inlineTagIncoming}>불량관리 {item.kimsungil_summon_qty} · 매칭 {Number(item.summon_matched_qty) || 0}</span>
                         )}
                         {item.code && <span className={styles.inlineMeta}>{item.code}</span>}
                       </span>
@@ -3806,6 +3828,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
           allTabs={defectTabs}
           summonCounts={matchSummonCounts}
           onSummonTab={summonTabFromMatch}
+          onMatch={reportSummonMatch}
           onClose={() => { setDefectMatchOpen(false); setTimeout(() => scanRef.current?.focus(), 0); }}
         />
       )}
@@ -3967,7 +3990,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                       {g.rows.map((item) => (
                         <div key={`${g.tab}-${item.code}-summon`} className={styles.defectLine}>
                           <span className={styles.defectText}>{renderDefectLabel(item)}</span>
-                          <span className={styles.inlineTagIncoming}>불량관리 {item.kimsungil_summon_qty}</span>
+                          <span className={styles.inlineTagIncoming}>불량관리 {item.kimsungil_summon_qty} · 매칭 {Number(item.summon_matched_qty) || 0}</span>
                           <span className={styles.inlineMeta}>{g.tab}탭</span>
                           <div className={styles.defectActions}>
                             <button className={styles.ghostBtn} onClick={() => handleKimsungilRevert(g.tab, item.code)}>불량관리로 되돌리기</button>

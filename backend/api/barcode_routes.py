@@ -664,6 +664,7 @@ def build_barcode_router(
     def _get_defect_list(state, *, exclude_kimsungil: bool = False):
         defect_counts = get_shared_defect_counts()
         summon_counts = get_shared_defect_summon_counts()
+        matched_counts = _summon_matched_counts(summon_counts)
         defect_base_lookup = _build_defect_base_lookup()
         rows = []
         for code, count in sorted(defect_counts.items()):
@@ -677,6 +678,8 @@ def build_barcode_router(
                     "code": code,
                     "count": count,
                     "kimsungil_summon_qty": summon_qty,
+                    # 불러온 수량 중 바코드 매칭으로 실물 확인된 수량 (출력·매입관리는 이 수량만 쓴다)
+                    "summon_matched_qty": min(matched_counts.get(code, 0), summon_qty),
                     "normal_qty": max(0, count - summon_qty),
                     "name": det.get("name", ""),
                     "option": det.get("option", ""),
@@ -2710,6 +2713,80 @@ def build_barcode_router(
             )
         conn.commit()
         return conn
+
+    def _summon_match_conn():
+        conn = _defect_record_conn()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS barcode_defect_summon_matched (
+                tab TEXT NOT NULL,
+                code TEXT NOT NULL,
+                qty INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (tab, code)
+            )
+            """
+        )
+        conn.commit()
+        return conn
+
+    def _summon_matched_counts(summon_counts: dict) -> dict[str, int]:
+        """현재 탭의 '불러오기 매칭 완료' 수량. 불러온 수량이 없어진 상품의 기록은 지운다."""
+        tab = defect_tab_service.current_tab()
+        try:
+            conn = _summon_match_conn()
+        except Exception:
+            return {}
+        try:
+            rows = conn.execute(
+                "SELECT code, qty FROM barcode_defect_summon_matched WHERE tab = ?", (tab,)
+            ).fetchall()
+            matched: dict[str, int] = {}
+            stale: list[str] = []
+            for row in rows:
+                code = row["code"]
+                if int(summon_counts.get(code, 0) or 0) <= 0:
+                    stale.append(code)
+                else:
+                    matched[code] = int(row["qty"] or 0)
+            for code in stale:
+                conn.execute("DELETE FROM barcode_defect_summon_matched WHERE tab = ? AND code = ?", (tab, code))
+            if stale:
+                conn.commit()
+            return matched
+        finally:
+            conn.close()
+
+    @router.post("/barcode/defect/summon-match")
+    def change_summon_matched(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """불량 불러오기 실물 매칭: 바코드를 찍을 때 +1, 취소할 때 -1 (현재 탭).
+        0 ~ 불러온 수량 사이로 맞춘다."""
+        raw = str(payload.get("code") or "").strip()
+        if not raw:
+            raise HTTPException(status_code=400, detail="code is required")
+        try:
+            delta = int(payload.get("delta") or 0)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="delta 형식이 올바르지 않습니다")
+        code = normalize_code(raw) or raw
+        tab = defect_tab_service.current_tab()
+        summon_qty = int(get_shared_defect_summon_counts().get(code, 0) or 0)
+        conn = _summon_match_conn()
+        try:
+            row = conn.execute(
+                "SELECT qty FROM barcode_defect_summon_matched WHERE tab = ? AND code = ?", (tab, code)
+            ).fetchone()
+            current = min(int(row["qty"] or 0), summon_qty) if row else 0
+            new_qty = max(0, min(summon_qty, current + delta))
+            conn.execute(
+                "INSERT INTO barcode_defect_summon_matched (tab, code, qty, updated_at) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(tab, code) DO UPDATE SET qty = excluded.qty, updated_at = excluded.updated_at",
+                (tab, code, new_qty, datetime.now(_KST).isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"ok": True, "code": code, "matched_qty": new_qty, "summon_qty": summon_qty}
 
     def _sync_defect_records(conn=None):
         """현재 불량 목록에 없는 상품의 사진·사유 기록을 '지난 불량'으로 닫는다 (지우지는 않음).
