@@ -2470,13 +2470,16 @@ def build_returns_router(
             if not order:
                 result["error"] = "이지어드민 미조회"
                 continue
-            order_no = str(order.get("order_id") or "").strip()
-            if not order_no:
+            # 이지어드민은 주문번호를 "[1792923304991]"처럼 대괄호로 감싸서(합포장이면 여러 개) 준다.
+            order_nos = re.findall(r"\d+", str(order.get("order_id") or ""))
+            if not order_nos:
                 result["error"] = "이지어드민 검색 결과에 주문번호 없음"
                 continue
-            result["order_no"] = order_no
+            result["order_no"] = ", ".join(order_nos)
             try:
-                rows = await ably.search_order_items_by_order_sno(order_no, start_date=ably_start, end_date=end_date)
+                rows = []
+                for order_no in order_nos:
+                    rows.extend(await ably.search_order_items_by_order_sno(order_no, start_date=ably_start, end_date=end_date))
             except Exception as e:
                 result["error"] = f"에이블리 주문조회 실패: {str(e)[:200]}"
                 continue

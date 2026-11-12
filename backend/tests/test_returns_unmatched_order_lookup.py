@@ -13,7 +13,7 @@ class _OrderEzAdminClient:
 
     async def find_order_by_invoice(self, invoice_no, *, start_date, end_date):
         orders = {
-            "111": {"pack": "p111", "phone": "010-1111-1111", "order_id": "1790064191087"},
+            "111": {"pack": "p111", "phone": "010-1111-1111", "order_id": "[1790064191087]"},
             "333": {"pack": "p333", "phone": "010-2222-2222", "order_id": None},
             "444": {"pack": "p444", "phone": "010-3333-3333", "order_id": "999"},
         }
