@@ -30,6 +30,8 @@ export default function DefectKakaoModal({ open, onClose, counts, tabHeaders }) 
   const [filters, setFilters] = useState({}); // 친구 검색어 { 거래처: text }
   const [editing, setEditing] = useState({}); // 매칭 변경 중인 거래처
   const [status, setStatus] = useState({}); // { 거래처: {busy, msg, ok} }
+  const [texts, setTexts] = useState({}); // 직접 고친 전송 문구 { 거래처: text } (없으면 자동 문구)
+  const textOf = (g) => (texts[g.vendor] !== undefined ? texts[g.vendor] : buildText(g.items));
 
   useEffect(() => {
     if (!open) return undefined;
@@ -40,6 +42,7 @@ export default function DefectKakaoModal({ open, onClose, counts, tabHeaders }) 
       setStatus({});
       setPicks({});
       setEditing({});
+      setTexts({});
       try {
         const [handoff, map, kakao] = await Promise.all([
           fetch(`${API}/barcode/defect/purchase-manager-handoff`, {
@@ -110,7 +113,8 @@ export default function DefectKakaoModal({ open, onClose, counts, tabHeaders }) 
         const uploaded = await uploadPhoto(new File([blob], `defect-${pid}.jpg`, { type: blob.type || "image/jpeg" }));
         mediaIds.push(uploaded.id);
       }
-      const text = buildText(g.items);
+      const text = textOf(g).trim();
+      if (!text) throw new Error("전송 문구가 비어 있습니다.");
       setSt(g.vendor, { msg: "전송 요청 중..." });
       // 문구를 먼저 큐에 넣는다. 사진 전송이 "확인 필요"로 끝나면 카톡 큐가 멈추는데, 그 뒤에 있던 문구는 못 나가기 때문이다.
       await call("/send", { method: "POST", body: { contact_id: contact.id, text, request_id: newRequestId() } });
@@ -171,11 +175,20 @@ export default function DefectKakaoModal({ open, onClose, counts, tabHeaders }) 
                 <strong>{g.vendor || "(거래처 없음)"}</strong>
                 <span className={styles.pill}>{g.items.length}종</span>
               </div>
-              <pre style={{ whiteSpace: "pre-wrap", margin: "0.4rem 0", fontFamily: "inherit", fontSize: "0.9em", background: "var(--bg-secondary)", padding: "0.5rem", borderRadius: 6 }}>
-                {buildText(g.items)}
-              </pre>
-              <div className={styles.inlineMeta}>
-                사진 {new Set(g.items.flatMap((it) => (it.records || []).flatMap((r) => r.photo_ids || []))).size}장
+              <textarea
+                value={textOf(g)}
+                disabled={st.busy}
+                onChange={(e) => setTexts((p) => ({ ...p, [g.vendor]: e.target.value }))}
+                rows={Math.min(12, Math.max(3, textOf(g).split("\n").length + 1))}
+                style={{ width: "100%", boxSizing: "border-box", margin: "0.4rem 0", fontFamily: "inherit", fontSize: "0.9em", background: "var(--bg-secondary)", color: "inherit", border: "1px solid var(--border-color)", padding: "0.5rem", borderRadius: 6, resize: "vertical" }}
+              />
+              <div className={styles.inlineMeta} style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <span>사진 {new Set(g.items.flatMap((it) => (it.records || []).flatMap((r) => r.photo_ids || []))).size}장</span>
+                {texts[g.vendor] !== undefined && (
+                  <button type="button" className={styles.ghostBtn} disabled={st.busy} onClick={() => setTexts((p) => { const n = { ...p }; delete n[g.vendor]; return n; })}>
+                    문구 원래대로
+                  </button>
+                )}
               </div>
               {!g.vendor ? (
                 <div style={{ color: "#dc2626" }}>거래처가 없어 보낼 수 없습니다. 원가베이스유에서 거래처를 확인하세요.</div>
