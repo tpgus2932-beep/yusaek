@@ -890,9 +890,7 @@ export default function WonbeTable() {
       setLastSync({ at: data.synced_at, count: String(data.inserted), fetched: String(data.fetched) });
       setMessage(
         `동기화 완료: ${data.fetched}개 조회 → ${data.inserted}개 신규 등록` +
-        (data.backfilled ? ` · 기존 상품 아이디 ${data.backfilled}건 채움` : "") +
-        (data.ingodaegi_added ? ` · 입고대기 ${data.ingodaegi_added}건 추가` : "") +
-        (data.ably_stock_added ? ` · 에이블리재고변경 ${data.ably_stock_added}건 추가` : "")
+        (data.backfilled ? ` · 기존 상품 아이디 ${data.backfilled}건 채움` : "")
       );
       setOffset(0);
       setQuery("");
@@ -904,9 +902,7 @@ export default function WonbeTable() {
       }
       // 동기화가 끝난 뒤 이어서 배포앱(Turso)으로 자동 전송 (동기화 실패 시에는 여기까지 오지 않는다)
       const syncMsg = `동기화 완료: ${data.fetched}개 조회 → ${data.inserted}개 신규 등록` +
-        (data.backfilled ? ` · 기존 상품 아이디 ${data.backfilled}건 채움` : "") +
-        (data.ingodaegi_added ? ` · 입고대기 ${data.ingodaegi_added}건 추가` : "") +
-        (data.ably_stock_added ? ` · 에이블리재고변경 ${data.ably_stock_added}건 추가` : "");
+        (data.backfilled ? ` · 기존 상품 아이디 ${data.backfilled}건 채움` : "");
       setMessage(`${syncMsg} · 배포앱 전송 중...`);
       try {
         setMessage(`${syncMsg} · ${await runPushToDeploy()}`);

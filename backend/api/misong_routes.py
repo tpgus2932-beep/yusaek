@@ -8,7 +8,7 @@ import xlwt
 from fastapi import APIRouter, Depends, HTTPException, Body
 from fastapi.responses import Response
 from datetime import datetime, timezone
-from api.wonbe_routes import _get_wonbe_db, _init_ingodaegi_table
+from api.wonbe_routes import _get_wonbe_db, _init_ingodaegi_table, load_waiting_base_rows
 
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
@@ -548,12 +548,11 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
     def download_waiting_base(user: str = Depends(get_current_user)):
         wonbe_conn = _get_wonbe_db()
         try:
-            _init_ingodaegi_table(wonbe_conn)
-            base_rows = wonbe_conn.execute("SELECT 상품코드, 입고수량 FROM 입고대기 ORDER BY 상품코드").fetchall()
+            base_rows = load_waiting_base_rows(wonbe_conn)
         finally:
             wonbe_conn.close()
         if not base_rows:
-            raise HTTPException(status_code=404, detail="입고대기 테이블에 데이터가 없습니다.")
+            raise HTTPException(status_code=404, detail="원가베이스유에 상품코드가 없습니다.")
 
         conn = get_db()
         try:
@@ -588,7 +587,7 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
         out_wb.save(buf)
         buf.seek(0)
 
-        # 미매칭: misong에는 있지만 입고대기 테이블에 코드가 없는 항목
+        # 미매칭: misong에는 있지만 원가베이스유(와 따로 추가한 코드)에 없는 항목
         unmatched = [code for code in qty_by_code if code not in matched_codes]
         unmatched_count = len(unmatched)
         # 헤더에 미매칭 코드 목록 전달 (쉼표 구분, 최대 500자)
@@ -1275,12 +1274,11 @@ def build_misong_router(*, get_current_user, get_db, get_setting):
 
         wonbe_conn = _get_wonbe_db()
         try:
-            _init_ingodaegi_table(wonbe_conn)
-            base_rows = wonbe_conn.execute("SELECT 상품코드, 입고수량 FROM 입고대기 ORDER BY 상품코드").fetchall()
+            base_rows = load_waiting_base_rows(wonbe_conn)
         finally:
             wonbe_conn.close()
         if not base_rows:
-            return {"ok": False, "error": "입고대기 테이블에 데이터가 없습니다."}
+            return {"ok": False, "error": "원가베이스유에 상품코드가 없습니다."}
 
         matched_count = sum(1 for r in base_rows if r["상품코드"] in qty_by_code)
 

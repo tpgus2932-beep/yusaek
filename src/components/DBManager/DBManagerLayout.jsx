@@ -6,8 +6,6 @@ import JanggiTable from "./JanggiTable";
 import AccountDataTable from "./AccountDataTable";
 import IchaeTable from "./IchaeTable";
 import InvoiceManageTable from "./InvoiceManageTable";
-import IngodaegiTable from "./IngodaegiTable";
-import AblyStockTable from "./AblyStockTable";
 import DefectProcessLogTable from "./DefectProcessLogTable";
 import OrderHistoryTable from "./OrderHistoryTable";
 
@@ -18,8 +16,6 @@ const TABLES = [
   { key: "account", label: "거래처계좌데이터", component: AccountDataTable },
   { key: "ichae", label: "이체파일", component: IchaeTable },
   { key: "invoice-manage", label: "계산서 관리", component: InvoiceManageTable },
-  { key: "ingodaegi", label: "입고대기", component: IngodaegiTable },
-  { key: "ably-stock", label: "에이블리재고변경", component: AblyStockTable },
   { key: "defect-process-logs", label: "불량처리로그", component: DefectProcessLogTable },
   { key: "order-history", label: "발주내역", component: OrderHistoryTable },
 ];

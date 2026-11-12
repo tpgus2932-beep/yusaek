@@ -905,6 +905,29 @@ def _sync_ingodaegi_from_wonbe(conn: sqlite3.Connection) -> int:
     return len(new_codes)
 
 
+def load_waiting_base_rows(conn: sqlite3.Connection) -> list:
+    """입고대기설정/입고대기_미송수량의 기준 목록: 원가베이스유의 모든 상품코드(+ '입고대기 추가'로 따로 넣은 코드).
+    입고수량은 항상 'ZERO'에서 시작하고, 호출하는 쪽이 미송 수량을 덮어쓴다. 예전의 입고대기 표를 동기화할 필요가 없다."""
+    _init_wonbe_table(conn)
+    _init_ingodaegi_table(conn)
+    return conn.execute(
+        """SELECT 상품코드, 'ZERO' AS 입고수량 FROM (
+               SELECT 상품코드 FROM wonbe WHERE TRIM(상품코드) != ''
+               UNION
+               SELECT 상품코드 FROM 입고대기 WHERE TRIM(상품코드) != ''
+           ) ORDER BY 상품코드"""
+    ).fetchall()
+
+
+def load_ably_stock_base_rows(conn: sqlite3.Connection) -> list:
+    """에이블리 재고 일괄 변경의 기준 목록: 원가베이스유에서 옵션번호가 있는 모든 옵션(수량 0에서 시작).
+    예전의 에이블리재고변경 표를 동기화할 필요가 없다."""
+    _init_wonbe_table(conn)
+    return conn.execute(
+        "SELECT DISTINCT 옵션번호, '0' AS 수량 FROM wonbe WHERE TRIM(옵션번호) != '' ORDER BY 옵션번호"
+    ).fetchall()
+
+
 def _init_ably_stock_table(conn: sqlite3.Connection):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS 에이블리재고변경 (
@@ -3497,17 +3520,6 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 if eid and eid not in g["ids"]:
                     g["ids"].append(eid)
             groups = [{"name": n, "codes": g["codes"], "ids": g["ids"], "count": len(g["codes"])} for n, g in groups_map.items()]
-            # 새로 들어온 상품이 입고대기 탭에도 바로 보이도록 '최신업데이트'(원가베이스유 기준 신규 추가)를 이어서 실행한다.
-            # 입고대기 쪽 문제로 이미 끝난 동기화 결과를 실패 처리하지 않도록 오류는 삼킨다.
-            try:
-                ingodaegi_added = _sync_ingodaegi_from_wonbe(conn)
-            except Exception:
-                ingodaegi_added = None
-            # 에이블리재고변경 탭도 같은 방식으로 최신업데이트 (원가베이스유 기준 신규 옵션 추가)
-            try:
-                ably_stock_added = _sync_ably_stock_from_wonbe(conn)
-            except Exception:
-                ably_stock_added = None
             return {
                 "ok": True,
                 "fetched": len(data_rows),
@@ -3515,8 +3527,6 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 "backfilled": backfilled,
                 "synced_at": synced_at,
                 "groups": groups,
-                "ingodaegi_added": ingodaegi_added,
-                "ably_stock_added": ably_stock_added,
             }
         finally:
             conn.close()

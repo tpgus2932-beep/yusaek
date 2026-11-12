@@ -25,7 +25,7 @@ import xlwt
 
 from api.wonbe_routes import (
     _get_wonbe_db,
-    _init_ably_stock_table,
+    load_ably_stock_base_rows,
     kdg_match_key,
     load_wonbe_client_info_by_code,
     load_wonbe_kdg_match_index,
@@ -1064,14 +1064,11 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
 
         wonbe_conn = _get_wonbe_db()
         try:
-            _init_ably_stock_table(wonbe_conn)
-            base_rows = wonbe_conn.execute(
-                "SELECT 옵션번호, 수량 FROM 에이블리재고변경 ORDER BY 옵션번호"
-            ).fetchall()
+            base_rows = load_ably_stock_base_rows(wonbe_conn)
         finally:
             wonbe_conn.close()
         if not base_rows:
-            raise HTTPException(status_code=404, detail="에이블리재고변경 테이블에 데이터가 없습니다.")
+            raise HTTPException(status_code=404, detail="원가베이스유에 옵션번호가 있는 상품이 없습니다.")
 
         matched = 0
         out_wb = openpyxl.Workbook()
@@ -1129,15 +1126,11 @@ def build_noye_kimsungil_router(*, get_current_user, get_setting, set_setting, g
 
         wonbe_conn = _get_wonbe_db()
         try:
-            _init_ably_stock_table(wonbe_conn)
-            base_snos = {
-                r["옵션번호"]
-                for r in wonbe_conn.execute("SELECT 옵션번호 FROM 에이블리재고변경").fetchall()
-            }
+            base_snos = {r["옵션번호"] for r in load_ably_stock_base_rows(wonbe_conn)}
         finally:
             wonbe_conn.close()
         if not base_snos:
-            raise HTTPException(status_code=404, detail="에이블리재고변경 테이블에 데이터가 없습니다.")
+            raise HTTPException(status_code=404, detail="원가베이스유에 옵션번호가 있는 상품이 없습니다.")
 
         # 가공결과 중 기준 파일에 매칭된 옵션번호(A)만 추출
         matched_snos = {
