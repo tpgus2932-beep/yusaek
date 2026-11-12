@@ -146,6 +146,8 @@ export default function LeadTimePage({ headerExtra = null }) {
   const [matchEdit, setMatchEdit] = useState(null); // 매칭작업 개수 직접 입력값 (null이면 불러온 수량)
   const [starts, setStarts] = useState(() => Object.fromEntries(START_KEYS.map((k) => [k, ""]))); // 시작 시각 직접 지정 ("HH:MM"). 빈칸이면 자동(포장·송장: 첫 근무 시간대, 출고: 포장 종료 + 쉬는시간)
   const [editingStart, setEditingStart] = useState(null); // 시작 시각을 누르면 "pack" | "ship" 수정칸으로 바뀐다
+  const [durations, setDurations] = useState(() => Object.fromEntries(PART_START_KEYS.map((k) => [k, ""]))); // 상세 항목 소요 시간 직접 지정(분). 빈칸이면 인원·처리 개수로 자동 계산
+  const [editingDur, setEditingDur] = useState(null); // 소요 시간을 누르면 그 항목 키로 수정칸이 열린다
   const [shipBulkHead, setShipBulkHead] = useState(""); // 대량출고 인원 (빈칸이면 시간대별 근무 인원을 따름)
   const [shipSingleHead, setShipSingleHead] = useState(""); // 개별출고 인원 (빈칸이면 시간대별 근무 인원을 따름)
   const [packEdit, setPackEdit] = useState(null); // 포장 수량 직접 입력값 (null이면 불러온 수량)
@@ -229,6 +231,7 @@ export default function LeadTimePage({ headerExtra = null }) {
       setJoinBulk(Boolean(st?.options?.join_bulk));
       setJoinCount(st?.options?.join_count != null ? String(st.options.join_count) : "");
       setStarts(Object.fromEntries(START_KEYS.map((k) => [k, st?.options?.[`${k}_start`] || ""])));
+      setDurations(Object.fromEntries(PART_START_KEYS.map((k) => [k, st?.options?.[`${k}_dur`] != null ? String(st.options[`${k}_dur`]) : ""])));
       setShipBulkHead(st?.options?.bulk_head != null ? String(st.options.bulk_head) : "");
       setShipSingleHead(st?.options?.single_head != null ? String(st.options.single_head) : "");
       if (bulkRate) setShipBulkRate(bulkRate);
@@ -562,6 +565,13 @@ export default function LeadTimePage({ headerExtra = null }) {
       return { qty, startMin, afterBreak: notBefore > 0 && notBefore >= toMin(first.slot), ...runQueue(qty, startMin, ks, rate) };
     };
     const parseStart = (raw) => (/^\d{1,2}:\d{2}$/.test(raw) ? toMin(raw) : null);
+    // 소요 시간을 직접 정한 항목은 인원·처리 개수 계산 대신 "시작 + 정한 시간"에 끝난다 (시간표 막대 길이도 그대로 고정).
+    const withDur = (key, part) => {
+      const raw = durations[key];
+      const n = raw !== "" && raw != null ? Number(raw) : NaN;
+      if (!Number.isInteger(n) || n < 0 || !(part.qty > 0)) return part;
+      return { ...part, endMin: part.startMin + n, over: false, manualDur: true };
+    };
     const packManual = parseStart(starts.pack);
     const packBase = run(packSlots, packQty, packRate, packManual ?? 0);
     let packRes = { ...packBase, afterBreak: false, manualStart: packManual != null && packBase.afterBreak };
@@ -579,8 +589,8 @@ export default function LeadTimePage({ headerExtra = null }) {
       // 항목별 시작 시각을 직접 정했으면 그 시각부터(겹쳐서 동시에 진행 가능), 아니면 앞 항목이 끝난 뒤 이어서 시작한다.
       const partRun = (key, qty, rate, prev) => {
         const own = parseStart(starts[key]);
-        if (own == null && prev && prev.endMin == null) return { qty, startMin: prev.startMin, endMin: null, over: false };
-        return run(packSlots, qty, rate, own ?? (prev ? prev.endMin : packManual ?? 0));
+        if (own == null && prev && prev.endMin == null) return withDur(key, { qty, startMin: prev.startMin, endMin: null, over: false });
+        return withDur(key, run(packSlots, qty, rate, own ?? (prev ? prev.endMin : packManual ?? 0)));
       };
       const bulk = partRun("pack_bulk", bulkQty, packRate, null);
       const single = partRun("pack_single", singleQty, packRate, bulk);
@@ -610,8 +620,8 @@ export default function LeadTimePage({ headerExtra = null }) {
     const singleBig = Math.round(shipSingleQty * bigShare(loadedShipParts.bigSingle, loadedShipParts.single));
     const effective = (qty, big, rate) => qty - big + big * (rate / shipBigRate);
     const withQty = (part, qty, big) => ({ ...part, qty, big });
-    const bulkAlone = withQty(run(bulkSlots, effective(shipBulkQty, bulkBig, shipBulkRate), shipBulkRate, parseStart(starts.ship_bulk) ?? shipNotBefore), shipBulkQty, bulkBig);
-    const single = withQty(run(singleSlots, effective(shipSingleQty, singleBig, shipSingleRate), shipSingleRate, parseStart(starts.ship_single) ?? shipNotBefore), shipSingleQty, singleBig);
+    const bulkAlone = withDur("ship_bulk", withQty(run(bulkSlots, effective(shipBulkQty, bulkBig, shipBulkRate), shipBulkRate, parseStart(starts.ship_bulk) ?? shipNotBefore), shipBulkQty, bulkBig));
+    const single = withDur("ship_single", withQty(run(singleSlots, effective(shipSingleQty, singleBig, shipSingleRate), shipSingleRate, parseStart(starts.ship_single) ?? shipNotBefore), shipSingleQty, singleBig));
     // 설정을 켰고 개별출고가 대량출고보다 먼저 끝나면, 끝난 시점부터 개별출고 인원이 대량출고(대량 처리 속도)에 합류한다.
     let bulk = bulkAlone;
     let joined = null;
@@ -641,8 +651,8 @@ export default function LeadTimePage({ headerExtra = null }) {
     // 직접 고친 송장 수는 불러온 본송장:재고송장 비율로 나눈다 (불러온 게 없으면 전부 본송장).
     const invoiceManual = parseStart(starts.invoice);
     const invoiceMainQty = loadedInvoiceQty > 0 ? Math.round(invoiceQty * (loadedInvoices.main / loadedInvoiceQty)) : invoiceQty;
-    const invoiceMain = run(fixedSlots(invoiceMainHead), invoiceMainQty, invoiceMainRate, parseStart(starts.invoice_main) ?? invoiceManual ?? 0);
-    const invoiceStock = run(fixedSlots(invoiceStockHead), invoiceQty - invoiceMainQty, invoiceStockRate, parseStart(starts.invoice_stock) ?? invoiceManual ?? 0);
+    const invoiceMain = withDur("invoice_main", run(fixedSlots(invoiceMainHead), invoiceMainQty, invoiceMainRate, parseStart(starts.invoice_main) ?? invoiceManual ?? 0));
+    const invoiceStock = withDur("invoice_stock", run(fixedSlots(invoiceStockHead), invoiceQty - invoiceMainQty, invoiceStockRate, parseStart(starts.invoice_stock) ?? invoiceManual ?? 0));
     const invoiceParts = [invoiceMain, invoiceStock].filter((p) => p.qty > 0);
     const invoiceRes = {
       startMin: invoiceParts.length ? Math.min(...invoiceParts.map((p) => p.startMin)) : invoiceMain.startMin,
@@ -661,7 +671,7 @@ export default function LeadTimePage({ headerExtra = null }) {
         ? Math.max(matchQty - assignedQty, 0)
         : (loadedMatchQty > 0 ? Math.min(Math.round(matchQty * (loadedMatch[k] / loadedMatchQty)), matchQty - assignedQty) : 0);
       assignedQty += qty;
-      matchDetail[k] = run(fixedSlots(matchHeads[k]), qty, matchRates[k], parseStart(starts[k]) ?? matchManual ?? 0);
+      matchDetail[k] = withDur(k, run(fixedSlots(matchHeads[k]), qty, matchRates[k], parseStart(starts[k]) ?? matchManual ?? 0));
     });
     const matchParts = Object.values(matchDetail).filter((p) => p.qty > 0);
     const matchFirst = matchDetail[MATCH_PARTS[0][0]];
@@ -673,7 +683,7 @@ export default function LeadTimePage({ headerExtra = null }) {
       endMin: matchParts.length === 0 || matchParts.some((p) => p.endMin == null) ? null : Math.max(...matchParts.map((p) => p.endMin)),
     };
     return { packRes, packDetail, shipRes, shipDetail: { bulk, single, joined }, invoiceRes, invoiceDetail: { main: invoiceMain, stock: invoiceStock }, matchRes, matchDetail };
-  }, [matchHeads, matchQty, loadedMatch, loadedMatchQty, matchRates, slots, kindSlots, pack, packQty, shipPieces, loadedShipPieces, loadedShipParts, packRate, packBigRate, shipBulkRate, shipSingleRate, shipBigRate, shipBulkHead, shipSingleHead, joinBulk, joinCount, starts, invoiceQty, loadedInvoiceQty, loadedInvoices, invoiceMainRate, invoiceStockRate, invoiceMainHead, invoiceStockHead]);
+  }, [durations, matchHeads, matchQty, loadedMatch, loadedMatchQty, matchRates, slots, kindSlots, pack, packQty, shipPieces, loadedShipPieces, loadedShipParts, packRate, packBigRate, shipBulkRate, shipSingleRate, shipBigRate, shipBulkHead, shipSingleHead, joinBulk, joinCount, starts, invoiceQty, loadedInvoiceQty, loadedInvoices, invoiceMainRate, invoiceStockRate, invoiceMainHead, invoiceStockHead]);
 
   // 상세 항목의 시작 시각: 눌러서 바로 고친다. 직접 정한 시각이 있으면 "자동"을 눌러 원래 계산으로 되돌린다.
   const renderPartStart = (key, startMin) => (
@@ -697,16 +707,45 @@ export default function LeadTimePage({ headerExtra = null }) {
     </>
   );
 
+  // 소요 시간: 눌러서 분 단위로 직접 정한다. 정한 항목은 "자동"을 눌러 인원·처리 개수 계산으로 되돌린다.
+  const changeDur = (key, raw) => {
+    setDurations((prev) => ({ ...prev, [key]: raw }));
+    persistCount(`${key}_dur`, raw);
+  };
+  const renderPartDur = (key, part) => (
+    <>
+      {editingDur === key ? (
+        <span className={styles.durEdit}>
+          <input
+            type="number" min="0" step="5" autoFocus className={`${styles.input} ${styles.durInput}`}
+            value={durations[key] !== "" ? durations[key] : part.endMin != null ? String(Math.round(part.endMin - part.startMin)) : ""}
+            onChange={(e) => changeDur(key, e.target.value)}
+            onBlur={() => setEditingDur(null)}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") setEditingDur(null); }}
+          />
+          분
+        </span>
+      ) : (
+        <button type="button" className={styles.durBtn} title="눌러서 소요 시간 직접 지정 (분)" onClick={() => setEditingDur(key)}>
+          {part.endMin != null ? fmtDuration(part.endMin - part.startMin) : "시간 입력"}
+        </button>
+      )}
+      {durations[key] !== "" && editingDur !== key && (
+        <button type="button" className={styles.removeBtn} title="직접 정한 소요 시간을 지우고 자동 계산으로" onClick={() => changeDur(key, "")}>자동</button>
+      )}
+    </>
+  );
+
   const renderDetailRow = (label, part, startKey = null) => (
     <li className={styles.detailRow}>
       <span className={styles.detailLabel}>{label} {part.qty.toLocaleString()}개</span>
       {part.qty > 0 && part.endMin != null ? (
         <span>
-          <b>{fmtDuration(part.endMin - part.startMin)}</b>
+          {startKey ? renderPartDur(startKey, part) : <b>{fmtDuration(part.endMin - part.startMin)}</b>}
           <span className={styles.muted}> · {startKey ? renderPartStart(startKey, part.startMin) : fmtMin(part.startMin)} → {fmtMin(part.endMin)}</span>
         </span>
       ) : part.qty > 0 && startKey ? (
-        <span className={styles.muted}>{renderPartStart(startKey, part.startMin)} 시작 · 근무 인원 없음</span>
+        <span className={styles.muted}>{renderPartStart(startKey, part.startMin)} 시작 · 근무 인원 없음 · {renderPartDur(startKey, part)}</span>
       ) : <span className={styles.muted}>-</span>}
     </li>
   );

@@ -34,7 +34,10 @@ _RATE_KINDS = ("pack", "pack_big", "ship_bulk", "ship_single", "ship_big", "ship
 _QTY_KINDS = ("pack", "ship", "invoice", "match")  # 직접 입력한 포장/출고/송장/매칭작업 개수
 # 비우면(null) 해제되는 인원 설정: 합류 인원 / 대량출고 인원 / 개별출고 인원 / 송장붙이기 본송장·재고송장 인원
 _COUNT_OPTIONS = ("join_count", "bulk_head", "single_head", "invoice_main_head", "invoice_stock_head",
-                  "match_stock_head", "match_krl_head", "match_combo_head")  # match_*_head: 매칭작업 항목별 인원
+                  "match_stock_head", "match_krl_head", "match_combo_head",  # match_*_head: 매칭작업 항목별 인원
+                  # 상세 항목 소요 시간 직접 지정(분). 비우면 인원·처리 개수로 자동 계산
+                  "pack_bulk_dur", "pack_single_dur", "pack_big_dur", "ship_bulk_dur", "ship_single_dur",
+                  "invoice_main_dur", "invoice_stock_dur", "match_stock_dur", "match_krl_dur", "match_combo_dur")
 # 시작 시각 직접 지정("HH:MM", 비우면 자동): 포장 / 출고 / 송장붙이기
 _TIME_OPTIONS = ("pack_start", "ship_start", "invoice_start", "match_start",
                  # 상세 항목별 시작 시각 (비우면 자동)
