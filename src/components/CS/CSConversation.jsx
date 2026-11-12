@@ -423,8 +423,7 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                     )}
                     {selected && (
                         <>
-                            <div hidden={sideTab !== 'order'} className={styles.orderCols}>
-                            <div className={styles.orderColInfo}>
+                            <div hidden={sideTab !== 'order'}>
                             {product && (
                                 <section className={styles.sideSec}>
                                     <h4>현재 문의 상품</h4>
@@ -471,11 +470,8 @@ const CSConversation = ({ selected, preview, detail, detailLoading, draft = '', 
                                     </ul>
                                 </section>
                             )}
-                            </div>
-                            <div className={styles.orderColStock}>
                             {room && <section className={styles.sideSec}>{renderStock('rank')}</section>}
                             {room && <section className={styles.sideSec}>{renderStock('stock')}</section>}
-                            </div>
                             </div>
                             <div hidden={sideTab !== 'action'}>
                                 <section className={styles.sideSec}>
