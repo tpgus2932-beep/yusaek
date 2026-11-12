@@ -1922,6 +1922,19 @@ def build_cs_router(*, get_current_user, get_db, get_setting=None, normalize_cod
         items.sort(key=lambda i: (i["expected_date"], i["goods_name"], i["option_label"]))
         return {"ok": True, "month": month, "items": items}
 
+    @router.get("/delay-schedules/codes")
+    def delay_schedule_codes(current_user=Depends(get_current_user)):
+        """입고 예정일이 잡힌 옵션 전부: {상품코드: 입고 예정일}. 거래처 카톡 보내기가 일정 잡힌 상품을 문자 대상에서 빼는 데 쓴다."""
+        _purge_past_inbound()
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT code, expected_date FROM cs_inbound_schedules WHERE expected_date != ''"
+            ).fetchall()
+        finally:
+            conn.close()
+        return {"ok": True, "dates": {r["code"]: r["expected_date"] for r in rows}}
+
     @router.get("/delay-schedules/pending")
     async def delay_schedule_pending(month: str = "", current_user=Depends(get_current_user)):
         """달력에 등록된(해당 월) 옵션들의 이지어드민 접수(출고 전 대기 주문) 수량과 재고를 조회한다.

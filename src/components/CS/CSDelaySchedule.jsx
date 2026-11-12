@@ -3,6 +3,7 @@ import { CalendarDays, ChevronLeft, ChevronRight, Download, RefreshCw, Search } 
 import styles from './CSDashboard.module.css';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import { useEzadminSession } from '../../lib/EzadminSessionContext';
+import CSVendorKakao from './CSVendorKakao';
 
 const OPTION_PREVIEW = 5; // 상품마다 먼저 보여줄 옵션 줄 수 (나머지는 펼쳐 보기)
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
@@ -54,6 +55,7 @@ export default function CSDelaySchedule() {
     const [drafts, setDrafts] = useState({}); // 옵션 상품코드 -> { date, memo } 입력 중인 값
     const [saving, setSaving] = useState('');
     const [expanded, setExpanded] = useState(() => new Set()); // 옵션을 모두 펼친 상품
+    const [vendorKakaoOpen, setVendorKakaoOpen] = useState(false); // 거래처 카톡 보내기 창
 
     const [month, setMonth] = useState(monthOf(todayStr()));
     const [selectedDate, setSelectedDate] = useState(todayStr());
@@ -237,6 +239,7 @@ export default function CSDelaySchedule() {
 
     return (
         <div className={styles.delayWrap}>
+            {vendorKakaoOpen && <CSVendorKakao onClose={() => setVendorKakaoOpen(false)} />}
             {/* ===== 왼쪽: 재고부족요청 × 에이블리 ===== */}
             <section className={styles.card}>
                 <h3>
@@ -248,6 +251,9 @@ export default function CSDelaySchedule() {
                     <button type="button" className={styles.delayLoad} disabled={loading} onClick={load}>
                         <Download size={15} />
                         {loading ? '불러오는 중...' : data ? '다시 불러오기' : '재고부족요청 불러오기'}
+                    </button>
+                    <button type="button" className={styles.delayLoad} onClick={() => setVendorKakaoOpen(true)} title="거래처 일정의 EZAdmin 불러오기·자동 실행과 같은 계산으로 거래처별 문자를 만들어 카톡으로 보냅니다">
+                        거래처 카톡 보내기
                     </button>
                     {data && <span className={styles.delayLoaded}>{loadedAt} 기준 · 상품 {data.total_products}개 · 주문 {data.matched_orders}건</span>}
                 </div>
