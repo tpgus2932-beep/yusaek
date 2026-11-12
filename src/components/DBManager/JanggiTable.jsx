@@ -4,6 +4,7 @@ import styles from "./DBManager.module.css";
 import topStyles from "./JanggiTop.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders } from "../../lib/api";
 
+import usePersistentState from "../../lib/usePersistentState";
 function _normalizePickup(v) { return String(v || "").replace(/\s+/g, "").trim(); }
 function _hasPickup(v) { const n = _normalizePickup(v); return n.includes("미송픽업") || (n.includes("미송") && n.includes("픽업")); }
 function _isMisong(v) { return _normalizePickup(v).includes("미송") && !_hasPickup(v); }
@@ -42,6 +43,11 @@ function JanggiListView({ initialQuery = "", initialDate = "", syncWonbeCost = f
   const [ichaeConfirmMode, setIchaeConfirmMode] = useState(false);
   const [bulkMarkLoading, setBulkMarkLoading] = useState(false);
   const [purchaseMoveLoading, setPurchaseMoveLoading] = useState(false);
+  const [moveLogOpen, setMoveLogOpen] = useState(false);
+  const [moveLogDate, setMoveLogDate] = useState("");
+  const [moveLogData, setMoveLogData] = useState({ logs: [], dates: [] });
+  const [moveLogLoading, setMoveLogLoading] = useState(false);
+  const [moveLogExpanded, setMoveLogExpanded] = useState(null);
   const [ilgwalOnly, setIlgwalOnly] = useState(false);
   const [showProductModal, setShowProductModal] = useState(false);
   const [deductModal, setDeductModal] = useState(null); // { client, amount } | null
@@ -139,12 +145,6 @@ function JanggiListView({ initialQuery = "", initialDate = "", syncWonbeCost = f
       if (!res.ok || !data.ok) throw new Error(data?.detail || "수정 실패");
       setRows((prev) => applyGroupRecalc(prev.map((r) => r.id === id ? { ...r, ...data.row } : r), data.recalc_rows));
 
-      if (col === "개수" && row) {
-        const oldQty = patchNum(row["개수"]);
-        const oldPrice = patchNum(row["가격"]);
-        const newQty = patchNum(value);
-        if (oldQty > 0 && newQty > 0 && oldPrice > 0) {
-          const newPrice = Math.round((oldPrice / oldQty) * newQty);
       // 거래처 모달에서 가격을 직접 고치면 원가베이스유 원가도 같이 수정 (원가 = 가격 ÷ 개수)
       if (syncWonbeCost && col === "가격") {
         const code = String(row?.["상품코드"] || "").trim();
@@ -164,6 +164,12 @@ function JanggiListView({ initialQuery = "", initialDate = "", syncWonbeCost = f
         }
       }
 
+      if (col === "개수" && row) {
+        const oldQty = patchNum(row["개수"]);
+        const oldPrice = patchNum(row["가격"]);
+        const newQty = patchNum(value);
+        if (oldQty > 0 && newQty > 0 && oldPrice > 0) {
+          const newPrice = Math.round((oldPrice / oldQty) * newQty);
           const pr = await fetch(`${API}/wonbe/janggi/row`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json", ...getAuthHeaders() },
@@ -448,12 +454,6 @@ function JanggiListView({ initialQuery = "", initialDate = "", syncWonbeCost = f
     }
   };
 
-  useEffect(() => {
-    if (!showProductModal) return;
-    const timer = setTimeout(async () => {
-      const q = productSearch.trim();
-      setProductSearchLoading(true);
-      try {
   const [pricePushLoading, setPricePushLoading] = useState(false);
 
   // 지금 목록(거래처 모달 포함)에 보이는 행의 상품코드로 에이블리 실제 상품가 변경 - 원가베이스유 화면의 상품가 변경과 동일 API
@@ -541,6 +541,12 @@ function JanggiListView({ initialQuery = "", initialDate = "", syncWonbeCost = f
     }
   };
 
+  useEffect(() => {
+    if (!showProductModal) return;
+    const timer = setTimeout(async () => {
+      const q = productSearch.trim();
+      setProductSearchLoading(true);
+      try {
         const params = new URLSearchParams({ q, limit: 50 });
         const res = await fetch(`${API}/wonbe/search?${params}`, { headers: getAuthHeaders() });
         const data = await res.json().catch(() => ({}));
@@ -788,6 +794,15 @@ function JanggiListView({ initialQuery = "", initialDate = "", syncWonbeCost = f
       }));
       if (!targets.length) throw new Error("이동할 음수 매입차감 금액이 없습니다.");
 
+      // 실행 기록 남기기 (실패해도 이동은 계속)
+      try {
+        await fetch(`${API}/wonbe/janggi/purchase-move-log`, {
+          method: "POST",
+          headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ date: dateFilter, targets }),
+        });
+      } catch { /* 기록 실패는 무시 */ }
+
       localStorage.setItem("noye-kimsungil-purchase-deduction-handoff", JSON.stringify({
         targets,
         createdAt: new Date().toISOString(),
@@ -800,6 +815,33 @@ function JanggiListView({ initialQuery = "", initialDate = "", syncWonbeCost = f
       setMessage(err.message || "매입관리 이동 실패");
       setPurchaseMoveLoading(false);
     }
+  };
+
+  const loadMoveLog = async (date) => {
+    setMoveLogLoading(true);
+    try {
+      const params = new URLSearchParams({ date: date || "" });
+      const res = await fetch(`${API}/wonbe/janggi/purchase-move-log?${params}`, { headers: getAuthHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "로그 조회 실패");
+      setMoveLogData({ logs: data.logs || [], dates: data.dates || [] });
+    } catch (err) {
+      setMoveLogData({ logs: [], dates: [] });
+      setMessage(err.message || "로그 조회 실패");
+    } finally {
+      setMoveLogLoading(false);
+    }
+  };
+
+  const pickMoveLogDate = (d) => {
+    setMoveLogDate(d);
+    setMoveLogExpanded(null);
+    loadMoveLog(d);
+  };
+
+  const openMoveLog = () => {
+    setMoveLogOpen(true);
+    pickMoveLogDate(dateFilter || _todayLocal());
   };
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
@@ -880,6 +922,18 @@ function JanggiListView({ initialQuery = "", initialDate = "", syncWonbeCost = f
         <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => { setProductSearch(""); setProductResults([]); setShowProductModal(true); }} disabled={loading} style={{ borderColor: "#7c3aed", color: "#7c3aed" }}>
           <PackagePlus size={13} />상품으로 추가
         </button>
+        {syncWonbeCost && ["이벤트전 할인가", "이벤트 할인가"].map((src) => (
+          <button
+            key={src}
+            className={`${styles.btn} ${styles.btnSecondary}`}
+            onClick={() => pushSearchPriceToAbly(src)}
+            disabled={loading || pricePushLoading || rows.length === 0}
+            title={`목록에 보이는 상품의 ${src === "이벤트 할인가" ? "이벤트 판매가" : "판매가"}로 에이블리 실제 상품가를 변경합니다`}
+            style={{ borderColor: "#0891b2", color: "#0891b2" }}
+          >
+            {pricePushLoading ? "변경 중..." : `에이블리 상품가 변경 (${src === "이벤트 할인가" ? "이벤트가" : "판매가"})`}
+          </button>
+        ))}
         <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setDeductModal({ client: initialQuery || "", amount: "" })} disabled={loading} style={{ borderColor: "#dc2626", color: "#dc2626" }}>
           <Plus size={13} />매입차감 추가
         </button>
@@ -922,18 +976,6 @@ function JanggiListView({ initialQuery = "", initialDate = "", syncWonbeCost = f
           <button
             className={`${styles.btn} ${styles.btnDanger}`}
             onClick={handleBulkClear}
-        {syncWonbeCost && ["이벤트전 할인가", "이벤트 할인가"].map((src) => (
-          <button
-            key={src}
-            className={`${styles.btn} ${styles.btnSecondary}`}
-            onClick={() => pushSearchPriceToAbly(src)}
-            disabled={loading || pricePushLoading || rows.length === 0}
-            title={`목록에 보이는 상품의 ${src === "이벤트 할인가" ? "이벤트 판매가" : "판매가"}로 에이블리 실제 상품가를 변경합니다`}
-            style={{ borderColor: "#0891b2", color: "#0891b2" }}
-          >
-            {pricePushLoading ? "변경 중..." : `에이블리 상품가 변경 (${src === "이벤트 할인가" ? "이벤트가" : "판매가"})`}
-          </button>
-        ))}
             disabled={loading || bulkMarkLoading}
             title={`${dateFilter} 날짜의 일괄이체 지정 전체 해제`}
           >
@@ -1081,22 +1123,110 @@ function JanggiListView({ initialQuery = "", initialDate = "", syncWonbeCost = f
       )}
 
       {misongFilter === "매입차감" && (
-        <button
-          className={`${styles.btn} ${styles.btnPrimary}`}
-          onClick={handleMoveToPurchaseManager}
-          disabled={loading || purchaseMoveLoading || !total}
-          style={{
-            position: "fixed",
-            right: "24px",
-            bottom: "24px",
-            zIndex: 30,
-            minHeight: "44px",
-            padding: "0 18px",
-            boxShadow: "0 10px 28px rgba(15, 23, 42, 0.2)",
-          }}
+        <div style={{ position: "fixed", right: "24px", bottom: "24px", zIndex: 30, display: "flex", gap: "8px" }}>
+          <button
+            className={`${styles.btn} ${styles.btnSecondary}`}
+            onClick={openMoveLog}
+            style={{ minHeight: "44px", padding: "0 16px", boxShadow: "0 10px 28px rgba(15, 23, 42, 0.2)" }}
+          >
+            이동 로그
+          </button>
+          <button
+            className={`${styles.btn} ${styles.btnPrimary}`}
+            onClick={handleMoveToPurchaseManager}
+            disabled={loading || purchaseMoveLoading || !total}
+            style={{ minHeight: "44px", padding: "0 18px", boxShadow: "0 10px 28px rgba(15, 23, 42, 0.2)" }}
+          >
+            {purchaseMoveLoading ? "이동 중..." : "매입관리로 이동"}
+          </button>
+        </div>
+      )}
+
+      {moveLogOpen && (
+        <div
+          onClick={() => setMoveLogOpen(false)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center" }}
         >
-          {purchaseMoveLoading ? "이동 중..." : "매입관리로 이동"}
-        </button>
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: "var(--surface, #fff)", color: "var(--text-primary)", borderRadius: 10, boxShadow: "0 8px 32px rgba(0,0,0,0.22)", width: "min(640px, 94vw)", maxHeight: "80vh", display: "flex", flexDirection: "column", padding: "1rem" }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.7rem", flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 700, flex: 1 }}>매입관리 이동 로그</div>
+              <input
+                type="date"
+                className={styles.syncDateInput}
+                value={moveLogDate}
+                onChange={(e) => pickMoveLogDate(e.target.value)}
+              />
+              <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => pickMoveLogDate("")}>최근 전체</button>
+              <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setMoveLogOpen(false)}><X size={14} /></button>
+            </div>
+
+            {moveLogData.dates.length > 0 && (
+              <div style={{ display: "flex", gap: "0.3rem", flexWrap: "wrap", marginBottom: "0.6rem" }}>
+                <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", alignSelf: "center" }}>실행한 날짜:</span>
+                {moveLogData.dates.map((d) => (
+                  <button
+                    key={d}
+                    onClick={() => pickMoveLogDate(d)}
+                    style={{
+                      fontSize: "0.75rem", padding: "2px 8px", borderRadius: 999, cursor: "pointer",
+                      border: "1px solid var(--border, #d1d5db)",
+                      background: d === moveLogDate ? "#2563eb" : "transparent",
+                      color: d === moveLogDate ? "#fff" : "inherit",
+                    }}
+                  >
+                    {d}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div style={{ overflowY: "auto", flex: 1 }}>
+              {moveLogLoading ? (
+                <div className={styles.empty}>불러오는 중...</div>
+              ) : !moveLogData.logs.length ? (
+                <div className={styles.empty}>
+                  {moveLogDate ? `${moveLogDate} 에는 매입관리 이동을 실행한 기록이 없습니다.` : "기록이 없습니다."}
+                </div>
+              ) : (
+                moveLogData.logs.map((log) => (
+                  <div key={log.id} style={{ border: "1px solid var(--border, #e5e7eb)", borderRadius: 8, marginBottom: "0.5rem" }}>
+                    <div
+                      onClick={() => setMoveLogExpanded(moveLogExpanded === log.id ? null : log.id)}
+                      style={{ display: "flex", gap: "0.8rem", alignItems: "center", padding: "0.5rem 0.7rem", cursor: "pointer", fontSize: "0.85rem", flexWrap: "wrap" }}
+                    >
+                      <span style={{ fontWeight: 600 }}>✅ {log.실행일시}</span>
+                      <span style={{ color: "var(--text-muted)" }}>대상일 {log.날짜}</span>
+                      <span>{log.실행자}</span>
+                      <span>거래처 {log.거래처수}곳</span>
+                      <span style={{ marginLeft: "auto", fontWeight: 600 }}>{Number(log.총금액 || 0).toLocaleString()}원</span>
+                      <span style={{ color: "var(--text-muted)" }}>{moveLogExpanded === log.id ? "▲" : "▼"}</span>
+                    </div>
+                    {moveLogExpanded === log.id && (
+                      <table className={styles.table} style={{ fontSize: "0.8rem" }}>
+                        <thead>
+                          <tr><th>거래처</th><th>금액</th><th>건수</th><th>메모</th></tr>
+                        </thead>
+                        <tbody>
+                          {(log.상세 || []).map((d, i) => (
+                            <tr key={i}>
+                              <td>{d.vendor}</td>
+                              <td style={{ textAlign: "right" }}>{Number(d.amount || 0).toLocaleString()}</td>
+                              <td style={{ textAlign: "right" }}>{d.sourceCount}</td>
+                              <td>{d.memo}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {deductModal && (
@@ -1965,7 +2095,17 @@ function JanggiTopComparison() {
 
 /* ── 메인 컴포넌트 ────────────────────────────────────────────── */
 export default function JanggiTable() {
-  const [tab, setTab] = useState("list");
+  const [tab, setTab] = usePersistentState("janggiTableTab", "list");
+  // 입고전표 엑셀전환 "DB저장" 직후 넘어오면 저장한 날짜로 목록을 연다 (한 번 쓰고 지움)
+  const [openDate] = useState(() => {
+    try {
+      const d = localStorage.getItem("janggi-list-open-date") || "";
+      localStorage.removeItem("janggi-list-open-date");
+      return d;
+    } catch {
+      return "";
+    }
+  });
 
   return (
     <>
@@ -1992,7 +2132,7 @@ export default function JanggiTable() {
         </div>
       </div>
 
-      {tab === "list" && <JanggiListView />}
+      {tab === "list" && <JanggiListView initialDate={openDate} />}
       {tab === "top" && <JanggiTopComparison />}
     </>
   );

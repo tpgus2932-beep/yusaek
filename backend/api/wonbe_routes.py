@@ -4472,6 +4472,81 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
         finally:
             conn.close()
 
+    def _init_purchase_move_log_table(conn: sqlite3.Connection):
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS 매입관리이동_로그 (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                날짜     TEXT NOT NULL,
+                실행일시 TEXT NOT NULL,
+                실행자   TEXT NOT NULL DEFAULT '',
+                거래처수 INTEGER NOT NULL DEFAULT 0,
+                총금액   INTEGER NOT NULL DEFAULT 0,
+                상세     TEXT NOT NULL DEFAULT '[]'
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_purchase_move_log_날짜 ON 매입관리이동_로그(날짜)")
+        conn.commit()
+
+    @router.post("/janggi/purchase-move-log")
+    def janggi_add_purchase_move_log(payload: dict = Body(...), user: str = Depends(get_current_user)):
+        """장끼 매입차감 → 매입관리 이동 버튼 실행 기록."""
+        date_str = str(payload.get("date") or "").strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_str):
+            raise HTTPException(status_code=400, detail="날짜(YYYY-MM-DD)가 필요합니다.")
+        targets = payload.get("targets") or []
+        if not isinstance(targets, list):
+            raise HTTPException(status_code=400, detail="targets 형식 오류")
+        detail = [
+            {
+                "vendor": str(t.get("vendor") or ""),
+                "amount": int(round(float(t.get("amount") or 0))),
+                "memo": str(t.get("memo") or ""),
+                "sourceCount": int(t.get("sourceCount") or 0),
+            }
+            for t in targets if isinstance(t, dict)
+        ]
+        total_amount = sum(d["amount"] for d in detail)
+        conn = _get_janggi_db()
+        try:
+            _init_purchase_move_log_table(conn)
+            conn.execute(
+                "INSERT INTO 매입관리이동_로그 (날짜, 실행일시, 실행자, 거래처수, 총금액, 상세) VALUES (?, ?, ?, ?, ?, ?)",
+                (date_str, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), str(user or ""),
+                 len(detail), total_amount, json.dumps(detail, ensure_ascii=False)),
+            )
+            conn.commit()
+            return {"ok": True}
+        finally:
+            conn.close()
+
+    @router.get("/janggi/purchase-move-log")
+    def janggi_get_purchase_move_log(date: str = "", user: str = Depends(get_current_user)):
+        """날짜별 매입관리 이동 기록. date 가 비면 최근 200건."""
+        date = date.strip()
+        conn = _get_janggi_db()
+        try:
+            _init_purchase_move_log_table(conn)
+            if date:
+                rows = conn.execute(
+                    "SELECT * FROM 매입관리이동_로그 WHERE 날짜 = ? ORDER BY id DESC", (date,)
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM 매입관리이동_로그 ORDER BY id DESC LIMIT 200").fetchall()
+            logs = []
+            for r in rows:
+                item = dict(r)
+                try:
+                    item["상세"] = json.loads(item.get("상세") or "[]")
+                except Exception:
+                    item["상세"] = []
+                logs.append(item)
+            dates = [r[0] for r in conn.execute(
+                "SELECT 날짜 FROM 매입관리이동_로그 GROUP BY 날짜 ORDER BY 날짜 DESC LIMIT 60"
+            ).fetchall()]
+            return {"ok": True, "logs": logs, "dates": dates}
+        finally:
+            conn.close()
+
     @router.get("/janggi/aliases")
     def janggi_get_aliases(user: str = Depends(get_current_user)):
         conn = _get_janggi_db()
