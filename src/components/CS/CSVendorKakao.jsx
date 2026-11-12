@@ -50,6 +50,8 @@ export default function CSVendorKakao({ onClose }) {
     const [editing, setEditing] = useState({});
     const [status, setStatus] = useState({}); // { 거래처: {busy, ok, msg} }
     const [bulkBusy, setBulkBusy] = useState(false);
+    const [texts, setTexts] = useState({}); // 직접 고친 전송 문구 { 거래처: text } (없으면 자동 문구)
+    const textOf = (g) => (texts[g.vendor] !== undefined ? texts[g.vendor] : g.message);
 
     // 문구·제외 거래처·카톡 친구/매칭을 처음에 한 번 읽는다.
     useEffect(() => {
@@ -133,6 +135,7 @@ export default function CSVendorKakao({ onClose }) {
             });
             setProcessed(rows);
             setStatus({});
+            setTexts({});
             setNote(`불러오기 완료: ${rows.length}행 · CS 입고일정이 잡힌 ${scheduled}행은 문자 대상에서 제외`);
         } catch (e) {
             setNote(`불러오기 실패: ${e.message || ''}`);
@@ -174,9 +177,11 @@ export default function CSVendorKakao({ onClose }) {
         const contact = contactById.get(vendorMap[g.vendor]);
         if (!contact) return;
         if (!skipConfirm && !window.confirm(`${g.vendor} → 카카오톡 "${contact.name}"에게 보낼까요?`)) return;
+        const text = textOf(g).trim();
+        if (!text) { setSt(g.vendor, { busy: false, ok: false, msg: '전송 문구가 비어 있습니다.' }); return; }
         setSt(g.vendor, { busy: true, msg: '전송 요청 중...', ok: undefined });
         try {
-            await call('/send', { method: 'POST', body: { contact_id: contact.id, text: g.message, request_id: newRequestId() } });
+            await call('/send', { method: 'POST', body: { contact_id: contact.id, text, request_id: newRequestId() } });
             setSt(g.vendor, { busy: false, ok: true, msg: '전송 요청됨' });
         } catch (e) {
             setSt(g.vendor, { busy: false, ok: false, msg: e.message || '전송 실패' });
@@ -292,9 +297,23 @@ export default function CSVendorKakao({ onClose }) {
                         return (
                             <div key={g.vendor} style={{ borderTop: '1px solid var(--border-color, #e5e7eb)', padding: '10px 0' }}>
                                 <strong>{g.vendor}</strong>
-                                <pre style={{ whiteSpace: 'pre-wrap', margin: '6px 0', fontFamily: 'inherit', fontSize: '0.9em', background: 'var(--bg-secondary, #f3f4f6)', padding: 8, borderRadius: 6 }}>
-                                    {g.message}
-                                </pre>
+                                <textarea
+                                    value={textOf(g)}
+                                    disabled={st.busy}
+                                    onChange={(e) => setTexts((p) => ({ ...p, [g.vendor]: e.target.value }))}
+                                    rows={Math.min(14, Math.max(3, textOf(g).split('\n').length + 1))}
+                                    style={{ ...input, width: '100%', boxSizing: 'border-box', margin: '6px 0', fontSize: '0.9em', background: 'var(--bg-secondary, #f3f4f6)', resize: 'vertical' }}
+                                />
+                                {texts[g.vendor] !== undefined && (
+                                    <button
+                                        type="button"
+                                        style={{ ...btn, marginBottom: 6 }}
+                                        disabled={st.busy}
+                                        onClick={() => setTexts((p) => { const n = { ...p }; delete n[g.vendor]; return n; })}
+                                    >
+                                        문구 원래대로
+                                    </button>
+                                )}
                                 {matched ? (
                                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                                         <span style={{ background: '#fef9c3', borderRadius: 10, padding: '2px 8px', fontSize: 13 }}>카톡: {contact.name}</span>
