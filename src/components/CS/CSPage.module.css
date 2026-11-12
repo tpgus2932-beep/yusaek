@@ -132,7 +132,7 @@
 
 .body {
     display: grid;
-    grid-template-columns: 330px minmax(0, 1fr) 800px;
+    grid-template-columns: 330px minmax(0, 1fr) 960px;
     gap: 12px;
     flex: 1;
     min-height: 0;
