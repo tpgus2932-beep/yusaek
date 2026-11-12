@@ -332,6 +332,7 @@ export default function CollaborationMenuPage() {
     }
     : null;
   const [receivingApplying, setReceivingApplying] = useState(false);
+  const [receivingCompleting, setReceivingCompleting] = useState(false);
   const [receivingMessage, setReceivingMessage] = useState('');
   const [receivingMessageType, setReceivingMessageType] = useState('');
   const [receivingSheetTitle, setReceivingSheetTitle] = useState('');
@@ -1076,6 +1077,41 @@ export default function CollaborationMenuPage() {
       setReceivingFeedback('error', error.message || '입고 처리에 실패했습니다.');
     } finally {
       setReceivingApplying(false);
+    }
+  };
+
+  // 오늘 생성된 입고전표를 전부 완료처리한다 (이미 완료된 전표는 서버가 건너뜀).
+  const completeAllReceiving = async () => {
+    if (!window.confirm('오늘 생성된 입고전표 중 아직 완료되지 않은 전표를 전부 완료처리할까요?\n(이미 완료된 전표는 건너뜁니다)')) return;
+    try {
+      setReceivingCompleting(true);
+      setReceivingFeedback('', '');
+      const res = await fetch(`${LOCAL_API_BASE}/order/simple-receiving/complete-all`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      });
+      if (handleUnauthorized(res)) return;
+      const data = await res.json().catch(() => ({}));
+      if (data?.need_session) {
+        openEzadminModal(completeAllReceiving);
+        return;
+      }
+      if (!res.ok || (data.ok === false && !data.failed)) {
+        throw new Error(data.detail || data.error || '일괄완료에 실패했습니다.');
+      }
+      const done = data.completed?.length || 0;
+      const skipped = data.already_completed || 0;
+      const failedCount = data.failed?.length || 0;
+      const summary = `입고전표 일괄완료: ${done}장 완료, 이미 완료 ${skipped}장 건너뜀`;
+      if (failedCount > 0) {
+        setReceivingFeedback('error', `${summary}, 실패 ${failedCount}장 (전표 ${data.failed.map((f) => f.sheet).join(', ')})`);
+      } else {
+        setReceivingFeedback('ok', summary);
+      }
+    } catch (error) {
+      setReceivingFeedback('error', error.message || '일괄완료에 실패했습니다.');
+    } finally {
+      setReceivingCompleting(false);
     }
   };
 
@@ -2235,6 +2271,15 @@ export default function CollaborationMenuPage() {
             >
               <ArrowDownToLine size={14} />
               {receivingApplying ? '입고 처리 중...' : `입고전표 생성 (${receivingDraft.length}건)`}
+            </button>
+            <button
+              type="button"
+              className={styles.secondaryBtn}
+              onClick={completeAllReceiving}
+              disabled={receivingCompleting || receivingApplying}
+              title="오늘 생성된 입고전표 중 완료 안 된 것을 전부 완료처리 (이미 완료된 전표는 건너뜀)"
+            >
+              {receivingCompleting ? '완료처리 중...' : '입고전표 일괄완료'}
             </button>
           </div>
         </div>

@@ -1551,6 +1551,97 @@ def build_order_router(
 
         return {"ok": True, "count": len(items), "vouchers": vouchers}
 
+    # ── 입고전표 일괄완료 (오늘 생성된 입고전표 중 아직 완료 안 된 것만 IM00 set_complate) ──
+    @router.post("/order/simple-receiving/complete-all")
+    async def simple_receiving_complete_all(admin: str = Depends(require_admin)):
+        phpsessid = (get_setting(_EZADMIN_SESSION_KEY) or "").strip()
+        if not phpsessid:
+            return {"ok": False, "need_session": True}
+
+        now = datetime.now(_KST)
+        today = now.strftime("%Y-%m-%d")
+        html_tag = re.compile(r"<[^>]+>")
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": f"{_EZADMIN_BASE}/template40.htm?template=IM00",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+                grid = await client.post(
+                    f"{_EZADMIN_BASE}/function.htm",
+                    data={
+                        "_search": "false",
+                        "nd": str(int(now.timestamp() * 1000)),
+                        "rows": "9999",
+                        "page": "1",
+                        "sidx": "",
+                        "sord": "asc",
+                        "template": "IM00",
+                        "action": "get_IM00_grid",
+                        "par": (
+                            "template=IM00&action=&page_code=IM00&search=1"
+                            "&_sort=&sort_order=&date_type=crdate"
+                            f"&start_date={today}&end_date={today}"
+                            "&date_period_sel=0&query_option=title&query_str=&req_status=0"
+                        ),
+                    },
+                    cookies={"PHPSESSID": phpsessid},
+                    headers=headers,
+                )
+                if _looks_like_ezadmin_session_error(grid, grid.text or ""):
+                    return {"ok": False, "need_session": True}
+                try:
+                    obj = grid.json()
+                except Exception:
+                    return {"ok": False, "error": "입고전표 목록 응답을 해석하지 못했습니다."}
+
+                pending: list[str] = []
+                already = 0
+                for row in obj.get("rows", []):
+                    cell = row.get("cell", {}) or {}
+                    sheet_no = html_tag.sub("", str(cell.get("sheet") or "")).strip()
+                    if not sheet_no:
+                        continue  # 합계 행 등
+                    if html_tag.sub("", str(cell.get("complete_date") or "")).strip():
+                        already += 1
+                    else:
+                        pending.append(sheet_no)
+
+                completed: list[str] = []
+                failed: list[dict] = []
+                for sheet_no in pending:
+                    resp = await client.post(
+                        f"{_EZADMIN_BASE}/function.htm",
+                        data={
+                            "template": "IM00",
+                            "action": "set_complate",
+                            "seq": sheet_no,
+                            "in_wh": "0",
+                            "timeFlag": _browser_time_flag(datetime.now(_KST)),
+                        },
+                        cookies={"PHPSESSID": phpsessid},
+                        headers=headers,
+                    )
+                    try:
+                        result = resp.json()
+                    except Exception:
+                        result = None
+                    if isinstance(result, dict) and str(result.get("error", "")) == "0":
+                        completed.append(sheet_no)
+                    else:
+                        failed.append({"sheet": sheet_no, "response": (resp.text or "")[:200]})
+        except httpx.HTTPError as exc:
+            return {"ok": False, "error": f"EZAdmin 요청 실패: {exc}"}
+
+        return {
+            "ok": not failed,
+            "date": today,
+            "completed": completed,
+            "already_completed": already,
+            "failed": failed,
+        }
+
     # ── 간단입고 바코드 출력용 상품명 조회 (원가베이스유 상품코드 → 순수 상품명) ──
     # 미송픽업 검색결과는 발주내역의 product_name/client_product_name이 실제 상품명이 아니라
     # 미송관리 쪽 표시용 값이라 코드로 원가베이스유를 찾아야 정확한 상품명이 나온다.
