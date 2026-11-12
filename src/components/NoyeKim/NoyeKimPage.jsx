@@ -475,6 +475,9 @@ export default function NoyeKimPage() {
   const [excelSlipRows, setExcelSlipRows] = useState([]);
   const [excelSlipOutput, setExcelSlipOutput] = useState("");
   const [savingJanggi, setSavingJanggi] = useState(false);
+  // 이미 DB저장한 변환 결과(배열 자체)를 기억 → 같은 결과를 두 번 넣지 않게. 새로 변환하면 배열이 바뀌어 다시 저장 가능.
+  const savedJanggiRowsRef = useRef(null);
+  const savingJanggiRef = useRef(false);
   const [slipVoucherList, setSlipVoucherList] = useState([]);
   const [showSlipVoucherModal, setShowSlipVoucherModal] = useState(false);
   const [selectedSlipSheets, setSelectedSlipSheets] = useState([]);
@@ -1320,6 +1323,12 @@ export default function NoyeKimPage() {
       setMessage("저장할 변환 결과가 없습니다.");
       return;
     }
+    if (savingJanggiRef.current) return;
+    if (savedJanggiRowsRef.current === excelSlipRows) {
+      alert("이미 DB에 저장(이동)된 데이터입니다.\n같은 내용은 한 번만 저장됩니다.");
+      return;
+    }
+    savingJanggiRef.current = true;
     setSavingJanggi(true);
     setMessage("");
     try {
@@ -1350,10 +1359,22 @@ export default function NoyeKimPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data?.detail || "DB 저장 실패");
+      savedJanggiRowsRef.current = excelSlipRows;
       setMessage(`날짜별장끼정리 DB 저장 완료: ${data.saved}건`);
+      // 저장 끝나면 DB관리 > 날짜별장끼정리 목록으로 바로 이동 (저장한 날짜로 열림)
+      const savedDate = excelSlipRows.map((r) => String(r.G || "").trim()).find((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)) || "";
+      try {
+        if (savedDate) localStorage.setItem("janggi-list-open-date", savedDate);
+        localStorage.setItem("dbManagerTable", "janggi");
+        localStorage.setItem("janggiTableTab", "list");
+        localStorage.setItem("topMode", "db-manager");
+      } catch { /* 저장소 사용 불가 시 이동만 생략 */ }
+      window.location.reload();
+      return;
     } catch (err) {
       setMessage(err.message || "DB 저장에 실패했습니다.");
     } finally {
+      savingJanggiRef.current = false;
       setSavingJanggi(false);
     }
   };
