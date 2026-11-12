@@ -84,9 +84,11 @@ class CostBase:
     def summarize(rows: list[dict]) -> dict:
         names = Counter(str(r.get("상품명") or "").strip() for r in rows)
         suppliers = [s for s, _ in Counter(str(r.get("거래처") or "").strip() for r in rows).most_common() if s]
+        supplier_names = [s for s, _ in Counter(str(r.get("거래처상품명") or "").strip() for r in rows).most_common() if s]
         costs = [c for c in (_to_number(r.get("원가")) for r in rows) if c is not None]
         return {
             "base_name": names.most_common(1)[0][0] if names else "",
+            "supplier_product_name": supplier_names[0] if supplier_names else "",
             "suppliers": suppliers[:3],
             "cost_min": int(min(costs)) if costs else None,
             "cost_max": int(max(costs)) if costs else None,
