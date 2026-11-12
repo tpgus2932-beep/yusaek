@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
-import { call } from "../KakaoTalk/kakaoApi";
+import { call, newRequestId } from "../KakaoTalk/kakaoApi";
 import styles from "./DBManager.module.css";
 
 const POLL_MS = 10000;
@@ -41,6 +41,9 @@ export default function InvoiceKakaoModal({ vendor, onClose }) {
   const [syncing, setSyncing] = useState(false); // 이 거래처 대화를 폰에서 읽는 중
   const [syncMsg, setSyncMsg] = useState({ text: "", ok: true });
   const wasSyncing = useRef(false);
+  const [draft, setDraft] = useState(""); // 답장 입력
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -118,6 +121,23 @@ export default function InvoiceKakaoModal({ vendor, onClose }) {
       setSyncMsg({ text: `${since}부터 폰에서 대화를 읽는 중입니다. 끝날 때까지 폰을 만지지 마세요.`, ok: true });
     } catch (e) {
       setSyncMsg({ text: e.message || "동기화를 시작하지 못했습니다.", ok: false });
+    }
+  };
+
+  // 답장 보내기: 서버 큐에 넣으면 폰이 차례로 전송한다 (Enter 전송 / Shift+Enter 줄바꿈)
+  const sendReply = async () => {
+    const text = draft.trim();
+    if (!text || !contactId || sending) return;
+    setSending(true);
+    setSendError("");
+    try {
+      await call("/send", { method: "POST", body: { contact_id: contactId, text: draft, request_id: newRequestId() } });
+      setDraft("");
+      await loadMessages();
+    } catch (e) {
+      setSendError(e.message || "전송 요청에 실패했습니다.");
+    } finally {
+      setSending(false);
     }
   };
 
@@ -287,6 +307,31 @@ export default function InvoiceKakaoModal({ vendor, onClose }) {
             );
           })}
         </div>
+
+        {contact && !editing && (
+          <div style={{ padding: "8px 16px", borderTop: "1px solid #e5e7eb" }}>
+            {sendError && <div style={{ color: "#dc2626", marginBottom: 6 }}>{sendError}</div>}
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+              <textarea
+                className={styles.inlineInput}
+                style={{ flex: 1, minHeight: 56, resize: "vertical", fontFamily: "inherit" }}
+                placeholder={`${contact.name}에게 답장 (Enter 전송 · Shift+Enter 줄바꿈)`}
+                value={draft}
+                disabled={sending}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    sendReply();
+                  }
+                }}
+              />
+              <button type="button" className={`${styles.btn} ${styles.btnPrimary}`} disabled={sending || !draft.trim()} onClick={sendReply}>
+                {sending ? "전송 중..." : "전송"}
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className={styles.catFooter}>
           <span style={{ marginRight: "auto", color: "#6b7280", fontSize: 12 }}>
