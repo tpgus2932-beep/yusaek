@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import styles from './LabelReprintPage.module.css';
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import { printProductLabels } from '../../lib/printProductLabels';
+import { withBigNumber } from '../../lib/decorateLabels';
 import { useEzadminSession } from '../../lib/EzadminSessionContext';
 
 const rowOption = (row) => [row['색상'], row['사이즈']].filter(Boolean).join(' ');
@@ -122,7 +123,7 @@ const LabelReprintPage = ({ onClose }) => {
     }
     return list.flatMap((it) => {
       const deco = decorations[it.code] || {};
-      const title = deco.prefix ? `${deco.prefix} ${it.name}` : it.name;
+      const title = withBigNumber(deco.prefix ? `${deco.prefix} ${it.name}` : it.name, deco.bigNumber);
       return Array.from({ length: Math.max(1, Number(it.qty) || 1) }, () => ({
         code: it.code, title, option: it.option, clientLine: deco.clientLine || '',
       }));

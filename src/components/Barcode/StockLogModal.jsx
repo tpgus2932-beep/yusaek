@@ -3,6 +3,7 @@ import { useEzadminSession } from "../../lib/EzadminSessionContext";
 import styles from "./BarcodePage.module.css";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 import { printProductLabels } from "../../lib/printProductLabels";
+import { withBigNumber } from "../../lib/decorateLabels";
 
 // 바코드 사이드메뉴 "로그 확인" 모달 (EZAdmin 재고내역 조회 + 입고/출고처리 + 라벨 출력).
 // 재고체크 등 다른 화면에서도 쓸 수 있게 따로 뺐다. open이 true가 될 때 initialCode가 있으면 바로 그 상품을 조회한다.
@@ -75,7 +76,7 @@ export default function StockLogModal({ open: showStockLog, onClose, initialCode
         if (dres.ok && ddata?.ok) deco = (ddata.decorations || {})[code] || {};
       } catch { /* 꾸밈 정보 조회 실패해도 출력은 진행 */ }
       const name = row["상품명"] || row["상품명합"] || "";
-      const title = deco.prefix ? `${deco.prefix} ${name}` : name;
+      const title = withBigNumber(deco.prefix ? `${deco.prefix} ${name}` : name, deco.bigNumber);
       const option = [row["색상"], row["사이즈"]].filter(Boolean).join(" ");
       const labels = Array.from({ length: qty }, () => ({ code, title, option, clientLine: deco.clientLine || "" }));
       if (!printProductLabels(labels)) throw new Error("팝업이 차단되었거나 출력할 라벨이 없습니다.");

@@ -26,6 +26,7 @@ from api.wonbe_routes import (
     load_wonbe_product_name_map,
     load_wonbe_pure_product_name_map,
     load_wonbe_rename_prefix_map,
+    load_wonbe_big_number_map,
 )
 from services.misong_lookup import load_misong_qty_by_code
 
@@ -293,6 +294,15 @@ def build_order_router(
             return {}
         try:
             return load_wonbe_rename_prefix_map()
+        except Exception:
+            return {}
+
+    def _big_number_by_code() -> dict[str, int]:
+        # 대형 번호 기록은 로컬 원가베이스유 DB에만 있다 - 배포앱에서는 없는 것으로 보고 번호를 생략한다.
+        if is_render:
+            return {}
+        try:
+            return load_wonbe_big_number_map()
         except Exception:
             return {}
 
@@ -1722,6 +1732,7 @@ def build_order_router(
         prefix_by_supplier = {k.replace(" ", ""): v for k, v in _load_label_prefixes().items()}
         client_info = _client_info_by_code()
         rename_prefixes = _rename_prefix_by_code()
+        big_numbers = _big_number_by_code()
         decorations = {}
         for code in codes:
             info = client_info.get(code) or {}
@@ -1731,6 +1742,8 @@ def build_order_router(
                 # 거래처 접두어가 없으면 상품명 일괄변경이 붙인 카테고리+컬러 글자(AA 등)를 쓴다.
                 "prefix": prefix_by_supplier.get(supplier) or rename_prefixes.get(code, ""),
                 "clientLine": f"({client_product})" if supplier in supplier_set and client_product else "",
+                # 대형 번호(1~5): 있으면 라벨 상품명 맨 앞에 "2 상품명"처럼 붙인다. 없으면 0.
+                "bigNumber": big_numbers.get(code, 0),
             }
         return {"ok": True, "decorations": decorations}
 
@@ -1746,6 +1759,7 @@ def build_order_router(
             "ok": True,
             "names": {code: name_map.get(code, "") for code in codes},
             "renamePrefixes": {code: rename_prefixes[code] for code in codes if code in rename_prefixes},
+            "bigNumbers": {code: n for code, n in _big_number_by_code().items() if code in codes},
             "clients": {
                 code: {
                     "거래처": (client_info.get(code) or {}).get("거래처", ""),

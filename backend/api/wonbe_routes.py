@@ -674,6 +674,18 @@ def save_kdg_manual_match(model_no, color, size, length, product_code: str) -> s
     return code
 
 
+def load_wonbe_big_number_map() -> dict[str, int]:
+    """상품코드 → 대형 번호(1~5). 이지어드민 상품명 앞에 붙인 번호를 기록해 둔 표(wonbe_big_number)에서 읽는다.
+    간단입고·라벨 재출력 등 라벨 상품명 앞에 같은 번호를 찍을 때 쓴다."""
+    conn = _get_wonbe_db()
+    try:
+        _init_wonbe_table(conn)
+        rows = conn.execute("SELECT 상품코드, number FROM wonbe_big_number").fetchall()
+    finally:
+        conn.close()
+    return {str(r["상품코드"]).strip(): int(r["number"]) for r in rows if str(r["상품코드"] or "").strip() and r["number"]}
+
+
 def load_wonbe_rename_prefix_map() -> dict[str, str]:
     """상품코드 → 상품명 일괄변경이 앞에 붙이는 카테고리+컬러 글자(예: "AA", "BC").
 

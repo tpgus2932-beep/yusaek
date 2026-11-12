@@ -4,6 +4,7 @@ import styles from './CollaborationMenuPage.module.css';
 import { LOCAL_API_BASE, getAuthHeaders, handleUnauthorized } from '../../lib/api';
 import { useEzadminSession } from '../../lib/EzadminSessionContext';
 import ReceiptOcrPanel from './ReceiptOcrPanel';
+import { withBigNumber } from '../../lib/decorateLabels';
 import {
   ArrowDownToLine, CheckCircle, ChevronDown, ChevronUp, Clipboard,
   Database, Download, Eye, FileSpreadsheet, PackagePlus, Plus, Printer, RefreshCw, Save, Search, Trash2, Upload, XCircle,
@@ -1134,6 +1135,7 @@ export default function CollaborationMenuPage() {
     let nameByCode = {};
     let clientByCode = {};
     let renamePrefixByCode = {};
+    let bigNumberByCode = {};
     try {
       const res = await fetch(`${LOCAL_API_BASE}/order/simple-receiving/resolve-product-names`, {
         method: 'POST',
@@ -1146,6 +1148,7 @@ export default function CollaborationMenuPage() {
         nameByCode = data.names || {};
         clientByCode = data.clients || {};
         renamePrefixByCode = data.renamePrefixes || {};
+        bigNumberByCode = data.bigNumbers || {};
       }
     } catch {
       // 상품명 조회에 실패해도 출력 자체는 막지 않는다 - 아래에서 담긴 목록의 이름으로 대체한다.
@@ -1165,7 +1168,8 @@ export default function CollaborationMenuPage() {
       // 거래처별 접두어(R/K/L 등)가 지정돼 있으면 상품명 앞에 공백 하나 두고 붙인다.
       // 거래처 접두어가 없으면 상품명 일괄변경이 붙인 카테고리+컬러 글자(AA 등)를 붙인다.
       const prefix = prefixBySupplier[clientName] || renamePrefixByCode[item.code] || '';
-      const title = prefix ? `${prefix} ${baseTitle}` : baseTitle;
+      // 대형 번호(1~5)가 있는 상품은 맨 앞에 "2 R 상품명"처럼 번호를 붙인다.
+      const title = withBigNumber(prefix ? `${prefix} ${baseTitle}` : baseTitle, bigNumberByCode[item.code]);
       const clientLine = labelSupplierSet.has(clientName) && clientProductName
         ? `(${clientProductName})`
         : '';
