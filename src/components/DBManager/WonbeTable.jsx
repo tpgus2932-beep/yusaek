@@ -1828,14 +1828,19 @@ export default function WonbeTable() {
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
             <strong>원가베이스유 수정 로그 ({editLogs.length}건, 최신순)</strong>
             <input
+              className={styles.searchInput}
               value={editLogQuery}
               onChange={(e) => setEditLogQuery(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") loadEditLogs(); }}
               placeholder="상품코드·상품명·칸·수정자 검색"
-              style={{ width: 220 }}
+              style={{ width: 260 }}
             />
-            <button onClick={() => loadEditLogs()} disabled={editLogLoading}>{editLogLoading ? "조회 중..." : "검색"}</button>
-            <button onClick={() => setEditLogOpen(false)}>닫기</button>
+            <button className={`${styles.btn} ${styles.btnPrimary}`} onClick={() => loadEditLogs()} disabled={editLogLoading}>
+              {editLogLoading ? "조회 중..." : "검색"}
+            </button>
+            <button className={`${styles.btn} ${styles.btnSecondary}`} onClick={() => setEditLogOpen(false)} style={{ marginLeft: "auto" }}>
+              닫기
+            </button>
           </div>
           {editLogs.length === 0 && !editLogLoading ? (
             <div style={{ color: "#888", fontSize: 13 }}>수정 로그가 없습니다.</div>
