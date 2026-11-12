@@ -74,6 +74,83 @@ def test_upload_filename_matches_original_program():
     assert svc.upload_filename("10028", date(2026, 10, 27), date(2026, 11, 12)) == "10028_download_20261027_20261112.xls"
 
 
+# ---------------------------------------------------------------- 아모드(10080)
+def _amood_item(item_id, order_id, **over):
+    base = {
+        "id": item_id, "order": {"id": order_id, "placed_at": "2026-11-12T03:06:53.183362+09:00"},
+        "product": {"name_origin": "[MD🩶/ブランド]ニット", "custom_code": "ABC 6044", "ably_sno": 12345678},
+        "product_option": {"option_values_origin": ["ブラック", "FREE"]},
+        "quantity": 2, "sale_price": 5900, "status": "SHIPPING_READYING",
+        "customer": {"full_name": "木下愛琉"},
+        "shipping_item": {"forwarding_address": {
+            "full_name": "수취인", "phone_number": "+82100000000", "zipcode": "12345",
+            "prefecture": "경기도", "city": "성남시", "local": "중원구 1길", "detail": "3층"}},
+    }
+    base.update(over)
+    return base
+
+
+def test_amood_row_follows_captured_format():
+    row = svc.amood_order_row(_amood_item(9990001, 8880001))
+    assert len(row) == len(svc.AMOOD_ORDER_HEADERS) == 19
+    r = dict(zip(svc.AMOOD_ORDER_HEADERS, row))
+    assert r["결제일"] == "2026-11-12T03:06:53.183362+09:00" and r["상품주문번호"] == "9990001" and r["주문번호"] == "8880001"
+    assert (r["택배사"], r["택배사 코드"], r["송장번호"], r["배송 메모"]) == ("", "", "", "")
+    assert r["상품명"] == "[MD🩶/ブランド]ニット"             # 아모드는 이모지를 지우지 않는다
+    assert r["옵션 정보"] == "ブラック/FREE" and r["수량"] == "2" and r["판매금액"] == "5900"
+    assert r["주문자명"] == "木下愛琉"                          # 고객 이름, 수취인은 포워딩(한국) 주소
+    assert (r["수취인명"], r["연락처"], r["우편번호"]) == ("수취인", "+82100000000", "12345")
+    assert r["배송지 주소"] == "경기도 성남시 중원구 1길 3층" and r["주문상태"] == "배송 준비중" and r["에이블리 상품코드"] == "12345678"
+
+
+def test_amood_address_without_detail_has_no_trailing_space():
+    item = _amood_item(1, 2)
+    item["shipping_item"]["forwarding_address"]["detail"] = None
+    assert dict(zip(svc.AMOOD_ORDER_HEADERS, svc.amood_order_row(item)))["배송지 주소"] == "경기도 성남시 중원구 1길"
+
+
+def test_amood_xls_round_trip_and_filename():
+    sheet = xlrd.open_workbook(file_contents=svc.build_amood_order_xls([_amood_item(1, 2)])).sheet_by_index(0)
+    assert (sheet.nrows, sheet.ncols) == (2, 19) and [sheet.cell_value(0, c) for c in range(19)] == svc.AMOOD_ORDER_HEADERS
+    assert all(sheet.cell_type(r, c) == xlrd.XL_CELL_TEXT for r in range(2) for c in range(19))
+    assert svc.upload_filename("10080", date(2026, 10, 27), date(2026, 11, 12), download=False) == "10080_20261027_20261112.xls"
+
+
+class FakeAmood:
+    def __init__(self, new=(), ready=(), failure=()):
+        self.new, self.ready, self.failure = list(new), list(ready), list(failure)
+        self.confirmed = []
+
+    async def list_items(self, status, start, end):
+        assert (end - start).days == svc.LOOKBACK_DAYS
+        return self.new if status == "PAYMENT_COMPLETED" else self.ready
+
+    async def ship_ready(self, ids):
+        self.confirmed = list(ids)
+        failed = [{"id": i, "error_code": "EMPTY_EXPORT_INFO", "message": "x"} for i in ids if i in self.failure]
+        return {"success": [{"id": i} for i in ids if i not in self.failure], "failure": failed}
+
+
+def test_amood_auto_order_confirms_then_uploads_ready_orders():
+    amood = FakeAmood(new=[_amood_item(1, 10), _amood_item(2, 11)], ready=[_amood_item(1, 10), _amood_item(3, 12)], failure=[2])
+    ez = FakeEz()
+    result = asyncio.run(svc.run_auto_order_amood(amood, ez, shop_id="10080", today=TODAY, log=lambda m: None))
+    assert amood.confirmed == [1, 2]
+    (template, action, kwargs), = ez.posts
+    assert (template, action, kwargs["data"]["shop_id"]) == ("DC00", "reg_orders_manual", "10080")
+    name, content, _ = kwargs["files"]["_file"]
+    assert name == "10080_20261027_20261112.xls"
+    assert xlrd.open_workbook(file_contents=content).sheet_by_index(0).nrows == 3      # 머리글 + 배송준비중 2건
+    assert result["confirmed"] == 1 and result["confirm_failed"] == 1 and result["fail_reasons"] == {"EMPTY_EXPORT_INFO": 1}
+    assert result["items"] == 2 and result["ez_new"] == 2
+
+
+def test_amood_auto_order_nothing_to_upload():
+    ez = FakeEz()
+    result = asyncio.run(svc.run_auto_order_amood(FakeAmood(), ez, shop_id="10080", today=TODAY, log=lambda m: None))
+    assert result["uploaded"] is False and ez.posts == []
+
+
 # ---------------------------------------------------------------- 송장 매칭
 def _cell(pack, status="8"):
     return {"cell": {"pack": pack, "status": status}}
@@ -203,27 +280,50 @@ def _wait_done(client, kind, timeout=5.0):
     raise AssertionError("job did not finish")
 
 
-def test_api_reports_missing_api_key():
+def _patched(ably_key="k", amood_key="a", ably=None, amood=None, ez=None):
+    from contextlib import ExitStack
+    stack = ExitStack()
+    stack.enter_context(patch.object(ezauto_routes.ez_config, "ABLY_VENDOR_API_KEY", ably_key))
+    stack.enter_context(patch.object(ezauto_routes.ez_config, "ABLY_VENDOR_TOKEN", "t"))
+    stack.enter_context(patch.object(ezauto_routes.ez_config, "AMOOD_VENDOR_API_KEY", amood_key))
+    stack.enter_context(patch.object(ezauto_routes.ez_config, "AMOOD_VENDOR_TOKEN", "t"))
+    stack.enter_context(patch.object(ezauto_routes.ez_ably, "AblyVendorClient", lambda token, key, base="": ably or FakeAbly()))
+    stack.enter_context(patch.object(ezauto_routes.ez_ably, "AmoodVendorClient", lambda token, key, base="": amood or FakeAmood()))
+    stack.enter_context(patch.object(ezauto_routes, "EzAdminClient", lambda get_setting, timeout=30.0: ez or FakeEz()))
+    return stack
+
+
+def test_api_reports_missing_api_keys_when_every_shop_fails():
     client, _ = _make_client()
-    with client, patch.object(ezauto_routes.ez_config, "ABLY_VENDOR_API_KEY", ""):
+    with client, _patched(ably_key="", amood_key=""):
         assert client.post("/ezauto/auto-order").json() == {"ok": True, "started": True}
         job = _wait_done(client, "auto_order")
-    assert "ABLY_VENDOR_API_KEY" in job["error"] and job["result"] is None
+    assert "ABLY_VENDOR_API_KEY" in job["error"] and "AMOOD_VENDOR_API_KEY" in job["error"] and job["result"] is None
 
 
-def test_api_runs_auto_order_and_keeps_last_result():
+def test_api_runs_both_shops_and_keeps_last_result():
     client, store = _make_client()
-    fake_ably = FakeAbly(new=[_item(1, 10)], preparing=[_item(1, 10)])
-    fake_ez = FakeEz()
-    with client, patch.object(ezauto_routes.ez_config, "ABLY_VENDOR_API_KEY", "k"), \
-            patch.object(ezauto_routes.ez_config, "ABLY_VENDOR_TOKEN", "t"), \
-            patch.object(ezauto_routes.ez_ably, "AblyVendorClient", lambda token, key, base="": fake_ably), \
-            patch.object(ezauto_routes, "EzAdminClient", lambda get_setting, timeout=30.0: fake_ez):
+    ez = FakeEz()
+    with client, _patched(ably=FakeAbly(new=[_item(1, 10)], preparing=[_item(1, 10)]),
+                          amood=FakeAmood(new=[_amood_item(5, 50)], ready=[_amood_item(5, 50)]), ez=ez):
         client.post("/ezauto/auto-order")
         job = _wait_done(client, "auto_order")
-    assert job["error"] == "" and job["result"]["uploaded"] is True and job["started_by"] == "tester"
-    assert any("주문확인" in s for s in job["steps"])
+    assert job["error"] == "" and job["started_by"] == "tester"
+    assert [(s["shop"], s["ok"]) for s in job["result"]["shops"]] == [("에이블리", True), ("아모드", True)]
+    assert [p[2]["data"]["shop_id"] for p in ez.posts] == ["10028", "10080"]          # 판매처별로 따로 업로드
+    assert any("[에이블리]" in s for s in job["steps"]) and any("[아모드]" in s for s in job["steps"])
     assert "ezauto_last_auto_order" in store          # 서버 재시작 후에도 마지막 결과를 보여주기 위해 저장
+
+
+def test_api_continues_with_other_shop_when_one_fails():
+    client, _ = _make_client()
+    ez = FakeEz()
+    with client, _patched(amood_key="", ably=FakeAbly(preparing=[_item(1, 10)]), ez=ez):
+        client.post("/ezauto/auto-order")
+        job = _wait_done(client, "auto_order")
+    shops = job["result"]["shops"]
+    assert job["error"] == "" and shops[0]["ok"] is True and shops[1]["ok"] is False
+    assert "AMOOD_VENDOR_API_KEY" in shops[1]["error"] and len(ez.posts) == 1       # 에이블리는 정상 처리
 
 
 def test_api_reports_session_expired_and_blocks_double_start():
@@ -234,10 +334,7 @@ def test_api_reports_session_expired_and_blocks_double_start():
             await asyncio.sleep(0.2)
             raise EzAdminSessionExpired("expired")
 
-    with client, patch.object(ezauto_routes.ez_config, "ABLY_VENDOR_API_KEY", "k"), \
-            patch.object(ezauto_routes.ez_config, "ABLY_VENDOR_TOKEN", "t"), \
-            patch.object(ezauto_routes.ez_ably, "AblyVendorClient", lambda token, key, base="": FakeAbly(preparing=[_item(1, 10)])), \
-            patch.object(ezauto_routes, "EzAdminClient", lambda get_setting, timeout=30.0: ExpiredEz()):
+    with client, _patched(ably=FakeAbly(preparing=[_item(1, 10)]), ez=ExpiredEz()):
         assert client.post("/ezauto/auto-order").status_code == 200
         assert client.post("/ezauto/auto-order").status_code == 409     # 실행 중에는 다시 시작 불가
         job = _wait_done(client, "auto_order")

@@ -61,19 +61,50 @@ def build_ezauto_router(*, get_current_user, get_setting, set_setting):
             ez_config.EZAUTO_DOMAIN, ez_config.EZAUTO_HOST, ez_config.EZAUTO_ABLY_SHOP_ID, base=ez_config.EZAUTO_BASE)
         return ez_ably.AblyVendorClient(token, api_key, base=ez_config.ABLY_PARTNER_BASE)
 
+    async def _amood_client() -> ez_ably.AmoodVendorClient:
+        api_key = ez_config.AMOOD_VENDOR_API_KEY
+        if not api_key:
+            raise EzautoError("서버에 AMOOD_VENDOR_API_KEY가 설정되어 있지 않습니다 (backend/.env 에 추가 후 서버 재시작)")
+        token = ez_config.AMOOD_VENDOR_TOKEN or await ez_ably.fetch_shop_token(
+            ez_config.EZAUTO_DOMAIN, ez_config.EZAUTO_HOST, ez_config.EZAUTO_AMOOD_SHOP_ID, base=ez_config.EZAUTO_BASE)
+        return ez_ably.AmoodVendorClient(token, api_key, base=ez_config.PASTELCO_BASE)
+
     async def _execute(kind: str) -> dict:
         job = jobs[kind]
 
-        def log(message: str) -> None:
-            job["steps"].append(f"{datetime.now(_KST):%H:%M:%S} {message}")
-            del job["steps"][:-_MAX_STEPS]
+        def logger(prefix: str = ""):
+            def log(message: str) -> None:
+                job["steps"].append(f"{datetime.now(_KST):%H:%M:%S} {prefix}{message}")
+                del job["steps"][:-_MAX_STEPS]
+            return log
 
-        ably = await _ably_client()
         ez = EzAdminClient(get_setting, timeout=180.0)
         today = datetime.now(_KST).date()
-        if kind == "auto_order":
-            return await ez_ably.run_auto_order(ably, ez, shop_id=ez_config.EZAUTO_ABLY_SHOP_ID, today=today, log=log)
-        return await ez_ably.run_invoice_register(ably, ez, today=today, log=log)
+        if kind == "invoice":
+            return await ez_ably.run_invoice_register(await _ably_client(), ez, today=today, log=logger())
+
+        # 자동발주: 판매처별로 차례로 실행한다. 한 판매처가 실패해도 다음 판매처는 계속 진행한다.
+        async def ably_shop():
+            return await ez_ably.run_auto_order(await _ably_client(), ez, shop_id=ez_config.EZAUTO_ABLY_SHOP_ID, today=today, log=logger("[에이블리] "))
+
+        async def amood_shop():
+            return await ez_ably.run_auto_order_amood(await _amood_client(), ez, shop_id=ez_config.EZAUTO_AMOOD_SHOP_ID, today=today, log=logger("[아모드] "))
+
+        shops = []
+        for label, shop_id, runner in (("에이블리", ez_config.EZAUTO_ABLY_SHOP_ID, ably_shop), ("아모드", ez_config.EZAUTO_AMOOD_SHOP_ID, amood_shop)):
+            try:
+                shops.append({"shop": label, "shop_id": shop_id, "ok": True, "result": await runner()})
+            except EzAdminSessionExpired:
+                raise  # 이지어드민 세션 문제는 모든 판매처에 해당하므로 중단
+            except EzautoError as exc:
+                shops.append({"shop": label, "shop_id": shop_id, "ok": False, "error": str(exc)})
+            except Exception as exc:
+                shops.append({"shop": label, "shop_id": shop_id, "ok": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
+            if not shops[-1]["ok"]:
+                logger(f"[{label}] ")(f"실패: {shops[-1]['error']}")
+        if not any(s["ok"] for s in shops):
+            raise EzautoError("모든 판매처에서 실패했습니다: " + " / ".join(f"{s['shop']}: {s['error']}" for s in shops))
+        return {"shops": shops}
 
     async def _run(kind: str) -> None:
         job = jobs[kind]

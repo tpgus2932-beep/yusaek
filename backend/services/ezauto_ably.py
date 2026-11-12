@@ -88,23 +88,57 @@ def order_row(item: dict) -> list[str]:
     ]
 
 
-def build_order_xls(items: list[dict]) -> bytes:
+def _text_xls(headers: list[str], rows: list[list[str]]) -> bytes:
     book = xlwt.Workbook(encoding="utf-8")
     sheet = book.add_sheet("Sheet1")
     # 빈 값도 실제 이지오토 파일처럼 '빈 문자열' 셀로 쓴다 (sheet.write("")는 빈 셀로 저장되어 버림)
-    for c, header in enumerate(ORDER_HEADERS):
+    for c, header in enumerate(headers):
         sheet.row(0).set_cell_text(c, header)
-    for r, item in enumerate(items, start=1):
+    for r, values in enumerate(rows, start=1):
         row = sheet.row(r)
-        for c, value in enumerate(order_row(item)):
+        for c, value in enumerate(values):
             row.set_cell_text(c, value)
     out = BytesIO()
     book.save(out)
     return out.getvalue()
 
 
-def upload_filename(shop_id: str, start: date, end: date) -> str:
-    return f"{shop_id}_download_{start:%Y%m%d}_{end:%Y%m%d}.xls"
+def build_order_xls(items: list[dict]) -> bytes:
+    return _text_xls(ORDER_HEADERS, [order_row(item) for item in items])
+
+
+# ---------------------------------------------------------------- 아모드(10080) 엑셀 변환
+AMOOD_ORDER_HEADERS = [
+    "결제일", "상품주문번호", "주문번호", "택배사", "택배사 코드", "송장번호", "상품명", "판매자 상품코드", "옵션 정보",
+    "수량", "판매금액", "주문자명", "연락처", "수취인명", "우편번호", "배송지 주소", "배송 메모", "주문상태", "에이블리 상품코드",
+]
+AMOOD_STATUS_LABEL = {"SHIPPING_READYING": "배송 준비중", "PAYMENT_COMPLETED": "결제 완료"}
+
+
+def amood_order_row(item: dict) -> list[str]:
+    """아모드 order_line_item 1건 -> 엑셀 1행 (실제 이지오토 엑셀 78행과 셀 단위로 일치하는 규칙)."""
+    order = item.get("order") or {}
+    product = item.get("product") or {}
+    option = item.get("product_option") or {}
+    customer = item.get("customer") or {}
+    fwd = (item.get("shipping_item") or {}).get("forwarding_address") or {}
+    address = " ".join(_s(fwd.get(k)) for k in ("prefecture", "city", "local", "detail")).strip()
+    status = _s(item.get("status"))
+    return [
+        _s(order.get("placed_at")), _s(item.get("id")), _s(order.get("id")), "", "", "",
+        _s(product.get("name_origin")), _s(product.get("custom_code")), "/".join(_s(v) for v in option.get("option_values_origin") or []),
+        _s(item.get("quantity")), _s(item.get("sale_price")), _s(customer.get("full_name")), _s(fwd.get("phone_number")),
+        _s(fwd.get("full_name")), _s(fwd.get("zipcode")), address, "", AMOOD_STATUS_LABEL.get(status, status),
+        _s(product.get("ably_sno")),
+    ]
+
+
+def build_amood_order_xls(items: list[dict]) -> bytes:
+    return _text_xls(AMOOD_ORDER_HEADERS, [amood_order_row(item) for item in items])
+
+
+def upload_filename(shop_id: str, start: date, end: date, *, download: bool = True) -> str:
+    return f"{shop_id}_{'download_' if download else ''}{start:%Y%m%d}_{end:%Y%m%d}.xls"
 
 
 # ---------------------------------------------------------------- 에이블리 공식 API
@@ -162,6 +196,51 @@ class AblyVendorClient:
         return {"success_snos": success, "errors": errors}
 
 
+class AmoodVendorClient:
+    """아모드(10080) 공식 API. 에이블리와 같은 서버(/v1/vendors/orders/order-line-items/)에 다른 인증 헤더를 쓴다."""
+
+    def __init__(self, token: str, api_key: str, *, base: str = "https://partner.api.a-bly.com", timeout: float = 120.0):
+        self._base, self._timeout = base, timeout
+        self._headers = {"authorization": f"TOKEN {token}", "x-amood-api-key": api_key}
+
+    async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        headers = {**self._headers, **kwargs.pop("headers", {})}
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            res = await client.request(method, f"{self._base}{path}", headers=headers, **kwargs)
+        if res.status_code >= 400:
+            raise EzautoError(f"아모드 API 오류 (HTTP {res.status_code}, {method} {path}): {res.text[:120]}")
+        return res
+
+    async def list_items(self, status: str, start: date, end: date) -> list[dict]:
+        items: list[dict] = []
+        page = 1
+        while True:
+            res = await self._request("GET", "/v1/vendors/orders/order-line-items/", params={
+                "status": status, "order_placed_date_start": f"{start:%Y-%m-%d}", "order_placed_date_end": f"{end:%Y-%m-%d}",
+                "page": page, "page_size": PER_PAGE,
+            })
+            data = res.json()
+            items.extend(data.get("order_line_items") or [])
+            if page >= int(data.get("total_page") or 1) or not data.get("order_line_items"):
+                break
+            page += 1
+        return items
+
+    async def ship_ready(self, ids: list[int | str]) -> dict:
+        """주문확인(배송준비). {"success": [...], "failure": [{"id", "error_code", "message"}]} 를 합쳐서 돌려준다."""
+        out: dict[str, list] = {"success": [], "failure": []}
+        for i in range(0, len(ids), PREPARE_CHUNK):
+            res = await self._request(
+                "PUT", "/v1/vendors/orders/order-line-items/bulk-shipping-ready/",
+                headers={**self._headers, "Content-Type": "application/json"},
+                json={"order_line_items": [{"id": str(x)} for x in ids[i:i + PREPARE_CHUNK]]},
+            )
+            body = res.json() if res.content else {}
+            out["success"].extend(body.get("success") or [])
+            out["failure"].extend(body.get("failure") or [])
+        return out
+
+
 async def fetch_shop_token(domain: str, host: str, shop_id: str, *, base: str = "http://ezauto.ezadmin.co.kr") -> str:
     """이지오토가 하는 것과 같이 이지어드민 이지오토 서버에서 판매처 토큰(m_strAuthCode)을 받아온다."""
     async with httpx.AsyncClient(timeout=20.0) as client:
@@ -207,6 +286,39 @@ async def run_auto_order(ably: AblyVendorClient, ez, *, shop_id: str, today: dat
         "confirmed": len(new_snos), "items": len(items), "uploaded": True,
         "ez_total": resp.get("cnt_total"), "ez_new": resp.get("cnt_new"), "ez_balju": resp.get("cnt_balju"),
     }
+
+
+async def run_auto_order_amood(amood: AmoodVendorClient, ez, *, shop_id: str, today: date, log: Log) -> dict:
+    start = today - timedelta(days=LOOKBACK_DAYS)
+    new_items = await amood.list_items("PAYMENT_COMPLETED", start, today)
+    log(f"신규 주문 {len(new_items)}건 조회")
+    confirmed, failed, fail_reasons = 0, 0, {}
+    if new_items:
+        res = await amood.ship_ready([i["id"] for i in new_items if i.get("id") is not None])
+        confirmed, failed = len(res["success"]), len(res["failure"])
+        for f in res["failure"]:
+            code = str(f.get("error_code") or "UNKNOWN")
+            fail_reasons[code] = fail_reasons.get(code, 0) + 1
+        log(f"주문확인 성공 {confirmed}건, 실패 {failed}건" + (f" ({', '.join(f'{k} {v}건' for k, v in fail_reasons.items())})" if fail_reasons else ""))
+
+    items = await amood.list_items("SHIPPING_READYING", start, today)
+    log(f"배송준비중 주문 {len(items)}건 조회")
+    base = {"confirmed": confirmed, "confirm_failed": failed, "fail_reasons": fail_reasons, "items": len(items)}
+    if not items:
+        return {**base, "uploaded": False, "message": "이지어드민에 입력할 주문이 없습니다."}
+
+    xls = build_amood_order_xls(items)
+    log(f"엑셀 {len(items)}행 변환 완료, 이지어드민 업로드 중...")
+    resp = await ez.post(
+        UPLOAD_TEMPLATE, "reg_orders_manual",
+        data={"shop_id": shop_id, "mode": "1", "is_auto": "1", "version": UPLOAD_VERSION},
+        files={"_file": (upload_filename(shop_id, start, today, download=False), xls, "application/octet-stream")},
+        time_flag=None,
+    )
+    if not isinstance(resp, dict) or not resp.get("success"):
+        raise EzautoError(f"이지어드민 발주 입력 실패: {str(resp)[:200]}")
+    log(f"이지어드민 발주 입력 완료 (신규 {resp.get('cnt_new')}건)")
+    return {**base, "uploaded": True, "ez_total": resp.get("cnt_total"), "ez_new": resp.get("cnt_new"), "ez_balju": resp.get("cnt_balju")}
 
 
 # ---------------------------------------------------------------- 판매처 송장등록
