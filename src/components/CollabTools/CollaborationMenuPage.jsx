@@ -81,7 +81,7 @@ function printProductLabels(labels) {
         ${l.clientLine ? `<div class="client">${escapeHtml(l.clientLine)}</div>` : ''}
         <div class="option"${l.option ? '' : ' style="visibility:hidden"'}>${l.option ? escapeHtml(l.option) : '-'}</div>
         ${l.separatorQty
-          ? `<div class="sep">↑ ${Number(l.separatorQty)}개</div>`
+          ? `<div class="sep">↓ ${Number(l.separatorQty)}개</div>`
           : `<div class="barcode">${buildBarcodeSvgMarkup(l.code)}</div>`}
     </div>
   `).join('\n');
@@ -1138,8 +1138,8 @@ export default function CollaborationMenuPage() {
       return Array.from({ length: qty }, () => ({ title, option, clientLine, code: item.code }));
     });
     // 같은 상품코드(일반/미송픽업 줄 합산)가 10장 이상이면 그 묶음 맨 끝에 바코드 없는 구분 라벨
-    // (상품명/옵션 + "↑ 수량개")을 한 장 넣는다 - 라벨 롤에서는 먼저 인쇄된 라벨이 위쪽에 오므로
-    // 묶음 끝에 붙인 구분 라벨이 위쪽 바코드 묶음을 가리킨다.
+    // (상품명/옵션 + "↓ 수량개")을 한 장 넣는다 - 라벨 롤에서는 마지막에 인쇄된 라벨이 맨 위에 오므로
+    // 묶음 끝에 붙인 구분 라벨이 맨 위에서 아래쪽 바코드 묶음을 가리킨다.
     const labelsByCode = new Map();
     labels.forEach((label) => {
       if (!labelsByCode.has(label.code)) labelsByCode.set(label.code, []);
