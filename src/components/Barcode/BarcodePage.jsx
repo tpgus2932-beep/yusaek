@@ -153,6 +153,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
   const [purchaseSelected, setPurchaseSelected] = useState({}); // "탭|코드" → 선택 여부
   const [purchaseItems, setPurchaseItems] = useState([]); // 매입관리 창: 전 탭 불량 [{...item, _tab}]
   const [purchaseSentByTab, setPurchaseSentByTab] = useState({}); // 탭 → { 코드: {normal, summon} }
+  const [purchaseSkipMatch, setPurchaseSkipMatch] = useState(false); // 이번만 예외: 매칭 없이 불러온 불량관리 수량 전체를 보낸다 (창을 열 때마다 꺼짐)
   const [purchaseSending, setPurchaseSending] = useState(false);
   const [defectPhotoCode, setDefectPhotoCode] = useState(null); // 📷 버튼으로 연 사진·사유 팝업의 상품코드
   const [purchaseSent, setPurchaseSent] = useState({}); // 이미 매입관리로 보낸 수량: 코드 → {normal, summon}
@@ -1466,6 +1467,12 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showDefectList, defectTab, defectList]);
 
+  // 매칭 예외 체크를 바꾸면 수량 기준이 달라지므로 신규 항목을 다시 전부 선택한다.
+  useEffect(() => {
+    if (purchaseModePicker) selectAllNew(purchaseScope);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [purchaseSkipMatch]);
+
   const handleKimsungilRevert = async (tab, code) => {
     if (!window.confirm(`${tab}탭 ${code} 소환 수량을 김승일 리스트로 되돌릴까요?`)) return;
     try {
@@ -1921,7 +1928,9 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
 
   // 매입관리로 넘길 수량: normal=직접 찍은 불량만, summon=김승일 소환술로 들어온 것만, all=둘 다(count).
   // 불량관리(불러오기) 수량은 바코드 매칭으로 실물 확인된 수량만 센다.
-  const matchedSummonQty = (item) => Number(item.summon_matched_qty) || 0;
+  const matchedSummonQty = (item) => (purchaseSkipMatch
+    ? Number(item.kimsungil_summon_qty) || 0
+    : Number(item.summon_matched_qty) || 0);
   const purchaseQty = (item, mode) => {
     const normal = Number(item.normal_qty ?? item.count) || 0;
     if (mode === "normal") return normal;
@@ -1934,9 +1943,14 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     normal: Number(item.normal_qty ?? item.count) || 0,
     summon: matchedSummonQty(item), // 매칭 완료된 수량만
   });
+  // 보낸 기록 정리(reconcile)용: 매칭 예외로 보낸 수량이 지워지지 않게 불러온 수량 전체를 기준으로 삼는다.
+  const reconcileParts = (item) => ({
+    normal: Number(item.normal_qty ?? item.count) || 0,
+    summon: Number(item.kimsungil_summon_qty) || 0,
+  });
   const allPurchaseParts = () => {
     const parts = {};
-    defectList.forEach((item) => { parts[String(item.code || "").trim()] = purchaseParts(item); });
+    defectList.forEach((item) => { parts[String(item.code || "").trim()] = reconcileParts(item); });
     return parts;
   };
   // 선택 범위에서 아직 매입관리로 안 보낸 신규 수량 (이미 보낸 수량은 제외)
@@ -1980,7 +1994,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
     const data = await res.json().catch(() => ({}));
     const defects = (data.defects ?? []).map((d) => ({ ...d, _tab: tab }));
     const parts = {};
-    defects.forEach((item) => { parts[String(item.code || "").trim()] = purchaseParts(item); });
+    defects.forEach((item) => { parts[String(item.code || "").trim()] = reconcileParts(item); });
     let sent = {};
     try {
       const sres = await fetch(`${API}/noye-kimsungil/defect-purchase/sent-state`, {
@@ -1997,6 +2011,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
   // 매입관리: 오늘 불량 + A·B·C·KDG 등 모든 탭의 불량을 한 번에 모아 보여준다.
   const openPurchasePicker = async () => {
     setPurchaseScope("all");
+    setPurchaseSkipMatch(false);
     setPurchaseSelected({});
     setPurchaseItems([]);
     setPurchaseModePicker(true);
@@ -3650,6 +3665,14 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                 </button>
               ))}
             </div>
+            <label style={{ display: "flex", gap: "0.5rem", alignItems: "center", padding: "6px 8px", marginBottom: "0.4rem", borderRadius: 6, background: purchaseSkipMatch ? "#fef9c3" : "transparent", fontWeight: 700 }}>
+              <input
+                type="checkbox"
+                checked={purchaseSkipMatch}
+                onChange={(e) => { setPurchaseSkipMatch(e.target.checked); setPurchaseSelected({}); }}
+              />
+              이번만 예외: 매칭 없이 불러온 불량관리 전체 수량 보내기
+            </label>
             {(() => {
               // 해당 범위에 수량이 있는 항목 중 신규가 있는 것을 먼저, 이미 이동된 것은 아래에 흐리게 표시
               const inScope = purchaseItems.filter((i) => purchaseQty(i, purchaseScope) > 0);
