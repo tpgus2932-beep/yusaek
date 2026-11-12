@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import styles from "./DefectMatch.module.css";
 
 const RESULT_LABEL = {
@@ -26,21 +26,26 @@ const normalizeCode = (text) => {
 };
 
 // 불량 불러오기 직후 실물 이중체크.
-// groups: [{ tab, rows: [{ code, label, total }] }] — 이번에 불러온 목록. A·B·C 탭을 각각 따로 매칭하고 탭마다 완료 처리한다.
+// session: { tabs, rowsByTab: { 탭: [{ key, tab, code, label, total }] }, scanned: { key: 개수 }, doneTabs, activeTab }
+//   A·B·C 탭을 각각 따로 매칭하고 탭마다 완료 처리한다. 바뀔 때마다 onChange(session)로 저장 → 창을 닫아도 이어서 할 수 있다.
+//   모든 탭이 끝나면 onChange(null)로 저장분을 지운다.
 // onRemove(tab, code, qty): 실물이 없는 불량을 그 탭 불량 목록에서도 지운다 (Promise).
-export default function DefectMatchModal({ groups, toKey, onRemove, onClose }) {
-  const tabs = useMemo(() => groups.map((g) => g.tab), [groups]);
-  const [rowsByTab, setRowsByTab] = useState(() =>
-    Object.fromEntries(
-      groups.map((g) => [
-        g.tab,
-        g.rows.map((row) => ({ key: `${g.tab}|${row.code}`, tab: g.tab, code: row.code, label: row.label, total: row.total })),
-      ]),
-    ),
-  );
-  const [activeTab, setActiveTab] = useState(tabs[0]);
-  const [doneTabs, setDoneTabs] = useState({});
-  const [scanned, setScanned] = useState({});
+export default function DefectMatchModal({ session, onChange, toKey, onRemove, onClose }) {
+  const tabs = session.tabs ?? [];
+  const rowsByTab = session.rowsByTab ?? {};
+  const scanned = session.scanned ?? {};
+  const doneTabs = session.doneTabs ?? {};
+  const activeTab = tabs.includes(session.activeTab) ? session.activeTab : tabs[0];
+  // 비동기(삭제) 뒤에도 최신 저장분 위에 덮어쓰도록 ref 로 들고 있는다.
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+  const update = (patch) => {
+    const next = { ...sessionRef.current, ...patch };
+    sessionRef.current = next;
+    onChange(next);
+  };
+  const setScanned = (next) => update({ scanned: next });
+
   const [text, setText] = useState("");
   const [flash, setFlash] = useState(null);
   const [errors, setErrors] = useState([]);
@@ -81,10 +86,11 @@ export default function DefectMatchModal({ groups, toKey, onRemove, onClose }) {
     const keyed = toKey ? toKey(raw) : raw.toUpperCase();
     const code = normalizeCode(keyed) || keyed;
     const sameCode = rows.filter((r) => r.code === code);
-    const target = sameCode.find((r) => (scanned[r.key] || 0) < r.total);
+    const latest = sessionRef.current.scanned ?? {}; // 빠르게 연속으로 찍어도 앞 스캔을 놓치지 않게
+    const target = sameCode.find((r) => (latest[r.key] || 0) < r.total);
     let result;
     if (target) {
-      const nextScanned = { ...scanned, [target.key]: (scanned[target.key] || 0) + 1 };
+      const nextScanned = { ...latest, [target.key]: (latest[target.key] || 0) + 1 };
       setScanned(nextScanned);
       const allDone = rows.every((r) => (nextScanned[r.key] || 0) >= r.total);
       result = allDone ? "done" : "next";
@@ -97,7 +103,7 @@ export default function DefectMatchModal({ groups, toKey, onRemove, onClose }) {
     playSound(result);
   };
 
-  const undoRow = (key) => setScanned((prev) => ({ ...prev, [key]: Math.max(0, (prev[key] || 0) - 1) }));
+  const undoRow = (key) => setScanned({ ...scanned, [key]: Math.max(0, (scanned[key] || 0) - 1) });
 
   // 실물이 없는(매칭 안 된) 수량만 불량 목록에서 지운다. 일부만 매칭됐으면 매칭된 수량은 남긴다.
   const removeRow = async (row) => {
@@ -112,12 +118,15 @@ export default function DefectMatchModal({ groups, toKey, onRemove, onClose }) {
     try {
       setRemoving(row.key);
       if (onRemove) await onRemove(row.tab, row.code, missing);
-      setRowsByTab((prev) => ({
-        ...prev,
-        [row.tab]: (prev[row.tab] ?? [])
-          .map((r) => (r.key === row.key ? { ...r, total: got } : r))
-          .filter((r) => r.total > 0),
-      }));
+      const cur = sessionRef.current;
+      update({
+        rowsByTab: {
+          ...cur.rowsByTab,
+          [row.tab]: (cur.rowsByTab?.[row.tab] ?? [])
+            .map((r) => (r.key === row.key ? { ...r, total: got } : r))
+            .filter((r) => r.total > 0),
+        },
+      });
       window.alert(`${name} ${missing}개를 불량 목록에서 삭제했습니다.`);
     } catch (err) {
       window.alert(err?.message || "불량 삭제 실패");
@@ -134,8 +143,8 @@ export default function DefectMatchModal({ groups, toKey, onRemove, onClose }) {
     return String(a.label).localeCompare(String(b.label));
   });
 
-  const switchTab = (tab) => {
-    setActiveTab(tab);
+  const switchTab = (tab, patch = {}) => {
+    update({ ...patch, activeTab: tab });
     setFlash(null);
     setErrors([]);
     setText("");
@@ -150,20 +159,20 @@ export default function DefectMatchModal({ groups, toKey, onRemove, onClose }) {
     }
     if (!window.confirm(`${activeTab}탭 매칭을 완료 처리할까요?`)) { focusInput(); return; }
     const nextDone = { ...doneTabs, [activeTab]: true };
-    setDoneTabs(nextDone);
     const nextTab = tabs.find((t) => !nextDone[t]);
     if (!nextTab) {
+      onChange(null); // 전부 끝났으니 저장분 삭제
       window.alert("모든 탭 매칭이 완료되었습니다.");
       onClose();
       return;
     }
     window.alert(`${activeTab}탭 완료. ${nextTab}탭 매칭을 시작합니다.`);
-    switchTab(nextTab);
+    switchTab(nextTab, { doneTabs: nextDone });
   };
 
   const handleClose = () => {
     const pending = tabs.filter((t) => !doneTabs[t]);
-    if (pending.length > 0 && !window.confirm(`아직 완료 처리하지 않은 탭이 있습니다: ${pending.join(", ")}\n그래도 닫을까요?`)) return;
+    if (pending.length > 0 && !window.confirm(`아직 완료 처리하지 않은 탭이 있습니다: ${pending.join(", ")}\n지금까지 찍은 기록은 저장되며, 불량 목록의 [매칭 이어하기]로 다시 열 수 있습니다.\n닫을까요?`)) return;
     onClose();
   };
 

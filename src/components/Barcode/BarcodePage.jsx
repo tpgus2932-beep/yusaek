@@ -11,6 +11,7 @@ import { getDownloadFilename } from "../../lib/download";
 import { LOCAL_API_BASE as API, getAuthHeaders, handleUnauthorized } from "../../lib/api";
 
 const BASE_DEFECT_TABS = ["A", "B", "C"];
+const DEFECT_MATCH_STORAGE_KEY = "defectMatchSession";
 const KDG_TAB = "KDG"; // 케이디지 상품은 불량 불러오기 때 항상 이 탭으로 간다 (서버와 같은 이름)
 const DEFECT_TAB_STORAGE_KEY = "barcodeDefectTab";
 const loadDefectTab = () => {
@@ -108,7 +109,18 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
   const [defectRecentCodes, setDefectRecentCodes] = useState([]);
   const [defectSheet, setDefectSheet] = useState(null); // 스캔 직후 사진·사유 등록 시트 { code, label }
   const [defectRecords, setDefectRecords] = useState([]); // 현재 탭의 사진·사유 기록 (SQLite)
-  const [defectMatchGroups, setDefectMatchGroups] = useState(null); // 불량 불러오기 직후 실물 매칭 모달용 [{ tab, rows }]
+  const [defectMatchOpen, setDefectMatchOpen] = useState(false); // 불량 불러오기 실물 매칭 창
+  // 실물 매칭 진행 상태 { tabs, rowsByTab, scanned, doneTabs, activeTab } — 창을 닫아도 이 기기에 저장돼 "매칭 이어하기"로 다시 연다.
+  const [defectMatchSession, setDefectMatchSession] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(DEFECT_MATCH_STORAGE_KEY) || "null"); } catch { return null; }
+  });
+  const saveDefectMatchSession = useCallback((session) => {
+    setDefectMatchSession(session);
+    try {
+      if (session) localStorage.setItem(DEFECT_MATCH_STORAGE_KEY, JSON.stringify(session));
+      else localStorage.removeItem(DEFECT_MATCH_STORAGE_KEY);
+    } catch { /* 저장 못 해도 매칭은 계속 가능 */ }
+  }, []);
   const [showKimsungilList, setShowKimsungilList] = useState(false);
   const [kimsungilNameSort, setKimsungilNameSort] = useState(""); // ""(기본: 입고 우선) | "desc" | "asc"
   const [kimsungilList, setKimsungilList] = useState([]);
@@ -1510,9 +1522,32 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
         .map(([code, total]) => ({ code, label: lookup[code] ? renderDefectLabel(lookup[code]) : code, total }));
       return { tab, rows };
     }));
+    // 저장된(아직 안 끝난) 매칭이 있으면 거기에 이어 붙인다. 이미 찍은 기록은 그대로 둔다.
+    const prev = defectMatchSession;
+    const rowsByTab = { ...(prev?.rowsByTab ?? {}) };
+    const doneTabs = { ...(prev?.doneTabs ?? {}) };
+    for (const g of groups) {
+      const list = [...(rowsByTab[g.tab] ?? [])];
+      for (const row of g.rows) {
+        const idx = list.findIndex((r) => r.code === row.code);
+        if (idx >= 0) list[idx] = { ...list[idx], total: list[idx].total + row.total };
+        else list.push({ key: `${g.tab}|${row.code}`, tab: g.tab, code: row.code, label: row.label, total: row.total });
+      }
+      rowsByTab[g.tab] = list;
+      delete doneTabs[g.tab]; // 새로 불러온 게 생긴 탭은 다시 매칭해야 한다
+    }
     const order = [...defectTabs, KDG_TAB];
-    groups.sort((a, b) => (order.indexOf(a.tab) + 1 || 999) - (order.indexOf(b.tab) + 1 || 999));
-    setDefectMatchGroups(groups);
+    const rank = (t) => (order.indexOf(t) + 1 || 999);
+    const tabs = Object.keys(rowsByTab).sort((a, b) => rank(a) - rank(b));
+    const firstNew = tabs.find((t) => groups.some((g) => g.tab === t));
+    saveDefectMatchSession({
+      tabs,
+      rowsByTab,
+      scanned: prev?.scanned ?? {},
+      doneTabs,
+      activeTab: firstNew || tabs[0],
+    });
+    setDefectMatchOpen(true);
   };
 
   // 매칭 모달에서 실물이 없는 불량을 지우면 해당 탭 불량 목록에서도 그 수량만큼 뺀다.
@@ -3622,12 +3657,13 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
         />
       )}
 
-      {defectMatchGroups && (
+      {defectMatchOpen && defectMatchSession && (
         <DefectMatchModal
-          groups={defectMatchGroups}
+          session={defectMatchSession}
+          onChange={saveDefectMatchSession}
           toKey={toEnglishKey}
           onRemove={removeUnmatchedDefect}
-          onClose={() => { setDefectMatchGroups(null); setTimeout(() => scanRef.current?.focus(), 0); }}
+          onClose={() => { setDefectMatchOpen(false); setTimeout(() => scanRef.current?.focus(), 0); }}
         />
       )}
 
@@ -3648,6 +3684,11 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                 >
                   {kimsungilSummonLoading ? "불러오는 중..." : "불량 불러오기"}
                 </button>
+                {defectMatchSession && (
+                  <button className={styles.secondaryBtn} onClick={() => setDefectMatchOpen(true)}>
+                    매칭 이어하기 ({(defectMatchSession.tabs ?? []).filter((t) => !defectMatchSession.doneTabs?.[t]).join(", ") || "완료"})
+                  </button>
+                )}
                 <button className={styles.secondaryBtn} onClick={() => handleDefectExportAndOchuul()} disabled={defectEzadminLoading || ochuulLoading || defectList.length === 0}>
                   {defectEzadminLoading ? "출고 중..." : ochuulLoading ? "오출 중..." : defectOchuulDoneAt && defectOchuulDoneAt.slice(0, 10) === new Date().toLocaleDateString("sv-SE") ? `출고+오출 완료 (${defectOchuulDoneAt})` : "출고+오출"}
                 </button>
