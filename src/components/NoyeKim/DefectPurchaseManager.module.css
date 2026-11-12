@@ -389,6 +389,7 @@
 .todayTotal { margin-left: auto; font-weight: 800; color: var(--dp-red); font-variant-numeric: tabular-nums; }
 .todayList { margin: 0.2rem 0 0.35rem; max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 0.35rem; }
 .todayGroup {
+  flex-shrink: 0; /* 목록 높이 제한 안에서 카드가 찌그러져 겹치지 않게 (넘치면 스크롤) */
   border-radius: 10px;
   border: 1px solid var(--border-color);
   background: var(--bg-primary);

@@ -260,7 +260,7 @@ export default function DefectPurchaseManager() {
       if (handleUnauthorized(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || "처리 실패");
-      await Promise.all([loadList(), loadVendorLogs(vendorName)]);
+      await Promise.all([loadList(), loadVendorLogs(vendorName), dailyOpen ? loadDailyLogs() : null]);
     } catch (err) {
       setError(err.message || "처리 실패");
     }
@@ -288,7 +288,7 @@ export default function DefectPurchaseManager() {
 삭제하면 되돌릴 수 없습니다.`)) return;
     try {
       await callDelete(item.id);
-      await Promise.all([loadList(), loadVendorLogs(vendorName)]);
+      await Promise.all([loadList(), loadVendorLogs(vendorName), dailyOpen ? loadDailyLogs() : null]);
     } catch (err) {
       setError(err.message || "삭제 실패");
     }
@@ -301,7 +301,7 @@ export default function DefectPurchaseManager() {
 목록과 로그에서 완전히 사라지고, 되돌릴 수 없습니다.`)) return;
     try {
       for (const item of vendor.items) await callDelete(item.id);
-      await Promise.all([loadList(), loadVendorLogs(vendor.vendor)]);
+      await Promise.all([loadList(), loadVendorLogs(vendor.vendor), dailyOpen ? loadDailyLogs() : null]);
     } catch (err) {
       setError(err.message || "삭제 실패");
       loadList().catch(() => {});
@@ -598,6 +598,15 @@ export default function DefectPurchaseManager() {
                             <div className={styles.rowActions}>
                               {cameraBtn(`${l.product_name} ${optionOf(l)}`, l.records)}
                               {editBtn(() => openEditById(l.vendor, l.item_id), !l.item_id || l.item_status === "deleted")}
+                              <button
+                                type="button"
+                                className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
+                                title="이 항목 삭제 (오늘 추가된 항목·목록에서도 사라짐)"
+                                disabled={!l.item_id || l.item_status === "deleted"}
+                                onClick={() => deleteItem(l.vendor, { id: l.item_id, status: l.item_status, amount: l.item_amount, source: l.source, memo: l.memo, product_name: l.product_name })}
+                              >
+                                <TrashIcon />
+                              </button>
                             </div>
                           </td>
                         </tr>
