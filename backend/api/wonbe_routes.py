@@ -3497,6 +3497,12 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 if eid and eid not in g["ids"]:
                     g["ids"].append(eid)
             groups = [{"name": n, "codes": g["codes"], "ids": g["ids"], "count": len(g["codes"])} for n, g in groups_map.items()]
+            # 새로 들어온 상품이 입고대기 탭에도 바로 보이도록 '최신업데이트'(원가베이스유 기준 신규 추가)를 이어서 실행한다.
+            # 입고대기 쪽 문제로 이미 끝난 동기화 결과를 실패 처리하지 않도록 오류는 삼킨다.
+            try:
+                ingodaegi_added = _sync_ingodaegi_from_wonbe(conn)
+            except Exception:
+                ingodaegi_added = None
             return {
                 "ok": True,
                 "fetched": len(data_rows),
@@ -3504,6 +3510,7 @@ def build_wonbe_router(*, get_current_user, get_setting=None, get_shared_db=None
                 "backfilled": backfilled,
                 "synced_at": synced_at,
                 "groups": groups,
+                "ingodaegi_added": ingodaegi_added,
             }
         finally:
             conn.close()
