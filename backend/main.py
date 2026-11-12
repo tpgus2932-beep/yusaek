@@ -90,6 +90,7 @@ from api.lead_time_routes import build_lead_time_router, init_lead_time_tables
 from api.supplies_routes import build_supplies_router
 from services.supplies import init_supplies_tables, deduct_from_ez_rows as deduct_supplies_from_ez_rows
 from api.invoice_print_routes import build_invoice_print_router, init_invoice_print_tables
+from api.partial_cancel_routes import build_partial_cancel_router
 from api.exchange_return_anomaly_routes import build_exchange_return_anomaly_router
 from api.return_anomaly_routes import build_return_anomaly_router
 from api.daily_checklist_routes import build_daily_checklist_router
@@ -1986,6 +1987,13 @@ app.include_router(
         get_current_user=_get_current_user,
         get_setting=_get_setting,
         get_db=_get_shared_db,
+    )
+)
+
+app.include_router(
+    build_partial_cancel_router(
+        get_current_user=_get_current_user,
+        get_setting=_get_setting,
     )
 )
 

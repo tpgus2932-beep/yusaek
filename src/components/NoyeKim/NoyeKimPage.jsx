@@ -5,6 +5,7 @@ import { getDownloadFilename } from "../../lib/download";
 import PurchaseManager from "./PurchaseManager";
 import DefectPurchaseManager from "./DefectPurchaseManager";
 import SuppliesManager from "./SuppliesManager";
+import PartialCancelManager from "./PartialCancelManager";
 import {
   AlertTriangle, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpDown, Clock, Clipboard, FileSpreadsheet,
   MessageSquare, Package, Pencil, Plus, Printer, RefreshCw, Search, Shuffle, Table2, Trash2, X, Zap,
@@ -2142,6 +2143,7 @@ export default function NoyeKimPage() {
           { key: "receipt-excel", label: "입고전표 엑셀전환",        icon: <FileSpreadsheet size={13} />, badge: null },
           { key: "bulyang",       label: "불량출력",                icon: <Printer size={13} />,       badge: null },
           { key: "supplies",      label: "비품관리",                icon: <Package size={13} />,       badge: null },
+          { key: "partial-cancel", label: "부분취소",               icon: <X size={13} />,             badge: null },
         ].map(({ key, label, icon, badge }) => (
           <button
             key={key}
@@ -2871,6 +2873,10 @@ export default function NoyeKimPage() {
 
       {activeTab === "supplies" && (
         <SuppliesManager />
+      )}
+
+      {activeTab === "partial-cancel" && (
+        <PartialCancelManager />
       )}
 
       {activeTab === "kdg" && (
