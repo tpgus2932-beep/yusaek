@@ -110,7 +110,7 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
   const [defectSheet, setDefectSheet] = useState(null); // 스캔 직후 사진·사유 등록 시트 { code, label }
   const [defectRecords, setDefectRecords] = useState([]); // 현재 탭의 사진·사유 기록 (SQLite)
   const [defectMatchOpen, setDefectMatchOpen] = useState(false); // 불량 불러오기 실물 매칭 창
-  // 실물 매칭 진행 상태 { tabs, rowsByTab, scanned, doneTabs, activeTab } — 창을 닫아도 이 기기에 저장돼 "매칭 이어하기"로 다시 연다.
+  // 실물 매칭 진행 상태 { tabs, rowsByTab, scanned, doneTabs, activeTab } — 창을 닫아도 이 기기에 저장돼, 그 탭을 누르면 이어서 연다.
   const [defectMatchSession, setDefectMatchSession] = useState(() => {
     try { return JSON.parse(localStorage.getItem(DEFECT_MATCH_STORAGE_KEY) || "null"); } catch { return null; }
   });
@@ -121,6 +121,22 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
       else localStorage.removeItem(DEFECT_MATCH_STORAGE_KEY);
     } catch { /* 저장 못 해도 매칭은 계속 가능 */ }
   }, []);
+  // 이 탭에 아직 완료 처리 안 한 매칭이 남아 있는지
+  const hasPendingMatch = (tab) => Boolean(defectMatchSession?.rowsByTab?.[tab] && !defectMatchSession?.doneTabs?.[tab]);
+  const pendingMatchText = (tab) => {
+    const list = defectMatchSession?.rowsByTab?.[tab] ?? [];
+    const sc = defectMatchSession?.scanned ?? {};
+    const total = list.reduce((sum, r) => sum + r.total, 0);
+    const got = list.reduce((sum, r) => sum + Math.min(r.total, sc[r.key] || 0), 0);
+    return `매칭 중 ${got}/${total}`;
+  };
+  // 탭을 누르면 그 탭 매칭을 이어서 연다.
+  const resumeDefectMatch = (tab) => {
+    if (!hasPendingMatch(tab)) return false;
+    saveDefectMatchSession({ ...defectMatchSession, activeTab: tab });
+    setDefectMatchOpen(true);
+    return true;
+  };
   const [showKimsungilList, setShowKimsungilList] = useState(false);
   const [kimsungilNameSort, setKimsungilNameSort] = useState(""); // ""(기본: 입고 우선) | "desc" | "asc"
   const [kimsungilList, setKimsungilList] = useState([]);
@@ -353,10 +369,11 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
         <span key={tab} style={{ display: "inline-flex", alignItems: "center" }}>
           <button
             className={`${styles.tabBtn} ${defectTab === tab ? styles.tabActive : ""} ${redTabs.includes(tab) ? styles.tabTextRed : ""}`}
-            onClick={() => switchDefectTab(tab)}
+            onClick={() => { switchDefectTab(tab); resumeDefectMatch(tab); }}
           >
             {tab}
             {showCost && getTabStat(tab) && ` · ${getTabStat(tab).cost.toLocaleString()}원`}
+            {hasPendingMatch(tab) && ` · ${pendingMatchText(tab)}`}
           </button>
           {showCost && defectTab === tab && (
             <>
@@ -3651,18 +3668,24 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
               {kimsungilSummonPicker.tabs.map((tab) => {
                 const info = kimsungilSummonPicker.counts[tab];
                 const none = info && info !== "?" && info.kinds === 0;
+                const pending = hasPendingMatch(tab);
                 return (
                   <button
                     key={tab}
                     className={styles.secondaryBtn}
                     style={{ flex: "1 1 90px", padding: "14px 8px", fontWeight: 700, opacity: none ? 0.5 : 1, color: redTabs.includes(tab) ? "#ef4444" : undefined }}
-                    disabled={kimsungilSummonLoading || info === null || none}
-                    onClick={() => handleKimsungilSummon(tab)}
+                    disabled={kimsungilSummonLoading || ((info === null || none) && !pending)}
+                    onClick={() => {
+                      // 새로 불러올 게 없고 매칭 중이던 탭이면 바로 이어서 매칭
+                      if (pending && (none || info === null || info === "?")) { setKimsungilSummonPicker(null); resumeDefectMatch(tab); return; }
+                      handleKimsungilSummon(tab);
+                    }}
                   >
                     {tab}탭
                     <div style={{ fontSize: "0.8rem", fontWeight: 500 }}>
                       {info === null ? "조회 중..." : info === "?" ? "?" : none ? "불러올 상품 없음" : `${info.kinds}종 ${info.total}개`}
                     </div>
+                    {pending && <div style={{ fontSize: "0.8rem", fontWeight: 700, color: "#2563eb" }}>{pendingMatchText(tab)} · 눌러서 이어하기</div>}
                   </button>
                 );
               })}
@@ -3710,11 +3733,6 @@ export default function BarcodePage({ title = "Barcode", headerExtra = null, mob
                 >
                   {kimsungilSummonLoading ? "불러오는 중..." : "불량 불러오기"}
                 </button>
-                {defectMatchSession && (
-                  <button className={styles.secondaryBtn} onClick={() => setDefectMatchOpen(true)}>
-                    매칭 이어하기 ({(defectMatchSession.tabs ?? []).filter((t) => !defectMatchSession.doneTabs?.[t]).join(", ") || "완료"})
-                  </button>
-                )}
                 <button className={styles.secondaryBtn} onClick={() => handleDefectExportAndOchuul()} disabled={defectEzadminLoading || ochuulLoading || defectList.length === 0}>
                   {defectEzadminLoading ? "출고 중..." : ochuulLoading ? "오출 중..." : defectOchuulDoneAt && defectOchuulDoneAt.slice(0, 10) === new Date().toLocaleDateString("sv-SE") ? `출고+오출 완료 (${defectOchuulDoneAt})` : "출고+오출"}
                 </button>

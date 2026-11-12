@@ -172,7 +172,7 @@ export default function DefectMatchModal({ session, onChange, toKey, onRemove, o
 
   const handleClose = () => {
     const pending = tabs.filter((t) => !doneTabs[t]);
-    if (pending.length > 0 && !window.confirm(`아직 완료 처리하지 않은 탭이 있습니다: ${pending.join(", ")}\n지금까지 찍은 기록은 저장되며, 불량 목록의 [매칭 이어하기]로 다시 열 수 있습니다.\n닫을까요?`)) return;
+    if (pending.length > 0 && !window.confirm(`아직 완료 처리하지 않은 탭이 있습니다: ${pending.join(", ")}\n지금까지 찍은 기록은 저장되며, 해당 탭을 누르면 이어서 할 수 있습니다.\n닫을까요?`)) return;
     onClose();
   };
 
